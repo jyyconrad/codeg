@@ -26,7 +26,6 @@ use super::manager::ChatChannelManager;
 
 const FLUSH_INTERVAL_SECS: u64 = 10;
 const BUFFER_FLUSH_THRESHOLD: usize = 500;
-const MAX_MESSAGE_LEN: usize = 2000;
 const MESSAGE_LANGUAGE_KEY: &str = "chat_message_language";
 const COMMAND_PREFIX_KEY: &str = "chat_command_prefix";
 const DEFAULT_COMMAND_PREFIX: &str = "/";
@@ -597,17 +596,12 @@ async fn handle_acp_envelope(
             }
         }
 
-        AcpEvent::TurnComplete {
-            stop_reason,
-            agent_type,
-            ..
-        } => {
+        AcpEvent::TurnComplete { stop_reason, .. } => {
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.get_mut(connection_id) {
                 let target = session.target.clone();
                 let conv_id = session.conversation_id;
-                let content = std::mem::take(&mut session.content_buffer);
-                let tool_count = session.tool_calls.len();
+                session.content_buffer.clear();
                 session.tool_calls.clear();
                 session.last_flushed = Instant::now();
                 // A kickoff prompt deferred by `SessionStarted` (the connection
@@ -616,25 +610,6 @@ async fn handle_acp_envelope(
                 // double-send it; retry below once the lock is released.
                 let deferred_kickoff = session.pending_prompt.take();
                 drop(guard);
-
-                let lang = get_lang(db).await;
-                let body = format_completion(&content, tool_count, lang);
-
-                let msg = RichMessage::info(body)
-                    .with_title(match lang {
-                        Lang::ZhCn | Lang::ZhTw => "任务完成",
-                        _ => "Turn Complete",
-                    })
-                    .with_field("Agent", agent_type)
-                    .with_field(
-                        match lang {
-                            Lang::ZhCn | Lang::ZhTw => "结束原因",
-                            _ => "Stop Reason",
-                        },
-                        localize_stop_reason(stop_reason, lang),
-                    );
-
-                let _ = manager.send_to_target(&target, &msg).await;
 
                 if stop_reason == "end_turn" {
                     let _ = conversation_service::update_status(
@@ -797,151 +772,6 @@ async fn clear_session_route(
     } else {
         let _ = sender_context_service::clear_session(db, channel_id, sender_id).await;
     }
-}
-
-fn format_completion(content: &str, tool_count: usize, lang: Lang) -> String {
-    if content.is_empty() {
-        return match lang {
-            Lang::ZhCn | Lang::ZhTw => format!("(无文本输出, {tool_count} 次工具调用)"),
-            _ => format!("(No text output, {tool_count} tool calls)"),
-        };
-    }
-
-    if content.len() <= MAX_MESSAGE_LEN {
-        let mut body = content.to_string();
-        if tool_count > 0 {
-            body.push_str(&format!(
-                "\n\n[{} {}]",
-                tool_count,
-                match lang {
-                    Lang::ZhCn | Lang::ZhTw => "次工具调用",
-                    _ => "tool calls",
-                }
-            ));
-        }
-        return body;
-    }
-
-    // Truncate long content (use char boundaries to avoid panic on multi-byte)
-    let head_end = content
-        .char_indices()
-        .nth(500)
-        .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let head = &content[..head_end];
-    let tail_start = content
-        .char_indices()
-        .rev()
-        .nth(499)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let tail = &content[tail_start..];
-
-    match lang {
-        Lang::ZhCn | Lang::ZhTw => {
-            format!(
-                "{head}\n\n...\n\n{tail}\n\n[完整回复: {} 字符, {tool_count} 次工具调用]",
-                content.len()
-            )
-        }
-        _ => {
-            format!(
-                "{head}\n\n...\n\n{tail}\n\n[Full response: {} chars, {tool_count} tool calls]",
-                content.len()
-            )
-        }
-    }
-}
-
-fn localize_stop_reason(reason: &str, lang: Lang) -> String {
-    match lang {
-        Lang::ZhCn => match reason {
-            "end_turn" => "正常结束",
-            "cancelled" => "已取消",
-            "max_tokens" => "达到最大长度",
-            "stop_sequence" => "遇到停止序列",
-            "error" => "错误",
-            "timeout" => "超时",
-            other => other,
-        },
-        Lang::ZhTw => match reason {
-            "end_turn" => "正常結束",
-            "cancelled" => "已取消",
-            "max_tokens" => "達到最大長度",
-            "stop_sequence" => "遇到停止序列",
-            "error" => "錯誤",
-            "timeout" => "逾時",
-            other => other,
-        },
-        Lang::Ja => match reason {
-            "end_turn" => "正常終了",
-            "cancelled" => "キャンセル",
-            "max_tokens" => "最大トークン数到達",
-            "stop_sequence" => "停止シーケンス",
-            "error" => "エラー",
-            "timeout" => "タイムアウト",
-            other => other,
-        },
-        Lang::Ko => match reason {
-            "end_turn" => "정상 종료",
-            "cancelled" => "취소됨",
-            "max_tokens" => "최대 길이 도달",
-            "stop_sequence" => "정지 시퀀스",
-            "error" => "오류",
-            "timeout" => "시간 초과",
-            other => other,
-        },
-        Lang::Es => match reason {
-            "end_turn" => "Finalizado",
-            "cancelled" => "Cancelado",
-            "max_tokens" => "Longitud máxima alcanzada",
-            "error" => "Error",
-            "timeout" => "Tiempo agotado",
-            other => other,
-        },
-        Lang::De => match reason {
-            "end_turn" => "Abgeschlossen",
-            "cancelled" => "Abgebrochen",
-            "max_tokens" => "Maximale Länge erreicht",
-            "error" => "Fehler",
-            "timeout" => "Zeitüberschreitung",
-            other => other,
-        },
-        Lang::Fr => match reason {
-            "end_turn" => "Terminé",
-            "cancelled" => "Annulé",
-            "max_tokens" => "Longueur maximale atteinte",
-            "error" => "Erreur",
-            "timeout" => "Délai dépassé",
-            other => other,
-        },
-        Lang::Pt => match reason {
-            "end_turn" => "Concluído",
-            "cancelled" => "Cancelado",
-            "max_tokens" => "Comprimento máximo atingido",
-            "error" => "Erro",
-            "timeout" => "Tempo esgotado",
-            other => other,
-        },
-        Lang::Ar => match reason {
-            "end_turn" => "اكتمل",
-            "cancelled" => "ملغى",
-            "max_tokens" => "تم بلوغ الحد الأقصى",
-            "error" => "خطأ",
-            "timeout" => "انتهت المهلة",
-            other => other,
-        },
-        Lang::En => match reason {
-            "end_turn" => "Completed",
-            "cancelled" => "Cancelled",
-            "max_tokens" => "Max length reached",
-            "stop_sequence" => "Stop sequence",
-            "error" => "Error",
-            "timeout" => "Timeout",
-            other => other,
-        },
-    }
-    .to_string()
 }
 
 /// Title-side match for `delegate_to_agent`. Title is free-form text the
@@ -1614,6 +1444,45 @@ mod async_relay_dedup_tests {
         assert!(
             matches!(blocks.as_slice(), [PromptInputBlock::Text { text }] if text == "do the task"),
             "the retried prompt must carry the deferred text, got {blocks:?}"
+        );
+    }
+
+    /// TurnComplete used to post a `format_completion` card titled
+    /// "Turn Complete" / "任务完成". Terminal delivery now lives in
+    /// lifecycle; this arm must not send a completion card.
+    #[tokio::test]
+    async fn turn_complete_does_not_send_format_completion_card() {
+        let (bridge, chat, rec) = harness().await;
+        bridge.lock().await.get_mut("conn").unwrap().content_buffer = "hello answer".into();
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let complete = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "S1".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude".into(),
+            },
+        };
+        handle_acp_envelope(
+            &complete,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.is_empty(),
+            "TurnComplete must not send a format_completion card, got {msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .all(|m| !m.contains("Turn Complete") && !m.contains("任务完成")),
+            "got {msgs:?}"
         );
     }
 }

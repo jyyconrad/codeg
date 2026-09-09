@@ -600,6 +600,12 @@ pub struct SessionState {
     /// `ConversationLinked` so a title dropped while the row was still
     /// unbound can be accepted on the next send.
     pub last_native_title: Option<String>,
+
+    /// Whether this connection run already fanned out a terminal IM message.
+    /// One publish per run; reset when a new prompt starts (`turn_in_flight`
+    /// rises / `send_prompt`). Not serialized: backend-internal, like
+    /// `turn_in_flight`.
+    pub terminal_message_published: bool,
 }
 
 impl SessionState {
@@ -665,6 +671,7 @@ impl SessionState {
             config_stale: false,
             config_stale_kind: None,
             last_native_title: None,
+            terminal_message_published: false,
         }
     }
 
@@ -1138,6 +1145,8 @@ impl SessionState {
                 // queued prompt sent instead of answering) must not leave a dead
                 // approval in the snapshot for a mid-turn attach to render.
                 self.pending_plan_approval = None;
+                // A new prompt starts a new connection run for IM fan-out.
+                self.terminal_message_published = false;
                 // Starting a prompt past an active AIR failure acknowledges it
                 // — settle EVERYTHING, mirroring the frontend reducer's
                 // prompt-start settle so a client hydrating mid-turn doesn't

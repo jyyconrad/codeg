@@ -26,6 +26,7 @@ struct Inner {
     command_tx: mpsc::Sender<IncomingCommand>,
     command_rx: Mutex<Option<mpsc::Receiver<IncomingCommand>>>,
     broadcaster: Mutex<Option<Arc<WebEventBroadcaster>>>,
+    bridge: Arc<Mutex<SessionBridge>>,
 }
 
 pub struct ChatChannelManager {
@@ -47,6 +48,7 @@ impl ChatChannelManager {
                 command_tx,
                 command_rx: Mutex::new(Some(command_rx)),
                 broadcaster: Mutex::new(None),
+                bridge: Arc::new(Mutex::new(SessionBridge::new())),
             }),
         }
     }
@@ -60,6 +62,13 @@ impl ChatChannelManager {
 
     pub fn command_sender(&self) -> mpsc::Sender<IncomingCommand> {
         self.inner.command_tx.clone()
+    }
+
+    /// Live Bridge shared with the session-event subscriber and command
+    /// dispatcher. Created empty in [`Self::new`] so lifecycle/cancel can
+    /// lock it without a `SessionBridge` parameter on `handle_event`.
+    pub fn session_bridge(&self) -> Arc<Mutex<SessionBridge>> {
+        self.inner.bridge.clone()
     }
 
     /// Take the command receiver (can only be called once, at startup).
@@ -351,8 +360,7 @@ impl ChatChannelManager {
 
         let db_conn2 = db_conn.clone();
 
-        // Create shared session bridge
-        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let bridge = self.inner.bridge.clone();
 
         // Spawn event subscriber
         let manager_for_events = self.clone_ref();

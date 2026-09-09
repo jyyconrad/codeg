@@ -1028,6 +1028,7 @@ impl ConnectionManager {
                 return Err(AcpError::TurnInProgress);
             }
             s.turn_in_flight = true;
+            s.terminal_message_published = false;
         }
         permit.send(ConnectionCommand::Prompt {
             blocks,
@@ -1848,6 +1849,14 @@ impl ConnectionManager {
                             conversation_id: cid,
                             status: ConversationStatus::Cancelled,
                         },
+                    )
+                    .await;
+                    crate::acp::lifecycle::maybe_publish_run_terminal(
+                        db,
+                        self,
+                        &state_arc,
+                        crate::chat_channel::terminal_message::TerminalKind::Stopped,
+                        None,
                     )
                     .await;
                 }
