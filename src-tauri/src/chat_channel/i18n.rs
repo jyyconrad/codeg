@@ -156,6 +156,38 @@ pub fn error_message_label(lang: Lang) -> &'static str {
     }
 }
 
+// ── Run terminal delivery (folder-channel fan-out) ──
+
+pub fn user_stopped_message(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "用户已停止",
+        Lang::ZhTw => "使用者已停止",
+        Lang::Ja => "ユーザーによって停止されました",
+        Lang::Ko => "사용자가 중지했습니다",
+        Lang::Es => "Detenido por el usuario",
+        Lang::De => "Vom Benutzer gestoppt",
+        Lang::Fr => "Arrêté par l'utilisateur",
+        Lang::Pt => "Interrompido pelo usuário",
+        Lang::Ar => "أوقفه المستخدم",
+        Lang::En => "Stopped by the user",
+    }
+}
+
+pub fn agent_error_fallback(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "代理发生错误",
+        Lang::ZhTw => "代理發生錯誤",
+        Lang::Ja => "エージェントでエラーが発生しました",
+        Lang::Ko => "에이전트에서 오류가 발생했습니다",
+        Lang::Es => "El agente encontró un error",
+        Lang::De => "Der Agent hat einen Fehler",
+        Lang::Fr => "L'agent a rencontré une erreur",
+        Lang::Pt => "O agente encontrou um erro",
+        Lang::Ar => "حدث خطأ في الوكيل",
+        Lang::En => "The agent encountered an error",
+    }
+}
+
 // ── Permission request (global event push) ──
 
 pub fn permission_request_title(lang: Lang) -> &'static str {
