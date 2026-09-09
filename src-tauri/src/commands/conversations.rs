@@ -473,6 +473,53 @@ pub async fn import_local_conversations(
     .await
 }
 
+pub async fn sync_codex_grok_sessions_core(
+    conn: &sea_orm::DatabaseConnection,
+    emitter: &EventEmitter,
+    folder_id: i32,
+) -> Result<ImportResult, AppCommandError> {
+    let _guard = IMPORT_GUARD
+        .try_lock()
+        .map_err(|_| AppCommandError::invalid_input("An import is already in progress"))?;
+
+    let folder = folder_service::get_folder_by_id(conn, folder_id)
+        .await
+        .map_err(AppCommandError::from)?
+        .ok_or_else(|| {
+            AppCommandError::not_found("Folder not found")
+                .with_detail(format!("folder_id={folder_id}"))
+        })?;
+
+    let (result, updated_ids) =
+        import_service::import_codex_grok_for_folder(conn, folder_id, &folder.path)
+            .await
+            .map_err(AppCommandError::from)?;
+
+    if result.imported > 0 || result.updated > 0 {
+        emit_event(
+            emitter,
+            CONVERSATIONS_BULK_CHANGED_EVENT,
+            ConversationsBulkChanged {
+                imported: result.imported,
+                updated: result.updated,
+                folder_ids: vec![folder_id],
+            },
+        );
+    }
+    let _ = updated_ids;
+    Ok(result)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn sync_codex_grok_sessions(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+) -> Result<ImportResult, AppCommandError> {
+    sync_codex_grok_sessions_core(&db.conn, &EventEmitter::Tauri(app), folder_id).await
+}
+
 /// Serializes concurrent batch imports: `(external_id, agent_type)` has no DB
 /// unique index (and adding one now could fail on historical duplicates), so
 /// two overlapping imports could double-insert the same session. `try_lock`
@@ -4550,6 +4597,19 @@ mod tests {
             msg.to_lowercase().contains("not found") || msg.to_lowercase().contains("999999"),
             "expected not-found-shaped error, got: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn sync_codex_grok_sessions_core_missing_folder_errors() {
+        // Takes IMPORT_GUARD internally — must not overlap a test holding it,
+        // or the guard error masks the not-found error asserted below.
+        let _serialized = IMPORT_GUARD_SERIALIZER.lock().await;
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let emitter = crate::web::event_bridge::EventEmitter::test_web_only(Default::default());
+        let err = sync_codex_grok_sessions_core(&db.conn, &emitter, 999_999)
+            .await
+            .expect_err("unknown folder");
+        assert!(err.to_string().to_lowercase().contains("folder"));
     }
 
     #[tokio::test]

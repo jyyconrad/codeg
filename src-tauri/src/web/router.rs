@@ -141,6 +141,10 @@ pub fn build_router(
             "/import_selected_sessions",
             post(handlers::conversations::import_selected_sessions),
         )
+        .route(
+            "/sync_codex_grok_sessions",
+            post(handlers::conversations::sync_codex_grok_sessions),
+        )
         .route("/list_folders", post(handlers::conversations::list_folders))
         .route("/get_stats", post(handlers::conversations::get_stats))
         .route(
