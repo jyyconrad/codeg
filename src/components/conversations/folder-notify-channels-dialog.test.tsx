@@ -90,4 +90,24 @@ describe("FolderNotifyChannelsDialog", () => {
       expect(api.setFolderChatChannels).toHaveBeenCalledWith(1, [3])
     )
   })
+
+  it("disables Save and does not show empty copy when load fails", async () => {
+    api.listChatChannels.mockRejectedValue(new Error("network down"))
+    renderDialog()
+
+    expect(
+      await screen.findByText(/Failed to load channels: network down/i)
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/No chat channels yet/i)).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /save/i })).toBeDisabled()
+    expect(api.setFolderChatChannels).not.toHaveBeenCalled()
+  })
+
+  it("shows empty copy and allows Save after a successful empty load", async () => {
+    api.listChatChannels.mockResolvedValue([])
+    renderDialog()
+
+    expect(await screen.findByText(/No chat channels yet/i)).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /save/i })).toBeEnabled()
+  })
 })

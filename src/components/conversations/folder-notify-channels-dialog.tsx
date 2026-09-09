@@ -38,6 +38,8 @@ export function FolderNotifyChannelsDialog({
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -45,17 +47,22 @@ export function FolderNotifyChannelsDialog({
     /* eslint-disable react-hooks/set-state-in-effect -- reset + fetch on open */
     setLoading(true)
     setSaving(false)
+    setLoaded(false)
+    setLoadError(null)
     void Promise.all([listChatChannels(), listFolderChatChannels(folderId)])
       .then(([listed, bound]) => {
         if (cancelled) return
         setChannels(listed)
         setSelected(new Set(bound))
+        setLoaded(true)
       })
       .catch((err) => {
         if (cancelled) return
-        setChannels([])
-        setSelected(new Set())
-        toast.error(t("loadFailed", { message: toErrorMessage(err) }))
+        // Keep last good channels/selection. Save is a full replace, so an
+        // empty fallback here would let a later click wipe every binding.
+        const message = toErrorMessage(err)
+        setLoadError(message)
+        toast.error(t("loadFailed", { message }))
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -76,6 +83,7 @@ export function FolderNotifyChannelsDialog({
   }, [])
 
   const handleSave = async () => {
+    if (!loaded || saving) return
     setSaving(true)
     const channelIds = channels
       .filter((channel) => selected.has(channel.id))
@@ -98,6 +106,10 @@ export function FolderNotifyChannelsDialog({
         </DialogHeader>
         {loading ? (
           <p className="text-sm text-muted-foreground">{tCommon("loading")}</p>
+        ) : loadError ? (
+          <p className="text-sm text-muted-foreground">
+            {t("loadFailed", { message: loadError })}
+          </p>
         ) : channels.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("empty")}</p>
         ) : (
@@ -137,7 +149,7 @@ export function FolderNotifyChannelsDialog({
           <Button
             type="button"
             onClick={() => void handleSave()}
-            disabled={loading || saving}
+            disabled={loading || saving || !loaded}
           >
             {tCommon("save")}
           </Button>

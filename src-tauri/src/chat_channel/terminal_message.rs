@@ -4,7 +4,6 @@ use sea_orm::{DatabaseConnection, EntityTrait};
 
 use super::i18n::{self, Lang};
 use super::manager::ChatChannelManager;
-use super::session_bridge::SessionBridge;
 use super::types::{ChannelMessageTarget, RichMessage};
 use crate::db::entities::{chat_channel_thread_binding, conversation};
 use crate::db::service::{
@@ -62,17 +61,19 @@ pub fn target_dedupe_key(target: &ChannelMessageTarget) -> String {
     )
 }
 
-/// Fan-out the final run message to every bound folder channel (plus the
-/// live Bridge target). Never returns `Err`; send failures are logged.
+/// Fan-out the final run message to every bound folder channel (plus any
+/// already-snapshotted Bridge targets). Never returns `Err`; send failures
+/// are logged. Callers must clone Bridge targets under the session mutex
+/// and drop that guard before calling — this function does DB + IM I/O.
 pub async fn publish_run_terminal_message(
     db: &DatabaseConnection,
     manager: &ChatChannelManager,
-    bridge: Option<&SessionBridge>,
+    extra_targets: &[ChannelMessageTarget],
     conversation_id: i32,
     kind: TerminalKind,
     body: &str,
 ) -> usize {
-    let targets = collect_terminal_targets(db, bridge, conversation_id).await;
+    let targets = collect_terminal_targets(db, extra_targets, conversation_id).await;
     if targets.is_empty() {
         return 0;
     }
@@ -126,19 +127,43 @@ fn target_from_binding(binding: &chat_channel_thread_binding::Model) -> ChannelM
     }
 }
 
+fn is_bare_channel_target(target: &ChannelMessageTarget) -> bool {
+    nonempty_trimmed(target.chat_id.as_deref()).is_none()
+        && nonempty_trimmed(target.thread_key.as_deref()).is_none()
+}
+
 fn push_unique(
     targets: &mut Vec<ChannelMessageTarget>,
     seen: &mut HashSet<String>,
     target: ChannelMessageTarget,
 ) {
-    if seen.insert(target_dedupe_key(&target)) {
-        targets.push(target);
+    let key = target_dedupe_key(&target);
+    if seen.contains(&key) {
+        return;
     }
+
+    if is_bare_channel_target(&target) {
+        // A live Bridge session for the same default chat is more specific
+        // (`"1|<chat_id>|"` vs `"1||"`). Keep the specific target only.
+        if targets.iter().any(|existing| {
+            existing.channel_id == target.channel_id && !is_bare_channel_target(existing)
+        }) {
+            return;
+        }
+    } else if let Some(idx) = targets.iter().position(|existing| {
+        existing.channel_id == target.channel_id && is_bare_channel_target(existing)
+    }) {
+        seen.remove(&target_dedupe_key(&targets[idx]));
+        targets.remove(idx);
+    }
+
+    seen.insert(key);
+    targets.push(target);
 }
 
 async fn collect_terminal_targets(
     db: &DatabaseConnection,
-    bridge: Option<&SessionBridge>,
+    extra_targets: &[ChannelMessageTarget],
     conversation_id: i32,
 ) -> Vec<ChannelMessageTarget> {
     let mut targets = Vec::new();
@@ -200,12 +225,8 @@ async fn collect_terminal_targets(
         }
     }
 
-    if let Some(bridge) = bridge {
-        for session in bridge.all_sessions() {
-            if session.conversation_id == conversation_id {
-                push_unique(&mut targets, &mut seen, session.target.clone());
-            }
-        }
+    for target in extra_targets {
+        push_unique(&mut targets, &mut seen, target.clone());
     }
 
     targets
@@ -214,6 +235,7 @@ async fn collect_terminal_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn completed_skips_blank() {
@@ -240,6 +262,19 @@ mod tests {
     }
 
     #[test]
+    fn error_includes_stop_reason_with_assistant() {
+        let s = terminal_body(
+            TerminalKind::Error,
+            Some("partial"),
+            Some("refusal"),
+            Lang::En,
+        )
+        .unwrap();
+        assert!(s.contains("partial"));
+        assert!(s.contains("refusal"));
+    }
+
+    #[test]
     fn dedupe_key_joins_channel_chat_thread() {
         let t = ChannelMessageTarget {
             channel_id: 1,
@@ -249,5 +284,35 @@ mod tests {
             provider_payload: None,
         };
         assert_eq!(target_dedupe_key(&t), "1|c|9");
+    }
+
+    #[test]
+    fn push_unique_replaces_bare_channel_with_specific_target() {
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
+        push_unique(&mut targets, &mut seen, ChannelMessageTarget::channel(1));
+        push_unique(
+            &mut targets,
+            &mut seen,
+            ChannelMessageTarget::telegram_general(1, "-100123"),
+        );
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].chat_id.as_deref(), Some("-100123"));
+        assert!(!seen.contains("1||"));
+        assert!(seen.contains("1|-100123|"));
+    }
+
+    #[test]
+    fn push_unique_skips_bare_channel_when_specific_exists() {
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
+        push_unique(
+            &mut targets,
+            &mut seen,
+            ChannelMessageTarget::telegram_general(1, "-100123"),
+        );
+        push_unique(&mut targets, &mut seen, ChannelMessageTarget::channel(1));
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].chat_id.as_deref(), Some("-100123"));
     }
 }

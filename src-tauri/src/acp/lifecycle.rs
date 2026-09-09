@@ -313,7 +313,8 @@ pub(crate) async fn handle_event(
                 _ => None,
             };
             if let Some(kind) = publish_kind {
-                maybe_publish_run_terminal(db_conn, manager, &state_arc, kind, None).await;
+                let error = (kind == TerminalKind::Error).then_some(stop_reason.as_str());
+                maybe_publish_run_terminal(db_conn, manager, &state_arc, kind, error).await;
             }
 
             // If this conversation was spawned by a delegation, resolve the
@@ -446,9 +447,20 @@ pub(crate) async fn maybe_publish_run_terminal(
         }
         snap.terminal_message_published = true;
     }
-    let bridge = ccm.session_bridge();
-    let guard = bridge.lock().await;
-    let _ = publish_run_terminal_message(db_conn, &ccm, Some(&*guard), cid, kind, &body).await;
+    // Snapshot matching Bridge targets under the process-wide mutex, then
+    // drop the guard before DB reads and `send_to_target`. Holding it
+    // across I/O would stall permission buttons, tool-progress, and
+    // `/cancel` on every other Bridge session.
+    let extra_targets = {
+        let bridge = ccm.session_bridge();
+        let guard = bridge.lock().await;
+        guard
+            .all_sessions()
+            .filter(|session| session.conversation_id == cid)
+            .map(|session| session.target.clone())
+            .collect::<Vec<_>>()
+    };
+    let _ = publish_run_terminal_message(db_conn, &ccm, &extra_targets, cid, kind, &body).await;
 }
 
 /// On TurnComplete for a delegation child, resolve the pending broker call
@@ -2463,6 +2475,83 @@ mod tests {
             msgs,
             vec!["answer".to_string()],
             "terminal_message_published must suppress a second fan-out"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_refusal_publishes_stop_reason_as_error() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-refusal").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+        mgr.get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .last_assistant_text = Some("partial".into());
+
+        handle_event(&db.conn, &mgr, &turn_complete_env("c1", "refusal"), None)
+            .await
+            .unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert_eq!(msgs.len(), 1, "expected one error body, got {msgs:?}");
+        assert!(
+            msgs[0].contains("partial"),
+            "must keep last assistant text, got {:?}",
+            msgs[0]
+        );
+        assert!(
+            msgs[0].contains("refusal"),
+            "exception TurnComplete must pass stop_reason as error, got {:?}",
+            msgs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_empty_stop_reason_without_assistant_sends_reason() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-empty").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+
+        handle_event(&db.conn, &mgr, &turn_complete_env("c1", "empty"), None)
+            .await
+            .unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert_eq!(msgs.len(), 1, "expected one error body, got {msgs:?}");
+        assert!(
+            msgs[0].contains("empty"),
+            "must send stop_reason rather than a success-looking assistant or generic fallback, got {:?}",
+            msgs[0]
         );
     }
 

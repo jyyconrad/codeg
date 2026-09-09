@@ -664,18 +664,17 @@ async fn handle_acp_envelope(
             // message would spawn a brand-new session, losing context).
             // The lifecycle worker mirrors this gating; see F2 in the
             // v0.14.3 sub-agent delegation post-mortem.
-            let lang = get_lang(db).await;
-            let msg = RichMessage {
-                title: Some(match lang {
-                    Lang::ZhCn | Lang::ZhTw => "Agent 错误".to_string(),
-                    _ => "Agent Error".to_string(),
-                }),
-                body: format!("[{agent_type}] {message}"),
-                fields: Vec::new(),
-                level: MessageLevel::Error,
-            };
-
             if !*terminal {
+                let lang = get_lang(db).await;
+                let msg = RichMessage {
+                    title: Some(match lang {
+                        Lang::ZhCn | Lang::ZhTw => "Agent 错误".to_string(),
+                        _ => "Agent Error".to_string(),
+                    }),
+                    body: format!("[{agent_type}] {message}"),
+                    fields: Vec::new(),
+                    level: MessageLevel::Error,
+                };
                 let target = {
                     let guard = bridge.lock().await;
                     guard.get(connection_id).map(|s| s.target.clone())
@@ -686,6 +685,9 @@ async fn handle_acp_envelope(
                 return;
             }
 
+            // Terminal errors: lifecycle owns the final IM body via
+            // `publish_run_terminal_message`. Tear the route down without
+            // posting a second Agent Error card.
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.remove(connection_id) {
                 let channel_id = session.channel_id;
@@ -693,8 +695,6 @@ async fn handle_acp_envelope(
                 let target = session.target.clone();
                 let conv_id = session.conversation_id;
                 drop(guard);
-
-                let _ = manager.send_to_target(&target, &msg).await;
 
                 let _ = conversation_service::update_status(
                     db,
@@ -1483,6 +1483,79 @@ mod async_relay_dedup_tests {
             msgs.iter()
                 .all(|m| !m.contains("Turn Complete") && !m.contains("任务完成")),
             "got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_error_does_not_send_agent_error_card() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::Error {
+                message: "transport closed".into(),
+                agent_type: "claude_code".into(),
+                code: None,
+                details: None,
+                terminal: true,
+            },
+        };
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.is_empty(),
+            "lifecycle owns the terminal IM body; subscriber must not send an Agent Error card, got {msgs:?}"
+        );
+        assert!(
+            bridge.lock().await.get("conn").is_none(),
+            "terminal Error must still tear the bridge session down"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_terminal_error_still_posts_agent_error_card() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::Error {
+                message: "Failed to set mode: bad id".into(),
+                agent_type: "claude_code".into(),
+                code: None,
+                details: None,
+                terminal: false,
+            },
+        };
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("Failed to set mode: bad id")),
+            "non-terminal Errors still post to the channel, got {msgs:?}"
+        );
+        assert!(
+            bridge.lock().await.get("conn").is_some(),
+            "non-terminal Error must leave the bridge session in place"
         );
     }
 }
