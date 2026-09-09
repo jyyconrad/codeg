@@ -10,6 +10,7 @@ pub mod chat_channel_thread_binding;
 pub mod conversation;
 pub mod custom_agent;
 pub mod folder;
+pub mod folder_chat_channel;
 pub mod folder_command;
 pub mod folder_group;
 pub mod folder_link;
