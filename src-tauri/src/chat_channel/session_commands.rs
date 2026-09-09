@@ -580,6 +580,7 @@ pub async fn handle_task(
                 conversation::ConversationStatus::Cancelled,
             )
             .await;
+            announce_channel_conversation(emitter, db, conv.id).await;
             return CommandMessageResult::current_target(
                 RichMessage::error(format!("{}{e}", i18n::failed_to_start_agent_label(lang))),
                 target,
@@ -606,6 +607,7 @@ pub async fn handle_task(
                 conversation::ConversationStatus::Cancelled,
             )
             .await;
+            announce_channel_conversation(emitter, db, conv.id).await;
             return CommandMessageResult::current_target(
                 RichMessage::error(format!("Failed to bind topic: {e}")),
                 target,

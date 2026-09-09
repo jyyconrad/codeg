@@ -422,35 +422,25 @@ pub(crate) async fn maybe_publish_run_terminal(
     let Some(ccm) = manager.chat_channel() else {
         return;
     };
-    let (conversation_id, last_text, already) = {
-        let snap = state_arc.read().await;
-        (
-            snap.conversation_id,
-            snap.last_assistant_text.clone(),
-            snap.terminal_message_published,
-        )
-    };
-    if already {
-        return;
-    }
-    let Some(cid) = conversation_id else {
-        return;
-    };
-    let lang = chat_message_lang(db_conn).await;
-    let Some(body) = terminal_body(kind, last_text.as_deref(), error, lang) else {
-        return;
-    };
-    {
+    let (cid, assistant) = {
         let mut snap = state_arc.write().await;
         if snap.terminal_message_published {
             return;
         }
+        let Some(cid) = snap.conversation_id else {
+            return;
+        };
+        let assistant = snap.concluding_assistant_text();
+        // Empty successful assistant: do not consume the one-shot; a later
+        // Error/Stopped can still publish.
+        if kind == TerminalKind::Completed && assistant.is_none() {
+            return;
+        }
         snap.terminal_message_published = true;
-    }
-    // Snapshot matching Bridge targets under the process-wide mutex, then
-    // drop the guard before DB reads and `send_to_target`. Holding it
-    // across I/O would stall permission buttons, tool-progress, and
-    // `/cancel` on every other Bridge session.
+        (cid, assistant)
+    };
+    // Snapshot while the Bridge row is still present. Callers that tear
+    // the session down must await this function first.
     let extra_targets = {
         let bridge = ccm.session_bridge();
         let guard = bridge.lock().await;
@@ -459,6 +449,10 @@ pub(crate) async fn maybe_publish_run_terminal(
             .filter(|session| session.conversation_id == cid)
             .map(|session| session.target.clone())
             .collect::<Vec<_>>()
+    };
+    let lang = chat_message_lang(db_conn).await;
+    let Some(body) = terminal_body(kind, assistant.as_deref(), error, lang) else {
+        return;
     };
     let _ = publish_run_terminal_message(db_conn, &ccm, &extra_targets, cid, kind, &body).await;
 }
@@ -639,7 +633,7 @@ async fn forward_disconnect_to_broker(
 /// (so the parent agent sees both the machine-readable bucket and the
 /// human-readable text). Trims trailing whitespace; returns `message`
 /// verbatim when no code is provided.
-fn format_terminal_error(message: &str, code: Option<&str>) -> String {
+pub(crate) fn format_terminal_error(message: &str, code: Option<&str>) -> String {
     let trimmed = message.trim();
     match code {
         Some(c) if !c.trim().is_empty() => format!("[{c}] {trimmed}"),
@@ -1643,9 +1637,8 @@ async fn connection_worker_loop(
                 if terminal_dispatched {
                     continue;
                 }
-                // Prefer handle_event while the manager entry is still live
-                // (tests + the common path). CachedConn covers the race where
-                // cleanup already dropped the manager entry before we woke.
+                // handle_event while the manager entry is live; CachedConn
+                // covers cleanup already dropping the entry.
                 handle_event_with_retry(&db, &manager, envelope, broker.as_ref()).await;
                 if let Some(entry) = cache.get(&connection_id) {
                     let detail = format_terminal_error(message, code.as_deref());
@@ -1845,10 +1838,12 @@ pub fn lifecycle_subscriber_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::session_state::SessionState;
+    use crate::acp::session_state::{LiveContentBlock, LiveMessage, SessionState};
     use crate::db::test_helpers;
     use crate::models::agent::AgentType;
+    use crate::models::message::MessageRole;
     use crate::web::event_bridge::EventEmitter;
+    use chrono::Utc;
     use std::sync::Arc;
     use tokio::sync::{mpsc, RwLock};
 
@@ -2585,6 +2580,132 @@ mod tests {
             msgs[0].contains("Stopped by the user") || msgs[0].contains("用户已停止"),
             "cancel with no assistant text must send the stop string, got {:?}",
             msgs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_during_follow_up_uses_in_flight_text_not_previous_turn() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-cancel-live").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        let _rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        {
+            let state_arc = mgr.get_state("c1").await.unwrap();
+            let mut state = state_arc.write().await;
+            state.conversation_id = Some(conv.id);
+            state.last_assistant_text = Some("previous answer".into());
+            state.live_message = Some(LiveMessage {
+                id: "live-1".into(),
+                role: MessageRole::Assistant,
+                content: vec![LiveContentBlock::Text {
+                    text: "partial now".into(),
+                    parent_tool_use_id: None,
+                }],
+                started_at: Utc::now(),
+            });
+        }
+
+        mgr.cancel(&db.conn, "c1").await.unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert_eq!(msgs.len(), 1, "expected one stop notice, got {msgs:?}");
+        assert!(
+            msgs[0].contains("partial now"),
+            "must attach in-flight text, got {:?}",
+            msgs[0]
+        );
+        assert!(
+            !msgs[0].contains("previous answer"),
+            "must not send the previous turn, got {:?}",
+            msgs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_error_publishes_to_bridge_session_without_folder_binding() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-bridge-only").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let channel = crate::db::service::chat_channel_service::create(
+            &db.conn,
+            "tg test".into(),
+            "telegram".into(),
+            "{}".into(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let chat = crate::chat_channel::manager::ChatChannelManager::new();
+        let rec = Recorder::default();
+        chat.add_channel(
+            channel.id,
+            "test".into(),
+            crate::chat_channel::types::ChannelType::Telegram,
+            Box::new(RecordingBackend { rec: rec.clone() }),
+        )
+        .await
+        .unwrap();
+        chat.session_bridge().lock().await.register(
+            "c1".into(),
+            crate::chat_channel::session_bridge::ActiveSession {
+                channel_id: channel.id,
+                sender_id: "u".into(),
+                target: crate::chat_channel::types::ChannelMessageTarget::channel(channel.id),
+                conversation_id: conv.id,
+                connection_id: "c1".into(),
+                agent_type: AgentType::ClaudeCode,
+                content_buffer: String::new(),
+                tool_calls: Vec::new(),
+                tool_call_inputs: Default::default(),
+                delegation_rendered: Default::default(),
+                last_flushed: std::time::Instant::now(),
+                pending_prompt: None,
+                permission_pending: None,
+            },
+        );
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+
+        let env = EventEnvelope {
+            seq: 1,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::Error {
+                message: "transport closed".into(),
+                agent_type: "claude_code".into(),
+                code: None,
+                details: None,
+                terminal: true,
+            },
+        };
+        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert_eq!(
+            msgs,
+            vec!["transport closed".to_string()],
+            "Bridge-only origin must still receive the terminal error"
         );
     }
 

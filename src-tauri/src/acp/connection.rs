@@ -12315,14 +12315,9 @@ fn map_grok_ext_notification(
             details: None,
             terminal: false,
         }),
-        // grok's HTTP retry loop (captured 2026-09-09, session
-        // `01a0863c-c65c-78c2-bb14-aa329204852d`): `_x.ai/session/update`
-        // with `sessionUpdate: retry_state`. `type=retrying` keeps the turn
-        // alive (same shape as Claude `api_retry` / Codex `_meta.codex.error`)
-        // and feeds the existing frontend retry banner. `type=failed` is the
-        // exhausted-retry notice — a non-terminal Error so the reqwest text
-        // is visible before `session/prompt` unwinds the connection. Other
-        // `type`s (none observed) stay unmapped.
+        // Live-only retry loop. `failed` is non-terminal so the in-app
+        // error shows before `session/prompt` unwinds; `code` lets the
+        // IM subscriber skip a second card.
         "retry_state" => match update.get("type").and_then(|v| v.as_str()) {
             Some("retrying") => {
                 let as_u32 = |key: &str| {
@@ -12356,7 +12351,7 @@ fn map_grok_ext_notification(
                     .unwrap_or("Request failed.")
                     .to_string(),
                 agent_type: agent_type.to_string(),
-                code: None,
+                code: Some("retry_state".into()),
                 details: None,
                 terminal: false,
             }),
@@ -16898,6 +16893,7 @@ mod tests {
             AcpEvent::Error {
                 message,
                 terminal,
+                code,
                 ..
             } => {
                 assert!(
@@ -16908,6 +16904,7 @@ mod tests {
                     !terminal,
                     "retry exhaustion must not itself kill the connection"
                 );
+                assert_eq!(code.as_deref(), Some("retry_state"));
             }
             other => panic!("expected non-terminal Error, got {other:?}"),
         }

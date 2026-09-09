@@ -17,13 +17,6 @@ pub enum TerminalKind {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TerminalPublish {
-    pub conversation_id: i32,
-    pub kind: TerminalKind,
-    pub body: String,
-}
-
 pub fn terminal_body(
     kind: TerminalKind,
     last_assistant: Option<&str>,

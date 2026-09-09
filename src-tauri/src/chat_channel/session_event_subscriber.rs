@@ -11,9 +11,13 @@ use super::session_bridge::{PendingPermission, SessionBridge};
 use super::tool_detail::{format_tool_call_detail, truncate_str};
 use super::types::{ChannelMessageTarget, MessageLevel, RichMessage};
 use crate::acp::internal_bus::InternalEventBus;
+use crate::acp::lifecycle::{format_terminal_error, maybe_publish_run_terminal};
 use crate::acp::manager::ConnectionManager;
 use crate::acp::types::{
     AcpEvent, ConnectionStatus, DelegationResultSummary, EventEnvelope, PromptInputBlock,
+};
+use crate::chat_channel::terminal_message::{
+    publish_run_terminal_message, terminal_body, TerminalKind,
 };
 
 use crate::db::service::{
@@ -652,6 +656,7 @@ async fn handle_acp_envelope(
             message,
             agent_type,
             terminal,
+            code,
             ..
         } => {
             // Non-terminal Errors (`turn_failure_error_event`,
@@ -665,6 +670,11 @@ async fn handle_acp_envelope(
             // The lifecycle worker mirrors this gating; see F2 in the
             // v0.14.3 sub-agent delegation post-mortem.
             if !*terminal {
+                // Grok `retry_state` failed is live-only; the prompt-unwind
+                // terminal Error owns the single final IM body.
+                if code.as_deref() == Some("retry_state") {
+                    return;
+                }
                 let lang = get_lang(db).await;
                 let msg = RichMessage {
                     title: Some(match lang {
@@ -685,9 +695,38 @@ async fn handle_acp_envelope(
                 return;
             }
 
-            // Terminal errors: lifecycle owns the final IM body via
-            // `publish_run_terminal_message`. Tear the route down without
-            // posting a second Agent Error card.
+            // Publish while the Bridge row is still present, then tear down.
+            let detail = format_terminal_error(message, code.as_deref());
+            if let Some(state_arc) = conn_mgr.get_state(connection_id).await {
+                maybe_publish_run_terminal(
+                    db,
+                    conn_mgr,
+                    &state_arc,
+                    TerminalKind::Error,
+                    Some(&detail),
+                )
+                .await;
+            } else if let Some((target, conv_id)) = {
+                let guard = bridge.lock().await;
+                guard
+                    .get(connection_id)
+                    .map(|s| (s.target.clone(), s.conversation_id))
+            } {
+                let lang = get_lang(db).await;
+                if let Some(body) =
+                    terminal_body(TerminalKind::Error, None, Some(&detail), lang)
+                {
+                    let _ = publish_run_terminal_message(
+                        db,
+                        manager,
+                        std::slice::from_ref(&target),
+                        conv_id,
+                        TerminalKind::Error,
+                        &body,
+                    )
+                    .await;
+                }
+            }
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.remove(connection_id) {
                 let channel_id = session.channel_id;
@@ -1513,8 +1552,9 @@ mod async_relay_dedup_tests {
         .await;
         let msgs = sent(&rec).await;
         assert!(
-            msgs.is_empty(),
-            "lifecycle owns the terminal IM body; subscriber must not send an Agent Error card, got {msgs:?}"
+            msgs.iter()
+                .all(|m| !m.contains("[claude_code]") && !m.contains("Agent Error")),
+            "must not send the titled Agent Error card, got {msgs:?}"
         );
         assert!(
             bridge.lock().await.get("conn").is_none(),
@@ -1556,6 +1596,42 @@ mod async_relay_dedup_tests {
         assert!(
             bridge.lock().await.get("conn").is_some(),
             "non-terminal Error must leave the bridge session in place"
+        );
+    }
+
+    #[tokio::test]
+    async fn grok_retry_state_failed_does_not_post_agent_error_card() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::Error {
+                message: "reqwest error stream".into(),
+                agent_type: "grok".into(),
+                code: Some("retry_state".into()),
+                details: None,
+                terminal: false,
+            },
+        };
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.is_empty(),
+            "retry_state failed is live-only; terminal Error owns IM, got {msgs:?}"
+        );
+        assert!(
+            bridge.lock().await.get("conn").is_some(),
+            "non-terminal retry_state must leave the bridge session in place"
         );
     }
 }

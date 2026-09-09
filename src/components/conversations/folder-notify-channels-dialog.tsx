@@ -52,8 +52,11 @@ export function FolderNotifyChannelsDialog({
     void Promise.all([listChatChannels(), listFolderChatChannels(folderId)])
       .then(([listed, bound]) => {
         if (cancelled) return
-        setChannels(listed)
-        setSelected(new Set(bound))
+        const enabled = listed.filter((channel) => channel.enabled)
+        setChannels(enabled)
+        setSelected(
+          new Set(bound.filter((id) => enabled.some((c) => c.id === id)))
+        )
         setLoaded(true)
       })
       .catch((err) => {

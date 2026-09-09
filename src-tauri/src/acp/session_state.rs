@@ -54,6 +54,34 @@ pub enum LiveContentBlock {
     Plan { entries: serde_json::Value },
 }
 
+/// Main-thread text after the last tool call. Empty / tool-only turns
+/// return `None` so a prior turn's `last_assistant_text` cannot leak.
+fn assemble_concluding_assistant_text(live: &LiveMessage) -> Option<String> {
+    let after_last_tool_call = live
+        .content
+        .iter()
+        .rposition(|b| matches!(b, LiveContentBlock::ToolCallRef { .. }))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let assembled: String = live.content[after_last_tool_call..]
+        .iter()
+        .filter_map(|b| match b {
+            LiveContentBlock::Text {
+                text,
+                parent_tool_use_id: None,
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<&str>>()
+        .join("");
+    let trimmed = assembled.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(assembled)
+    }
+}
+
 /// 工具调用的运行态。turn 完成时统一 clear。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallState {
@@ -518,7 +546,9 @@ pub struct SessionState {
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
-    /// `delegation_call_id`-bound child outcome. Cleared on the next prompt.
+    /// `delegation_call_id`-bound child outcome. Not cleared on the next
+    /// prompt until that turn completes — in-flight text lives on
+    /// `live_message` (`concluding_assistant_text`).
     pub last_assistant_text: Option<String>,
 
     /// The in-flight user prompt for the current turn, captured from
@@ -1049,29 +1079,7 @@ impl SessionState {
                     self.last_assistant_text = None;
                 }
                 if let Some(live) = self.live_message.as_ref() {
-                    let after_last_tool_call = live
-                        .content
-                        .iter()
-                        .rposition(|b| matches!(b, LiveContentBlock::ToolCallRef { .. }))
-                        .map(|i| i + 1)
-                        .unwrap_or(0);
-                    let assembled: String = live.content[after_last_tool_call..]
-                        .iter()
-                        .filter_map(|b| match b {
-                            // Main-thread text only: a subagent's trailing
-                            // prose (parented blocks, claude-agent-acp ≥0.63
-                            // subagent transcripts) is the CHILD's voice and
-                            // must never read as the parent's delegation
-                            // result.
-                            LiveContentBlock::Text {
-                                text,
-                                parent_tool_use_id: None,
-                            } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<&str>>()
-                        .join("");
-                    if !assembled.trim().is_empty() {
+                    if let Some(assembled) = assemble_concluding_assistant_text(live) {
                         self.last_assistant_text = Some(assembled);
                     }
                 }
@@ -1449,6 +1457,23 @@ impl SessionState {
         match self.async_task_activity_at {
             Some(at) => now.signed_duration_since(at) < background_keepalive_max_age(),
             None => false,
+        }
+    }
+
+    /// Assistant text for a run-end IM body. While `live_message` is still
+    /// open (user stop / mid-turn crash), use the in-flight concluding
+    /// text — never the previous turn's `last_assistant_text`. After
+    /// TurnComplete has snapshotted and cleared live_message, fall back
+    /// to `last_assistant_text`.
+    pub fn concluding_assistant_text(&self) -> Option<String> {
+        if let Some(live) = self.live_message.as_ref() {
+            assemble_concluding_assistant_text(live)
+        } else {
+            self.last_assistant_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
         }
     }
 
@@ -3291,6 +3316,38 @@ mod tests {
             agent_type: "claude_code".into(),
         });
         assert_eq!(s.last_assistant_text.as_deref(), Some("final answer"));
+    }
+
+    #[test]
+    fn concluding_assistant_text_prefers_live_over_previous_turn() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.last_assistant_text = Some("previous answer".into());
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "partial now".into(),
+            parent_tool_use_id: None,
+        });
+        assert_eq!(s.concluding_assistant_text().as_deref(), Some("partial now"));
+    }
+
+    #[test]
+    fn concluding_assistant_text_falls_back_after_turn_complete() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "final answer".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sess-1".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        });
+        assert!(s.live_message.is_none());
+        assert_eq!(
+            s.concluding_assistant_text().as_deref(),
+            Some("final answer")
+        );
     }
 
     #[test]

@@ -2784,7 +2784,7 @@ export function SidebarConversationList({
         onNewConversation={handleNewConversationForFolder}
         onImport={handleImportForFolder}
         onSyncCodexGrok={handleSyncCodexGrok}
-        syncingCodexGrok={syncingFolderId === folderId}
+        syncingCodexGrok={syncingFolderId !== null}
         onManageConversations={handleManageConversations}
         onManageLinks={handleManageFolderLinks}
         onNotifyChannels={

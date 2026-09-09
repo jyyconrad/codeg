@@ -72,23 +72,19 @@ describe("FolderNotifyChannelsDialog", () => {
     )
   })
 
-  it("keeps disabled channels selectable", async () => {
-    const user = userEvent.setup()
+  it("omits disabled channels", async () => {
     api.listChatChannels.mockResolvedValue([
       channel(2, "Telegram", true),
       channel(3, "Lark", false),
     ])
-    api.setFolderChatChannels.mockResolvedValue([3])
     renderDialog()
 
-    const lark = await screen.findByRole("checkbox", { name: "Lark" })
-    expect(lark).not.toBeDisabled()
-    await user.click(lark)
-    await user.click(screen.getByRole("button", { name: /save/i }))
-
-    await waitFor(() =>
-      expect(api.setFolderChatChannels).toHaveBeenCalledWith(1, [3])
-    )
+    expect(
+      await screen.findByRole("checkbox", { name: "Telegram" })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole("checkbox", { name: "Lark" })
+    ).not.toBeInTheDocument()
   })
 
   it("disables Save and does not show empty copy when load fails", async () => {
