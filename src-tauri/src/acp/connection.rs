@@ -5760,14 +5760,15 @@ async fn run_connection(
                                     .otherwise(async |dispatch| {
                                         // Historical replay: throwaway state,
                                         // mirroring the sibling closure above.
-                                        // An ext notification that raises an
-                                        // ALERT is skipped, though — a
-                                        // compaction failure or a dropped image
-                                        // recorded in a past session is not
-                                        // happening now, and that path also
-                                        // fires an OS notification. The typed
-                                        // closure above draws the same line by
-                                        // forwarding only AvailableCommands.
+                                        // An ext notification that raises a
+                                        // LIVE-ONLY surface is skipped — a
+                                        // compaction failure, a dropped image,
+                                        // or a retry banner recorded in a past
+                                        // session is not happening now, and the
+                                        // Error path also fires an OS
+                                        // notification. The typed closure above
+                                        // draws the same line by forwarding
+                                        // only AvailableCommands.
                                         let mut replay_cb_state =
                                             CodeBuddyLiveState::default();
                                         if !grok_ext_notification_is_alert(&dispatch, agent_type) {
@@ -12198,18 +12199,20 @@ fn grok_ext_event_id(params: &serde_json::Value) -> String {
         .unwrap_or_else(|| format!("grok-ext-{}", uuid::Uuid::new_v4().simple()))
 }
 
-/// Map grok's private ext notifications — context compaction and dropped
-/// prompt images — into `AcpEvent`s.
+/// Map grok's private ext notifications — context compaction, dropped prompt
+/// images, and HTTP `retry_state` — into `AcpEvent`s.
 ///
-/// grok reports `/compact` (and auto-compaction) results, and the fate of an
-/// image it refused to send, on
-/// `_x.ai/session_notification` / `_x.ai/session/update` rather than as normal
-/// `agent_message_chunk`s. Those methods never match the typed `session/update`
-/// pipeline, so without this the whole turn is blank and `/compact` looks like
-/// it failed. Only grok emits these, so gate on the agent. Turn-level failures
-/// are intentionally NOT handled here — the `session/prompt` response path
-/// (`turn_failure_error_event`) already surfaces those, and duplicating them
-/// would double-report.
+/// grok reports `/compact` (and auto-compaction) results, the fate of an
+/// image it refused to send, and (on a failing HTTP turn) a stream of
+/// `retry_state` frames, on `_x.ai/session_notification` /
+/// `_x.ai/session/update` rather than as normal `agent_message_chunk`s.
+/// Those methods never match the typed `session/update` pipeline, so without
+/// this the whole turn is blank — `/compact` looks like it failed, and a
+/// 15-attempt retry loop looks like the agent is frozen. Only grok emits
+/// these, so gate on the agent. Turn-level failures (`turn_completed`) are
+/// intentionally NOT handled here — the `session/prompt` response path
+/// (`turn_failure_error_event` / connection unwind) already surfaces those,
+/// and duplicating them would double-report.
 fn map_grok_ext_notification(
     notification: &UntypedMessage,
     agent_type: AgentType,
@@ -12312,6 +12315,53 @@ fn map_grok_ext_notification(
             details: None,
             terminal: false,
         }),
+        // grok's HTTP retry loop (captured 2026-09-09, session
+        // `01a0863c-c65c-78c2-bb14-aa329204852d`): `_x.ai/session/update`
+        // with `sessionUpdate: retry_state`. `type=retrying` keeps the turn
+        // alive (same shape as Claude `api_retry` / Codex `_meta.codex.error`)
+        // and feeds the existing frontend retry banner. `type=failed` is the
+        // exhausted-retry notice — a non-terminal Error so the reqwest text
+        // is visible before `session/prompt` unwinds the connection. Other
+        // `type`s (none observed) stay unmapped.
+        "retry_state" => match update.get("type").and_then(|v| v.as_str()) {
+            Some("retrying") => {
+                let as_u32 = |key: &str| {
+                    update
+                        .get(key)
+                        .and_then(|v| v.as_u64())
+                        .and_then(|n| u32::try_from(n).ok())
+                };
+                Some(AcpEvent::TurnRetrying {
+                    message: update
+                        .get("reason")
+                        .or_else(|| update.get("message"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    // Capture carries `error_type: "http"` (a class), not an
+                    // HTTP status code — leave `error_status` unset.
+                    error_status: None,
+                    attempt: as_u32("attempt"),
+                    max_retries: as_u32("max_retries"),
+                    retry_delay_ms: None,
+                })
+            }
+            Some("failed") => Some(AcpEvent::Error {
+                message: update
+                    .get("message")
+                    .or_else(|| update.get("reason"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Request failed.")
+                    .to_string(),
+                agent_type: agent_type.to_string(),
+                code: None,
+                details: None,
+                terminal: false,
+            }),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -12596,15 +12646,15 @@ fn grok_subagent_meta(
 
 /// Whether a dispatch is a grok ext notification that
 /// `map_grok_ext_notification` renders as visible turn output (a compaction
-/// card, a compaction error, or a dropped-image error). The active-turn loop
-/// consults this BEFORE the typed
-/// pipeline to mark the turn as non-empty: a `/compact` turn emits only these
-/// ext notifications and no standard `agent_message_chunk`, so without this its
-/// `end_turn` is reclassified as `"empty"` and re-surfaced as a spurious error —
-/// the exact symptom this change removes. Reuses `map_grok_ext_notification` so
-/// the handled-variant set can never drift from what actually emits. A turn
-/// whose only output was a dropped image therefore reports THAT, rather than
-/// the generic empty-turn failure it used to.
+/// card, a compaction error, a dropped-image error, or a retry banner). The
+/// active-turn loop consults this BEFORE the typed pipeline to mark the turn
+/// as non-empty: a `/compact` turn emits only these ext notifications and no
+/// standard `agent_message_chunk`, so without this its `end_turn` is
+/// reclassified as `"empty"` and re-surfaced as a spurious error — the exact
+/// symptom this change removes. Reuses `map_grok_ext_notification` so the
+/// handled-variant set can never drift from what actually emits. A turn whose
+/// only output was a dropped image therefore reports THAT, rather than the
+/// generic empty-turn failure it used to.
 fn grok_ext_notification_is_turn_output(dispatch: &Dispatch, agent_type: AgentType) -> bool {
     match dispatch {
         Dispatch::Notification(notification) => {
@@ -12614,20 +12664,21 @@ fn grok_ext_notification_is_turn_output(dispatch: &Dispatch, agent_type: AgentTy
     }
 }
 
-/// Whether a grok ext notification would raise a user-facing ALERT (status-bar
-/// entry + OS notification), as opposed to rendering a card in the turn.
+/// Whether a grok ext notification would raise a user-facing LIVE-ONLY
+/// surface (status-bar entry + OS notification, or the transient retry
+/// banner), as opposed to rendering a card in the turn.
 ///
 /// Only the historical `session/load` replay asks: those notifications describe
-/// a PAST session, so re-raising their alerts would report a compaction failure
-/// or a dropped image as if it were happening now, for a session the user is
-/// merely opening. Reuses the mapper for the same reason
-/// [`grok_ext_notification_is_turn_output`] does — the alerting set cannot drift
+/// a PAST session, so re-raising them would report a compaction failure, a
+/// dropped image, or a retry as if it were happening now, for a session the
+/// user is merely opening. Reuses the mapper for the same reason
+/// [`grok_ext_notification_is_turn_output`] does — the skip set cannot drift
 /// away from what actually emits.
 fn grok_ext_notification_is_alert(dispatch: &Dispatch, agent_type: AgentType) -> bool {
     match dispatch {
         Dispatch::Notification(notification) => matches!(
             map_grok_ext_notification(notification, agent_type),
-            Some(AcpEvent::Error { .. })
+            Some(AcpEvent::Error { .. }) | Some(AcpEvent::TurnRetrying { .. })
         ),
         _ => false,
     }
@@ -16768,6 +16819,100 @@ mod tests {
         ));
     }
 
+    /// Captured from grok session `01a0863c-c65c-78c2-bb14-aa329204852d`
+    /// (`~/.grok/sessions/…/depu/ordering/…/updates.jsonl` line 2): a
+    /// `_x.ai/session/update` `retry_state` / `type=retrying` frame. Before
+    /// this mapping the live turn sat on Prompting for ~19 min with no
+    /// retry banner — Codeg dropped every one of these 44 frames.
+    #[test]
+    fn map_grok_ext_notification_surfaces_retry_state() {
+        let raw = UntypedMessage::new(
+            "_x.ai/session/update",
+            serde_json::json!({
+                "sessionId": "01a0863c-c65c-78c2-bb14-aa329204852d",
+                "update": {
+                    "sessionUpdate": "retry_state",
+                    "type": "retrying",
+                    "attempt": 1,
+                    "max_retries": 15,
+                    "reason": "request error: error sending request for url (https://cli-chat-proxy.grok.com/v1/responses): client error (Connect): tcp connect error: deadline has elapsed",
+                    "error_type": "http"
+                },
+                "_meta": {
+                    "eventId": "01a0863c-c65c-78c2-bb14-aa329204852d-4",
+                    "agentTimestampMs": 1788958639142u64
+                }
+            }),
+        )
+        .unwrap();
+        match map_grok_ext_notification(&raw, AgentType::Grok)
+            .expect("retry_state type=retrying must not be dropped")
+        {
+            AcpEvent::TurnRetrying {
+                message,
+                error_status,
+                attempt,
+                max_retries,
+                retry_delay_ms,
+            } => {
+                assert!(
+                    message.contains("deadline has elapsed"),
+                    "banner must carry grok's reason; got: {message}"
+                );
+                assert_eq!(attempt, Some(1));
+                assert_eq!(max_retries, Some(15));
+                // Capture has `error_type: "http"` (a class, not a status
+                // code) and no delay — do not invent either field.
+                assert_eq!(error_status, None);
+                assert_eq!(retry_delay_ms, None);
+            }
+            other => panic!("expected TurnRetrying, got {other:?}"),
+        }
+    }
+
+    /// Same session, last `retry_state` (updates.jsonl line 46): retries
+    /// exhausted. Distinct from `turn_completed` (left on the prompt-
+    /// response path so it cannot double-report).
+    #[test]
+    fn map_grok_ext_notification_surfaces_retry_state_failed() {
+        let raw = UntypedMessage::new(
+            "_x.ai/session/update",
+            serde_json::json!({
+                "sessionId": "01a0863c-c65c-78c2-bb14-aa329204852d",
+                "update": {
+                    "sessionUpdate": "retry_state",
+                    "type": "failed",
+                    "error_type": "http",
+                    "message": "reqwest error stream: error sending request for url (https://cli-chat-proxy.grok.com/v1/responses)"
+                },
+                "_meta": {
+                    "eventId": "01a0863c-c65c-78c2-bb14-aa329204852d-50",
+                    "agentTimestampMs": 1788959776872u64
+                }
+            }),
+        )
+        .unwrap();
+        match map_grok_ext_notification(&raw, AgentType::Grok)
+            .expect("retry_state type=failed must not be dropped")
+        {
+            AcpEvent::Error {
+                message,
+                terminal,
+                ..
+            } => {
+                assert!(
+                    message.contains("reqwest error stream"),
+                    "error must carry grok's message; got: {message}"
+                );
+                assert!(
+                    !terminal,
+                    "retry exhaustion must not itself kill the connection"
+                );
+            }
+            other => panic!("expected non-terminal Error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn map_grok_ext_notification_image_dropped_surfaces_error() {
         let raw = UntypedMessage::new(
@@ -17387,7 +17532,7 @@ mod tests {
 
     /// The turn-loop consults this to keep a compaction-only `/compact` turn
     /// from being reclassified as `"empty"` (which re-surfaces a spurious error).
-    /// It must count exactly the compaction outcomes that emit a card/error.
+    /// It must count exactly the mapper outcomes that emit a card/error/banner.
     #[test]
     fn grok_ext_notification_is_turn_output_marks_compaction_outcomes() {
         let notif = |variant: &str| {
@@ -17411,6 +17556,26 @@ mod tests {
         // turn_completed is deliberately left to the prompt-response path — it is
         // NOT counted here (otherwise a genuinely empty turn would be masked).
         assert!(!grok_ext_notification_is_turn_output(&notif("turn_completed"), AgentType::Grok));
+        // A retry-only turn (no tool_call / agent_message_chunk) must not be
+        // reclassified as empty either — the banner is the visible output.
+        let retrying = Dispatch::Notification(
+            UntypedMessage::new(
+                "_x.ai/session/update",
+                serde_json::json!({
+                    "sessionId": "s",
+                    "update": {
+                        "sessionUpdate": "retry_state",
+                        "type": "retrying",
+                        "attempt": 1,
+                        "max_retries": 15,
+                        "reason": "x",
+                        "error_type": "http"
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        assert!(grok_ext_notification_is_turn_output(&retrying, AgentType::Grok));
         // Never fires for a non-grok agent.
         assert!(!grok_ext_notification_is_turn_output(
             &notif("auto_compact_completed"),
@@ -17618,9 +17783,10 @@ mod tests {
     }
 
     /// The `session/load` replay drains a PAST session, so anything that would
-    /// raise an alert (status-bar entry + OS notification) has to be recognised
-    /// and skipped there — otherwise opening an old conversation reports its
-    /// historical failures as if they were happening now.
+    /// raise a live-only surface (status-bar entry + OS notification, or the
+    /// retry banner) has to be recognised and skipped there — otherwise opening
+    /// an old conversation reports its historical failures/retries as if they
+    /// were happening now.
     #[test]
     fn grok_ext_notification_is_alert_matches_only_the_error_outcomes() {
         let notif = |variant: &str| {
@@ -17663,6 +17829,42 @@ mod tests {
             &notif("image_dropped"),
             AgentType::Codex
         ));
+        // Retry banners are live-only: replaying them would show "retrying
+        // 14/15" on a session that already ended.
+        let retrying = Dispatch::Notification(
+            UntypedMessage::new(
+                "_x.ai/session/update",
+                serde_json::json!({
+                    "sessionId": "s",
+                    "update": {
+                        "sessionUpdate": "retry_state",
+                        "type": "retrying",
+                        "attempt": 1,
+                        "max_retries": 15,
+                        "reason": "x",
+                        "error_type": "http"
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        assert!(grok_ext_notification_is_alert(&retrying, AgentType::Grok));
+        let failed = Dispatch::Notification(
+            UntypedMessage::new(
+                "_x.ai/session/update",
+                serde_json::json!({
+                    "sessionId": "s",
+                    "update": {
+                        "sessionUpdate": "retry_state",
+                        "type": "failed",
+                        "error_type": "http",
+                        "message": "reqwest error stream"
+                    }
+                }),
+            )
+            .unwrap(),
+        );
+        assert!(grok_ext_notification_is_alert(&failed, AgentType::Grok));
     }
 
     /// Grok's cumulative token count rides the OUTER `params._meta` of ordinary
