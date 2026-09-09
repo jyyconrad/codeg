@@ -1753,6 +1753,8 @@
       "noConversationsFound": "No conversations found.",
       "importLocalSessions": "Import local sessions",
       "importing": "Importing...",
+      "syncCodexGrok": "Sync Codex / Grok sessions",
+      "syncingCodexGrok": "Syncing...",
       "error": "Error: {message}",
       "completeAllSessions": "Complete all sessions",
       "completeAllReviewTitle": "Complete all review sessions?",
@@ -1777,7 +1779,10 @@
         "updateGroupFailed": "Failed to update group: {message}",
         "deleteGroupFailed": "Failed to delete group: {message}",
         "moveToGroupFailed": "Failed to move folder: {message}",
-        "applyLayoutFailed": "Failed to save the folder order: {message}"
+        "applyLayoutFailed": "Failed to save the folder order: {message}",
+        "codexGrokSynced": "Synced {imported} new, updated {updated}, skipped {skipped}",
+        "codexGrokSyncFailed": "Sync failed: {message}",
+        "codexGrokNone": "No Codex or Grok sessions for this folder"
       },
       "statsLabel": "{folders} folders · {convos} conversations",
       "reorderHandle": "Drag to reorder",

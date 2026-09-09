@@ -1753,6 +1753,8 @@
       "noConversationsFound": "لم يتم العثور على محادثات.",
       "importLocalSessions": "استيراد الجلسات المحلية",
       "importing": "جارٍ الاستيراد...",
+      "syncCodexGrok": "مزامنة جلسات Codex / Grok",
+      "syncingCodexGrok": "جارٍ المزامنة...",
       "error": "خطأ: {message}",
       "completeAllSessions": "إكمال جميع الجلسات",
       "completeAllReviewTitle": "إكمال جميع جلسات المراجعة؟",
@@ -1777,7 +1779,10 @@
         "updateGroupFailed": "فشل تحديث المجموعة: {message}",
         "deleteGroupFailed": "فشل حذف المجموعة: {message}",
         "moveToGroupFailed": "فشل نقل المجلد: {message}",
-        "applyLayoutFailed": "فشل حفظ ترتيب المجلدات: {message}"
+        "applyLayoutFailed": "فشل حفظ ترتيب المجلدات: {message}",
+        "codexGrokSynced": "تمت المزامنة: {imported} جديدة، وتحديث {updated}، وتخطي {skipped}",
+        "codexGrokSyncFailed": "فشلت المزامنة: {message}",
+        "codexGrokNone": "لا توجد جلسات Codex أو Grok لهذا المجلد"
       },
       "statsLabel": "{folders} مجلدات · {convos} محادثة",
       "reorderHandle": "اسحب لإعادة الترتيب",

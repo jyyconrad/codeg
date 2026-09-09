@@ -1753,6 +1753,8 @@
       "noConversationsFound": "Keine Konversationen gefunden.",
       "importLocalSessions": "Lokale Sitzungen importieren",
       "importing": "Importiere...",
+      "syncCodexGrok": "Codex-/Grok-Sitzungen synchronisieren",
+      "syncingCodexGrok": "Synchronisiere...",
       "error": "Fehler: {message}",
       "completeAllSessions": "Alle Sitzungen abschließen",
       "completeAllReviewTitle": "Alle Review-Sitzungen abschließen?",
@@ -1777,7 +1779,10 @@
         "updateGroupFailed": "Gruppe konnte nicht aktualisiert werden: {message}",
         "deleteGroupFailed": "Gruppe konnte nicht gelöscht werden: {message}",
         "moveToGroupFailed": "Ordner konnte nicht verschoben werden: {message}",
-        "applyLayoutFailed": "Ordnerreihenfolge konnte nicht gespeichert werden: {message}"
+        "applyLayoutFailed": "Ordnerreihenfolge konnte nicht gespeichert werden: {message}",
+        "codexGrokSynced": "Synchronisiert: {imported} neu, {updated} aktualisiert, {skipped} übersprungen",
+        "codexGrokSyncFailed": "Synchronisierung fehlgeschlagen: {message}",
+        "codexGrokNone": "Keine Codex- oder Grok-Sitzungen für diesen Ordner"
       },
       "statsLabel": "{folders} Ordner · {convos} Konversationen",
       "reorderHandle": "Zum Neuordnen ziehen",

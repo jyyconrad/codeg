@@ -19,7 +19,22 @@ import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
+import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
 import enMessages from "@/i18n/messages/en.json"
+
+const syncCodexGrokSessions = vi.hoisted(() =>
+  vi.fn(async () => ({
+    imported: 0,
+    updated: 0,
+    skipped: 0,
+    restored: 0,
+  }))
+)
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>()
+  return { ...actual, syncCodexGrokSessions }
+})
 
 // ── Probes ────────────────────────────────────────────────────────────────
 // AgentIcon renders once per card body → counts card re-renders. The Folder /
@@ -809,6 +824,7 @@ describe("SidebarConversationList — folder ⋯ opens the same menu as right-cl
   beforeEach(() => {
     probes.card = 0
     probes.folder = 0
+    syncCodexGrokSessions.mockClear()
     const folders = [folder(1, "Folder 1")]
     useAppWorkspaceStore.setState({
       folders,
@@ -834,6 +850,72 @@ describe("SidebarConversationList — folder ⋯ opens the same menu as right-cl
 
     // The identical menu is now open — assert a label unique to the folder menu.
     expect(document.body.textContent).toContain("Manage conversations")
+  })
+
+  it("offers Sync Codex / Grok sessions on the folder menu", () => {
+    render(tree())
+    const moreBtn = document.querySelector('[aria-label="More options"]')
+    act(() => {
+      fireEvent.click(moreBtn as HTMLElement)
+    })
+    expect(document.body.textContent).toContain("Sync Codex / Grok sessions")
+  })
+
+  it("syncs Codex / Grok sessions and refetches open Codex/Grok details", async () => {
+    syncCodexGrokSessions.mockResolvedValue({
+      imported: 1,
+      updated: 1,
+      skipped: 0,
+      restored: 0,
+    })
+    useAppWorkspaceStore.setState({
+      conversations: [
+        conv(11, 1, { agent_type: "codex" }),
+        conv(12, 1, { agent_type: "claude_code" }),
+      ],
+    })
+    store.tabSpec = [
+      {
+        id: "tab-11",
+        conversationId: 11,
+        agentType: "codex",
+        folderId: 1,
+        title: "conv-11",
+        isPinned: false,
+      },
+      {
+        id: "tab-12",
+        conversationId: 12,
+        agentType: "claude_code",
+        folderId: 1,
+        title: "conv-12",
+        isPinned: false,
+      },
+    ]
+    const refetchDetail = vi.fn()
+    const prevActions = useConversationRuntimeStore.getState().actions
+    useConversationRuntimeStore.setState({
+      actions: { ...prevActions, refetchDetail },
+    })
+    try {
+      render(tree())
+      const moreBtn = document.querySelector('[aria-label="More options"]')
+      act(() => {
+        fireEvent.click(moreBtn as HTMLElement)
+      })
+      const item = Array.from(
+        document.querySelectorAll('[role="menuitem"]')
+      ).find((el) => el.textContent?.includes("Sync Codex / Grok sessions"))
+      expect(item).toBeTruthy()
+      await act(async () => {
+        fireEvent.click(item as HTMLElement)
+      })
+      expect(syncCodexGrokSessions).toHaveBeenCalledWith(1)
+      expect(refetchDetail).toHaveBeenCalledWith(11)
+      expect(refetchDetail).not.toHaveBeenCalledWith(12)
+    } finally {
+      useConversationRuntimeStore.setState({ actions: prevActions })
+    }
   })
 })
 

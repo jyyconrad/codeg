@@ -1753,6 +1753,8 @@
       "noConversationsFound": "未找到会话。",
       "importLocalSessions": "导入本地会话",
       "importing": "导入中...",
+      "syncCodexGrok": "同步 Codex / Grok 会话",
+      "syncingCodexGrok": "同步中...",
       "error": "错误：{message}",
       "completeAllSessions": "完成全部会话",
       "completeAllReviewTitle": "完成全部复查会话？",
@@ -1777,7 +1779,10 @@
         "updateGroupFailed": "更新分组失败：{message}",
         "deleteGroupFailed": "删除分组失败：{message}",
         "moveToGroupFailed": "移动文件夹失败：{message}",
-        "applyLayoutFailed": "保存文件夹顺序失败：{message}"
+        "applyLayoutFailed": "保存文件夹顺序失败：{message}",
+        "codexGrokSynced": "已同步新增 {imported}，更新 {updated}，跳过 {skipped}",
+        "codexGrokSyncFailed": "同步失败：{message}",
+        "codexGrokNone": "此文件夹没有 Codex 或 Grok 会话"
       },
       "statsLabel": "{folders} 个文件夹 · {convos} 个会话",
       "reorderHandle": "拖拽排序",

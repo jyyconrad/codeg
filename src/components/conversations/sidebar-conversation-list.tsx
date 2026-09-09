@@ -35,6 +35,7 @@ import {
   MonitorCloud,
   MoreHorizontal,
   Palette,
+  RefreshCw,
   Rocket,
   Settings,
   SquarePen,
@@ -43,6 +44,7 @@ import {
 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
@@ -62,6 +64,7 @@ import {
   updateFolderDefaultAgent,
   deleteConversation,
   listChildConversations,
+  syncCodexGrokSessions,
 } from "@/lib/api"
 import { isDesktop, revealItemInDir } from "@/lib/platform"
 import type {
@@ -211,6 +214,8 @@ const FolderHeader = memo(function FolderHeader({
   onRemoveFromWorkspace,
   onNewConversation,
   onImport,
+  onSyncCodexGrok,
+  syncingCodexGrok,
   onManageConversations,
   onManageLinks,
   onChangeColor,
@@ -261,6 +266,8 @@ const FolderHeader = memo(function FolderHeader({
   onRemoveFromWorkspace: (folderId: number) => void
   onNewConversation: (folderId: number) => void
   onImport: (folderId: number) => void
+  onSyncCodexGrok: (folderId: number) => void
+  syncingCodexGrok: boolean
   onManageConversations: (folderId: number) => void
   onManageLinks: (folderId: number) => void
   onChangeColor: (folderId: number, color: FolderThemeColor) => void
@@ -611,6 +618,17 @@ const FolderHeader = memo(function FolderHeader({
             <Download className="h-4 w-4" />
             {t("importLocalSessions")}
           </ContextMenuItem>
+          <ContextMenuItem
+            onSelect={() => onSyncCodexGrok(folderId)}
+            disabled={syncingCodexGrok}
+          >
+            {syncingCodexGrok ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            {syncingCodexGrok ? t("syncingCodexGrok") : t("syncCodexGrok")}
+          </ContextMenuItem>
           <ContextMenuSub>
             <ContextMenuSubTrigger>
               <ExternalLink className="h-4 w-4" />
@@ -926,6 +944,10 @@ export function SidebarConversationList({
 
   const activeTabId = useTabStore((s) => s.activeTabId)
   const tabs = useTabStore((s) => s.tabs)
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+  const [syncingFolderId, setSyncingFolderId] = useState<number | null>(null)
+  const syncingFolderIdRef = useRef<number | null>(null)
   const {
     openTab,
     closeConversationTab,
@@ -2127,6 +2149,59 @@ export function SidebarConversationList({
     [folderIndex]
   )
 
+  const handleSyncCodexGrok = useCallback(
+    (folderId: number) => {
+      if (syncingFolderIdRef.current !== null) return
+      syncingFolderIdRef.current = folderId
+      setSyncingFolderId(folderId)
+      void (async () => {
+        try {
+          const result = await syncCodexGrokSessions(folderId)
+          if (
+            result.imported === 0 &&
+            result.updated === 0 &&
+            result.skipped === 0
+          ) {
+            toast.info(t("toasts.codexGrokNone"))
+          } else {
+            toast.success(
+              t("toasts.codexGrokSynced", {
+                imported: result.imported,
+                updated: result.updated,
+                skipped: result.skipped,
+              })
+            )
+          }
+          const conversations = useAppWorkspaceStore.getState().conversations
+          const byId = new Map(conversations.map((c) => [c.id, c]))
+          const { refetchDetail } =
+            useConversationRuntimeStore.getState().actions
+          for (const tab of tabsRef.current) {
+            if (tab.conversationId == null) continue
+            const conv = byId.get(tab.conversationId)
+            const inFolder = conv
+              ? conv.folder_id === folderId
+              : tab.folderId === folderId
+            const agent = conv?.agent_type ?? tab.agentType
+            if (inFolder && (agent === "codex" || agent === "grok")) {
+              refetchDetail(tab.conversationId)
+            }
+          }
+        } catch (err) {
+          toast.error(
+            t("toasts.codexGrokSyncFailed", {
+              message: toErrorMessage(err),
+            })
+          )
+        } finally {
+          syncingFolderIdRef.current = null
+          setSyncingFolderId(null)
+        }
+      })()
+    },
+    [t]
+  )
+
   const handleOpenImportWindow = useCallback(() => {
     void openImportSessionsWindow()
   }, [])
@@ -2690,6 +2765,8 @@ export function SidebarConversationList({
         onRemoveFromWorkspace={handleRemoveFolder}
         onNewConversation={handleNewConversationForFolder}
         onImport={handleImportForFolder}
+        onSyncCodexGrok={handleSyncCodexGrok}
+        syncingCodexGrok={syncingFolderId === folderId}
         onManageConversations={handleManageConversations}
         onManageLinks={handleManageFolderLinks}
         onChangeColor={handleChangeFolderColor}
