@@ -4755,6 +4755,22 @@ export async function listChatChannels(): Promise<ChatChannelInfo[]> {
   return getTransport().call("list_chat_channels")
 }
 
+export async function listFolderChatChannels(
+  folderId: number
+): Promise<number[]> {
+  return getTransport().call("list_folder_chat_channels", { folderId })
+}
+
+export async function setFolderChatChannels(
+  folderId: number,
+  channelIds: number[]
+): Promise<number[]> {
+  return getTransport().call("set_folder_chat_channels", {
+    folderId,
+    channelIds,
+  })
+}
+
 export async function createChatChannel(params: {
   name: string
   channelType: string

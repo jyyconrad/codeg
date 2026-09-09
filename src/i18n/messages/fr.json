@@ -1755,6 +1755,14 @@
       "importing": "Import en cours...",
       "syncCodexGrok": "Synchroniser les sessions Codex / Grok",
       "syncingCodexGrok": "Synchronisation...",
+      "notifyChannels": "Canaux de notification…",
+      "notifyChannelsDialog": {
+        "title": "Canaux de notification",
+        "description": "Quand une exécution se termine dans ce dossier, le message final est envoyé à chaque canal sélectionné.",
+        "empty": "Aucun canal de discussion. Ajoutez-en un dans les paramètres.",
+        "loadFailed": "Échec du chargement des canaux : {message}",
+        "saveFailed": "Échec de l'enregistrement des canaux : {message}"
+      },
       "error": "Erreur : {message}",
       "completeAllSessions": "Terminer toutes les sessions",
       "completeAllReviewTitle": "Terminer toutes les sessions en revue ?",

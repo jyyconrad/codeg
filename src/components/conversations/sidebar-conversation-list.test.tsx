@@ -257,6 +257,9 @@ vi.mock("@/contexts/workbench-route-context", () => {
 vi.mock("./conversation-manage-dialog", () => ({
   ConversationManageDialog: () => null,
 }))
+vi.mock("./folder-notify-channels-dialog", () => ({
+  FolderNotifyChannelsDialog: () => null,
+}))
 vi.mock("@/components/layout/clone-dialog", () => ({ CloneDialog: () => null }))
 // The sub-session realtime sync hook reaches @/lib/platform (transport), which
 // these tests don't load; stub it to a no-op — it has its own unit tests.
@@ -859,6 +862,30 @@ describe("SidebarConversationList — folder ⋯ opens the same menu as right-cl
       fireEvent.click(moreBtn as HTMLElement)
     })
     expect(document.body.textContent).toContain("Sync Codex / Grok sessions")
+  })
+
+  it("offers Notify channels… on the folder menu", () => {
+    render(tree())
+    const moreBtn = document.querySelector('[aria-label="More options"]')
+    act(() => {
+      fireEvent.click(moreBtn as HTMLElement)
+    })
+    expect(document.body.textContent).toContain("Notify channels…")
+  })
+
+  it("hides Notify channels… when the folder kind is chat", () => {
+    const folders = [{ ...folder(1, "Folder 1"), kind: "chat" } as FolderDetail]
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1)],
+    })
+    render(tree())
+    const moreBtn = document.querySelector('[aria-label="More options"]')
+    act(() => {
+      fireEvent.click(moreBtn as HTMLElement)
+    })
+    expect(document.body.textContent).not.toContain("Notify channels…")
   })
 
   it("syncs Codex / Grok sessions and refetches open Codex/Grok details", async () => {

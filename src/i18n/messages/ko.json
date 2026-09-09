@@ -1755,6 +1755,14 @@
       "importing": "가져오는 중...",
       "syncCodexGrok": "Codex / Grok 세션 동기화",
       "syncingCodexGrok": "동기화 중...",
+      "notifyChannels": "알림 채널…",
+      "notifyChannelsDialog": {
+        "title": "알림 채널",
+        "description": "이 폴더의 실행이 끝나면 최종 메시지를 선택한 채널로 보냅니다.",
+        "empty": "채팅 채널이 없습니다. 설정에서 추가하세요.",
+        "loadFailed": "채널을 불러오지 못했습니다: {message}",
+        "saveFailed": "채널 바인딩을 저장하지 못했습니다: {message}"
+      },
       "error": "오류: {message}",
       "completeAllSessions": "모든 세션 완료 처리",
       "completeAllReviewTitle": "모든 검토 세션을 완료 처리할까요?",

@@ -15,6 +15,7 @@ import { useTranslations } from "next-intl"
 import { toast } from "sonner"
 import { Virtualizer, type VirtualizerHandle } from "virtua"
 import {
+  Bell,
   Bot,
   Check,
   ChevronDown,
@@ -143,6 +144,7 @@ import { useSubsessionSync } from "@/hooks/use-subsession-sync"
 import { SidebarSectionHeader } from "./sidebar-section-header"
 import { SidebarFolderGroupHeader } from "./sidebar-folder-group-header"
 import { ConversationManageDialog } from "./conversation-manage-dialog"
+import { FolderNotifyChannelsDialog } from "./folder-notify-channels-dialog"
 import { CloneDialog } from "@/components/layout/clone-dialog"
 import { RemoteWorkspaceManageDialog } from "@/components/layout/remote-workspace-manage-dialog"
 import { WorkspaceFolderDialog } from "@/components/layout/workspace-folder-dialog"
@@ -218,6 +220,7 @@ const FolderHeader = memo(function FolderHeader({
   syncingCodexGrok,
   onManageConversations,
   onManageLinks,
+  onNotifyChannels,
   onChangeColor,
   onSetAlias,
   onSetDefaultAgent,
@@ -270,6 +273,8 @@ const FolderHeader = memo(function FolderHeader({
   syncingCodexGrok: boolean
   onManageConversations: (folderId: number) => void
   onManageLinks: (folderId: number) => void
+  /** Omitted for `kind === "chat"` folders, which have no notify menu. */
+  onNotifyChannels?: (folderId: number) => void
   onChangeColor: (folderId: number, color: FolderThemeColor) => void
   onSetAlias: (folderId: number, alias: string | null) => void
   onSetDefaultAgent: (folderId: number, agentType: AgentType | null) => void
@@ -653,6 +658,12 @@ const FolderHeader = memo(function FolderHeader({
             <Link2 className="h-4 w-4" />
             {t("folderHeaderMenu.manageLinks")}
           </ContextMenuItem>
+          {onNotifyChannels != null && (
+            <ContextMenuItem onSelect={() => onNotifyChannels(folderId)}>
+              <Bell className="h-4 w-4" />
+              {t("notifyChannels")}
+            </ContextMenuItem>
+          )}
           <ContextMenuSub>
             <ContextMenuSubTrigger>
               <Bot className="h-4 w-4" />
@@ -967,6 +978,7 @@ export function SidebarConversationList({
         color: string
         defaultAgentType: AgentType | null
         gitBranch: string | null
+        kind: FolderDetail["kind"]
       }
     >()
     for (const f of allFolders)
@@ -977,6 +989,7 @@ export function SidebarConversationList({
         color: f.color,
         defaultAgentType: f.default_agent_type,
         gitBranch: f.git_branch,
+        kind: f.kind,
       })
     return map
   }, [allFolders])
@@ -1101,6 +1114,7 @@ export function SidebarConversationList({
   // Folder the "manage conversations" dialog opens on — its initial scope; the
   // dialog itself can then widen to the workspace or point at another folder.
   const [manageFolderId, setManageFolderId] = useState<number | null>(null)
+  const [notifyFolderId, setNotifyFolderId] = useState<number | null>(null)
   const [cloneOpen, setCloneOpen] = useState(false)
   const [browserOpen, setBrowserOpen] = useState(false)
   const [remoteManageOpen, setRemoteManageOpen] = useState(false)
@@ -2019,6 +2033,10 @@ export function SidebarConversationList({
     setManageFolderId(folderId)
   }, [])
 
+  const handleNotifyChannels = useCallback((folderId: number) => {
+    setNotifyFolderId(folderId)
+  }, [])
+
   const handleManageFolderLinks = useCallback(
     (folderId: number) => {
       const folder = allFolders.find((f) => f.id === folderId)
@@ -2769,6 +2787,9 @@ export function SidebarConversationList({
         syncingCodexGrok={syncingFolderId === folderId}
         onManageConversations={handleManageConversations}
         onManageLinks={handleManageFolderLinks}
+        onNotifyChannels={
+          folderEntry?.kind === "chat" ? undefined : handleNotifyChannels
+        }
         onChangeColor={handleChangeFolderColor}
         onSetAlias={handleSetFolderAlias}
         onSetDefaultAgent={handleChangeFolderDefaultAgent}
@@ -3523,6 +3544,13 @@ export function SidebarConversationList({
           open
           onOpenChange={(o) => !o && setManageFolderId(null)}
           folderId={manageFolderId}
+        />
+      )}
+      {notifyFolderId != null && (
+        <FolderNotifyChannelsDialog
+          open
+          onOpenChange={(o) => !o && setNotifyFolderId(null)}
+          folderId={notifyFolderId}
         />
       )}
 

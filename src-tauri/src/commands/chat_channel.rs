@@ -3,7 +3,9 @@ use crate::chat_channel::backends::weixin::{WeixinQrcodeInfo, WeixinQrcodeStatus
 use crate::chat_channel::manager::ChatChannelManager;
 use crate::chat_channel::types::ChannelType;
 use crate::chat_channel::webhook::WebhookConfig;
-use crate::db::service::{chat_channel_message_log_service, chat_channel_service};
+use crate::db::service::{
+    chat_channel_message_log_service, chat_channel_service, folder_chat_channel_service,
+};
 use crate::db::AppDatabase;
 use crate::models::chat_channel::{ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo};
 
@@ -454,6 +456,25 @@ pub async fn weixin_check_qrcode_core(
     })
 }
 
+pub async fn list_folder_chat_channels_core(
+    db: &AppDatabase,
+    folder_id: i32,
+) -> Result<Vec<i32>, AppCommandError> {
+    folder_chat_channel_service::list_channel_ids(&db.conn, folder_id)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+pub async fn set_folder_chat_channels_core(
+    db: &AppDatabase,
+    folder_id: i32,
+    channel_ids: Vec<i32>,
+) -> Result<Vec<i32>, AppCommandError> {
+    folder_chat_channel_service::set_channel_ids(&db.conn, folder_id, &channel_ids)
+        .await
+        .map_err(AppCommandError::from)
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands (use tauri::State for injection)
 // ---------------------------------------------------------------------------
@@ -675,6 +696,25 @@ pub async fn weixin_check_qrcode(
     qrcode: String,
 ) -> Result<WeixinQrcodeStatusPublic, AppCommandError> {
     weixin_check_qrcode_core(&db, channel_id, &qrcode).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn list_folder_chat_channels(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+) -> Result<Vec<i32>, AppCommandError> {
+    list_folder_chat_channels_core(&db, folder_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn set_folder_chat_channels(
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    channel_ids: Vec<i32>,
+) -> Result<Vec<i32>, AppCommandError> {
+    set_folder_chat_channels_core(&db, folder_id, channel_ids).await
 }
 
 #[cfg(test)]

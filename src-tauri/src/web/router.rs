@@ -1309,6 +1309,14 @@ pub fn build_router(
             "/weixin_check_qrcode",
             post(handlers::chat_channel::weixin_check_qrcode),
         )
+        .route(
+            "/list_folder_chat_channels",
+            post(handlers::chat_channel::list_folder_chat_channels),
+        )
+        .route(
+            "/set_folder_chat_channels",
+            post(handlers::chat_channel::set_folder_chat_channels),
+        )
         // ─── Model Providers ───
         .route(
             "/list_model_providers",

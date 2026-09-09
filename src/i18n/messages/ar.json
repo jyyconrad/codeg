@@ -1755,6 +1755,14 @@
       "importing": "جارٍ الاستيراد...",
       "syncCodexGrok": "مزامنة جلسات Codex / Grok",
       "syncingCodexGrok": "جارٍ المزامنة...",
+      "notifyChannels": "قنوات الإشعار…",
+      "notifyChannelsDialog": {
+        "title": "قنوات الإشعار",
+        "description": "عند انتهاء تشغيل في هذا المجلد، أرسل الرسالة النهائية إلى كل قناة محددة.",
+        "empty": "لا توجد قنوات دردشة بعد. أضف واحدة من الإعدادات.",
+        "loadFailed": "تعذر تحميل القنوات: {message}",
+        "saveFailed": "تعذر حفظ ربط القنوات: {message}"
+      },
       "error": "خطأ: {message}",
       "completeAllSessions": "إكمال جميع الجلسات",
       "completeAllReviewTitle": "إكمال جميع جلسات المراجعة؟",

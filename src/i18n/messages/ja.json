@@ -1755,6 +1755,14 @@
       "importing": "インポート中...",
       "syncCodexGrok": "Codex / Grok セッションを同期",
       "syncingCodexGrok": "同期中...",
+      "notifyChannels": "通知チャネル…",
+      "notifyChannelsDialog": {
+        "title": "通知チャネル",
+        "description": "このフォルダーの実行が終了したとき、最終メッセージを選択したチャネルへ送ります。",
+        "empty": "チャットチャネルはまだありません。設定で追加してください。",
+        "loadFailed": "チャネルの読み込みに失敗しました: {message}",
+        "saveFailed": "チャネルの保存に失敗しました: {message}"
+      },
       "error": "エラー: {message}",
       "completeAllSessions": "すべてのセッションを完了",
       "completeAllReviewTitle": "すべてのレビューセッションを完了しますか？",

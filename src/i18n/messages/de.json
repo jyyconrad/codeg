@@ -1755,6 +1755,14 @@
       "importing": "Importiere...",
       "syncCodexGrok": "Codex-/Grok-Sitzungen synchronisieren",
       "syncingCodexGrok": "Synchronisiere...",
+      "notifyChannels": "Benachrichtigungskanäle…",
+      "notifyChannelsDialog": {
+        "title": "Benachrichtigungskanäle",
+        "description": "Wenn ein Lauf in diesem Ordner endet, wird die Abschlussnachricht an alle ausgewählten Kanäle gesendet.",
+        "empty": "Noch keine Chat-Kanäle. Fügen Sie einen in den Einstellungen hinzu.",
+        "loadFailed": "Kanäle konnten nicht geladen werden: {message}",
+        "saveFailed": "Kanäle konnten nicht gespeichert werden: {message}"
+      },
       "error": "Fehler: {message}",
       "completeAllSessions": "Alle Sitzungen abschließen",
       "completeAllReviewTitle": "Alle Review-Sitzungen abschließen?",

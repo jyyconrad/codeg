@@ -1755,6 +1755,14 @@
       "importing": "匯入中...",
       "syncCodexGrok": "同步 Codex / Grok 會話",
       "syncingCodexGrok": "同步中...",
+      "notifyChannels": "通知渠道…",
+      "notifyChannelsDialog": {
+        "title": "通知渠道",
+        "description": "此資料夾中的對話結束時，將最終訊息發送到所選渠道。",
+        "empty": "尚無聊天渠道。請先在設定中新增。",
+        "loadFailed": "載入渠道失敗：{message}",
+        "saveFailed": "儲存渠道綁定失敗：{message}"
+      },
       "error": "錯誤：{message}",
       "completeAllSessions": "完成全部會話",
       "completeAllReviewTitle": "完成全部複查會話？",

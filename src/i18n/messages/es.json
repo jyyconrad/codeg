@@ -1755,6 +1755,14 @@
       "importing": "Importando...",
       "syncCodexGrok": "Sincronizar sesiones de Codex / Grok",
       "syncingCodexGrok": "Sincronizando...",
+      "notifyChannels": "Canales de notificación…",
+      "notifyChannelsDialog": {
+        "title": "Canales de notificación",
+        "description": "Cuando termine una ejecución en esta carpeta, envía el mensaje final a cada canal seleccionado.",
+        "empty": "Aún no hay canales de chat. Añade uno en Ajustes.",
+        "loadFailed": "No se pudieron cargar los canales: {message}",
+        "saveFailed": "No se pudieron guardar los canales: {message}"
+      },
       "error": "Error del sistema: {message}",
       "completeAllSessions": "Completar todas las sesiones",
       "completeAllReviewTitle": "¿Completar todas las sesiones en revisión?",

@@ -1755,6 +1755,14 @@
       "importing": "Importing...",
       "syncCodexGrok": "Sync Codex / Grok sessions",
       "syncingCodexGrok": "Syncing...",
+      "notifyChannels": "Notify channels…",
+      "notifyChannelsDialog": {
+        "title": "Notify channels",
+        "description": "Send this folder's final messages to the selected chat channels.",
+        "empty": "No chat channels yet. Add one in Settings.",
+        "loadFailed": "Failed to load channels: {message}",
+        "saveFailed": "Failed to save channel bindings: {message}"
+      },
       "error": "Error: {message}",
       "completeAllSessions": "Complete all sessions",
       "completeAllReviewTitle": "Complete all review sessions?",

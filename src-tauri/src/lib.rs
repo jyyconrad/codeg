@@ -1659,6 +1659,8 @@ mod tauri_app {
                 chat_channel_commands::set_chat_message_language,
                 chat_channel_commands::weixin_get_qrcode,
                 chat_channel_commands::weixin_check_qrcode,
+                chat_channel_commands::list_folder_chat_channels,
+                chat_channel_commands::set_folder_chat_channels,
                 model_provider_commands::list_model_providers,
                 model_provider_commands::create_model_provider,
                 model_provider_commands::update_model_provider,
