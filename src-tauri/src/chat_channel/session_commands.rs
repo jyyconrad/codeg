@@ -424,6 +424,14 @@ pub async fn handle_callback(
 
 // ── /task ──
 
+pub(crate) async fn announce_channel_conversation(
+    emitter: &EventEmitter,
+    db: &DatabaseConnection,
+    conversation_id: i32,
+) {
+    crate::commands::conversations::emit_conversation_upsert(emitter, db, conversation_id).await;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_task(
     db: &DatabaseConnection,
@@ -545,6 +553,8 @@ pub async fn handle_task(
             );
         }
     };
+
+    announce_channel_conversation(emitter, db, conv.id).await;
 
     // 5. Spawn ACP agent
     let owner_label = owner_label_for(channel_id, sender_id, &session_target);
@@ -2198,5 +2208,23 @@ mod tests {
 
         crate::acp::custom_registry::hydrate(&[]);
         assert_eq!(parse_agent_type("chat-cmd-qwen-code"), None);
+    }
+
+    #[tokio::test]
+    async fn announce_channel_conversation_broadcasts_upsert() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-channel-announce").await;
+        let conv = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        let broadcaster = std::sync::Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
+        let mut rx = broadcaster.subscribe();
+        let emitter = crate::web::event_bridge::EventEmitter::test_web_only(broadcaster);
+        announce_channel_conversation(&emitter, &db.conn, conv).await;
+        let evt = rx.try_recv().expect("upsert");
+        assert_eq!(
+            evt.channel,
+            crate::web::event_bridge::CONVERSATION_CHANGED_EVENT
+        );
+        assert_eq!(evt.payload["kind"], "upsert");
+        assert_eq!(evt.payload["summary"]["id"], conv);
     }
 }
