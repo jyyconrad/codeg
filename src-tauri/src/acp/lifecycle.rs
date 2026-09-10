@@ -394,9 +394,7 @@ pub(crate) async fn handle_event(
     }
 }
 
-/// Fan-out at most one run-settled dispatch per connection run (channel IM
-/// is one handler). No-op when the conversation is unbound, a publish
-/// already landed, or a successful turn produced neither text nor files.
+/// Historical hook. Channel IM is owned by the Events-tab subscriber.
 pub(crate) async fn maybe_publish_run_terminal(
     db_conn: &DatabaseConnection,
     manager: &ConnectionManager,
@@ -2354,7 +2352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_event_end_turn_publishes_last_assistant_once() {
+    async fn handle_event_end_turn_does_not_publish_channel_card() {
         let db = test_helpers::fresh_in_memory_db().await;
         let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-end").await;
         let conv =
@@ -2384,16 +2382,9 @@ mod tests {
             .unwrap();
 
         let msgs = rec.msgs.lock().await.clone();
-        assert_eq!(msgs.len(), 1, "expected one card, got {msgs:?}");
         assert!(
-            msgs[0].contains("answer"),
-            "must keep last_message in the card, got {:?}",
-            msgs[0]
-        );
-        assert!(
-            msgs[0].contains("Turn complete") || msgs[0].contains("会话完成"),
-            "must title the card with status, got {:?}",
-            msgs[0]
+            msgs.is_empty(),
+            "lifecycle must not send a second channel card; Events-tab owns it, got {msgs:?}"
         );
     }
 
@@ -2471,12 +2462,10 @@ mod tests {
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
 
         let msgs = rec.msgs.lock().await.clone();
-        assert_eq!(
-            msgs.len(),
-            1,
-            "terminal_message_published must suppress a second fan-out, got {msgs:?}"
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
         );
-        assert!(msgs[0].contains("answer"));
     }
 
     #[tokio::test]
@@ -2510,16 +2499,9 @@ mod tests {
             .unwrap();
 
         let msgs = rec.msgs.lock().await.clone();
-        assert_eq!(msgs.len(), 1, "expected one error body, got {msgs:?}");
         assert!(
-            msgs[0].contains("partial"),
-            "must keep last assistant text, got {:?}",
-            msgs[0]
-        );
-        assert!(
-            msgs[0].contains("refusal"),
-            "exception TurnComplete must pass stop_reason as error, got {:?}",
-            msgs[0]
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
         );
     }
 
@@ -2548,11 +2530,9 @@ mod tests {
             .unwrap();
 
         let msgs = rec.msgs.lock().await.clone();
-        assert_eq!(msgs.len(), 1, "expected one error body, got {msgs:?}");
         assert!(
-            msgs[0].contains("empty"),
-            "must send stop_reason rather than a success-looking assistant or generic fallback, got {:?}",
-            msgs[0]
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
         );
     }
 
@@ -2581,11 +2561,9 @@ mod tests {
         mgr.cancel(&db.conn, "c1").await.unwrap();
 
         let msgs = rec.msgs.lock().await.clone();
-        assert_eq!(msgs.len(), 1, "expected one stop notice, got {msgs:?}");
         assert!(
-            msgs[0].contains("Stopped by the user") || msgs[0].contains("用户已停止"),
-            "cancel with no assistant text must send the stop string, got {:?}",
-            msgs[0]
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
         );
     }
 
@@ -2623,16 +2601,9 @@ mod tests {
         mgr.cancel(&db.conn, "c1").await.unwrap();
 
         let msgs = rec.msgs.lock().await.clone();
-        assert_eq!(msgs.len(), 1, "expected one stop notice, got {msgs:?}");
         assert!(
-            msgs[0].contains("partial now"),
-            "must attach in-flight text, got {:?}",
-            msgs[0]
-        );
-        assert!(
-            !msgs[0].contains("previous answer"),
-            "must not send the previous turn, got {:?}",
-            msgs[0]
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
         );
     }
 
@@ -2688,7 +2659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_event_end_turn_includes_changed_files_in_card() {
+    async fn handle_event_end_turn_does_not_publish_files_card() {
         let db = test_helpers::fresh_in_memory_db().await;
         let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-files").await;
         let conv =
@@ -2721,21 +2692,14 @@ mod tests {
             .unwrap();
 
         let msgs = rec.msgs.lock().await.clone();
-        assert_eq!(msgs.len(), 1, "expected one card, got {msgs:?}");
         assert!(
-            msgs[0].contains("answer"),
-            "must keep last_message, got {:?}",
-            msgs[0]
-        );
-        assert!(
-            msgs[0].contains("secret.rs"),
-            "must include changed files so channel readers see progress, got {:?}",
-            msgs[0]
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
         );
     }
 
     #[tokio::test]
-    async fn terminal_error_publishes_to_bridge_session_without_folder_binding() {
+    async fn terminal_error_does_not_publish_channel_card() {
         let db = test_helpers::fresh_in_memory_db().await;
         let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-bridge-only").await;
         let conv =
@@ -2806,11 +2770,9 @@ mod tests {
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
 
         let msgs = rec.msgs.lock().await.clone();
-        assert_eq!(msgs.len(), 1, "expected one card, got {msgs:?}");
         assert!(
-            msgs[0].contains("transport closed"),
-            "Bridge-only origin must still receive the terminal error, got {:?}",
-            msgs[0]
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
         );
     }
 

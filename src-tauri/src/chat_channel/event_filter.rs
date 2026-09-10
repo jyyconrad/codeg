@@ -2,8 +2,8 @@
 //!
 //! Same contract as `event_subscriber`: a null/absent filter is the default
 //! set (everything except opt-in content events). An explicit list is an
-//! allow-list. Used by both the global event feed and the run-settled
-//! last-message fan-out so toggling 「对话完成」/「代理错误」 gates both.
+//! allow-list. Used by the global event feed so toggling turn_complete / error
+//! gates IM.
 
 use sea_orm::DatabaseConnection;
 

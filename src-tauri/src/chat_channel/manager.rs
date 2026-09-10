@@ -27,6 +27,7 @@ struct Inner {
     command_rx: Mutex<Option<mpsc::Receiver<IncomingCommand>>>,
     broadcaster: Mutex<Option<Arc<WebEventBroadcaster>>>,
     bridge: Arc<Mutex<SessionBridge>>,
+    conn_mgr: Mutex<Option<ConnectionManager>>,
 }
 
 pub struct ChatChannelManager {
@@ -49,6 +50,7 @@ impl ChatChannelManager {
                 command_rx: Mutex::new(Some(command_rx)),
                 broadcaster: Mutex::new(None),
                 bridge: Arc::new(Mutex::new(SessionBridge::new())),
+                conn_mgr: Mutex::new(None),
             }),
         }
     }
@@ -69,6 +71,22 @@ impl ChatChannelManager {
     /// lock it without a `SessionBridge` parameter on `handle_event`.
     pub fn session_bridge(&self) -> Arc<Mutex<SessionBridge>> {
         self.inner.bridge.clone()
+    }
+
+    /// ACP connection manager, set by [`Self::start_background`]. The Events
+    /// subscriber uses it to fill last-message / title / files on turn-complete
+    /// cards. Tests can install a stub the same way.
+    pub async fn set_connection_manager(&self, mgr: ConnectionManager) {
+        *self.inner.conn_mgr.lock().await = Some(mgr);
+    }
+
+    pub async fn connection_manager(&self) -> Option<ConnectionManager> {
+        self.inner
+            .conn_mgr
+            .lock()
+            .await
+            .as_ref()
+            .map(|m| m.clone_ref())
     }
 
     /// Take the command receiver (can only be called once, at startup).
@@ -361,6 +379,7 @@ impl ChatChannelManager {
         let db_conn2 = db_conn.clone();
 
         let bridge = self.inner.bridge.clone();
+        self.set_connection_manager(conn_mgr.clone_ref()).await;
 
         // Spawn event subscriber
         let manager_for_events = self.clone_ref();
