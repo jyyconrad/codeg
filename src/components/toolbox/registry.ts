@@ -1,5 +1,4 @@
 import type { ToolboxCategory, ToolboxToolId, ToolboxToolMeta } from "./types"
-import { TOOLBOX_TOOL_IDS } from "./types"
 
 const META: readonly ToolboxToolMeta[] = [
   {
@@ -260,6 +259,4 @@ export function listToolboxToolsByCategory(
   return META.filter((tool) => tool.category === category)
 }
 
-export function isToolboxToolId(value: string): value is ToolboxToolId {
-  return (TOOLBOX_TOOL_IDS as readonly string[]).includes(value)
-}
+export { isToolboxToolId } from "./types"

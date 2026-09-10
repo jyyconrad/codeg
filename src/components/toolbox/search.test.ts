@@ -26,9 +26,9 @@ describe("toolbox search", () => {
     const hash = listToolboxTools().find((tool) => tool.id === "hash")
     expect(base64).toBeTruthy()
     expect(hash).toBeTruthy()
-    expect(
-      matchesToolboxQuery(base64!, labels("Base64"), "base64加密")
-    ).toBe(true)
+    expect(matchesToolboxQuery(base64!, labels("Base64"), "base64加密")).toBe(
+      true
+    )
     expect(matchesToolboxQuery(hash!, labels("Hash"), "md5加密")).toBe(true)
   })
 

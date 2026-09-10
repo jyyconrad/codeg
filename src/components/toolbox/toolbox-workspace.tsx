@@ -1,20 +1,25 @@
 "use client"
 
-import { Suspense, lazy, useMemo } from "react"
+import {
+  Suspense,
+  lazy,
+  type ComponentType,
+  type LazyExoticComponent,
+} from "react"
 import { Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { TOOL_LOADERS } from "./tool-loaders"
 import { useToolboxStore } from "./toolbox-store"
+import type { ToolboxToolId } from "./types"
+
+const LAZY_TOOLS = Object.fromEntries(
+  Object.entries(TOOL_LOADERS).map(([id, loader]) => [id, lazy(loader)])
+) as Record<ToolboxToolId, LazyExoticComponent<ComponentType>>
 
 export function ToolboxWorkspace() {
   const t = useTranslations("Toolbox")
   const selectedToolId = useToolboxStore((s) => s.selectedToolId)
-
-  const Tool = useMemo(() => {
-    if (!selectedToolId) return null
-    const loader = TOOL_LOADERS[selectedToolId]
-    return lazy(loader)
-  }, [selectedToolId])
+  const Tool = selectedToolId ? LAZY_TOOLS[selectedToolId] : null
 
   if (!Tool) {
     return (

@@ -10,7 +10,10 @@ import { matchesToolboxQuery } from "./search"
 import { TOOLBOX_CATEGORIES, type ToolboxToolId } from "./types"
 import { useToolboxStore } from "./toolbox-store"
 
-export function ToolboxCatalog({ query, onQueryChange }: {
+export function ToolboxCatalog({
+  query,
+  onQueryChange,
+}: {
   query: string
   onQueryChange: (value: string) => void
 }) {
@@ -21,18 +24,13 @@ export function ToolboxCatalog({ query, onQueryChange }: {
   const recent = useToolboxStore((s) => s.recent)
   const toggleFavorite = useToolboxStore((s) => s.toggleFavorite)
 
-  const labelFor = (id: ToolboxToolId) => ({
-    title: t(`tools.${id}.title`),
-    description: t(`tools.${id}.description`),
-    aliases: t(`tools.${id}.aliases`),
-    category: t(`categories.${listToolboxTools().find((item) => item.id === id)?.category ?? "text"}`),
-  })
-
   const visible = listToolboxTools().filter((tool) =>
     matchesToolboxQuery(
       tool,
       {
-        ...labelFor(tool.id),
+        title: t(`tools.${tool.id}.title`),
+        description: t(`tools.${tool.id}.description`),
+        aliases: t(`tools.${tool.id}.aliases`),
         category: t(`categories.${tool.category}`),
       },
       query
@@ -117,7 +115,9 @@ export function ToolboxCatalog({ query, onQueryChange }: {
             )
           })}
           {visible.length === 0 ? (
-            <p className="px-2 text-sm text-muted-foreground">{t("noResults")}</p>
+            <p className="px-2 text-sm text-muted-foreground">
+              {t("noResults")}
+            </p>
           ) : null}
         </div>
       </ScrollArea>

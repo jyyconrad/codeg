@@ -54,6 +54,10 @@ export const TOOLBOX_TOOL_IDS = [
 
 export type ToolboxToolId = (typeof TOOLBOX_TOOL_IDS)[number]
 
+export function isToolboxToolId(value: string): value is ToolboxToolId {
+  return (TOOLBOX_TOOL_IDS as readonly string[]).includes(value)
+}
+
 export interface ToolboxToolMeta {
   id: ToolboxToolId
   category: ToolboxCategory

@@ -13,7 +13,8 @@ function readJsonArray(key: string): string[] {
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return []
     return parsed.filter(
-      (item): item is string => typeof item === "string" && isToolboxToolId(item)
+      (item): item is string =>
+        typeof item === "string" && isToolboxToolId(item)
     )
   } catch {
     return []
