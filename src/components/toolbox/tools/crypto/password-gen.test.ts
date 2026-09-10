@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { charsetFromOptions, generatePassword } from "./password-gen"
+import { charsetFromOptions, generatePassword } from "./password-gen.core"
 import { randomInt } from "./random-int"
 
 describe("password generator", () => {

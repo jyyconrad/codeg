@@ -9,6 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react"
 import { useTranslations } from "next-intl"
+import { ToolboxSelect } from "@/components/toolbox/toolbox-controls"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Input } from "@/components/ui/input"
@@ -23,7 +24,7 @@ import {
   roundRect,
   type AspectPreset,
   type Rect,
-} from "./image-crop"
+} from "./image-crop.core"
 import { ImageResultPreview } from "./image-preview"
 import { useLoadedImage } from "./use-loaded-image"
 import { useObjectUrl } from "./use-object-url"
@@ -37,7 +38,6 @@ import {
   makeSampleImageFile,
   mimeForFormat,
   TOOL_LABEL_CLASS,
-  TOOL_SELECT_CLASS,
   triggerBlobDownload,
   withExtension,
   type ExportFormat,
@@ -293,23 +293,21 @@ export default function ImageCropTool() {
             {t("params")}
           </p>
           <div className="flex flex-wrap items-end gap-3">
-            <label className={TOOL_LABEL_CLASS}>
+            <div className={TOOL_LABEL_CLASS}>
               Aspect
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={preset}
-                onChange={(event) => {
-                  setPreset(event.target.value as AspectPreset)
+                onChange={(value) => {
+                  setPreset(value as AspectPreset)
                   setRectOverride(null)
                 }}
-              >
-                {ASPECTS.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
+                options={ASPECTS.map((item) => ({
+                  value: item,
+                  label: item,
+                }))}
+                className="w-full"
+              />
+            </div>
             <label className={TOOL_LABEL_CLASS}>
               x
               <Input
@@ -367,22 +365,18 @@ export default function ImageCropTool() {
                 }
               />
             </label>
-            <label className={TOOL_LABEL_CLASS}>
+            <div className={TOOL_LABEL_CLASS}>
               JPEG / WebP / PNG
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={format}
-                onChange={(event) =>
-                  setFormat(event.target.value as ExportFormat)
-                }
-              >
-                {EXPORT_FORMATS.map((item) => (
-                  <option key={item} value={item}>
-                    {item.toUpperCase()}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={(value) => setFormat(value as ExportFormat)}
+                options={EXPORT_FORMATS.map((item) => ({
+                  value: item,
+                  label: item.toUpperCase(),
+                }))}
+                className="w-full"
+              />
+            </div>
           </div>
         </div>
       }

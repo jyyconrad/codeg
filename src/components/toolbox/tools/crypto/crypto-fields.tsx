@@ -1,10 +1,8 @@
 "use client"
 
-import { type ChangeEvent, type ReactNode } from "react"
+import { type ReactNode } from "react"
+import { ToolboxSelect } from "@/components/toolbox/toolbox-controls"
 import { cn } from "@/lib/utils"
-
-export const paramControlClass =
-  "h-8 rounded-full border border-border bg-input/30 px-2 text-sm text-foreground"
 
 export function ParamPanel({
   title,
@@ -31,10 +29,10 @@ export function ParamField({
   children: ReactNode
 }) {
   return (
-    <label className={cn("flex min-w-[9rem] flex-col gap-1", className)}>
+    <div className={cn("flex min-w-[9rem] flex-col gap-1", className)}>
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       {children}
-    </label>
+    </div>
   )
 }
 
@@ -50,19 +48,12 @@ export function ParamSelect({
   className?: string
 }) {
   return (
-    <select
-      className={cn(paramControlClass, className)}
+    <ToolboxSelect
       value={value}
-      onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-        onChange(event.target.value)
-      }
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+      onChange={onChange}
+      options={options}
+      className={cn("w-full", className)}
+    />
   )
 }
 

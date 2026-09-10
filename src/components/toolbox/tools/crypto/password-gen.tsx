@@ -2,13 +2,14 @@
 
 import { useCallback, useState } from "react"
 import { useTranslations } from "next-intl"
+import { ToolboxCheckbox } from "@/components/toolbox/toolbox-controls"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ParamField, ParamPanel } from "./crypto-fields"
 import { errorMessage } from "./encoding"
-import { type PasswordSetId, generatePassword } from "./password-gen"
+import { type PasswordSetId, generatePassword } from "./password-gen.core"
 
 const SETS: { id: PasswordSetId; label: string }[] = [
   { id: "lower", label: "a-z" },
@@ -84,26 +85,18 @@ export default function PasswordGenTool() {
             />
           </ParamField>
           {SETS.map((set) => (
-            <label
+            <ToolboxCheckbox
               key={set.id}
-              className="flex items-center gap-2 pb-1 text-xs text-muted-foreground"
-            >
-              <input
-                type="checkbox"
-                checked={sets.includes(set.id)}
-                onChange={(event) => toggleSet(set.id, event.target.checked)}
-              />
-              {set.label}
-            </label>
-          ))}
-          <label className="flex items-center gap-2 pb-1 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={excludeSimilar}
-              onChange={(event) => setExcludeSimilar(event.target.checked)}
+              label={set.label}
+              checked={sets.includes(set.id)}
+              onChange={(checked) => toggleSet(set.id, checked)}
             />
-            Exclude 0/O/1/I/l
-          </label>
+          ))}
+          <ToolboxCheckbox
+            label="Exclude 0/O/1/I/l"
+            checked={excludeSimilar}
+            onChange={setExcludeSimilar}
+          />
           <Button type="button" size="sm" onClick={generate}>
             Generate
           </Button>

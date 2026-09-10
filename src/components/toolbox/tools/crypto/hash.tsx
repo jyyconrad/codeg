@@ -24,7 +24,7 @@ import {
   readFileBytes,
   SMALL_FILE_MAX_BYTES,
   type HashReport,
-} from "./hash"
+} from "./hash.core"
 
 export default function HashTool() {
   const t = useTranslations("Toolbox")

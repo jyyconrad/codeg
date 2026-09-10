@@ -8,7 +8,7 @@ import { ParamPanel } from "./crypto-fields"
 import {
   estimatePasswordStrength,
   formatPasswordStrength,
-} from "./password-strength"
+} from "./password-strength.core"
 
 export default function PasswordStrengthTool() {
   const t = useTranslations("Toolbox")

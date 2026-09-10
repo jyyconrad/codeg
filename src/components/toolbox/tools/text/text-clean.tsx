@@ -1,14 +1,12 @@
 "use client"
 
 import { useCallback, useMemo, useState } from "react"
+import { ToolboxSelect } from "@/components/toolbox/toolbox-controls"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { cleanText, type PunctMode, type WidthMode } from "./text-clean-core"
-
-const SELECT_CLASS =
-  "h-8 rounded-full border border-border bg-input/30 px-2 text-xs text-foreground"
 
 const EXAMPLE = "  Hello，　Ｗｏｒｌｄ！  \r\n\r\n\r\nFullwidth：ＡＢＣ  "
 
@@ -64,30 +62,26 @@ export default function TextCleanTool() {
             />
             Normalize newlines
           </Label>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            Width
-            <select
-              className={SELECT_CLASS}
-              value={width}
-              onChange={(event) => setWidth(event.target.value as WidthMode)}
-            >
-              <option value="off">Off</option>
-              <option value="full-to-half">Full → half</option>
-              <option value="half-to-full">Half → full</option>
-            </select>
-          </label>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            Punctuation
-            <select
-              className={SELECT_CLASS}
-              value={punct}
-              onChange={(event) => setPunct(event.target.value as PunctMode)}
-            >
-              <option value="off">Off</option>
-              <option value="cjk-to-ascii">CJK → ASCII</option>
-              <option value="ascii-to-cjk">ASCII → CJK</option>
-            </select>
-          </label>
+          <ToolboxSelect
+            label="Width"
+            value={width}
+            onChange={(value) => setWidth(value as WidthMode)}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "full-to-half", label: "Full → half" },
+              { value: "half-to-full", label: "Half → full" },
+            ]}
+          />
+          <ToolboxSelect
+            label="Punctuation"
+            value={punct}
+            onChange={(value) => setPunct(value as PunctMode)}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "cjk-to-ascii", label: "CJK → ASCII" },
+              { value: "ascii-to-cjk", label: "ASCII → CJK" },
+            ]}
+          />
         </div>
       }
     />

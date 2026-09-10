@@ -1,4 +1,12 @@
+"use client"
+
 import type { ReactNode } from "react"
+import {
+  ToolboxCheckbox,
+  ToolboxNumber,
+  ToolboxSelect,
+  ToolboxText,
+} from "@/components/toolbox/toolbox-controls"
 
 export function ToolParams({ children }: { children: ReactNode }) {
   return (
@@ -20,20 +28,12 @@ export function ToolSelect({
   options: readonly { value: string; label: string }[]
 }) {
   return (
-    <label className="flex items-center gap-2">
-      {label}
-      <select
-        className="h-8 rounded-full border border-border bg-input/30 px-2 text-foreground"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
+    <ToolboxSelect
+      label={label}
+      value={value}
+      onChange={onChange}
+      options={options}
+    />
   )
 }
 
@@ -46,16 +46,7 @@ export function ToolCheckbox({
   checked: boolean
   onChange: (checked: boolean) => void
 }) {
-  return (
-    <label className="flex items-center gap-2">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      {label}
-    </label>
-  )
+  return <ToolboxCheckbox label={label} checked={checked} onChange={onChange} />
 }
 
 export function ToolNumber({
@@ -72,17 +63,13 @@ export function ToolNumber({
   onChange: (value: number) => void
 }) {
   return (
-    <label className="flex items-center gap-2">
-      {label}
-      <input
-        type="number"
-        min={min}
-        max={max}
-        className="h-8 w-20 rounded-full border border-border bg-input/30 px-2 text-foreground"
-        value={Number.isFinite(value) ? value : ""}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-    </label>
+    <ToolboxNumber
+      label={label}
+      value={value}
+      min={min}
+      max={max}
+      onChange={onChange}
+    />
   )
 }
 
@@ -100,16 +87,12 @@ export function ToolText({
   mono?: boolean
 }) {
   return (
-    <label className="flex min-w-[12rem] flex-1 items-center gap-2">
-      {label}
-      <input
-        className={`h-8 min-w-0 flex-1 rounded-full border border-border bg-input/30 px-2 text-foreground ${
-          mono ? "font-mono" : ""
-        }`}
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </label>
+    <ToolboxText
+      label={label}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      mono={mono}
+    />
   )
 }

@@ -1,7 +1,7 @@
 import "./webcrypto-test"
 import { describe, expect, it } from "vitest"
 import { encodeHex, encodeUtf8 } from "./encoding"
-import { hmacBytes } from "./hmac"
+import { hmacBytes } from "./hmac.core"
 
 describe("hmac", () => {
   it("matches the HMAC-SHA256 RFC 4231 case 1 vector", async () => {

@@ -7,6 +7,7 @@ import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { useCopiedFlag } from "@/hooks/use-copied-flag"
+import { ToolboxCheckbox } from "@/components/toolbox/toolbox-controls"
 import { ParamField, ParamPanel, ParamSelect, Warn } from "./crypto-fields"
 import { type ByteEncoding, errorMessage } from "./encoding"
 import {
@@ -335,35 +336,26 @@ export default function AsymmetricCipherTool() {
                     ]}
                   />
                 </ParamField>
-                <label className="flex items-center gap-2 pb-1 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={sm2Asn1}
-                    onChange={(event) => setSm2Asn1(event.target.checked)}
-                  />
-                  ASN.1
-                </label>
+                <ToolboxCheckbox
+                  label="ASN.1"
+                  checked={sm2Asn1}
+                  onChange={setSm2Asn1}
+                />
               </>
             ) : null}
             {family === "sm2" && action === "keys" ? (
-              <label className="flex items-center gap-2 pb-1 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={sm2Prefix}
-                  onChange={(event) => setSm2Prefix(event.target.checked)}
-                />
-                Uncompressed 04 prefix
-              </label>
+              <ToolboxCheckbox
+                label="Uncompressed 04 prefix"
+                checked={sm2Prefix}
+                onChange={setSm2Prefix}
+              />
             ) : null}
             {family === "sm2" && action === "sign" ? (
-              <label className="flex items-center gap-2 pb-1 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={sm2Der}
-                  onChange={(event) => setSm2Der(event.target.checked)}
-                />
-                ASN.1 / DER signature
-              </label>
+              <ToolboxCheckbox
+                label="ASN.1 / DER signature"
+                checked={sm2Der}
+                onChange={setSm2Der}
+              />
             ) : null}
             {action !== "keys" ? (
               <>

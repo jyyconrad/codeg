@@ -6,9 +6,6 @@ export const IMAGE_DECODE_MESSAGE = "Could not decode image."
 export const EXPORT_FORMATS = ["jpeg", "png", "webp"] as const
 export type ExportFormat = (typeof EXPORT_FORMATS)[number]
 
-export const TOOL_SELECT_CLASS =
-  "h-8 rounded-full border border-border bg-input/30 px-2 text-sm text-foreground"
-
 export const TOOL_LABEL_CLASS =
   "flex flex-col gap-1 text-xs font-medium text-muted-foreground"
 

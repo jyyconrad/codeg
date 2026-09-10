@@ -1,12 +1,10 @@
 "use client"
 
 import { useCallback, useMemo, useState } from "react"
+import { ToolboxSelect } from "@/components/toolbox/toolbox-controls"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { convertZh, type ZhDirection } from "./zh-convert-core"
-
-const SELECT_CLASS =
-  "h-8 rounded-full border border-border bg-input/30 px-2 text-xs text-foreground"
 
 const EXAMPLE = "汉字转换：后面是头发。"
 
@@ -26,19 +24,15 @@ export default function ZhConvertTool() {
       result={result}
       downloadFilename="zh-converted.txt"
       params={
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          Direction
-          <select
-            className={SELECT_CLASS}
-            value={direction}
-            onChange={(event) =>
-              setDirection(event.target.value as ZhDirection)
-            }
-          >
-            <option value="s2t">Simplified → Traditional</option>
-            <option value="t2s">Traditional → Simplified</option>
-          </select>
-        </label>
+        <ToolboxSelect
+          label="Direction"
+          value={direction}
+          onChange={(value) => setDirection(value as ZhDirection)}
+          options={[
+            { value: "s2t", label: "Simplified → Traditional" },
+            { value: "t2s", label: "Traditional → Simplified" },
+          ]}
+        />
       }
     />
   )

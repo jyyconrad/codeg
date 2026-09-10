@@ -7,7 +7,7 @@ import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input
 import { Input } from "@/components/ui/input"
 import { ParamField, ParamPanel, ParamSelect } from "./crypto-fields"
 import { type ByteEncoding, errorMessage } from "./encoding"
-import { type HmacAlgorithm, type HmacOutputEncoding, hmacText } from "./hmac"
+import { type HmacAlgorithm, type HmacOutputEncoding, hmacText } from "./hmac.core"
 
 const ALGORITHMS: { value: HmacAlgorithm; label: string }[] = [
   { value: "SHA-256", label: "SHA-256" },

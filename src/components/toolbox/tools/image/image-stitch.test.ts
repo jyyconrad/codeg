@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { computeStitchLayout, defaultGridColumns } from "./image-stitch"
+import { computeStitchLayout, defaultGridColumns } from "./image-stitch.core"
 
 const a = { width: 100, height: 50 }
 const b = { width: 40, height: 80 }

@@ -2,13 +2,11 @@
 
 import { useCallback, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
+import { ToolboxSelect } from "@/components/toolbox/toolbox-controls"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Input } from "@/components/ui/input"
-import {
-  TOOL_LABEL_CLASS,
-  TOOL_SELECT_CLASS,
-} from "@/components/toolbox/tools/image/image-io"
+import { TOOL_LABEL_CLASS } from "@/components/toolbox/tools/image/image-io"
 import {
   convertUnit,
   formatConversion,
@@ -17,7 +15,7 @@ import {
   listUnits,
   parseUnitInput,
   type UnitCategory,
-} from "./unit-convert"
+} from "./unit-convert.core"
 
 export default function UnitConvertTool() {
   const t = useTranslations("Toolbox")
@@ -87,50 +85,42 @@ export default function UnitConvertTool() {
             {t("params")}
           </p>
           <div className="flex flex-wrap items-end gap-3">
-            <label className={TOOL_LABEL_CLASS}>
+            <div className={TOOL_LABEL_CLASS}>
               Category
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={category}
-                onChange={(event) =>
-                  changeCategory(event.target.value as UnitCategory)
-                }
-              >
-                {listUnitCategories().map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={TOOL_LABEL_CLASS}>
+                onChange={(value) => changeCategory(value as UnitCategory)}
+                options={listUnitCategories().map((item) => ({
+                  value: item,
+                  label: item,
+                }))}
+                className="w-full"
+              />
+            </div>
+            <div className={TOOL_LABEL_CLASS}>
               From
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={fromId}
-                onChange={(event) => setFromId(event.target.value)}
-              >
-                {units.map((unit) => (
-                  <option key={unit.id} value={unit.id}>
-                    {unit.id}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={TOOL_LABEL_CLASS}>
+                onChange={setFromId}
+                options={units.map((unit) => ({
+                  value: unit.id,
+                  label: unit.id,
+                }))}
+                className="w-full"
+              />
+            </div>
+            <div className={TOOL_LABEL_CLASS}>
               To
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={toId}
-                onChange={(event) => setToId(event.target.value)}
-              >
-                {units.map((unit) => (
-                  <option key={unit.id} value={unit.id}>
-                    {unit.id}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={setToId}
+                options={units.map((unit) => ({
+                  value: unit.id,
+                  label: unit.id,
+                }))}
+                className="w-full"
+              />
+            </div>
           </div>
         </div>
       }

@@ -24,7 +24,7 @@ code block
 `
 
 const PREVIEW_PROSE =
-  "min-h-[12rem] flex-1 overflow-auto rounded-xl border border-border bg-input/30 p-3 text-sm leading-6 break-words " +
+  "h-full min-h-0 flex-1 overflow-auto rounded-xl border border-border bg-input/30 p-3 text-sm leading-6 break-words " +
   "[&_h1]:mb-2 [&_h1]:text-lg [&_h1]:font-semibold " +
   "[&_h2]:mt-3 [&_h2]:mb-2 [&_h2]:text-base [&_h2]:font-semibold " +
   "[&_h3]:mt-2 [&_h3]:mb-1 [&_h3]:text-sm [&_h3]:font-semibold " +
@@ -61,11 +61,14 @@ export default function MarkdownPreviewTool() {
             skipHtml
             urlTransform={defaultUrlTransform}
             components={{
-              img: ({ alt, src }) => (
-                <span className="text-muted-foreground">
-                  {alt || src || "image"}
-                </span>
-              ),
+              img: ({ alt, src }) => {
+                const srcText = typeof src === "string" ? src : ""
+                return (
+                  <span className="text-muted-foreground">
+                    {alt || srcText || "image"}
+                  </span>
+                )
+              },
             }}
           >
             {input}

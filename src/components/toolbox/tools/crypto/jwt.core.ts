@@ -5,7 +5,7 @@ import {
   decodeUtf8,
   encodeUtf8,
 } from "./encoding"
-import { hmacBytes } from "./hmac"
+import { hmacBytes } from "./hmac.core"
 import { rsaVerify } from "./rsa"
 
 export interface JwtDecodeResult {

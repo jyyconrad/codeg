@@ -2,9 +2,7 @@
 
 import type { ReactNode } from "react"
 import { useTranslations } from "next-intl"
-
-const SELECT_CLASS =
-  "h-8 rounded-full border border-border bg-input/30 px-2 text-sm text-foreground"
+import { ToolboxSelect } from "@/components/toolbox/toolbox-controls"
 
 export function EncodingParams({ children }: { children: ReactNode }) {
   const t = useTranslations("Toolbox")
@@ -30,17 +28,11 @@ export function EncodingSelect({
   "aria-label": string
 }) {
   return (
-    <select
+    <ToolboxSelect
       aria-label={ariaLabel}
-      className={SELECT_CLASS}
       value={value}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+      onChange={onChange}
+      options={options}
+    />
   )
 }

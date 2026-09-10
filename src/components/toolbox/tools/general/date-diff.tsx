@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
+import { ToolboxCheckbox } from "@/components/toolbox/toolbox-controls"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Input } from "@/components/ui/input"
@@ -12,7 +13,7 @@ import {
   parseDateDiffInput,
   parseToolDate,
   toDateTimeLocalValue,
-} from "./date-diff"
+} from "./date-diff.core"
 
 function defaultRange(): { start: string; end: string } {
   const end = new Date()
@@ -80,14 +81,11 @@ export default function DateDiffTool() {
           <p className="text-xs font-medium text-muted-foreground">
             {t("params")}
           </p>
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={inclusive}
-              onChange={(event) => setInclusive(event.target.checked)}
-            />
-            Inclusive
-          </label>
+          <ToolboxCheckbox
+            label="Inclusive"
+            checked={inclusive}
+            onChange={setInclusive}
+          />
         </div>
       }
       inputSlot={

@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
+import {
+  ToolboxCheckbox,
+  ToolboxSelect,
+} from "@/components/toolbox/toolbox-controls"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Input } from "@/components/ui/input"
@@ -10,7 +14,7 @@ import {
   clampOpacity,
   coverDiagonal,
   iterTileOrigins,
-} from "./image-watermark"
+} from "./image-watermark.core"
 import { ImageResultPreview } from "./image-preview"
 import { useLoadedImage } from "./use-loaded-image"
 import { useObjectUrl } from "./use-object-url"
@@ -24,7 +28,6 @@ import {
   makeSampleImageFile,
   mimeForFormat,
   TOOL_LABEL_CLASS,
-  TOOL_SELECT_CLASS,
   triggerBlobDownload,
   withExtension,
   type ExportFormat,
@@ -291,30 +294,19 @@ export default function ImageWatermarkTool() {
                 onChange={(event) => setFill(event.target.value)}
               />
             </label>
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={tile}
-                onChange={(event) => setTile(event.target.checked)}
-              />
-              Tile
-            </label>
-            <label className={TOOL_LABEL_CLASS}>
+            <ToolboxCheckbox label="Tile" checked={tile} onChange={setTile} />
+            <div className={TOOL_LABEL_CLASS}>
               JPEG / WebP / PNG
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={format}
-                onChange={(event) =>
-                  setFormat(event.target.value as ExportFormat)
-                }
-              >
-                {EXPORT_FORMATS.map((item) => (
-                  <option key={item} value={item}>
-                    {item.toUpperCase()}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={(value) => setFormat(value as ExportFormat)}
+                options={EXPORT_FORMATS.map((item) => ({
+                  value: item,
+                  label: item.toUpperCase(),
+                }))}
+                className="w-full"
+              />
+            </div>
           </div>
         </div>
       }

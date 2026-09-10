@@ -7,9 +7,9 @@ import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ToolboxSelect } from "@/components/toolbox/toolbox-controls"
 import {
   TOOL_LABEL_CLASS,
-  TOOL_SELECT_CLASS,
   canvasToBlob,
   triggerBlobDownload,
 } from "@/components/toolbox/tools/image/image-io"
@@ -63,23 +63,20 @@ export default function QrGenerateTool() {
             {t("params")}
           </p>
           <div className="flex flex-wrap items-end gap-3">
-            <label className={TOOL_LABEL_CLASS}>
+            <div className={TOOL_LABEL_CLASS}>
               L / M / Q / H
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={level}
-                onChange={(event) => {
-                  const next = event.target.value
-                  if (isQrEccLevel(next)) setLevel(next)
+                onChange={(value) => {
+                  if (isQrEccLevel(value)) setLevel(value)
                 }}
-              >
-                {QR_ECC_LEVELS.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
+                options={QR_ECC_LEVELS.map((item) => ({
+                  value: item,
+                  label: item,
+                }))}
+                className="w-full"
+              />
+            </div>
             <label className={TOOL_LABEL_CLASS}>
               px
               <Input

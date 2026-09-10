@@ -12,7 +12,7 @@ import {
   generateTotp,
   parseTotpSecret,
   totpRemaining,
-} from "./totp"
+} from "./totp.core"
 
 export default function TotpTool() {
   const t = useTranslations("Toolbox")

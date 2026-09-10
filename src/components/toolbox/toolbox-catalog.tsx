@@ -1,14 +1,26 @@
 "use client"
 
-import { Star } from "lucide-react"
+import { useState, type ReactNode } from "react"
+import { ChevronRight, Star } from "lucide-react"
 import { useTranslations } from "next-intl"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
-import { listToolboxTools } from "./registry"
+import { getToolboxTool, listToolboxTools } from "./registry"
 import { matchesToolboxQuery } from "./search"
-import { TOOLBOX_CATEGORIES, type ToolboxToolId } from "./types"
+import {
+  TOOLBOX_CATEGORIES,
+  type ToolboxCategory,
+  type ToolboxToolId,
+} from "./types"
 import { useToolboxStore } from "./toolbox-store"
+
+type CatalogSectionId = "favorites" | "recent" | ToolboxCategory
 
 export function ToolboxCatalog({
   query,
@@ -23,6 +35,10 @@ export function ToolboxCatalog({
   const favorites = useToolboxStore((s) => s.favorites)
   const recent = useToolboxStore((s) => s.recent)
   const toggleFavorite = useToolboxStore((s) => s.toggleFavorite)
+  const [openSections, setOpenSections] = useState<Set<CatalogSectionId>>(
+    () => new Set()
+  )
+  const [syncedToolId, setSyncedToolId] = useState(selectedToolId)
 
   const visible = listToolboxTools().filter((tool) =>
     matchesToolboxQuery(
@@ -37,6 +53,32 @@ export function ToolboxCatalog({
     )
   )
   const visibleIds = new Set(visible.map((tool) => tool.id))
+  const searching = query.trim().length > 0
+  const selectedCategory = selectedToolId
+    ? getToolboxTool(selectedToolId)?.category
+    : undefined
+
+  if (selectedToolId !== syncedToolId) {
+    setSyncedToolId(selectedToolId)
+    if (selectedCategory && !openSections.has(selectedCategory)) {
+      const next = new Set(openSections)
+      next.add(selectedCategory)
+      setOpenSections(next)
+    }
+  }
+
+  function sectionOpen(id: CatalogSectionId) {
+    return searching || openSections.has(id)
+  }
+
+  function setSectionOpen(id: CatalogSectionId, open: boolean) {
+    setOpenSections((prev) => {
+      const next = new Set(prev)
+      if (open) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
 
   function row(id: ToolboxToolId) {
     const active = selectedToolId === id
@@ -85,33 +127,37 @@ export function ToolboxCatalog({
         />
       </div>
       <ScrollArea className="min-h-0 flex-1" y="scroll">
-        <div className="flex flex-col gap-3 px-2 pb-3">
+        <div className="flex flex-col gap-1 px-2 pb-3">
           {favoriteRows.length > 0 ? (
-            <section>
-              <h2 className="px-2 pb-1 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
-                {t("favorites")}
-              </h2>
+            <CatalogAccordion
+              title={t("favorites")}
+              open={sectionOpen("favorites")}
+              onOpenChange={(open) => setSectionOpen("favorites", open)}
+            >
               {favoriteRows.map(row)}
-            </section>
+            </CatalogAccordion>
           ) : null}
           {recentRows.length > 0 ? (
-            <section>
-              <h2 className="px-2 pb-1 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
-                {t("recent")}
-              </h2>
+            <CatalogAccordion
+              title={t("recent")}
+              open={sectionOpen("recent")}
+              onOpenChange={(open) => setSectionOpen("recent", open)}
+            >
               {recentRows.map(row)}
-            </section>
+            </CatalogAccordion>
           ) : null}
           {TOOLBOX_CATEGORIES.map((category) => {
             const tools = visible.filter((tool) => tool.category === category)
             if (tools.length === 0) return null
             return (
-              <section key={category}>
-                <h2 className="px-2 pb-1 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">
-                  {t(`categories.${category}`)}
-                </h2>
+              <CatalogAccordion
+                key={category}
+                title={t(`categories.${category}`)}
+                open={sectionOpen(category)}
+                onOpenChange={(open) => setSectionOpen(category, open)}
+              >
                 {tools.map((tool) => row(tool.id))}
-              </section>
+              </CatalogAccordion>
             )
           })}
           {visible.length === 0 ? (
@@ -122,5 +168,27 @@ export function ToolboxCatalog({
         </div>
       </ScrollArea>
     </div>
+  )
+}
+
+function CatalogAccordion({
+  title,
+  open,
+  onOpenChange,
+  children,
+}: {
+  title: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  children: ReactNode
+}) {
+  return (
+    <Collapsible open={open} onOpenChange={onOpenChange}>
+      <CollapsibleTrigger className="flex w-full items-center gap-1 rounded-lg px-2 py-1.5 text-left text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground">
+        <ChevronRight className="size-3.5 shrink-0 transition-transform [[data-state=open]>&]:rotate-90" />
+        <span className="truncate">{title}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>{children}</CollapsibleContent>
+    </Collapsible>
   )
 }

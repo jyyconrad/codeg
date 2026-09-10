@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { estimatePasswordStrength } from "./password-strength"
+import { estimatePasswordStrength } from "./password-strength.core"
 
 describe("password strength", () => {
   it("counts length, classes, and entropy", () => {

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
+import { ToolboxSelect } from "@/components/toolbox/toolbox-controls"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Input } from "@/components/ui/input"
@@ -9,7 +10,7 @@ import {
   computeStitchLayout,
   defaultGridColumns,
   type StitchMode,
-} from "./image-stitch"
+} from "./image-stitch.core"
 import { ImageResultPreview } from "./image-preview"
 import { useObjectUrl } from "./use-object-url"
 import {
@@ -26,7 +27,6 @@ import {
   makeSampleImageFile,
   mimeForFormat,
   TOOL_LABEL_CLASS,
-  TOOL_SELECT_CLASS,
   triggerBlobDownload,
   withExtension,
   type ExportFormat,
@@ -202,18 +202,19 @@ export default function ImageStitchTool() {
             {t("params")}
           </p>
           <div className="flex flex-wrap items-end gap-3">
-            <label className={TOOL_LABEL_CLASS}>
+            <div className={TOOL_LABEL_CLASS}>
               Layout
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={mode}
-                onChange={(event) => setMode(event.target.value as StitchMode)}
-              >
-                <option value="horizontal">horizontal</option>
-                <option value="vertical">vertical</option>
-                <option value="grid">grid</option>
-              </select>
-            </label>
+                onChange={(value) => setMode(value as StitchMode)}
+                options={[
+                  { value: "horizontal", label: "horizontal" },
+                  { value: "vertical", label: "vertical" },
+                  { value: "grid", label: "grid" },
+                ]}
+                className="w-full"
+              />
+            </div>
             <label className={TOOL_LABEL_CLASS}>
               Gap
               <Input
@@ -249,22 +250,18 @@ export default function ImageStitchTool() {
                 onChange={(event) => setBackground(event.target.value)}
               />
             </label>
-            <label className={TOOL_LABEL_CLASS}>
+            <div className={TOOL_LABEL_CLASS}>
               JPEG / WebP / PNG
-              <select
-                className={TOOL_SELECT_CLASS}
+              <ToolboxSelect
                 value={format}
-                onChange={(event) =>
-                  setFormat(event.target.value as ExportFormat)
-                }
-              >
-                {EXPORT_FORMATS.map((item) => (
-                  <option key={item} value={item}>
-                    {item.toUpperCase()}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={(value) => setFormat(value as ExportFormat)}
+                options={EXPORT_FORMATS.map((item) => ({
+                  value: item,
+                  label: item.toUpperCase(),
+                }))}
+                className="w-full"
+              />
+            </div>
           </div>
         </div>
       }

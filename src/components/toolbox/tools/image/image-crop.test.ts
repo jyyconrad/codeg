@@ -9,7 +9,7 @@ import {
   mapSourceRectToDisplay,
   normalizeRect,
   roundRect,
-} from "./image-crop"
+} from "./image-crop.core"
 
 describe("crop geometry", () => {
   it("maps a display selection onto source pixels", () => {

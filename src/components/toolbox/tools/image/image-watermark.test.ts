@@ -4,7 +4,7 @@ import {
   clampOpacity,
   coverDiagonal,
   iterTileOrigins,
-} from "./image-watermark"
+} from "./image-watermark.core"
 
 describe("watermark tiling", () => {
   it("steps by stamp size plus spacing", () => {

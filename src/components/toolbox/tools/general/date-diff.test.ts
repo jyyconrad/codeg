@@ -7,7 +7,7 @@ import {
   parseDateDiffInput,
   parseToolDate,
   toDateTimeLocalValue,
-} from "./date-diff"
+} from "./date-diff.core"
 
 describe("date-diff", () => {
   it("counts calendar days and optional inclusive endpoints", () => {

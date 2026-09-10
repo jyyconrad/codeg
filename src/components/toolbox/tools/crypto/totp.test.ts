@@ -1,7 +1,7 @@
 import "./webcrypto-test"
 import { describe, expect, it } from "vitest"
 import { encodeUtf8 } from "./encoding"
-import { decodeBase32, generateTotp, type TotpHmacFn } from "./totp"
+import { decodeBase32, generateTotp, type TotpHmacFn } from "./totp.core"
 
 describe("totp", () => {
   it("computes a code from a stub HMAC (RFC 4226 truncation)", async () => {

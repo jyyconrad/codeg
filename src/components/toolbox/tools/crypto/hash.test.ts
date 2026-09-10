@@ -1,7 +1,7 @@
 import "./webcrypto-test"
 import { describe, expect, it } from "vitest"
 import { encodeUtf8 } from "./encoding"
-import { hashBytes } from "./hash"
+import { hashBytes } from "./hash.core"
 
 describe("hash", () => {
   it("matches the SHA-256 vector for abc", async () => {

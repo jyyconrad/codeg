@@ -16,6 +16,7 @@ import {
   toolboxRustAvailable,
   type ToolboxProgress,
 } from "@/lib/toolbox-api"
+import { ToolboxCheckbox } from "@/components/toolbox/toolbox-controls"
 import { ParamField, ParamPanel, ParamSelect, Warn } from "./crypto-fields"
 import { type ByteEncoding, errorMessage } from "./encoding"
 import type { PaddingMode } from "./padding"
@@ -307,14 +308,11 @@ export default function SymmetricCipherTool() {
               />
             </ParamField>
             {mode !== "ecb" ? (
-              <label className="flex items-center gap-2 pb-1 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  checked={prependIv}
-                  onChange={(event) => setPrependIv(event.target.checked)}
-                />
-                Prepend IV to ciphertext
-              </label>
+              <ToolboxCheckbox
+                label="Prepend IV to ciphertext"
+                checked={prependIv}
+                onChange={setPrependIv}
+              />
             ) : null}
           </ParamPanel>
           <div className="flex flex-wrap items-end gap-3">

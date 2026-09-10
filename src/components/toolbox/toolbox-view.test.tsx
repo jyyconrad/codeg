@@ -26,13 +26,32 @@ describe("ToolboxView", () => {
     })
   })
 
-  it("lists v1 categories and filters by alias", async () => {
+  it("lists v1 categories as collapsed accordion sections", async () => {
     const user = userEvent.setup()
     renderView()
-    expect(screen.getByText("Encrypt / Decrypt")).toBeTruthy()
+    expect(
+      screen.getByRole("button", { name: "Encrypt / Decrypt" })
+    ).toBeTruthy()
+    expect(
+      screen.queryByRole("button", { name: "AES / SM4 encrypt" })
+    ).toBeNull()
+
+    await user.click(screen.getByRole("button", { name: "Encrypt / Decrypt" }))
     expect(
       screen.getByRole("button", { name: "AES / SM4 encrypt" })
     ).toBeTruthy()
+
+    await user.click(screen.getByRole("button", { name: "Encrypt / Decrypt" }))
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: "AES / SM4 encrypt" })
+      ).toBeNull()
+    })
+  })
+
+  it("filters by alias and expands matching sections", async () => {
+    const user = userEvent.setup()
+    renderView()
 
     await user.type(screen.getByLabelText("Search tools"), "md5加密")
     expect(screen.getByRole("button", { name: "Hash & checksum" })).toBeTruthy()
@@ -44,11 +63,13 @@ describe("ToolboxView", () => {
   it("opens a tool from the catalog", async () => {
     const user = userEvent.setup()
     renderView()
+    await user.click(screen.getByRole("button", { name: "Encode / Decode" }))
     await user.click(
       screen.getByRole("button", { name: "Base64 encode / decode" })
     )
     await waitFor(() => {
       expect(screen.getByText("This is encoding, not encryption.")).toBeTruthy()
     })
+    expect(document.querySelectorAll(".h-\\[300px\\]").length).toBe(2)
   })
 })

@@ -5,7 +5,7 @@ import {
   formatUnitNumber,
   parseUnitInput,
   resolveUnitAlias,
-} from "./unit-convert"
+} from "./unit-convert.core"
 
 describe("unit convert", () => {
   it("converts via a canonical unit", () => {

@@ -88,11 +88,11 @@ function aesCbcEcb(
 ): Uint8Array {
   const keyWA = bytesToWordArray(key)
   const dataWA = bytesToWordArray(data)
-  const cfg: CryptoJS.CipherOption = {
+  const cfg = {
     mode: mode === "cbc" ? CryptoJS.mode.CBC : CryptoJS.mode.ECB,
     padding: CryptoJS.pad.NoPadding,
+    ...(mode === "cbc" ? { iv: bytesToWordArray(iv) } : {}),
   }
-  if (mode === "cbc") cfg.iv = bytesToWordArray(iv)
   if (direction === "encrypt") {
     const encrypted = CryptoJS.AES.encrypt(dataWA, keyWA, cfg)
     return wordArrayToBytes(encrypted.ciphertext)
