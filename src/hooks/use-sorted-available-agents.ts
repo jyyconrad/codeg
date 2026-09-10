@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo } from "react"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { filterAvailableAgents } from "@/lib/available-agents"
 import { AGENT_DISPLAY_ORDER, type AgentType } from "@/lib/types"
 
 const STORAGE_KEY = "workspace:sorted-available-agents"
@@ -44,10 +45,10 @@ const initialSeed: AgentType[] = readSeed()
 
 export interface UseSortedAvailableAgentsResult {
   /**
-   * Enabled + available agent types in the user-defined sort order. While
-   * the first `acpListAgents()` call is in flight, this falls back to the
-   * last persisted snapshot from localStorage. Empty array means no usable
-   * agents are known yet.
+   * Enabled, platform-available, installed agent types in the user-defined
+   * sort order. While the first `acpListAgents()` call is in flight, this
+   * falls back to the last persisted snapshot from localStorage. Empty array
+   * means no usable agents are known yet.
    */
   sortedTypes: AgentType[]
   /** True once the first successful reload has completed this session. */
@@ -56,9 +57,9 @@ export interface UseSortedAvailableAgentsResult {
 }
 
 /**
- * Thin wrapper over `useAcpAgents()` that applies the
- * `enabled && available` filter, projects to agent types, and persists
- * the result so cold starts have a synchronous (if possibly stale) seed.
+ * Thin wrapper over `useAcpAgents()` that applies {@link filterAvailableAgents},
+ * projects to agent types, and persists the result so cold starts have a
+ * synchronous (if possibly stale) seed.
  *
  * Used by both TabProvider (to resolve default agents for new draft
  * tabs) and SidebarConversationList (to populate the per-folder "set
@@ -69,8 +70,7 @@ export function useSortedAvailableAgents(): UseSortedAvailableAgentsResult {
   const { agents, fresh, refresh } = useAcpAgents()
 
   const liveSortedTypes = useMemo(
-    () =>
-      agents.filter((a) => a.enabled && a.available).map((a) => a.agent_type),
+    () => filterAvailableAgents(agents).map((a) => a.agent_type),
     [agents]
   )
 

@@ -12,6 +12,8 @@ import {
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { filterOptionsByAvailableAgents } from "@/lib/available-agents"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { BrowserLink } from "@/components/ui/browser-link"
@@ -298,11 +300,10 @@ function appsToDraft(apps: McpAppType[]): Record<McpAppType, boolean> {
 }
 
 function selectedAppsFromDraft(
-  draft: Record<McpAppType, boolean>
+  draft: Record<McpAppType, boolean>,
+  options: { value: McpAppType }[] = APP_OPTIONS
 ): McpAppType[] {
-  return APP_OPTIONS.filter((item) => draft[item.value]).map(
-    (item) => item.value
-  )
+  return options.filter((item) => draft[item.value]).map((item) => item.value)
 }
 
 function detectEnvOnRemote(text: string): boolean {
@@ -354,6 +355,11 @@ export function McpSettings() {
   const t = useTranslations("McpSettings")
   const ime = useImeGuard()
   const mcpT = useMemo(() => t as unknown as McpTranslator, [t])
+  const { agents: acpAgents } = useAcpAgents()
+  const visibleAppOptions = useMemo(
+    () => filterOptionsByAvailableAgents(APP_OPTIONS, acpAgents),
+    [acpAgents]
+  )
   const [loading, setLoading] = useState(true)
   const [loadingError, setLoadingError] = useState<string | null>(null)
 
@@ -642,19 +648,18 @@ export function McpSettings() {
       return
     }
 
-    // Apps the user can see and toggle in the UI.
-    const visibleApps = selectedAppsFromDraft(localAppsDraft)
-    // Carry forward assignments for agents not offered in the UI (OpenClaw,
-    // which no longer accepts MCP over the ACP wire, and pi, whose config
-    // belongs to a third-party extension). We never add these, but must not
-    // silently strip such an assignment from a server the user is editing —
-    // the backend save means "these agents and no others", so dropping one
-    // here DELETES that agent's on-disk entry, and it could also wedge an
-    // OpenClaw- or pi-only server into an unsavable "no apps" state.
-    const hiddenLegacyApps = selectedLocal.apps.filter(
-      (app) => !APP_OPTIONS.some((option) => option.value === app)
+    // Apps the user can see and toggle in the UI (available agents only).
+    const visibleApps = selectedAppsFromDraft(localAppsDraft, visibleAppOptions)
+    // Carry forward assignments for agents not offered in the UI: OpenClaw
+    // and pi (never assignable — see APP_OPTIONS notes), plus any catalog
+    // agent that is currently disabled / uninstalled. We never add these,
+    // but must not silently strip such an assignment from a server the user
+    // is editing — the backend save means "these agents and no others", so
+    // dropping one here DELETES that agent's on-disk entry.
+    const hiddenApps = selectedLocal.apps.filter(
+      (app) => !visibleAppOptions.some((option) => option.value === app)
     )
-    const apps = normalizeApps([...visibleApps, ...hiddenLegacyApps])
+    const apps = normalizeApps([...visibleApps, ...hiddenApps])
     if (apps.length === 0) {
       toast.error(t("toasts.selectAtLeastOneApp"))
       return
@@ -691,6 +696,7 @@ export function McpSettings() {
     refreshLocalServers,
     selectedLocal,
     t,
+    visibleAppOptions,
   ])
 
   const handleCreateDraft = useCallback(() => {
@@ -698,8 +704,8 @@ export function McpSettings() {
     setSelection({ kind: "draft" })
     setDraftServerId("")
     setDraftSpecText(DEFAULT_DRAFT_SPEC)
-    setDraftAppsDraft(appsToDraft(APP_OPTIONS.map((item) => item.value)))
-  }, [])
+    setDraftAppsDraft(appsToDraft(visibleAppOptions.map((item) => item.value)))
+  }, [visibleAppOptions])
 
   const saveDraft = useCallback(async () => {
     const trimmedId = draftServerId.trim()
@@ -726,7 +732,9 @@ export function McpSettings() {
       return
     }
 
-    const apps = normalizeApps(selectedAppsFromDraft(draftAppsDraft))
+    const apps = normalizeApps(
+      selectedAppsFromDraft(draftAppsDraft, visibleAppOptions)
+    )
     if (apps.length === 0) {
       toast.error(t("toasts.selectAtLeastOneApp"))
       return
@@ -764,6 +772,7 @@ export function McpSettings() {
     mcpT,
     refreshLocalServers,
     t,
+    visibleAppOptions,
   ])
 
   const switchInstallOption = useCallback(
@@ -785,7 +794,9 @@ export function McpSettings() {
 
   const openInstallDialog = useCallback(() => {
     if (!marketDetail) return
-    setInstallAppsDraft(appsToDraft(APP_OPTIONS.map((item) => item.value)))
+    setInstallAppsDraft(
+      appsToDraft(visibleAppOptions.map((item) => item.value))
+    )
     const option =
       marketDetail.install_options.find(
         (item) => item.id === selectedInstallOptionId
@@ -795,7 +806,7 @@ export function McpSettings() {
     setSelectedInstallOptionId(option?.id ?? "")
     setInstallParamDraft(defaultParamDraft(option))
     setInstallDialogOpen(true)
-  }, [marketDetail, selectedInstallOptionId])
+  }, [marketDetail, selectedInstallOptionId, visibleAppOptions])
 
   const installMarketServer = useCallback(async () => {
     if (!marketDetail) return
@@ -831,7 +842,9 @@ export function McpSettings() {
       }
     }
 
-    const apps = normalizeApps(selectedAppsFromDraft(installAppsDraft))
+    const apps = normalizeApps(
+      selectedAppsFromDraft(installAppsDraft, visibleAppOptions)
+    )
     if (apps.length === 0) {
       toast.error(t("toasts.selectAtLeastOneApp"))
       return
@@ -877,6 +890,7 @@ export function McpSettings() {
     refreshLocalServers,
     selectedInstallOption,
     t,
+    visibleAppOptions,
   ])
 
   if (loading) {
@@ -1035,7 +1049,7 @@ export function McpSettings() {
               <div className="text-xs text-muted-foreground">
                 {t("installDialog.targetApps")}
               </div>
-              {APP_OPTIONS.map((app) => (
+              {visibleAppOptions.map((app) => (
                 <label
                   key={app.value}
                   className="inline-flex w-full items-center gap-2 rounded-md border px-2 py-1.5"
@@ -1422,7 +1436,7 @@ export function McpSettings() {
                   {t("local.enabledApps")}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {APP_OPTIONS.map((app) => (
+                  {visibleAppOptions.map((app) => (
                     <label
                       key={app.value}
                       className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
@@ -1540,7 +1554,7 @@ export function McpSettings() {
                   {t("local.enabledApps")}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {APP_OPTIONS.map((app) => (
+                  {visibleAppOptions.map((app) => (
                     <label
                       key={app.value}
                       className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"

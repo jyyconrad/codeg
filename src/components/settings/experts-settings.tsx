@@ -16,6 +16,7 @@ import {
   expertsReadContent,
 } from "@/lib/api"
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
+import { isAvailableAgent } from "@/lib/available-agents"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type { AcpAgentInfo, ExpertLinkState, ExpertListItem } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
@@ -54,11 +55,15 @@ export function ExpertsBody({
         acpListAgents(),
       ])
       setExperts(expertList)
-      // A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by the
-      // default-dir skill store, so it doesn't get a column here.
+      // Columns are available (enabled+installed) agents that have a skill
+      // store. A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by
+      // the default-dir skill store, so it doesn't get a column here.
       setAgents(
         agentList.filter(
-          (agent) => agent.skills_capable && !piUsesCustomAgentDir(agent)
+          (agent) =>
+            isAvailableAgent(agent) &&
+            agent.skills_capable &&
+            !piUsesCustomAgentDir(agent)
         )
       )
       setReloadKey((k) => k + 1)

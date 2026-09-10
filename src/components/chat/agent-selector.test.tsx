@@ -33,7 +33,7 @@ function agent(
     custom_source: null,
     enabled: true,
     sort_order: 0,
-    installed_version: null,
+    installed_version: "1.0.0",
     host_tools_agent_mode: false,
     env: {},
     config_json: null,
@@ -149,6 +149,60 @@ describe("AgentSelector", () => {
       screen.getByRole("button", { name: "Open Agents settings" })
     )
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it("hides disabled, platform-unavailable, and uninstalled agents", () => {
+    mockUseAcpAgents.mockReturnValue({
+      agents: [
+        agent("claude_code", { enabled: false }),
+        agent("codex"),
+        agent("gemini", { available: false }),
+        agent("open_code", { installed_version: null }),
+        agent("grok"),
+      ],
+      fresh: true,
+      refresh: async () => {},
+    })
+    const { container } = renderWithIntl(
+      <AgentSelector defaultAgentType="codex" onSelect={() => {}} />
+    )
+    const labels = pills(container).map((el) => el.textContent ?? "")
+    expect(labels.some((text) => text.includes(getAgentLabel("codex")))).toBe(
+      true
+    )
+    expect(labels.some((text) => text.includes(getAgentLabel("grok")))).toBe(
+      true
+    )
+    expect(
+      labels.some((text) => text.includes(getAgentLabel("claude_code")))
+    ).toBe(false)
+    expect(labels.some((text) => text.includes(getAgentLabel("gemini")))).toBe(
+      false
+    )
+    expect(
+      labels.some((text) => text.includes(getAgentLabel("open_code")))
+    ).toBe(false)
+  })
+
+  it("keeps the selected agent visible even when it is not installed", () => {
+    mockUseAcpAgents.mockReturnValue({
+      agents: [
+        agent("claude_code", { installed_version: null }),
+        agent("codex"),
+      ],
+      fresh: true,
+      refresh: async () => {},
+    })
+    const { container } = renderWithIntl(
+      <AgentSelector defaultAgentType="claude_code" onSelect={() => {}} />
+    )
+    const labels = pills(container).map((el) => el.textContent ?? "")
+    expect(
+      labels.some((text) => text.includes(getAgentLabel("claude_code")))
+    ).toBe(true)
+    expect(labels.some((text) => text.includes(getAgentLabel("codex")))).toBe(
+      true
+    )
   })
 
   it("clicking an available agent invokes onSelect with its agent_type", () => {
