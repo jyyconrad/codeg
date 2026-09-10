@@ -179,6 +179,62 @@ impl RichMessage {
         }
         text
     }
+
+    /// Assemble a CommonMark document: `## title`, body, then `**field**` blocks.
+    /// Channel backends that can render markdown send this; others send it as text.
+    pub fn to_markdown(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(title) = self
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            parts.push(format!("## {title}"));
+        }
+        if !self.body.is_empty() {
+            parts.push(self.body.clone());
+        }
+        for (key, value) in &self.fields {
+            parts.push(format!("**{key}**\n{value}"));
+        }
+        parts.join("\n\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_markdown_joins_title_body_and_fields() {
+        let msg = RichMessage {
+            title: Some("完成 Filter UI Grok".into()),
+            body: "done with **bold**".into(),
+            fields: vec![("2 files changed".into(), "src/a.rs\nsrc/b.rs".into())],
+            level: MessageLevel::Info,
+        };
+        assert_eq!(
+            msg.to_markdown(),
+            "## 完成 Filter UI Grok\n\ndone with **bold**\n\n**2 files changed**\nsrc/a.rs\nsrc/b.rs"
+        );
+    }
+
+    #[test]
+    fn to_markdown_omits_empty_sections() {
+        assert_eq!(RichMessage::info("hello").to_markdown(), "hello");
+        assert_eq!(
+            RichMessage::info("").with_title("Start").to_markdown(),
+            "## Start"
+        );
+        let fields_only = RichMessage {
+            title: None,
+            body: String::new(),
+            fields: vec![("Op".into(), "ls".into())],
+            level: MessageLevel::Warning,
+        };
+        assert_eq!(fields_only.to_markdown(), "**Op**\nls");
+    }
 }
 
 // ── Phase 2 forward-compatible types ──

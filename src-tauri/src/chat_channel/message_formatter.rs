@@ -8,7 +8,7 @@ use crate::models::AgentType;
 
 const MAX_BODY_CHARS: usize = 2000;
 const MAX_FILE_PATHS: usize = 6;
-const MAX_SESSION_TITLE_CHARS: usize = 10;
+const MAX_SESSION_TITLE_CHARS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEventKind {
@@ -31,10 +31,6 @@ pub struct SessionEventCard<'a> {
 
 fn nonempty_trimmed(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|s| !s.is_empty())
-}
-
-fn take_chars(s: &str, max: usize) -> String {
-    s.chars().take(max).collect()
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -99,7 +95,7 @@ fn format_card_title(card: &SessionEventCard<'_>, lang: Lang) -> String {
     };
     let mut parts = vec![status.to_string()];
     if let Some(session) = nonempty_trimmed(card.conversation_title) {
-        parts.push(take_chars(session, MAX_SESSION_TITLE_CHARS));
+        parts.push(truncate_chars(session, MAX_SESSION_TITLE_CHARS));
     }
     let agent = agent_card_name(card.agent_type);
     if !agent.is_empty() {
@@ -108,7 +104,7 @@ fn format_card_title(card: &SessionEventCard<'_>, lang: Lang) -> String {
     parts.join(" ")
 }
 
-/// Events-tab session card: `{status} {session10} {agent}`, last-message body,
+/// Events-tab session card: `{status} {session50} {agent}`, last-message body,
 /// then `{n} files changed` listing at most six paths.
 pub fn format_session_card(card: &SessionEventCard<'_>, lang: Lang) -> RichMessage {
     let last = nonempty_trimmed(card.last_message).map(str::to_string);
@@ -386,14 +382,17 @@ mod user_prompt_sent_tests {
     }
 
     #[test]
-    fn title_is_status_session10_agent() {
+    fn title_is_status_session50_agent() {
         let msg = format_user_prompt_sent(
             "你好",
             Some("User Greeting and Session Start"),
             Some("Grok"),
             Lang::ZhCn,
         );
-        assert_eq!(msg.title.as_deref(), Some("开始任务 User Greet Grok"));
+        assert_eq!(
+            msg.title.as_deref(),
+            Some("开始任务 User Greeting and Session Start Grok")
+        );
         assert_eq!(msg.body, "你好");
         assert!(msg.fields.is_empty());
     }
@@ -488,7 +487,7 @@ mod session_event_card_tests {
     }
 
     #[test]
-    fn completed_title_is_status_session10_agent() {
+    fn completed_title_is_status_session50_agent() {
         let msg = format_session_card(
             &complete(
                 "Grok",
@@ -499,9 +498,28 @@ mod session_event_card_tests {
             ),
             Lang::ZhCn,
         );
-        assert_eq!(msg.title.as_deref(), Some("完成 User Greet Grok"));
+        assert_eq!(
+            msg.title.as_deref(),
+            Some("完成 User Greeting and Session Start Grok")
+        );
         assert_eq!(msg.body, "Hi — ready to help.");
         assert!(msg.fields.is_empty());
+    }
+
+    #[test]
+    fn session_title_truncates_at_50_chars_with_ellipsis() {
+        let title: String = "x".repeat(51);
+        let msg = format_turn_complete("Grok", Some(&title), Some("done"), &[], None, Lang::ZhCn);
+        let expected = format!("完成 {}… Grok", "x".repeat(50));
+        assert_eq!(msg.title.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn session_title_of_exactly_50_chars_is_not_truncated() {
+        let title: String = "y".repeat(50);
+        let msg = format_turn_complete("Grok", Some(&title), Some("done"), &[], None, Lang::En);
+        let expected = format!("Done {title} Grok");
+        assert_eq!(msg.title.as_deref(), Some(expected.as_str()));
     }
 
     #[test]

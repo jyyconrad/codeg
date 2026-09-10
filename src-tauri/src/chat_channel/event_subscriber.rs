@@ -1128,8 +1128,8 @@ mod permission_push_tests {
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 1, "got {msgs:?}");
         assert!(
-            msgs[0].contains("完成 User Greet Grok"),
-            "title must be status + session10 + agent, got {:?}",
+            msgs[0].contains("完成 User Greeting and Session Start Grok"),
+            "title must be status + session50 + agent, got {:?}",
             msgs[0]
         );
         assert!(
@@ -1199,8 +1199,8 @@ mod permission_push_tests {
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 1, "got {msgs:?}");
         assert!(
-            msgs[0].contains("开始任务 User Greet Grok"),
-            "title must be status + session10 + agent, got {:?}",
+            msgs[0].contains("开始任务 User Greeting and Session Start Grok"),
+            "title must be status + session50 + agent, got {:?}",
             msgs[0]
         );
         assert!(

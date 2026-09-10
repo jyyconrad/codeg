@@ -754,8 +754,7 @@ impl ChatChannelBackend for WeixinBackend {
         &self,
         message: &RichMessage,
     ) -> Result<SentMessageId, ChatChannelError> {
-        let plain_text = message.to_plain_text();
-        self.send_text(&plain_text).await
+        self.send_text(&message.to_markdown()).await
     }
 
     async fn test_connection(&self) -> Result<(), ChatChannelError> {

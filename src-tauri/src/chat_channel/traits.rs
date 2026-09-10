@@ -24,7 +24,7 @@ pub trait ChatChannelBackend: Send + Sync + 'static {
     /// Send a plain text message.
     async fn send_message(&self, text: &str) -> Result<SentMessageId, ChatChannelError>;
 
-    /// Send a rich/structured message (Telegram Markdown / Lark Card).
+    /// Send a rich/structured message (Telegram HTML / Lark post markdown).
     async fn send_rich_message(
         &self,
         message: &RichMessage,
