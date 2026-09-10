@@ -505,7 +505,10 @@ async fn deepseek_model_catalog_is_readable_and_shaped_for_the_panel() {
     assert!(body["exists"].is_boolean(), "got {body}");
     assert!(body["configured"].is_boolean(), "got {body}");
     assert!(body["models"].is_array(), "got {body}");
-    assert!(body["error"].is_string() || body["error"].is_null(), "got {body}");
+    assert!(
+        body["error"].is_string() || body["error"].is_null(),
+        "got {body}"
+    );
 }
 
 #[tokio::test]

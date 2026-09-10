@@ -141,10 +141,7 @@ pub fn default_models() -> Vec<DeepSeekCatalogModel> {
             description: None,
             context_window: Some(DEFAULT_CONTEXT_WINDOW),
             max_tokens: None,
-            input_modalities: Some(vec![
-                MODALITY_TEXT.to_string(),
-                MODALITY_IMAGE.to_string(),
-            ]),
+            input_modalities: Some(vec![MODALITY_TEXT.to_string(), MODALITY_IMAGE.to_string()]),
             image_pixel_budget: Some(DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
             image_max_bytes: Some(DEFAULT_REQUEST_IMAGE_MAX_BYTES),
             image_detail: None,
@@ -438,9 +435,11 @@ fn update_deepseek_model_catalog_at(
     models: Option<Vec<DeepSeekCatalogModel>>,
 ) -> Result<(), AcpError> {
     let validated = match models {
-        Some(models) if !models.is_empty() => Some(validate_models(&models).map_err(|message| {
-            AcpError::protocol(format!("invalid DeepSeek model list: {message}"))
-        })?),
+        Some(models) if !models.is_empty() => {
+            Some(validate_models(&models).map_err(|message| {
+                AcpError::protocol(format!("invalid DeepSeek model list: {message}"))
+            })?)
+        }
         _ => None,
     };
 
@@ -709,7 +708,10 @@ fn split_lines(raw: &str) -> Vec<DocLine> {
     for line in raw.split_inclusive('\n') {
         let range = offset..offset + line.len();
         offset += line.len();
-        let text = line.trim_end_matches('\n').trim_end_matches('\r').to_string();
+        let text = line
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_string();
         let indent = text.find(|c: char| !c.is_whitespace());
         let comment = indent.is_some_and(|i| text.as_bytes()[i] == b'#');
         out.push(DocLine {
@@ -787,7 +789,11 @@ fn patch_settings_models(
     existing: &str,
     models: Option<&[DeepSeekCatalogModel]>,
 ) -> Result<String, String> {
-    let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+    let newline = if existing.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
 
     // A document codeg cannot parse is one it must not rewrite: the splice
     // below reasons about indentation, and the verification at the end needs a
@@ -927,9 +933,7 @@ fn splice_models(
         // a trailing comment or blank line keeps introducing what it introduced.
         None => {
             let mut end = body_end;
-            while end > section + 1
-                && (lines[end - 1].indent.is_none() || lines[end - 1].comment)
-            {
+            while end > section + 1 && (lines[end - 1].indent.is_none() || lines[end - 1].comment) {
                 end -= 1;
             }
             (end, end)
@@ -969,15 +973,16 @@ fn splice_models(
             // written above `models:` goes with the section it annotated. That
             // is the one thing this splice deletes on purpose; leaving the
             // header behind to keep the note would leave the rejected shape.
-            let section_is_empty = lines[section + 1..body_end]
-                .iter()
-                .enumerate()
-                .all(|(offset, line)| {
-                    let index = section + 1 + offset;
-                    (index >= replace_from && index < replace_to)
-                        || line.indent.is_none()
-                        || line.comment
-                });
+            let section_is_empty =
+                lines[section + 1..body_end]
+                    .iter()
+                    .enumerate()
+                    .all(|(offset, line)| {
+                        let index = section + 1 + offset;
+                        (index >= replace_from && index < replace_to)
+                            || line.indent.is_none()
+                            || line.comment
+                    });
             if section_is_empty {
                 let header_start = lines[section].range.start;
                 let mut out = String::with_capacity(existing.len());
@@ -1010,7 +1015,8 @@ fn verify_patch(
     let after: serde_yaml::Value = if patched.trim().is_empty() {
         serde_yaml::Value::Null
     } else {
-        serde_yaml::from_str(patched).map_err(|err| unsafe_edit(&format!("re-parse failed: {err}")))?
+        serde_yaml::from_str(patched)
+            .map_err(|err| unsafe_edit(&format!("re-parse failed: {err}")))?
     };
 
     let section_key = serde_yaml::Value::String(SECTION_KEY.to_string());
@@ -1027,7 +1033,9 @@ fn verify_patch(
             let expected = serde_yaml::to_value(models)
                 .map_err(|err| unsafe_edit(&format!("serialize failed: {err}")))?;
             if stored != Some(&expected) {
-                return Err(unsafe_edit("the model list did not land where it was aimed"));
+                return Err(unsafe_edit(
+                    "the model list did not land where it was aimed",
+                ));
             }
         }
         None => {
@@ -1461,7 +1469,9 @@ mod tests {
 
     #[test]
     fn refuses_an_inline_section_or_key_rather_than_guessing() {
-        assert!(patch_settings_models("llm-deepseek: {baseURL: x}\n", Some(&[model("a")])).is_err());
+        assert!(
+            patch_settings_models("llm-deepseek: {baseURL: x}\n", Some(&[model("a")])).is_err()
+        );
         assert!(patch_settings_models(
             "llm-deepseek:\n  models: [{id: old}]\n",
             Some(&[model("a")])
@@ -1507,8 +1517,7 @@ mod tests {
             image_max_bytes: None,
             image_detail: Some("low".into()),
         };
-        let patched =
-            patch_settings_models("", Some(std::slice::from_ref(&entry))).expect("patch");
+        let patched = patch_settings_models("", Some(std::slice::from_ref(&entry))).expect("patch");
         // Absent stays absent — the adapter's schema rejects an explicit null,
         // and "absent" is what selects its own default.
         assert!(!patched.contains("null"));
@@ -1537,7 +1546,10 @@ mod tests {
         );
         let models = models_of(existing);
         assert_eq!(models.len(), 2);
-        assert_eq!(models[1].name.as_deref(), Some("DeepSeek-V4.1-Flash (内测)"));
+        assert_eq!(
+            models[1].name.as_deref(),
+            Some("DeepSeek-V4.1-Flash (内测)")
+        );
         assert!(models[1].accepts_images());
 
         let patched = patch_settings_models(existing, Some(&models)).expect("patch");
