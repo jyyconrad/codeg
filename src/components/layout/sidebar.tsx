@@ -10,6 +10,7 @@ import {
   ListTodo,
   Map as MapIcon,
   Menu,
+  Wrench,
   MessagesSquare,
   SquarePen,
   Zap,
@@ -104,6 +105,7 @@ const NAV_ITEM_ICONS: Record<SidebarNavItemId, LucideIcon> = {
   tasks: ListTodo,
   forge: LayoutTemplate,
   canvas: MapIcon,
+  toolbox: Wrench,
 }
 
 /**
@@ -575,6 +577,17 @@ export function Sidebar() {
             onClick={() => {
               if (isMobile) toggle()
               setRoute("canvas")
+            }}
+          />
+        )}
+        {isNavItemVisible(navItems, "toolbox") && (
+          <SidebarNavButton
+            icon={Wrench}
+            label={t("toolbox")}
+            active={routeId === "toolbox"}
+            onClick={() => {
+              if (isMobile) toggle()
+              setRoute("toolbox")
             }}
           />
         )}

@@ -8,6 +8,7 @@ import {
   LayoutTemplate,
   ListTodo,
   Map as MapIcon,
+  Wrench,
   MonitorCloud,
   PawPrint,
   Rocket,
@@ -232,6 +233,10 @@ export function QuickActionsDropdown() {
           <DropdownMenuItem onSelect={() => setRoute("canvas")}>
             <MapIcon />
             {tSidebar("canvas")}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setRoute("toolbox")}>
+            <Wrench />
+            {tSidebar("toolbox")}
           </DropdownMenuItem>
 
           {desktop && (
