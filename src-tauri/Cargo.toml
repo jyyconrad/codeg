@@ -142,6 +142,20 @@ semver = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "registry", "std"] }
 tracing-appender = "0.2"
+md-5 = "0.10"
+sha1 = "0.10"
+sha3 = "0.10"
+sm3 = "0.4"
+sm4 = "0.5"
+aes = "0.8"
+cbc = "0.1"
+cipher = "0.4"
+digest = "0.10"
+bcrypt = "0.16"
+x509-parser = "0.16"
+rustls-pemfile = "2"
+pbkdf2 = "0.12"
+hmac = "0.12"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-window-state = { version = "2", optional = true }
