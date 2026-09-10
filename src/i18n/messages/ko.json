@@ -6077,6 +6077,16 @@
         "title": "Date interval",
         "description": "Calendar days vs exact duration. Inclusive start/end option.",
         "aliases": "datediff"
+      },
+      "bcrypt": {
+        "title": "bcrypt password hash",
+        "description": "Hash and verify passwords with bcrypt. Cost 4–14. Runs in Rust; password is not stored.",
+        "aliases": "bcrypt password hash"
+      },
+      "cert-pem": {
+        "title": "Certificate / PEM",
+        "description": "Parse a PEM certificate: subject, SAN, validity, SHA-256 fingerprint. No CRL/OCSP.",
+        "aliases": "x509 pem certificate"
       }
     }
   }

@@ -188,6 +188,18 @@ const META: readonly ToolboxToolMeta[] = [
     chainTargets: [],
   },
   {
+    id: "bcrypt",
+    category: "crypto",
+    aliases: ["bcrypt", "口令哈希"],
+    chainTargets: [],
+  },
+  {
+    id: "cert-pem",
+    category: "crypto",
+    aliases: ["x509", "pem", "证书"],
+    chainTargets: [],
+  },
+  {
     id: "image-compress",
     category: "image",
     aliases: ["compress", "图片压缩"],

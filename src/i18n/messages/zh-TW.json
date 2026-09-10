@@ -6077,6 +6077,16 @@
         "title": "日期間隔",
         "description": "自然日差與精確時長；是否包含起迄日。",
         "aliases": "日期間隔"
+      },
+      "bcrypt": {
+        "title": "bcrypt 口令雜湊",
+        "description": "bcrypt 雜湊與校驗；cost 4–14；走 Rust；明文不落盤。",
+        "aliases": "bcrypt 口令雜湊"
+      },
+      "cert-pem": {
+        "title": "憑證 / PEM 檢視",
+        "description": "解析 PEM 憑證：主題、SAN、有效期、SHA-256 指紋；不校 CRL/OCSP。",
+        "aliases": "x509 pem 憑證"
       }
     }
   }

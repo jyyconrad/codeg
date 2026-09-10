@@ -32,6 +32,12 @@ describe("toolbox search", () => {
     expect(matchesToolboxQuery(hash!, labels("Hash"), "md5加密")).toBe(true)
   })
 
+  it("registers v2 bcrypt and cert tools", () => {
+    const ids = listToolboxTools().map((tool) => tool.id)
+    expect(ids).toContain("bcrypt")
+    expect(ids).toContain("cert-pem")
+  })
+
   it("matches 国密 on the symmetric cipher tool", () => {
     const hits = searchToolboxTools("国密", (tool) =>
       labels(tool.id, tool.aliases.join(" "))

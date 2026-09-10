@@ -35,6 +35,8 @@ export const TOOL_LOADERS: Record<ToolboxToolId, () => Promise<ToolModule>> = {
   jwt: () => import("./tools/crypto/jwt"),
   "password-strength": () => import("./tools/crypto/password-strength"),
   totp: () => import("./tools/crypto/totp"),
+  bcrypt: () => import("./tools/crypto/bcrypt"),
+  "cert-pem": () => import("./tools/crypto/cert-pem"),
   "image-compress": () => import("./tools/image/image-compress"),
   "color-convert": () => import("./tools/image/color-convert"),
   "image-crop": () => import("./tools/image/image-crop"),

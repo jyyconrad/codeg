@@ -41,6 +41,8 @@ export const TOOLBOX_TOOL_IDS = [
   "jwt",
   "password-strength",
   "totp",
+  "bcrypt",
+  "cert-pem",
   "image-compress",
   "color-convert",
   "image-crop",
