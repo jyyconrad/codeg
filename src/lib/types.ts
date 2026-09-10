@@ -1,4 +1,4 @@
-/** The fifteen agents codeg ships hand-written support for. */
+/** The sixteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -15,6 +15,7 @@ export type BuiltinAgentType =
   | "deepseek"
   | "qoder"
   | "antigravity"
+  | "codeg_agent"
 
 /**
  * Which agent backs a conversation.
@@ -925,6 +926,7 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "deepseek",
   "qoder",
   "antigravity",
+  "codeg_agent",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -959,12 +961,14 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "deepseek",
   "qoder",
   "antigravity",
+  "codeg_agent",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
   "claude_code",
   "codex",
   "gemini",
+  "codeg_agent",
 ]
 
 /**
@@ -1270,6 +1274,7 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   deepseek: "DeepSeek Harness",
   qoder: "Qoder",
   antigravity: "Google Antigravity",
+  codeg_agent: "Codeg Agent",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1288,6 +1293,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   deepseek: "bg-[#4D6BFE]",
   qoder: "bg-[#6C4CF1]",
   antigravity: "bg-[#1A73E8]",
+  codeg_agent: "bg-[#0F766E]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -3085,6 +3091,17 @@ export interface WorkflowPhase {
   state: string
 }
 
+/** One child agent (node) inside a workflow run. */
+export interface WorkflowAgent {
+  agent_id: string
+  label: string
+  phase?: string | null
+  /** `pending` | `running` | `done` | `failed` | `cancelled`. */
+  state: string
+  tokens_used?: number | null
+  duration_ms?: number | null
+}
+
 /**
  * Canonical live projection of a background workflow. Agent-specific frames
  * (Grok `workflow_updated`, AIR `async_task` with `taskType=workflow`) are
@@ -3097,11 +3114,15 @@ export interface WorkflowRun {
   state: string
   phases: WorkflowPhase[]
   current_phase?: string | null
+  agents: WorkflowAgent[]
   agents_done: number
   agents_running: number
   agents_used: number
+  agent_budget?: number | null
+  agents_remaining?: number | null
   elapsed_ms?: number | null
   last_event?: string | null
+  last_event_detail?: string | null
   can_stop: boolean
 }
 
@@ -3113,11 +3134,15 @@ export interface WorkflowDelta {
   state?: string | null
   phases?: WorkflowPhase[] | null
   current_phase?: string | null
+  agents?: WorkflowAgent[] | null
   agents_done?: number | null
   agents_running?: number | null
   agents_used?: number | null
+  agent_budget?: number | null
+  agents_remaining?: number | null
   elapsed_ms?: number | null
   last_event?: string | null
+  last_event_detail?: string | null
   can_stop?: boolean | null
 }
 
@@ -3902,6 +3927,7 @@ export type McpAppType =
   | "qoder"
   | "antigravity"
   | "pi"
+  | "codeg_agent"
 
 export interface LocalMcpServer {
   id: string

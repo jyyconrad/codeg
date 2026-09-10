@@ -286,6 +286,23 @@ pub struct WorkflowPhase {
     pub state: String,
 }
 
+/// One child agent (node) inside a workflow run. Grok publishes the full list
+/// on each `workflow_updated`; AIR workflows typically have none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowAgent {
+    pub agent_id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// `pending` | `running` | `done` | `failed` | `cancelled`.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
 /// Canonical live projection of a background workflow. Agent-specific wire
 /// frames (Grok `workflow_updated`, AIR `async_task` with `taskType=workflow`)
 /// are adapted into this shape before they hit SessionState / the UI.
@@ -301,6 +318,8 @@ pub struct WorkflowRun {
     pub phases: Vec<WorkflowPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<WorkflowAgent>,
     #[serde(default)]
     pub agents_done: u32,
     #[serde(default)]
@@ -308,9 +327,16 @@ pub struct WorkflowRun {
     #[serde(default)]
     pub agents_used: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_budget: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_remaining: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    /// Wire event kind (`phase_entered`, `workflow_started`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_detail: Option<String>,
     #[serde(default)]
     pub can_stop: bool,
 }
@@ -333,15 +359,23 @@ pub struct WorkflowDelta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_phase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<WorkflowAgent>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents_done: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents_running: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents_used: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_budget: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_remaining: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub can_stop: Option<bool>,
 }
@@ -355,11 +389,15 @@ impl WorkflowDelta {
             state: self.state.clone().unwrap_or_else(|| "running".into()),
             phases: self.phases.clone().unwrap_or_default(),
             current_phase: self.current_phase.clone(),
+            agents: self.agents.clone().unwrap_or_default(),
             agents_done: self.agents_done.unwrap_or(0),
             agents_running: self.agents_running.unwrap_or(0),
             agents_used: self.agents_used.unwrap_or(0),
+            agent_budget: self.agent_budget,
+            agents_remaining: self.agents_remaining,
             elapsed_ms: self.elapsed_ms,
             last_event: self.last_event.clone(),
+            last_event_detail: self.last_event_detail.clone(),
             can_stop: self.can_stop.unwrap_or(false),
         }
     }
@@ -380,6 +418,9 @@ impl WorkflowDelta {
         if let Some(v) = &self.current_phase {
             record.current_phase = Some(v.clone());
         }
+        if let Some(v) = &self.agents {
+            record.agents = v.clone();
+        }
         if let Some(v) = self.agents_done {
             record.agents_done = v;
         }
@@ -389,11 +430,20 @@ impl WorkflowDelta {
         if let Some(v) = self.agents_used {
             record.agents_used = v;
         }
+        if let Some(v) = self.agent_budget {
+            record.agent_budget = Some(v);
+        }
+        if let Some(v) = self.agents_remaining {
+            record.agents_remaining = Some(v);
+        }
         if let Some(v) = self.elapsed_ms {
             record.elapsed_ms = Some(v);
         }
         if let Some(v) = &self.last_event {
             record.last_event = Some(v.clone());
+        }
+        if let Some(v) = &self.last_event_detail {
+            record.last_event_detail = Some(v.clone());
         }
         if let Some(v) = self.can_stop {
             record.can_stop = v;

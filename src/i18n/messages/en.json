@@ -1434,7 +1434,8 @@
       "upgradeAvailable": "{versionText}. Upgrade available.",
       "remoteUnavailable": "{versionText}. Remote version is currently unavailable.",
       "latest": "{versionText}. Already latest.",
-      "latestChannel": "{versionText}. Latest channel is on; Upgrade installs the newest release."
+      "latestChannel": "{versionText}. Latest channel is on; Upgrade installs the newest release.",
+      "inProcess": "Built-in runtime {version}. No CLI install required."
     },
     "adapter": {
       "label": "ACP adapter",
@@ -1583,7 +1584,13 @@
     "customAgentRemoveWithData": "Also delete its recorded conversation history",
     "customAgentRemoved": "Removed {name}",
     "customAgentBadge": "Custom",
-    "customAgentNotLaunchable": "This agent cannot launch here: {reason}"
+    "customAgentNotLaunchable": "This agent cannot launch here: {reason}",
+    "codegAgent": {
+      "inProcess": "Built-in in-process runtime. Bind a model provider and set CODEG_AGENT_CONTEXT_WINDOWS to a JSON map of model id → token window. No CLI install required.",
+      "experimental": "Experimental. Disabled by default.",
+      "contextWindowsHint": "Unknown models cannot start until a window is configured. Do not assume 128k.",
+      "protocol": "v1 uses OpenAI Chat Completions only."
+    }
   },
   "SettingsPages": {
     "agentsLoading": "Loading agent settings...",
@@ -3750,9 +3757,31 @@
         "stopFailed": "Failed to stop the task: {error}"
       },
       "workflows": {
+        "title": "Workflow",
+        "collapseAria": "Collapse workflow",
+        "expandAria": "Expand workflow",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "Dock above the input",
+        "dockToOverlayAria": "Dock beside the plan",
         "starting": "Starting",
         "phase": "{name} ({current}/{total})",
-        "agents": "{done} done · {running} running"
+        "agents": "{done} done · {running} running",
+        "budget": "{used}/{total}",
+        "paused": "Paused",
+        "phaseState": {
+          "pending": "Pending",
+          "active": "Active",
+          "done": "Done",
+          "failed": "Failed"
+        },
+        "nodeState": {
+          "pending": "Pending",
+          "running": "Running",
+          "done": "Done",
+          "failed": "Failed",
+          "cancelled": "Cancelled"
+        }
       },
       "proposedPlan": {
         "title": "Proposed plan",

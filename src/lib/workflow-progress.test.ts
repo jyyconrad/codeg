@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   adoptUnknownWorkflows,
+  groupAgentsByPhase,
   liveWorkflows,
   phaseProgress,
   upsertWorkflow,
@@ -19,6 +20,7 @@ function run(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
       { title: "Research", state: "pending" },
     ],
     current_phase: "Plan",
+    agents: [],
     agents_done: 0,
     agents_running: 1,
     agents_used: 1,
@@ -52,6 +54,25 @@ describe("upsertWorkflow", () => {
     expect(next.agents_running).toBe(1)
     expect(next.name).toBe("deep-research")
   })
+
+  it("replaces the agent node list when the delta carries one", () => {
+    const [next] = upsertWorkflow(
+      [run()],
+      delta({
+        spawned: false,
+        agents: [
+          {
+            agent_id: "a1",
+            label: "planner",
+            phase: "Plan",
+            state: "done",
+          },
+        ],
+      })
+    )
+    expect(next.agents).toHaveLength(1)
+    expect(next.agents[0].label).toBe("planner")
+  })
 })
 
 describe("liveWorkflows", () => {
@@ -75,6 +96,42 @@ describe("phaseProgress", () => {
 
   it("returns null when the run has no phase rail", () => {
     expect(phaseProgress(run({ phases: [] }))).toBeNull()
+  })
+})
+
+describe("groupAgentsByPhase", () => {
+  it("nests nodes under the matching phase and keeps leftovers", () => {
+    const grouped = groupAgentsByPhase(
+      run({
+        agents: [
+          {
+            agent_id: "a1",
+            label: "planner",
+            phase: "Plan",
+            state: "done",
+          },
+          {
+            agent_id: "a2",
+            label: "researcher",
+            phase: "Research",
+            state: "running",
+          },
+          {
+            agent_id: "a3",
+            label: "orphan",
+            phase: "Other",
+            state: "pending",
+          },
+        ],
+      })
+    )
+    expect(
+      grouped.map((g) => [g.phase?.title ?? null, g.agents.map((a) => a.label)])
+    ).toEqual([
+      ["Plan", ["planner"]],
+      ["Research", ["researcher"]],
+      [null, ["orphan"]],
+    ])
   })
 })
 

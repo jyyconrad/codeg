@@ -73,6 +73,7 @@ describe("denormalizeSnapshot — workflows", () => {
             name: "deep-research",
             state: "running",
             phases: [{ title: "Plan", state: "active" }],
+            agents: [],
             agents_done: 0,
             agents_running: 1,
             agents_used: 1,

@@ -7,7 +7,7 @@
  * `Bash(run_in_background)` shells and monitors (claude-agent-acp 0.73+), and
  * Codex's background terminals (codex-acp 1.10+) — reported on the adapter's
  * own lifecycle channel. Workflow-typed AIR tasks are filtered out here and
- * rendered by `WorkflowProgressStrip` instead. The transcript already draws
+ * rendered by `WorkflowProgressOverlay` instead. The transcript already draws
  * the tool call that LAUNCHED such a job, but it cannot say whether the job
  * is still alive:
  * the poll-derived card explicitly refuses to claim "running" because a

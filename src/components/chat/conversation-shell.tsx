@@ -21,7 +21,8 @@ import type {
 import type { SessionFailureAction } from "@/lib/session-failures"
 import { SessionFailureBanner } from "@/components/chat/session-failure-banner"
 import { AsyncTaskStrip } from "@/components/chat/async-task-strip"
-import { WorkflowProgressStrip } from "@/components/chat/workflow-progress-strip"
+import { WorkflowProgressDockProvider } from "@/components/chat/workflow-progress-dock"
+import { WorkflowProgressOverlay } from "@/components/chat/workflow-progress-overlay"
 import type {
   PendingPermission,
   PendingQuestion,
@@ -286,136 +287,136 @@ export function ConversationShell({
   }, [claudeApiRetry, tAcp])
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col">
-      {topBanner}
+    <WorkflowProgressDockProvider runs={workflows ?? []}>
+      <div className="relative flex h-full min-h-0 flex-col">
+        {topBanner}
 
-      {/* Above the transcript, not down in the composer dock: this is the state
-          of work running RIGHT NOW, and pinning it here keeps it still while the
-          messages scroll under it — the stop button doesn't move out from under
-          the pointer. The dock below is for things that come and go with the
-          turn (retry line, last error). */}
-      {workflows && workflows.length > 0 && (
-        <WorkflowProgressStrip runs={workflows} />
-      )}
-      {asyncTasks && asyncTasks.length > 0 && (
-        <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
-      )}
+        {asyncTasks && asyncTasks.length > 0 && (
+          <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
+        )}
 
-      <div className="flex-1 min-h-0">{children}</div>
+        <div className="flex-1 min-h-0">{children}</div>
 
-      <PermissionDialog
-        permission={pendingPermission}
-        onRespond={onRespondPermission}
-      />
+        <PermissionDialog
+          permission={pendingPermission}
+          onRespond={onRespondPermission}
+        />
 
-      <QuestionDialog question={pendingQuestion} onAnswer={onAnswerQuestion} />
+        <QuestionDialog
+          question={pendingQuestion}
+          onAnswer={onAnswerQuestion}
+        />
 
-      {/* Composer dock. The ask-question card sits in normal flow just above the
+        {/* Composer dock. The ask-question card sits in normal flow just above the
           feedback list and input — like the permission/question dialogs — so it
           shrinks the message list instead of covering it, while staying aligned
           to the input width. */}
-      <div>
-        {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
-          <div className="mx-auto w-full max-w-3xl px-4">
-            <AskQuestionCard
-              question={pendingAskQuestion}
-              onAnswer={onAnswerAskQuestion}
-            />
-          </div>
-        )}
-        {pendingPlanApproval && (
-          <div className="mx-auto w-full max-w-3xl px-4">
-            {/* key on approval_id so the card always remounts (fresh in-flight /
+        <div>
+          {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
+            <div className="mx-auto w-full max-w-3xl px-4">
+              <AskQuestionCard
+                question={pendingAskQuestion}
+                onAnswer={onAnswerAskQuestion}
+              />
+            </div>
+          )}
+          {pendingPlanApproval && (
+            <div className="mx-auto w-full max-w-3xl px-4">
+              {/* key on approval_id so the card always remounts (fresh in-flight /
                 feedback state) if the slot is ever reused for a new approval. */}
-            <PlanApprovalCard
-              key={pendingPlanApproval.approval_id}
-              approval={pendingPlanApproval}
-              onAnswer={onAnswerPlanApproval}
-            />
-          </div>
-        )}
+              <PlanApprovalCard
+                key={pendingPlanApproval.approval_id}
+                approval={pendingPlanApproval}
+                onAnswer={onAnswerPlanApproval}
+              />
+            </div>
+          )}
 
-        {composerBanner && (
-          <div className="mx-auto w-full max-w-3xl px-4 pb-2">
-            {composerBanner}
-          </div>
-        )}
+          {composerBanner && (
+            <div className="mx-auto w-full max-w-3xl px-4 pb-2">
+              {composerBanner}
+            </div>
+          )}
 
-        {!hideInput && feedbackList && (
-          <div className="mx-auto w-full max-w-3xl px-4">{feedbackList}</div>
-        )}
+          {!hideInput && feedbackList && (
+            <div className="mx-auto w-full max-w-3xl px-4">{feedbackList}</div>
+          )}
 
-        {!hideInput && (
           <div className="mx-auto w-full max-w-3xl">
-            <ChatInput
-              status={status}
-              promptCapabilities={promptCapabilities}
-              defaultPath={defaultPath}
-              agentName={agentName}
-              onFocus={onFocus}
-              onSend={onSend}
-              onCancel={onCancel}
-              modes={modes}
-              configOptions={configOptions}
-              modeLoading={modeLoading}
-              configOptionsLoading={configOptionsLoading}
-              selectorsLoading={selectorsLoading}
-              selectedModeId={selectedModeId}
-              onModeChange={onModeChange}
-              onConfigOptionChange={onConfigOptionChange}
-              agentType={agentType}
-              availableCommands={availableCommands}
-              attachmentTabId={attachmentTabId}
-              folderPickerOverride={folderPickerOverride}
-              draftStorageKey={draftStorageKey}
-              isActive={isActive}
-              showActiveFlow={showActiveFlow}
-              queue={queue}
-              onEnqueue={onEnqueue}
-              onQueueReorder={onQueueReorder}
-              onQueueEdit={onQueueEdit}
-              onQueueDelete={onQueueDelete}
-              editingItemId={editingItemId}
-              editingDraftText={editingDraftText}
-              editingDraftBlocks={editingDraftBlocks}
-              isEditingQueueItem={isEditingQueueItem}
-              onSaveQueueEdit={onSaveQueueEdit}
-              onCancelQueueEdit={onCancelQueueEdit}
-              onSteer={onSteer}
-              steerChannel={steerChannel}
-              onAddFeedback={onAddFeedback}
-              feedbackAddDisabled={feedbackAddDisabled}
-              injectContent={injectContent}
-              onInjectConsumed={onInjectConsumed}
-            />
+            <div className="px-4">
+              <WorkflowProgressOverlay placement="composer" />
+            </div>
+            {!hideInput && (
+              <ChatInput
+                status={status}
+                promptCapabilities={promptCapabilities}
+                defaultPath={defaultPath}
+                agentName={agentName}
+                onFocus={onFocus}
+                onSend={onSend}
+                onCancel={onCancel}
+                modes={modes}
+                configOptions={configOptions}
+                modeLoading={modeLoading}
+                configOptionsLoading={configOptionsLoading}
+                selectorsLoading={selectorsLoading}
+                selectedModeId={selectedModeId}
+                onModeChange={onModeChange}
+                onConfigOptionChange={onConfigOptionChange}
+                agentType={agentType}
+                availableCommands={availableCommands}
+                attachmentTabId={attachmentTabId}
+                folderPickerOverride={folderPickerOverride}
+                draftStorageKey={draftStorageKey}
+                isActive={isActive}
+                showActiveFlow={showActiveFlow}
+                queue={queue}
+                onEnqueue={onEnqueue}
+                onQueueReorder={onQueueReorder}
+                onQueueEdit={onQueueEdit}
+                onQueueDelete={onQueueDelete}
+                editingItemId={editingItemId}
+                editingDraftText={editingDraftText}
+                editingDraftBlocks={editingDraftBlocks}
+                isEditingQueueItem={isEditingQueueItem}
+                onSaveQueueEdit={onSaveQueueEdit}
+                onCancelQueueEdit={onCancelQueueEdit}
+                onSteer={onSteer}
+                steerChannel={steerChannel}
+                onAddFeedback={onAddFeedback}
+                feedbackAddDisabled={feedbackAddDisabled}
+                injectContent={injectContent}
+                onInjectConsumed={onInjectConsumed}
+              />
+            )}
+          </div>
+        </div>
+
+        {sessionFailures && sessionFailures.length > 0 && (
+          <SessionFailureBanner
+            failures={sessionFailures}
+            onAction={onSessionFailureAction}
+            onDismiss={onSessionFailureDismiss}
+          />
+        )}
+
+        {retryLineText && (
+          <div className="border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-xs text-destructive">
+            <div className="flex items-center gap-2 font-medium">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+                {retryLineText}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="px-4 py-2 text-xs text-destructive bg-destructive/5 border-t border-destructive/20">
+            {error}
           </div>
         )}
       </div>
-
-      {sessionFailures && sessionFailures.length > 0 && (
-        <SessionFailureBanner
-          failures={sessionFailures}
-          onAction={onSessionFailureAction}
-          onDismiss={onSessionFailureDismiss}
-        />
-      )}
-
-      {retryLineText && (
-        <div className="border-t border-destructive/20 bg-destructive/5 px-4 py-2 text-xs text-destructive">
-          <div className="flex items-center gap-2 font-medium">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-              {retryLineText}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div className="px-4 py-2 text-xs text-destructive bg-destructive/5 border-t border-destructive/20">
-          {error}
-        </div>
-      )}
-    </div>
+    </WorkflowProgressDockProvider>
   )
 }

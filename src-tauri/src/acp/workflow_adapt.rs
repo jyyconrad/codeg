@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::acp::types::{AsyncTaskDelta, WorkflowDelta, WorkflowPhase};
+use crate::acp::types::{AsyncTaskDelta, WorkflowAgent, WorkflowDelta, WorkflowPhase};
 use crate::models::agent::AgentType;
 
 const GROK_EXT_UPDATE_METHODS: [&str; 2] = ["_x.ai/session_notification", "_x.ai/session/update"];
@@ -60,11 +60,15 @@ pub fn adapt_air_workflow(delta: &AsyncTaskDelta, known: bool) -> Option<Workflo
         state: delta.state.clone(),
         phases: None,
         current_phase: delta.last_tool_name.clone(),
+        agents: None,
         agents_done: None,
         agents_running: None,
         agents_used: delta.usage.as_ref().map(|u| u.tool_uses as u32),
+        agent_budget: None,
+        agents_remaining: None,
         elapsed_ms: delta.usage.as_ref().map(|u| u.duration_ms),
         last_event: delta.summary.clone().or(delta.last_tool_name.clone()),
+        last_event_detail: None,
         can_stop: delta.can_stop,
     })
 }
@@ -103,26 +107,12 @@ fn grok_delta(run_id: String, spawned: bool, update: &Value) -> WorkflowDelta {
             })
             .collect::<Vec<_>>()
     });
-    let agents = update.get("agents").and_then(Value::as_array);
+    let agents = grok_agents(update);
     let active_agents = update
         .get("active_agents")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let (done, running) = agent_counts(agents, active_agents);
-    let last_event = update
-        .get("last_event_detail")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            update
-                .get("last_event")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        });
+    let (done, running) = agent_counts(agents.as_ref(), active_agents);
     WorkflowDelta {
         run_id,
         spawned,
@@ -140,34 +130,72 @@ fn grok_delta(run_id: String, spawned: bool, update: &Value) -> WorkflowDelta {
             .map(str::to_string),
         state: Some(state),
         phases,
-        current_phase: current_phase.clone(),
+        current_phase,
+        agents,
         agents_done: Some(done),
         agents_running: Some(running),
         agents_used: update
             .get("agents_used")
             .and_then(Value::as_u64)
             .map(|n| n as u32),
+        agent_budget: update
+            .get("agent_budget")
+            .and_then(Value::as_u64)
+            .map(|n| n as u32),
+        agents_remaining: update
+            .get("agents_remaining")
+            .and_then(Value::as_u64)
+            .map(|n| n as u32),
         elapsed_ms: update.get("elapsed_ms").and_then(Value::as_u64),
-        last_event: last_event.or(current_phase),
+        last_event: opt_trim(update.get("last_event")),
+        last_event_detail: opt_trim(update.get("last_event_detail")),
         can_stop: Some(false),
     }
 }
 
-fn agent_counts(agents: Option<&Vec<Value>>, active_agents: u64) -> (u32, u32) {
+fn opt_trim(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn grok_agents(update: &Value) -> Option<Vec<WorkflowAgent>> {
+    update.get("agents").and_then(Value::as_array).map(|list| {
+        list.iter()
+            .filter_map(|a| {
+                let label = opt_trim(a.get("label"));
+                let agent_id = opt_trim(a.get("agent_id")).or_else(|| label.clone())?;
+                let label = label.unwrap_or_else(|| agent_id.clone());
+                Some(WorkflowAgent {
+                    agent_id,
+                    label,
+                    phase: opt_trim(a.get("phase")),
+                    state: a
+                        .get("state")
+                        .and_then(Value::as_str)
+                        .unwrap_or("running")
+                        .to_string(),
+                    tokens_used: a.get("tokens_used").and_then(Value::as_u64),
+                    duration_ms: a.get("duration_ms").and_then(Value::as_u64),
+                })
+            })
+            .collect()
+    })
+}
+
+fn agent_counts(agents: Option<&Vec<WorkflowAgent>>, active_agents: u64) -> (u32, u32) {
     let done = agents
-        .map(|list| {
-            list.iter()
-                .filter(|a| matches!(a.get("state").and_then(Value::as_str), Some("done")))
-                .count()
-        })
+        .map(|list| list.iter().filter(|a| a.state == "done").count())
         .unwrap_or(0) as u32;
     let running_from_list = agents
         .map(|list| {
             list.iter()
                 .filter(|a| {
                     !matches!(
-                        a.get("state").and_then(Value::as_str),
-                        Some("done" | "failed" | "cancelled" | "canceled")
+                        a.state.as_str(),
+                        "done" | "failed" | "cancelled" | "canceled"
                     )
                 })
                 .count()
@@ -204,6 +232,7 @@ mod tests {
                 ],
                 "agent_budget": 128,
                 "agents_used": 0,
+                "agents_remaining": 128,
                 "active_agents": 0,
                 "elapsed_ms": 7
             })),
@@ -221,6 +250,8 @@ mod tests {
         assert_eq!(phases[0].title, "Plan");
         assert_eq!(delta.agents_done, Some(0));
         assert_eq!(delta.agents_running, Some(0));
+        assert_eq!(delta.agent_budget, Some(128));
+        assert_eq!(delta.agents_remaining, Some(128));
     }
 
     #[test]
@@ -244,10 +275,15 @@ mod tests {
                 "agents_used": 1,
                 "active_agents": 4,
                 "elapsed_ms": 43362,
+                "last_event": "phase_entered",
+                "last_event_detail": "Research",
                 "agents": [{
+                    "agent_id": "ag_1",
                     "label": "research-planner",
+                    "phase": "Plan",
                     "state": "done",
-                    "tokens_used": 22284
+                    "tokens_used": 22284,
+                    "duration_ms": 43281
                 }]
             })),
             &mut seen,
@@ -258,6 +294,17 @@ mod tests {
         assert_eq!(delta.agents_done, Some(1));
         assert_eq!(delta.agents_running, Some(4));
         assert_eq!(delta.elapsed_ms, Some(43362));
+        assert_eq!(delta.last_event.as_deref(), Some("phase_entered"));
+        assert_eq!(delta.last_event_detail.as_deref(), Some("Research"));
+        assert_eq!(delta.agent_budget, None);
+        let agents = delta.agents.expect("agents");
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent_id, "ag_1");
+        assert_eq!(agents[0].label, "research-planner");
+        assert_eq!(agents[0].phase.as_deref(), Some("Plan"));
+        assert_eq!(agents[0].state, "done");
+        assert_eq!(agents[0].tokens_used, Some(22284));
+        assert_eq!(agents[0].duration_ms, Some(43281));
     }
 
     #[test]
@@ -279,6 +326,7 @@ mod tests {
         )
         .expect("mapped");
         assert_eq!(delta.state.as_deref(), Some("completed"));
+        assert_eq!(delta.last_event.as_deref(), Some("workflow_completed"));
     }
 
     #[test]

@@ -1434,7 +1434,8 @@
       "upgradeAvailable": "{versionText}。发现可升级版本。",
       "remoteUnavailable": "{versionText}。远程版本暂不可用。",
       "latest": "{versionText}。已是最新版本。",
-      "latestChannel": "{versionText}。已启用最新版通道；升级会安装最新版本。"
+      "latestChannel": "{versionText}。已启用最新版通道；升级会安装最新版本。",
+      "inProcess": "内置运行时 {version}。无需安装 CLI。"
     },
     "adapter": {
       "label": "ACP 适配器",
@@ -1583,7 +1584,13 @@
     "customAgentRemoveWithData": "同时删除已记录的会话历史",
     "customAgentRemoved": "已移除 {name}",
     "customAgentBadge": "自定义",
-    "customAgentNotLaunchable": "该智能体在此环境无法启动：{reason}"
+    "customAgentNotLaunchable": "该智能体在此环境无法启动：{reason}",
+    "codegAgent": {
+      "inProcess": "内置进程内运行时。绑定模型供应商，并在 CODEG_AGENT_CONTEXT_WINDOWS 中填写模型 id → 窗口（token）的 JSON。无需安装 CLI。",
+      "experimental": "实验功能，默认关闭。",
+      "contextWindowsHint": "未配置窗口的模型无法启动，不会默认设为 128k。",
+      "protocol": "v1 仅使用 OpenAI Chat Completions。"
+    }
   },
   "SettingsPages": {
     "agentsLoading": "加载 Agent 设置中...",
@@ -3750,9 +3757,31 @@
         "stopFailed": "停止任务失败：{error}"
       },
       "workflows": {
+        "title": "工作流",
+        "collapseAria": "折叠工作流",
+        "expandAria": "展开工作流",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "停靠到输入框上方",
+        "dockToOverlayAria": "停靠到计划栏下方",
         "starting": "启动中",
         "phase": "{name}（{current}/{total}）",
-        "agents": "{done} 已完成 · {running} 运行中"
+        "agents": "{done} 已完成 · {running} 运行中",
+        "budget": "{used}/{total}",
+        "paused": "已暂停",
+        "phaseState": {
+          "pending": "待处理",
+          "active": "进行中",
+          "done": "已完成",
+          "failed": "失败"
+        },
+        "nodeState": {
+          "pending": "待处理",
+          "running": "运行中",
+          "done": "已完成",
+          "failed": "失败",
+          "cancelled": "已取消"
+        }
       },
       "proposedPlan": {
         "title": "计划提案",

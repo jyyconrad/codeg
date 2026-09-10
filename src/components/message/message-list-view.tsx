@@ -35,6 +35,7 @@ import { UserResourceLinks } from "./user-resource-links"
 import { UserImageAttachments } from "./user-image-attachments"
 import { AgentPlanOverlay } from "@/components/chat/agent-plan-overlay"
 import { SubAgentOverlay } from "@/components/chat/sub-agent-overlay"
+import { WorkflowProgressOverlay } from "@/components/chat/workflow-progress-overlay"
 import { SessionViewerHost } from "@/components/message/session-viewer-host"
 import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { parseResumeTaskId } from "@/lib/codeg-mcp-tool"
@@ -1602,12 +1603,13 @@ export function MessageListView({
         {/* Shared overlay stack pinned to the inline-start edge (top-left in LTR,
           top-right in RTL). A flex column keeps the order stable regardless of
           each panel's expand/collapse height: the message navigator first, then
-          the plan panel, then the sub-agent panel. Empty panels render null and
-          collapse out. Positioning lives here (not in the child overlays); the
-          chips are "bullets" — flat on the start side (flush to the pinned
-          edge), rounded on the end side — that expand toward the inline-end on
-          hover. Logical `start-0` + `items-start` keep the anchor and the bullet
-          on the same side, so the whole stack mirrors cleanly in RTL. */}
+          the plan panel, then the workflow panel, then the sub-agent panel.
+          Empty panels render null and collapse out. Positioning lives here
+          (not in the child overlays); the chips are "bullets" — flat on the
+          start side (flush to the pinned edge), rounded on the end side — that
+          expand toward the inline-end on hover. Logical `start-0` +
+          `items-start` keep the anchor and the bullet on the same side, so the
+          whole stack mirrors cleanly in RTL. */}
         <div className="pointer-events-none absolute start-0 top-4 z-20 flex max-w-[min(22rem,calc(100%-2rem))] flex-col items-start gap-2">
           {showMessageNav && userMessageCount > 0 && (
             <ConversationMessageNav
@@ -1626,6 +1628,7 @@ export function MessageListView({
             defaultExpanded={false}
             isStreaming={connStatus === "prompting"}
           />
+          <WorkflowProgressOverlay placement="overlay" />
           <SubAgentOverlay
             key={subAgentOverlayKey}
             delegations={lastAssistantDelegations}

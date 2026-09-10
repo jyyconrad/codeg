@@ -1434,7 +1434,8 @@
       "upgradeAvailable": "{versionText}. Mise à niveau disponible.",
       "remoteUnavailable": "{versionText}. La version distante est actuellement indisponible.",
       "latest": "{versionText}. Déjà à jour.",
-      "latestChannel": "{versionText}. Le canal Dernière est actif ; Mettre à niveau installe la version la plus récente."
+      "latestChannel": "{versionText}. Le canal Dernière est actif ; Mettre à niveau installe la version la plus récente.",
+      "inProcess": "Runtime intégré {version}. Aucune installation CLI."
     },
     "adapter": {
       "label": "Adaptateur ACP",
@@ -1583,7 +1584,13 @@
     "customAgentRemoveWithData": "Supprimer aussi l'historique de conversation enregistré",
     "customAgentRemoved": "{name} supprimé",
     "customAgentBadge": "Personnalisé",
-    "customAgentNotLaunchable": "Cet agent ne peut pas démarrer ici : {reason}"
+    "customAgentNotLaunchable": "Cet agent ne peut pas démarrer ici : {reason}",
+    "codegAgent": {
+      "inProcess": "Runtime intégré in-process. Liez un fournisseur de modèles et renseignez CODEG_AGENT_CONTEXT_WINDOWS (JSON model id → fenêtre de tokens). Aucune installation CLI.",
+      "experimental": "Expérimental. Désactivé par défaut.",
+      "contextWindowsHint": "Un modèle sans fenêtre ne démarre pas ; 128k n'est pas implicite.",
+      "protocol": "v1 n'utilise que OpenAI Chat Completions."
+    }
   },
   "SettingsPages": {
     "agentsLoading": "Chargement des paramètres des agents...",
@@ -3750,9 +3757,31 @@
         "stopFailed": "Échec de l'arrêt de la tâche : {error}"
       },
       "workflows": {
+        "title": "Workflow",
+        "collapseAria": "Réduire le workflow",
+        "expandAria": "Développer le workflow",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "Ancrer au-dessus de la saisie",
+        "dockToOverlayAria": "Ancrer sous le plan",
         "starting": "Démarrage",
         "phase": "{name} ({current}/{total})",
-        "agents": "{done} terminés · {running} en cours"
+        "agents": "{done} terminés · {running} en cours",
+        "budget": "{used}/{total}",
+        "paused": "En pause",
+        "phaseState": {
+          "pending": "En attente",
+          "active": "Actif",
+          "done": "Terminé",
+          "failed": "Échec"
+        },
+        "nodeState": {
+          "pending": "En attente",
+          "running": "En cours",
+          "done": "Terminé",
+          "failed": "Échec",
+          "cancelled": "Annulé"
+        }
       },
       "proposedPlan": {
         "title": "Plan proposé",

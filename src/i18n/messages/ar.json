@@ -1434,7 +1434,8 @@
       "upgradeAvailable": "{versionText}. تتوفر ترقية.",
       "remoteUnavailable": "{versionText}. الإصدار البعيد غير متاح حاليًا.",
       "latest": "{versionText}. أنت على أحدث إصدار.",
-      "latestChannel": "{versionText}. قناة الأحدث مفعّلة؛ الترقية تثبّت أحدث إصدار."
+      "latestChannel": "{versionText}. قناة الأحدث مفعّلة؛ الترقية تثبّت أحدث إصدار.",
+      "inProcess": "بيئة تشغيل مدمجة {version}. لا حاجة لتثبيت CLI."
     },
     "adapter": {
       "label": "محوّل ACP",
@@ -1583,7 +1584,13 @@
     "customAgentRemoveWithData": "حذف سجل المحادثات المسجل أيضًا",
     "customAgentRemoved": "تمت إزالة {name}",
     "customAgentBadge": "مخصص",
-    "customAgentNotLaunchable": "لا يمكن تشغيل هذا الوكيل هنا: {reason}"
+    "customAgentNotLaunchable": "لا يمكن تشغيل هذا الوكيل هنا: {reason}",
+    "codegAgent": {
+      "inProcess": "بيئة تشغيل مدمجة داخل العملية. اربط مزوّد نماذج وعيّن CODEG_AGENT_CONTEXT_WINDOWS كـ JSON من معرّف النموذج إلى نافذة الرموز. لا حاجة لتثبيت CLI.",
+      "experimental": "تجريبي. معطّل افتراضيًا.",
+      "contextWindowsHint": "لا يبدأ نموذج بلا نافذة، ولن يُفترض 128k.",
+      "protocol": "الإصدار الأول يستخدم OpenAI Chat Completions فقط."
+    }
   },
   "SettingsPages": {
     "agentsLoading": "جارٍ تحميل إعدادات الوكلاء...",
@@ -3750,9 +3757,31 @@
         "stopFailed": "فشل إيقاف المهمة: {error}"
       },
       "workflows": {
+        "title": "سير العمل",
+        "collapseAria": "طي سير العمل",
+        "expandAria": "توسيع سير العمل",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "تثبيت فوق حقل الإدخال",
+        "dockToOverlayAria": "تثبيت بجانب الخطة",
         "starting": "جارٍ البدء",
         "phase": "{name} ({current}/{total})",
-        "agents": "{done} مكتمل · {running} قيد التشغيل"
+        "agents": "{done} مكتمل · {running} قيد التشغيل",
+        "budget": "{used}/{total}",
+        "paused": "متوقف",
+        "phaseState": {
+          "pending": "معلق",
+          "active": "نشط",
+          "done": "مكتمل",
+          "failed": "فشل"
+        },
+        "nodeState": {
+          "pending": "معلق",
+          "running": "قيد التشغيل",
+          "done": "مكتمل",
+          "failed": "فشل",
+          "cancelled": "أُلغي"
+        }
       },
       "proposedPlan": {
         "title": "الخطة المقترحة",

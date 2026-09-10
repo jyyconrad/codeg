@@ -1434,7 +1434,8 @@
       "upgradeAvailable": "{versionText}。アップグレード可能です。",
       "remoteUnavailable": "{versionText}。現在リモートバージョンは取得できません。",
       "latest": "{versionText}。すでに最新です。",
-      "latestChannel": "{versionText}。最新版チャンネルが有効です。アップグレードで最新リリースをインストールします。"
+      "latestChannel": "{versionText}。最新版チャンネルが有効です。アップグレードで最新リリースをインストールします。",
+      "inProcess": "組み込みランタイム {version}。CLI のインストールは不要です。"
     },
     "adapter": {
       "label": "ACP アダプター",
@@ -1583,7 +1584,13 @@
     "customAgentRemoveWithData": "記録された会話履歴も削除する",
     "customAgentRemoved": "{name} を削除しました",
     "customAgentBadge": "カスタム",
-    "customAgentNotLaunchable": "この環境では起動できません: {reason}"
+    "customAgentNotLaunchable": "この環境では起動できません: {reason}",
+    "codegAgent": {
+      "inProcess": "組み込みのインプロセスランタイムです。モデルプロバイダーをバインドし、CODEG_AGENT_CONTEXT_WINDOWS に model id → トークン窓の JSON を設定します。CLI のインストールは不要です。",
+      "experimental": "実験的機能。既定では無効です。",
+      "contextWindowsHint": "窓が未設定のモデルは起動できません。128k にはしません。",
+      "protocol": "v1 は OpenAI Chat Completions のみです。"
+    }
   },
   "SettingsPages": {
     "agentsLoading": "エージェント設定を読み込み中...",
@@ -3750,9 +3757,31 @@
         "stopFailed": "タスクの停止に失敗しました: {error}"
       },
       "workflows": {
+        "title": "ワークフロー",
+        "collapseAria": "ワークフローを折りたたむ",
+        "expandAria": "ワークフローを展開",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "入力欄の上に固定",
+        "dockToOverlayAria": "プランの下に固定",
         "starting": "開始中",
         "phase": "{name}（{current}/{total}）",
-        "agents": "{done} 完了 · {running} 実行中"
+        "agents": "{done} 完了 · {running} 実行中",
+        "budget": "{used}/{total}",
+        "paused": "一時停止",
+        "phaseState": {
+          "pending": "保留",
+          "active": "進行中",
+          "done": "完了",
+          "failed": "失敗"
+        },
+        "nodeState": {
+          "pending": "保留",
+          "running": "実行中",
+          "done": "完了",
+          "failed": "失敗",
+          "cancelled": "キャンセル"
+        }
       },
       "proposedPlan": {
         "title": "提案された計画",

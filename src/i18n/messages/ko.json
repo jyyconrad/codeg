@@ -1434,7 +1434,8 @@
       "upgradeAvailable": "{versionText}. 업그레이드가 가능합니다.",
       "remoteUnavailable": "{versionText}. 현재 원격 버전을 사용할 수 없습니다.",
       "latest": "{versionText}. 이미 최신입니다.",
-      "latestChannel": "{versionText}. 최신 버전 채널이 켜져 있습니다. 업그레이드하면 최신 릴리스를 설치합니다."
+      "latestChannel": "{versionText}. 최신 버전 채널이 켜져 있습니다. 업그레이드하면 최신 릴리스를 설치합니다.",
+      "inProcess": "내장 런타임 {version}. CLI 설치가 필요 없습니다."
     },
     "adapter": {
       "label": "ACP 어댑터",
@@ -1583,7 +1584,13 @@
     "customAgentRemoveWithData": "기록된 대화 기록도 삭제",
     "customAgentRemoved": "{name} 제거됨",
     "customAgentBadge": "사용자 지정",
-    "customAgentNotLaunchable": "이 환경에서는 실행할 수 없습니다: {reason}"
+    "customAgentNotLaunchable": "이 환경에서는 실행할 수 없습니다: {reason}",
+    "codegAgent": {
+      "inProcess": "내장 인프로세스 런타임입니다. 모델 공급자를 바인딩하고 CODEG_AGENT_CONTEXT_WINDOWS에 model id → 토큰 창 JSON을 설정하세요. CLI 설치는 필요 없습니다.",
+      "experimental": "실험 기능이며 기본값은 꺼짐입니다.",
+      "contextWindowsHint": "창이 없는 모델은 시작할 수 없으며 128k로 가정하지 않습니다.",
+      "protocol": "v1은 OpenAI Chat Completions만 사용합니다."
+    }
   },
   "SettingsPages": {
     "agentsLoading": "에이전트 설정을 불러오는 중...",
@@ -3750,9 +3757,31 @@
         "stopFailed": "작업 중지에 실패했습니다: {error}"
       },
       "workflows": {
+        "title": "워크플로",
+        "collapseAria": "워크플로 접기",
+        "expandAria": "워크플로 펼치기",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "입력창 위에 고정",
+        "dockToOverlayAria": "계획 아래에 고정",
         "starting": "시작 중",
         "phase": "{name} ({current}/{total})",
-        "agents": "{done} 완료 · {running} 실행 중"
+        "agents": "{done} 완료 · {running} 실행 중",
+        "budget": "{used}/{total}",
+        "paused": "일시 중지",
+        "phaseState": {
+          "pending": "대기",
+          "active": "진행 중",
+          "done": "완료",
+          "failed": "실패"
+        },
+        "nodeState": {
+          "pending": "대기",
+          "running": "실행 중",
+          "done": "완료",
+          "failed": "실패",
+          "cancelled": "취소됨"
+        }
       },
       "proposedPlan": {
         "title": "제안된 계획",

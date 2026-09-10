@@ -2504,11 +2504,15 @@ mod tests {
             state: None,
             phases: None,
             current_phase: None,
+            agents: None,
             agents_done: None,
             agents_running: None,
             agents_used: None,
+            agent_budget: None,
+            agents_remaining: None,
             elapsed_ms: None,
             last_event: None,
+            last_event_detail: None,
             can_stop: None,
         }
     }
