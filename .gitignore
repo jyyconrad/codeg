@@ -13,6 +13,9 @@ dist-ssr
 *.local
 tsconfig.tsbuildinfo
 
+.iflycode
+.iflycode/
+
 # Next.js
 .next/
 out/
