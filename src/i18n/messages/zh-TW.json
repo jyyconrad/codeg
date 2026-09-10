@@ -1872,6 +1872,7 @@
       "loadingSubsessions": "正在載入子會話…",
       "forge": "儲存庫面板",
       "canvas": "無限會話",
+      "toolbox": "萬能小工具",
       "folderGroup": {
         "newGroup": "新增分組",
         "newGroupTitle": "新增資料夾分組",
@@ -5846,5 +5847,237 @@
     "terminalNoDirectory": "這張卡片沒有工作目錄",
     "confirmDeleteTerminals": "{count} 個執行中的終端機會被關閉，其中的處理程序也會一併結束。",
     "confirmDeleteNotesAndTerminals": "你寫下的 {notes} 則便條將被永久刪除，另有 {terminals} 個執行中的終端機會被結束。"
+  },
+  "Toolbox": {
+    "title": "萬能小工具",
+    "searchPlaceholder": "搜尋工具",
+    "favorites": "收藏",
+    "recent": "最近",
+    "favorite": "收藏",
+    "noResults": "沒有符合的工具",
+    "emptyHint": "從左側選擇一個工具",
+    "input": "輸入",
+    "output": "結果",
+    "params": "參數",
+    "example": "示例",
+    "clear": "清空",
+    "copy": "複製",
+    "copied": "已複製",
+    "download": "下載",
+    "sendTo": "結果傳到",
+    "sendToPlaceholder": "選擇工具",
+    "error": "錯誤",
+    "encodingNotice": "這是編碼，不是加密。",
+    "cryptoFooter": "僅在本機計算，用於聯調與格式轉換，不能替代金鑰管理系統。",
+    "categories": {
+      "text": "文本",
+      "dev": "開發",
+      "encoding": "編解碼",
+      "crypto": "加解密",
+      "image": "圖片",
+      "general": "通用"
+    },
+    "tools": {
+      "text-stats": {
+        "title": "字數與文本統計",
+        "description": "統計字元、中文字元、詞、行、位元組；空白是否計入可切換。",
+        "aliases": "字數統計"
+      },
+      "text-clean": {
+        "title": "文本清洗",
+        "description": "去首尾空白、去空行、統一換行、全半形、中英文標點。",
+        "aliases": "清洗"
+      },
+      "line-dedupe-sort": {
+        "title": "行去重與排序",
+        "description": "按行切分，按大小寫等規則去重，再排序或保持原序。",
+        "aliases": "去重 排序"
+      },
+      "case-naming": {
+        "title": "命名風格轉換",
+        "description": "camelCase / snake_case / PascalCase / kebab-case / CONSTANT_CASE。",
+        "aliases": "駝峰 底線"
+      },
+      "text-diff": {
+        "title": "文本差異對比",
+        "description": "兩段文本按行 diff，再標出行內增刪。",
+        "aliases": "對比"
+      },
+      "find-replace": {
+        "title": "批量尋找取代",
+        "description": "普通字串與正則；先展示命中和取代預覽。",
+        "aliases": "取代"
+      },
+      "markdown-preview": {
+        "title": "Markdown 預覽",
+        "description": "解析為 HTML，清理危險內容，再渲染、複製或匯出。",
+        "aliases": "md"
+      },
+      "zh-convert": {
+        "title": "簡繁轉換",
+        "description": "簡體 ↔ 繁體（詞庫級，不只單字）。",
+        "aliases": "簡繁"
+      },
+      "json-format": {
+        "title": "JSON 格式化與校驗",
+        "description": "縮排或壓縮；失敗時定位行列；大整數可按字串保留。",
+        "aliases": "json"
+      },
+      "timestamp": {
+        "title": "時間戳轉換",
+        "description": "秒/毫秒 ↔ 日期；顯式時區；範圍檢查。",
+        "aliases": "unix 時間戳"
+      },
+      "uuid": {
+        "title": "UUID 產生",
+        "description": "安全隨機 UUID v4；批量產生和複製；可選 v7。",
+        "aliases": "guid"
+      },
+      "json-yaml": {
+        "title": "JSON ↔ YAML",
+        "description": "雙向轉換，失敗時指出路徑。",
+        "aliases": "yml"
+      },
+      "json-csv": {
+        "title": "JSON ↔ CSV",
+        "description": "物件陣列對應表頭；反向時顯式選擇欄位類型。",
+        "aliases": "csv"
+      },
+      "regex-tester": {
+        "title": "正規表示式測試",
+        "description": "即時匹配組與取代；Worker 執行，支援逾時終止。",
+        "aliases": "正則"
+      },
+      "cron": {
+        "title": "Cron 解釋",
+        "description": "五段/六段語法 + 時區；列出未來若干次執行時間。",
+        "aliases": "crontab 定時"
+      },
+      "sql-format": {
+        "title": "SQL 格式化",
+        "description": "美化 / 壓縮；不執行語句。",
+        "aliases": "sql"
+      },
+      "code-format": {
+        "title": "XML / YAML 檢視",
+        "description": "縮排、摺疊、語法錯誤位置。",
+        "aliases": "xml yaml"
+      },
+      "base64": {
+        "title": "Base64 編解碼",
+        "description": "文本按 UTF-8 轉位元組再編碼；支援檔案；校驗非法字元。",
+        "aliases": "base64加密"
+      },
+      "url-codec": {
+        "title": "URL 編解碼與拆解",
+        "description": "區分完整 URL 與參數值；展示協定、網域、路徑、查詢參數。",
+        "aliases": "urlencode"
+      },
+      "hex-string": {
+        "title": "Hex ↔ 字串",
+        "description": "UTF-8 / Latin-1；容忍空白與 0x 前綴。",
+        "aliases": "十六進位"
+      },
+      "html-entities": {
+        "title": "HTML 實體",
+        "description": "轉義 / 反轉義。",
+        "aliases": "html"
+      },
+      "unicode-escape": {
+        "title": "Unicode 轉義",
+        "description": "\\uXXXX ↔ 中文；JSON 風格轉義。",
+        "aliases": "unicode"
+      },
+      "radix": {
+        "title": "進位轉換",
+        "description": "2–36 進位整數；大整數用字串。",
+        "aliases": "二進位"
+      },
+      "symmetric-cipher": {
+        "title": "AES / SM4 加解密",
+        "description": "AES-128/192/256 與 SM4；CBC/GCM/ECB；PKCS7；金鑰和 IV 支援 UTF-8 / Hex / Base64。",
+        "aliases": "aes sm4 國密"
+      },
+      "hash": {
+        "title": "雜湊與校驗和",
+        "description": "MD5、SHA-1/2/3、SM3；文本或小檔案。",
+        "aliases": "md5加密 sha256 sm3"
+      },
+      "hmac": {
+        "title": "HMAC 簽章",
+        "description": "金鑰 + 訊息；SHA-256/512 或 SM3；輸出 Hex / Base64。",
+        "aliases": "簽章"
+      },
+      "password-gen": {
+        "title": "隨機密碼產生",
+        "description": "安全隨機，指定字元集與長度；不儲存結果。",
+        "aliases": "密碼產生"
+      },
+      "asymmetric-cipher": {
+        "title": "RSA / SM2",
+        "description": "金鑰產生、加解密、簽章驗章；PEM 匯入匯出。",
+        "aliases": "rsa sm2 公鑰"
+      },
+      "jwt": {
+        "title": "JWT 檢視與驗章",
+        "description": "拆解 Header / Payload；可選 HMAC/RSA 驗章，與解碼分開顯示。",
+        "aliases": "json web token"
+      },
+      "password-strength": {
+        "title": "密碼強度",
+        "description": "長度、字元類、估算熵；不上傳、不儲存。",
+        "aliases": "密碼強度"
+      },
+      "totp": {
+        "title": "TOTP 一次性口令",
+        "description": "根據 Base32 金鑰產生本地目前碼；倒數；金鑰只留在記憶體。",
+        "aliases": "otp 2fa"
+      },
+      "image-compress": {
+        "title": "圖片壓縮與格式轉換",
+        "description": "調整尺寸或品質，匯出並對比大小和觀感。",
+        "aliases": "壓縮"
+      },
+      "color-convert": {
+        "title": "顏色轉換",
+        "description": "HEX、RGB、HSL 互轉；展示色塊和透明度。",
+        "aliases": "rgb hsl"
+      },
+      "image-crop": {
+        "title": "圖片裁剪與縮放",
+        "description": "選框對應原圖座標，重採樣匯出；可鎖定比例。",
+        "aliases": "裁剪"
+      },
+      "image-watermark": {
+        "title": "圖片浮水印",
+        "description": "文字或圖片按透明度、角度、間距疊加。",
+        "aliases": "浮水印"
+      },
+      "image-stitch": {
+        "title": "圖片拼接",
+        "description": "橫向、縱向或網格繪製到一張畫布。",
+        "aliases": "拼接"
+      },
+      "qr-generate": {
+        "title": "QR 碼產生",
+        "description": "文本或連結；糾錯等級；匯出 PNG / SVG。",
+        "aliases": "QR碼"
+      },
+      "qr-decode": {
+        "title": "QR 碼識別",
+        "description": "本地讀圖解碼；不自動開啟結果裡的連結。",
+        "aliases": "掃碼"
+      },
+      "unit-convert": {
+        "title": "單位換算",
+        "description": "同類單位先換成基準再轉換；溫度單獨處理偏移。",
+        "aliases": "單位"
+      },
+      "date-diff": {
+        "title": "日期間隔",
+        "description": "自然日差與精確時長；是否包含起迄日。",
+        "aliases": "日期間隔"
+      }
+    }
   }
 }
