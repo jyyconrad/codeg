@@ -68,27 +68,39 @@ fn parse_cert_der(der: &[u8]) -> Result<CertView, AppCommandError> {
 mod tests {
     use super::*;
 
-    // Short self-contained leaf used only to prove the parser extracts fields.
-    // Generated offline; not a production trust anchor.
     const TEST_CERT: &str = r#"-----BEGIN CERTIFICATE-----
-MIIDazCCAlOgAwIBAgIUZq0nY0k1m3p0s0v1w2x3y4z5a6cwDQYJKoZIhvcNAQEL
-BQAwRTELMAkGA1UEBhMCQVUxEzARBgNVBAgMClNvbWUtU3RhdGUxITAfBgNVBAoM
-GEludGVybmV0IFdpZGdpdHMgUHR5IEx0ZDAeFw0yMDAxMDEwMDAwMDBaFw0zMDAx
-MDEwMDAwMDBaMEUxCzAJBgNVBAYTAlVTMRMwEQYDVQQIDApTb21lLVN0YXRlMSEw
-HwYDVQQKDBhJbnRlcm5ldCBXaWRnaXRzIFB0eSBMdGQwggEiMA0GCSqGSIb3DQEB
-AQUAA4IBDwAwggEKAoIBAQC7VJTUt9Us8cKjMzEfYyjiWA4R4/M2bS1+fWIcPmFl
-CMS4V4+SWIUDNSzVxNCCEoY0/qM/Btd0GOz/px2kaCc=
+MIIC9zCCAd+gAwIBAgIJAKC3I1OPQBJCMA0GCSqGSIb3DQEBCwUAMCcxFTATBgNV
+BAMMDHRvb2xib3gudGVzdDEOMAwGA1UECgwFQ29kZWcwHhcNMjYwOTEwMTI0NjU1
+WhcNMzYwOTA3MTI0NjU1WjAnMRUwEwYDVQQDDAx0b29sYm94LnRlc3QxDjAMBgNV
+BAoMBUNvZGVnMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2WPN2I0a
+aGBb4QCdairjofYQB7K0xQbXSX/159sCwjVgKzbt/GiHjsDSH6CKazv3fTueufSL
+OES7dUsTdSg5JhIQQLo+TqUwFxI4Y4eDWhR8H2Ta1enjUE3pcfr34+4scjDrUK5f
+VgvwryGbPDtbMvjUKJ3otZ+dWqKxlhEChV8nX5Sxsvi9qJ2QG6MGZR+ZBhKYrjMk
+LlYRunN8GY/zfyStEYSnI6QG8EaJfwxksqXpmnoL0PavUSVP9IlUdIU9Dfhc3e+L
+esc2KK2zIAohZcBdJOe/IunwUigKPxgB7SETOX0o2MylNDhWr3NnJs2X2Qz2RnK5
+SttS411g7TgviQIDAQABoyYwJDAiBgNVHREEGzAZggx0b29sYm94LnRlc3SCCWxv
+Y2FsaG9zdDANBgkqhkiG9w0BAQsFAAOCAQEAxkzCG+Llo2csO8A56LSHvbU/u0Ak
+yQTmaHYGlZb/4YZ2JYnEOCfVDZQytuMwzcB4AJ4ZMVdQLc/gQRShMbGZmUT4/nmE
+9G1YPHlGkSx2S4u5ZPkqmpYfRd7R4I56XDOIYnnZTvqnxH7sLPtRXycmLXLZdxwx
+Ier8VapNO8XGarxlATWTV51K6PWh21+2kmmrxAX1as3jNsFxUbzWc4ni1iC5pBLc
+Y+rOpPQdLqYEnr9Rga0fQ5hH6/9AJ2QeaA4wd1a8yKB5oV7kJ0ZaRzfp9E8fn0KO
+X2ZAluIspCxdjwES1Av162SJOvMaPm/BltWQ1dp1ywoNd8ghSrABjAP7zA==
 -----END CERTIFICATE-----"#;
 
     #[test]
     fn rejects_garbage() {
         let err = parse_cert_pem("not a cert").unwrap_err();
-        assert!(err.message.to_lowercase().contains("pem") || err.message.to_lowercase().contains("certificate") || err.message.to_lowercase().contains("no certificate"));
+        let msg = err.message.to_lowercase();
+        assert!(
+            msg.contains("pem") || msg.contains("certificate") || msg.contains("x.509")
+        );
     }
 
     #[test]
-    fn parses_github_like_pem_or_reports_invalid() {
-        // The truncated blob above is intentionally invalid DER; parser must not panic.
-        let _ = parse_cert_pem(TEST_CERT);
+    fn parses_subject_and_san() {
+        let view = parse_cert_pem(TEST_CERT).expect("valid test cert");
+        assert!(view.subject.contains("toolbox.test"));
+        assert!(view.san.iter().any(|n| n.contains("localhost")));
+        assert_eq!(view.fingerprint_sha256.len(), 64);
     }
 }

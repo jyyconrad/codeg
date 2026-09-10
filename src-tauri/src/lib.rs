@@ -74,7 +74,7 @@ mod tauri_app {
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
         science as science_commands, session_info as session_info_commands, system_settings,
-        terminal as terminal_commands, token_usage as token_usage_commands, version_control,
+        terminal as terminal_commands, token_usage as token_usage_commands, toolbox, version_control,
         windows, work_task as work_task_commands, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
@@ -1621,6 +1621,12 @@ mod tauri_app {
                 notification::open_system_notification_settings,
                 file_io::save_binary_file,
                 file_io::save_text_file,
+                toolbox::toolbox_hash_file,
+                toolbox::toolbox_cipher_file,
+                toolbox::toolbox_cancel_job,
+                toolbox::toolbox_bcrypt_hash,
+                toolbox::toolbox_bcrypt_verify,
+                toolbox::toolbox_parse_cert,
                 backup::backup_create,
                 backup::backup_prepare_source,
                 backup::backup_release_source,

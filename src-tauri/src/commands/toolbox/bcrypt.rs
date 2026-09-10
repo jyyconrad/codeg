@@ -1,10 +1,10 @@
-use bcrypt::{hash, verify, DEFAULT_COST};
+use bcrypt::{hash, verify};
 
 use crate::app_error::AppCommandError;
 
 pub const BCRYPT_COST_MIN: u32 = 4;
 pub const BCRYPT_COST_MAX: u32 = 14;
-pub const BCRYPT_COST_DEFAULT: u32 = DEFAULT_COST; // 12 in some versions; we pin 10 in the command.
+pub const BCRYPT_COST_DEFAULT: u32 = 10;
 
 pub fn bcrypt_hash_core(password: &str, cost: u32) -> Result<String, AppCommandError> {
     if !(BCRYPT_COST_MIN..=BCRYPT_COST_MAX).contains(&cost) {
