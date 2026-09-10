@@ -612,10 +612,16 @@ impl ChatChannelBackend for LarkBackend {
         &self,
         message: &RichMessage,
     ) -> Result<SentMessageId, ChatChannelError> {
-        let card = build_lark_card(message);
-        let content = serde_json::to_string(&card)
+        let post = build_lark_post(message);
+        let content = serde_json::to_string(&post)
             .map_err(|e| ChatChannelError::SendFailed(e.to_string()))?;
-        self.send_lark_message("interactive", &content).await
+        match self.send_lark_message("post", &content).await {
+            Ok(id) => Ok(id),
+            Err(e) => {
+                tracing::warn!("[Lark] post markdown send failed: {e}, retrying as plain text");
+                self.send_message(&message.to_plain_text()).await
+            }
+        }
     }
 
     async fn test_connection(&self) -> Result<(), ChatChannelError> {
@@ -624,110 +630,70 @@ impl ChatChannelBackend for LarkBackend {
     }
 }
 
-fn build_lark_card(msg: &RichMessage) -> serde_json::Value {
-    let header_color = match msg.level {
-        MessageLevel::Info => "blue",
-        MessageLevel::Warning => "orange",
-        MessageLevel::Error => "red",
-    };
-
-    let title = msg.title.as_deref().unwrap_or("Codeg");
-
-    let mut elements: Vec<serde_json::Value> = Vec::new();
-
-    if !msg.body.is_empty() {
-        // Render the body as PLAIN TEXT, never markdown. An event body can carry
-        // user-authored content (e.g. `user_prompt_sent` forwards the prompt
-        // text verbatim), and Lark's `markdown` element would interpret `<at>`
-        // mentions, links, and formatting embedded in it. `plain_text`
-        // neutralizes all of that; existing event bodies are plain sentences, so
-        // their rendering is unchanged.
-        elements.push(serde_json::json!({
-            "tag": "div",
-            "text": {
-                "tag": "plain_text",
-                "content": msg.body,
-            },
-        }));
-    }
-
-    if !msg.fields.is_empty() {
-        // Render each field as PLAIN TEXT, never `lark_md`. A field VALUE can carry
-        // untrusted content — `permission_request` puts the proposed tool operation
-        // (e.g. a Bash command) here, and `error` puts the agent's error string —
-        // which `lark_md` would interpret, letting embedded `<at>` mentions, links
-        // and markdown inject into the card. The label is our own i18n constant, so
-        // the only injectable part is the value; plain_text neutralizes both. We
-        // drop the bold label styling (cosmetic) for safety, mirroring the body.
-        let field_elements: Vec<serde_json::Value> = msg
-            .fields
-            .iter()
-            .map(|(k, v)| {
-                serde_json::json!({
-                    "is_short": true,
-                    "text": {
-                        "tag": "plain_text",
-                        "content": format!("{}\n{}", k, v),
-                    }
-                })
-            })
-            .collect();
-
-        elements.push(serde_json::json!({
-            "tag": "div",
-            "fields": field_elements,
-        }));
-    }
-
+/// Feishu `post` + `md` tag: CommonMark 0.31 + GFM, no colored card header.
+fn build_lark_post(msg: &RichMessage) -> serde_json::Value {
     serde_json::json!({
-        "config": { "wide_screen_mode": true },
-        "header": {
-            "title": {
-                "tag": "plain_text",
-                "content": title,
-            },
-            "template": header_color,
-        },
-        "elements": elements,
+        "zh_cn": {
+            "content": [[{
+                "tag": "md",
+                "text": sanitize_lark_markdown(&msg.to_markdown()),
+            }]]
+        }
     })
+}
+
+/// Strip Feishu-extended `<at>` mention tags so agent/user text cannot @everyone.
+fn sanitize_lark_markdown(s: &str) -> String {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"(?is)<at\b[^>]*>.*?</at\s*>|<at\b[^>]*/?>").expect("at-tag regex")
+    });
+    re.replace_all(s, "").into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The card body must render as `plain_text`, never `markdown` — an event
-    /// body can carry user-authored content (e.g. `user_prompt_sent`), and a
-    /// markdown body would let `<at>` mentions / links / formatting inject into
-    /// the Lark card. Guards against a regression back to the markdown element.
-    #[test]
-    fn body_renders_as_plain_text_not_markdown() {
-        let raw = "<at id=all></at> **bold** [x](http://e.test)";
-        let msg = RichMessage::info(raw).with_title("User Message");
-        let card = build_lark_card(&msg);
-
-        let elements = card["elements"].as_array().expect("elements array");
-        let body = &elements[0];
-        assert_eq!(body["tag"], "div", "body must be a div element");
-        assert_eq!(
-            body["text"]["tag"], "plain_text",
-            "body text must be plain_text, not markdown"
-        );
-        // Content is preserved verbatim — there is no markdown element to
-        // interpret the `<at>` / `**` / link syntax.
-        assert_eq!(body["text"]["content"], raw);
-        assert!(
-            elements.iter().all(|e| e["tag"] != "markdown"),
-            "no element may render the body as markdown"
-        );
+    fn post_md_text(post: &serde_json::Value) -> &str {
+        post["zh_cn"]["content"][0][0]["text"]
+            .as_str()
+            .expect("post md text")
     }
 
-    /// Field VALUES carry untrusted content (a permission tool command, an agent
-    /// error string), so they must render as `plain_text` — never `lark_md`,
-    /// which would interpret embedded `<at>` / links / markdown. Guards against a
-    /// regression back to the lark_md field rendering.
+    /// Rich pushes use Feishu `post` + `md` so CommonMark/GFM in the agent
+    /// body actually renders. The colored interactive-card header is gone.
     #[test]
-    fn fields_render_as_plain_text_not_lark_md() {
+    fn rich_message_is_post_with_md_tag() {
+        let msg = RichMessage::info("done with **bold** and a list:\n- a\n- b")
+            .with_title("完成 Filter UI Grok");
+        let post = build_lark_post(&msg);
+        let node = &post["zh_cn"]["content"][0][0];
+        assert_eq!(node["tag"], "md");
+        let text = node["text"].as_str().unwrap();
+        assert!(text.contains("## 完成 Filter UI Grok"), "got {text}");
+        assert!(text.contains("**bold**"), "got {text}");
+        assert!(text.contains("- a"), "got {text}");
+        assert!(post.get("header").is_none(), "must not use a card header");
+        assert!(post.get("elements").is_none(), "must not use a card body");
+    }
+
+    /// `<at>` is Feishu-extended markdown that would @everyone / inject a
+    /// mention. Strip it; keep the rest of the markdown (bold, links).
+    #[test]
+    fn strips_at_mention_tags_from_markdown() {
+        let raw = "<at id=all></at> **bold** [x](http://e.test) <at user_id=\"ou_1\">Tom</at>";
+        let msg = RichMessage::info(raw).with_title("User Message");
+        let post = build_lark_post(&msg);
+        let text = post_md_text(&post);
+        assert!(!text.contains("<at"), "got {text}");
+        assert!(!text.contains("id=all"), "got {text}");
+        assert!(text.contains("**bold**"), "got {text}");
+        assert!(text.contains("[x](http://e.test)"), "got {text}");
+    }
+
+    #[test]
+    fn field_at_tags_are_stripped() {
         let injected = "Bash: echo [x](http://e.test) <at id=all></at> **b**";
         let msg = RichMessage {
             title: Some("Permission Request".into()),
@@ -735,26 +701,11 @@ mod tests {
             fields: vec![("Operation".into(), injected.into())],
             level: MessageLevel::Warning,
         };
-        let card = build_lark_card(&msg);
-
-        let elements = card["elements"].as_array().expect("elements array");
-        let field_el = elements
-            .iter()
-            .find(|e| e.get("fields").is_some())
-            .expect("a div element carrying fields");
-        let fields = field_el["fields"].as_array().expect("fields array");
-        assert_eq!(
-            fields[0]["text"]["tag"], "plain_text",
-            "field text must be plain_text, not lark_md"
-        );
-        // The injected value is preserved verbatim, with no markup interpretation.
-        let content = fields[0]["text"]["content"].as_str().unwrap();
-        assert!(content.contains(injected), "got {content:?}");
-        assert!(
-            elements
-                .iter()
-                .all(|e| e["text"]["tag"] != "lark_md" && e["tag"] != "lark_md"),
-            "no element may render content as lark_md"
-        );
+        let post = build_lark_post(&msg);
+        let text = post_md_text(&post);
+        assert!(!text.contains("<at"), "got {text}");
+        assert!(text.contains("**Operation**"), "got {text}");
+        assert!(text.contains("[x](http://e.test)"), "got {text}");
+        assert!(text.contains("**b**"), "got {text}");
     }
 }
