@@ -16,6 +16,9 @@ tsconfig.tsbuildinfo
 .iflycode
 .iflycode/
 
+work
+work/
+
 # Next.js
 .next/
 out/
