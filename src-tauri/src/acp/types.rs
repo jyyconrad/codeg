@@ -275,6 +275,136 @@ pub fn async_task_state_is_terminal(state: &str) -> bool {
     matches!(state, "completed" | "failed" | "stopped")
 }
 
+/// One phase in a long-running workflow (Grok `workflow_updated`, Claude
+/// `local_workflow`, or any future adapter that projects onto this shape).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPhase {
+    pub title: String,
+    /// `pending` | `active` | `done` | `failed`. Plain string so an unmapped
+    /// future value still round-trips.
+    #[serde(default)]
+    pub state: String,
+}
+
+/// Canonical live projection of a background workflow. Agent-specific wire
+/// frames (Grok `workflow_updated`, AIR `async_task` with `taskType=workflow`)
+/// are adapted into this shape before they hit SessionState / the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRun {
+    pub run_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    /// Same vocabulary as [`AsyncTaskRecord::state`].
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<WorkflowPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_phase: Option<String>,
+    #[serde(default)]
+    pub agents_done: u32,
+    #[serde(default)]
+    pub agents_running: u32,
+    #[serde(default)]
+    pub agents_used: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event: Option<String>,
+    #[serde(default)]
+    pub can_stop: bool,
+}
+
+/// Partial revision of a [`WorkflowRun`]. Same merge contract as
+/// [`AsyncTaskDelta`]: only a `spawned` frame may CREATE a row, and absent
+/// fields mean unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDelta {
+    pub run_id: String,
+    pub spawned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phases: Option<Vec<WorkflowPhase>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_done: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_running: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_used: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_stop: Option<bool>,
+}
+
+impl WorkflowDelta {
+    pub fn to_record(&self) -> WorkflowRun {
+        WorkflowRun {
+            run_id: self.run_id.clone(),
+            name: self.name.clone().unwrap_or_else(|| "Workflow".into()),
+            objective: self.objective.clone(),
+            state: self.state.clone().unwrap_or_else(|| "running".into()),
+            phases: self.phases.clone().unwrap_or_default(),
+            current_phase: self.current_phase.clone(),
+            agents_done: self.agents_done.unwrap_or(0),
+            agents_running: self.agents_running.unwrap_or(0),
+            agents_used: self.agents_used.unwrap_or(0),
+            elapsed_ms: self.elapsed_ms,
+            last_event: self.last_event.clone(),
+            can_stop: self.can_stop.unwrap_or(false),
+        }
+    }
+
+    pub fn apply_to(&self, record: &mut WorkflowRun) {
+        if let Some(v) = &self.name {
+            record.name = v.clone();
+        }
+        if let Some(v) = &self.objective {
+            record.objective = Some(v.clone());
+        }
+        if let Some(v) = &self.state {
+            record.state = v.clone();
+        }
+        if let Some(v) = &self.phases {
+            record.phases = v.clone();
+        }
+        if let Some(v) = &self.current_phase {
+            record.current_phase = Some(v.clone());
+        }
+        if let Some(v) = self.agents_done {
+            record.agents_done = v;
+        }
+        if let Some(v) = self.agents_running {
+            record.agents_running = v;
+        }
+        if let Some(v) = self.agents_used {
+            record.agents_used = v;
+        }
+        if let Some(v) = self.elapsed_ms {
+            record.elapsed_ms = Some(v);
+        }
+        if let Some(v) = &self.last_event {
+            record.last_event = Some(v.clone());
+        }
+        if let Some(v) = self.can_stop {
+            record.can_stop = v;
+        }
+    }
+}
+
+pub fn workflow_state_is_terminal(state: &str) -> bool {
+    async_task_state_is_terminal(state)
+}
+
 /// Events pushed from Rust backend to frontend via Tauri event system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -555,6 +685,10 @@ pub enum AcpEvent {
     /// advertises `asyncTasks` to: claude-agent-acp (0.73+) and codex-acp
     /// (1.10+).
     AsyncTask { delta: AsyncTaskDelta },
+    /// Canonical workflow progress (see [`WorkflowDelta`]). Agent-specific
+    /// frames are adapted into this shape before they are stored or rendered:
+    /// Grok `workflow_updated`, AIR `async_task` with `taskType=workflow`.
+    Workflow { delta: WorkflowDelta },
     /// `session/load` failed in a way codeg cannot paper over — the agent has
     /// no record of this `session_id`, the session/process died, or it is
     /// archived. Emitted instead of silently falling back to `session/new`, so

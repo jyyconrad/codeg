@@ -3749,6 +3749,11 @@
         "stopDeclined": "Diese Aufgabe konnte nicht gestoppt werden – sie ist möglicherweise bereits beendet.",
         "stopFailed": "Aufgabe konnte nicht gestoppt werden: {error}"
       },
+      "workflows": {
+        "starting": "Startet",
+        "phase": "{name} ({current}/{total})",
+        "agents": "{done} fertig · {running} aktiv"
+      },
       "proposedPlan": {
         "title": "Vorgeschlagener Plan",
         "planning": "Wird geplant…"

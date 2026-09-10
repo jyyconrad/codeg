@@ -3749,6 +3749,11 @@
         "stopDeclined": "無法停止該任務，它可能已經結束。",
         "stopFailed": "停止任務失敗：{error}"
       },
+      "workflows": {
+        "starting": "啟動中",
+        "phase": "{name}（{current}/{total}）",
+        "agents": "{done} 已完成 · {running} 執行中"
+      },
       "proposedPlan": {
         "title": "計劃提案",
         "planning": "規劃中…"

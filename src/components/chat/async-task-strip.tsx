@@ -4,10 +4,12 @@
  * Live AIR async tasks, pinned above the transcript in `conversation-shell`.
  *
  * These are the agent's NON-AGENT background jobs — Claude's
- * `Bash(run_in_background)` shells, workflows and monitors (claude-agent-acp
- * 0.73+), and codex's background terminals (codex-acp 1.10+) — reported on the
- * adapter's own lifecycle channel. The transcript already draws the tool call
- * that LAUNCHED such a job, but it cannot say whether the job is still alive:
+ * `Bash(run_in_background)` shells and monitors (claude-agent-acp 0.73+), and
+ * Codex's background terminals (codex-acp 1.10+) — reported on the adapter's
+ * own lifecycle channel. Workflow-typed AIR tasks are filtered out here and
+ * rendered by `WorkflowProgressStrip` instead. The transcript already draws
+ * the tool call that LAUNCHED such a job, but it cannot say whether the job
+ * is still alive:
  * the poll-derived card explicitly refuses to claim "running" because a
  * transcript can't tell a live task from one whose CLI died, and codex's
  * launching call simply never settles. This strip is the authoritative answer,
@@ -63,7 +65,7 @@ export function AsyncTaskStrip({
    *  task. Undefined disables every stop button (no live connection to ask). */
   onStop?: (taskId: string) => Promise<boolean>
 }) {
-  const live = liveAsyncTasks(tasks)
+  const live = liveAsyncTasks(tasks).filter((t) => t.task_type !== "workflow")
   if (live.length === 0) return null
 
   return (
@@ -116,11 +118,13 @@ function AsyncTaskRow({
     }
   }, [onStop, stopping, task.task_id])
 
-  // The meta line is the "is this making progress" evidence: the tool the task
-  // last ran, then its cost. Both are absent until the first progress tick.
+  // The meta line is the "is this making progress" evidence: a workflow's
+  // phase summary, the tool the task last ran, then its cost. All are absent
+  // until the first progress tick.
   const meta = [
-    task.last_tool_name,
-    task.usage
+    task.summary,
+    !task.summary ? task.last_tool_name : null,
+    task.usage && task.usage.total_tokens > 0
       ? t("tokens", { count: formatTokenCount(task.usage.total_tokens) })
       : null,
   ].filter(Boolean) as string[]

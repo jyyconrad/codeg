@@ -3749,6 +3749,11 @@
         "stopDeclined": "このタスクは停止できませんでした。すでに終了している可能性があります。",
         "stopFailed": "タスクの停止に失敗しました: {error}"
       },
+      "workflows": {
+        "starting": "開始中",
+        "phase": "{name}（{current}/{total}）",
+        "agents": "{done} 完了 · {running} 実行中"
+      },
       "proposedPlan": {
         "title": "提案された計画",
         "planning": "計画中…"

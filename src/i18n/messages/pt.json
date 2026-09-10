@@ -3749,6 +3749,11 @@
         "stopDeclined": "Não foi possível parar essa tarefa — ela pode já ter terminado.",
         "stopFailed": "Falha ao parar a tarefa: {error}"
       },
+      "workflows": {
+        "starting": "Iniciando",
+        "phase": "{name} ({current}/{total})",
+        "agents": "{done} concluídos · {running} em execução"
+      },
       "proposedPlan": {
         "title": "Plano proposto",
         "planning": "A planear…"

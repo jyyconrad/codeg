@@ -3749,6 +3749,11 @@
         "stopDeclined": "Impossible d'arrêter cette tâche : elle est peut-être déjà terminée.",
         "stopFailed": "Échec de l'arrêt de la tâche : {error}"
       },
+      "workflows": {
+        "starting": "Démarrage",
+        "phase": "{name} ({current}/{total})",
+        "agents": "{done} terminés · {running} en cours"
+      },
       "proposedPlan": {
         "title": "Plan proposé",
         "planning": "Planification…"

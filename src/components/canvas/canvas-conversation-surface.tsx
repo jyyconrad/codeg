@@ -726,6 +726,7 @@ export function CanvasConversationSurface({
           claudeApiRetry={conn.claudeApiRetry}
           sessionFailures={conn.sessionFailures}
           asyncTasks={conn.asyncTasks}
+          workflows={conn.workflows}
           onStopAsyncTask={handleStopAsyncTask}
           pendingPermission={conn.pendingPermission}
           pendingQuestion={conn.pendingQuestion}

@@ -16,7 +16,7 @@ use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
     AcpEvent, AsyncTaskRecord, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus,
     EventEnvelope, GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo,
-    SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo,
+    SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo, WorkflowRun,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;
@@ -541,6 +541,11 @@ pub struct SessionState {
     /// deterministic snapshot order.
     pub async_tasks: BTreeMap<String, AsyncTaskRecord>,
 
+    /// Canonical workflow runs, adapted from Grok `workflow_updated` and AIR
+    /// `async_task` frames with `taskType=workflow`. Same retain-after-settle
+    /// rule as [`Self::async_tasks`].
+    pub workflows: BTreeMap<String, WorkflowRun>,
+
     /// When the last async-task delta of any kind landed. Bounds the keep-alive
     /// exemption in `has_active_background_work` exactly the way
     /// `background_activity_at` bounds the watcher's half — see
@@ -700,6 +705,7 @@ impl SessionState {
             goal_active: false,
             session_failures: BTreeMap::new(),
             async_tasks: BTreeMap::new(),
+            workflows: BTreeMap::new(),
             async_task_activity_at: None,
             last_assistant_text: None,
             pending_user_message: None,
@@ -772,6 +778,7 @@ impl SessionState {
                     // the turn that started it, and "fork from here" is only
                     // accepted between turns.
                     self.async_tasks.clear();
+                    self.workflows.clear();
                     self.async_task_activity_at = None;
                 }
                 self.external_id = Some(session_id.clone());
@@ -1358,6 +1365,22 @@ impl SessionState {
                         .insert(record.id.clone(), record.clone());
                 }
             }
+            AcpEvent::Workflow { delta } => {
+                match self.workflows.get_mut(&delta.run_id) {
+                    Some(existing) => delta.apply_to(existing),
+                    None if delta.spawned => {
+                        self.workflows
+                            .insert(delta.run_id.clone(), delta.to_record());
+                    }
+                    None => {
+                        tracing::debug!(
+                            run_id = %delta.run_id,
+                            "[ACP] ignoring workflow delta for an unannounced run"
+                        );
+                    }
+                }
+                self.async_task_activity_at = Some(Utc::now());
+            }
             AcpEvent::AsyncTask { delta } => {
                 // The SAME merge the frontend reducer applies, so a client
                 // seeded from the snapshot and one that watched every delta
@@ -1448,8 +1471,8 @@ impl SessionState {
     /// is handled directly (`SessionStarted` clears the table on a session-id
     /// change); this window is what catches the ones nobody predicted.
     ///
-    /// Refreshed by ANY async-task delta, so a task that keeps reporting keeps
-    /// its exemption for as long as it runs.
+    /// Refreshed by ANY async-task or workflow delta, so a task that keeps
+    /// reporting keeps its exemption for as long as it runs.
     ///
     /// That clause is claude-only in practice. codex-acp publishes no
     /// `async_task_progress` channel at all (only `_spawned` and
@@ -1461,11 +1484,15 @@ impl SessionState {
     /// mean pinning a connection open on a liveness claim nothing re-verifies —
     /// the exact failure this age bound exists to prevent.
     pub fn has_live_async_task(&self, now: DateTime<Utc>) -> bool {
-        if !self
+        let live_task = self
             .async_tasks
             .values()
-            .any(|t| !crate::acp::types::async_task_state_is_terminal(&t.state))
-        {
+            .any(|t| !crate::acp::types::async_task_state_is_terminal(&t.state));
+        let live_workflow = self
+            .workflows
+            .values()
+            .any(|w| !crate::acp::types::workflow_state_is_terminal(&w.state));
+        if !live_task && !live_workflow {
             return false;
         }
         match self.async_task_activity_at {
@@ -1885,6 +1912,7 @@ impl SessionState {
             last_error: self.last_error.clone(),
             session_failures: self.session_failures.values().cloned().collect(),
             async_tasks: self.async_tasks.values().cloned().collect(),
+            workflows: self.workflows.values().cloned().collect(),
             goal_actions: self.goal_actions.clone(),
             event_seq: self.event_seq,
         }
@@ -2008,6 +2036,10 @@ pub struct LiveSessionSnapshot {
     /// keep the wire shape byte-identical pre-feature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub async_tasks: Vec<AsyncTaskRecord>,
+    /// Canonical workflow runs. Terminal rows included for the same reason as
+    /// `async_tasks`. Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<WorkflowRun>,
     /// Goal-control action vocabulary the goal card gates its buttons on
     /// (see `SessionState.goal_actions`): the advertised list for neutral-goal
     /// adapters, the legacy ["pause","clear"] pair for the rest.
@@ -2117,6 +2149,7 @@ mod tests {
         AcpEvent, AsyncTaskDelta, AsyncTaskUsage, ConnectionStatus, DelegationResultSummary,
         EventEnvelope, PromptCapabilitiesInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
         SessionConfigSelectInfo, SessionModeInfo, SessionModeStateInfo, UserMessageBlock,
+        WorkflowDelta, WorkflowPhase,
     };
 
     fn fresh_state() -> SessionState {
@@ -2459,6 +2492,140 @@ mod tests {
             session_id: "s2".into(),
         });
         assert!(s.async_tasks.is_empty());
+        assert!(!s.has_active_background_work(Utc::now()));
+    }
+
+    fn workflow_delta(run_id: &str, spawned: bool) -> WorkflowDelta {
+        WorkflowDelta {
+            run_id: run_id.into(),
+            spawned,
+            name: None,
+            objective: None,
+            state: None,
+            phases: None,
+            current_phase: None,
+            agents_done: None,
+            agents_running: None,
+            agents_used: None,
+            elapsed_ms: None,
+            last_event: None,
+            can_stop: None,
+        }
+    }
+
+    #[test]
+    fn workflow_rows_are_created_only_by_a_spawn_delta() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::Workflow {
+            delta: workflow_delta("ghost", false),
+        });
+        assert!(s.workflows.is_empty());
+
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("running".into()),
+                phases: Some(vec![
+                    WorkflowPhase {
+                        title: "Plan".into(),
+                        state: "pending".into(),
+                    },
+                    WorkflowPhase {
+                        title: "Research".into(),
+                        state: "pending".into(),
+                    },
+                ]),
+                ..workflow_delta("wf_1", true)
+            },
+        });
+        let row = &s.workflows["wf_1"];
+        assert_eq!(row.name, "deep-research");
+        assert_eq!(row.state, "running");
+        assert_eq!(row.phases.len(), 2);
+    }
+
+    #[test]
+    fn workflow_deltas_revise_only_the_fields_they_carry() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                name: Some("deep-research".into()),
+                ..workflow_delta("wf_1", true)
+            },
+        });
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                current_phase: Some("Research".into()),
+                agents_done: Some(1),
+                agents_running: Some(4),
+                elapsed_ms: Some(43_362),
+                ..workflow_delta("wf_1", false)
+            },
+        });
+        let row = &s.workflows["wf_1"];
+        assert_eq!(row.name, "deep-research");
+        assert_eq!(row.current_phase.as_deref(), Some("Research"));
+        assert_eq!(row.agents_done, 1);
+        assert_eq!(row.agents_running, 4);
+        assert_eq!(row.elapsed_ms, Some(43_362));
+
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                state: Some("completed".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        });
+        assert_eq!(s.workflows["wf_1"].state, "completed");
+        let snap = s.to_snapshot();
+        assert_eq!(snap.workflows.len(), 1);
+        assert_eq!(snap.workflows[0].run_id, "wf_1");
+    }
+
+    #[test]
+    fn a_live_workflow_alone_defers_the_idle_sweep() {
+        let mut s = fresh_state();
+        let now = Utc::now();
+        assert!(!s.has_active_background_work(now));
+
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                name: Some("deep-research".into()),
+                ..workflow_delta("wf_1", true)
+            },
+        });
+        assert_eq!(s.background_outstanding, 0);
+        assert!(s.async_tasks.is_empty());
+        assert!(s.has_active_background_work(now));
+
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                state: Some("completed".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        });
+        assert!(!s.has_active_background_work(now));
+    }
+
+    #[test]
+    fn a_session_id_change_drops_the_previous_session_workflows() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s1".into(),
+        });
+        s.apply_event(&AcpEvent::Workflow {
+            delta: workflow_delta("wf_1", true),
+        });
+        assert!(s.has_active_background_work(Utc::now()));
+
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s1".into(),
+        });
+        assert_eq!(s.workflows.len(), 1);
+
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s2".into(),
+        });
+        assert!(s.workflows.is_empty());
         assert!(!s.has_active_background_work(Utc::now()));
     }
 

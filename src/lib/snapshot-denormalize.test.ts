@@ -57,6 +57,35 @@ describe("denormalizeSnapshot — active_delegations", () => {
   })
 })
 
+describe("denormalizeSnapshot — workflows", () => {
+  it("defaults workflows to [] when the field is absent", () => {
+    const snap = baseSnapshot()
+    delete (snap as { workflows?: unknown }).workflows
+    expect(denormalizeSnapshot(snap).workflows).toEqual([])
+  })
+
+  it("carries workflow runs through to the patch", () => {
+    const patch = denormalizeSnapshot(
+      baseSnapshot({
+        workflows: [
+          {
+            run_id: "wf_1",
+            name: "deep-research",
+            state: "running",
+            phases: [{ title: "Plan", state: "active" }],
+            agents_done: 0,
+            agents_running: 1,
+            agents_used: 1,
+            can_stop: false,
+          },
+        ],
+      })
+    )
+    expect(patch.workflows).toHaveLength(1)
+    expect(patch.workflows[0].name).toBe("deep-research")
+  })
+})
+
 describe("denormalizeSnapshot — subagent attribution on live blocks", () => {
   it("forwards parent_tool_use_id onto text/thinking, absent field stays undefined", () => {
     const patch = denormalizeSnapshot(

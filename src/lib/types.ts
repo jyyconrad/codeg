@@ -2623,6 +2623,10 @@ export type AcpEvent =
       delta: AsyncTaskDelta
     }
   | {
+      type: "workflow"
+      delta: WorkflowDelta
+    }
+  | {
       type: "session_load_failed"
       session_id: string
       message: string
@@ -3075,6 +3079,48 @@ export interface AsyncTaskDelta {
   tool_call_id?: string | null
 }
 
+export interface WorkflowPhase {
+  title: string
+  /** `pending` | `active` | `done` | `failed`. */
+  state: string
+}
+
+/**
+ * Canonical live projection of a background workflow. Agent-specific frames
+ * (Grok `workflow_updated`, AIR `async_task` with `taskType=workflow`) are
+ * adapted into this shape before they reach the UI.
+ */
+export interface WorkflowRun {
+  run_id: string
+  name: string
+  objective?: string | null
+  state: string
+  phases: WorkflowPhase[]
+  current_phase?: string | null
+  agents_done: number
+  agents_running: number
+  agents_used: number
+  elapsed_ms?: number | null
+  last_event?: string | null
+  can_stop: boolean
+}
+
+export interface WorkflowDelta {
+  run_id: string
+  spawned: boolean
+  name?: string | null
+  objective?: string | null
+  state?: string | null
+  phases?: WorkflowPhase[] | null
+  current_phase?: string | null
+  agents_done?: number | null
+  agents_running?: number | null
+  agents_used?: number | null
+  elapsed_ms?: number | null
+  last_event?: string | null
+  can_stop?: boolean | null
+}
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -3140,6 +3186,8 @@ export interface LiveSessionSnapshot {
    *  re-create a settled task as a running one on its next correction. Absent
    *  while empty (the common case). */
   async_tasks?: AsyncTaskRecord[]
+  /** Canonical workflow runs. Terminal rows included. Absent while empty. */
+  workflows?: WorkflowRun[]
   /** Goal-control action vocabulary the goal card gates its buttons on: the
    *  advertised `_meta.goal.actions` for neutral-goal adapters (claude has no
    *  "pause"), else the legacy ["pause","clear"] pair. `null` while the

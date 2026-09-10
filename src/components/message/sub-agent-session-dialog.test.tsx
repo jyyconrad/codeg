@@ -211,6 +211,7 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     claudeApiRetry: null,
     sessionFailures: [],
     asyncTasks: [],
+    workflows: [],
     error: null,
     loadError: null,
     loadErrorCommand: null,

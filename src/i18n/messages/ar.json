@@ -3749,6 +3749,11 @@
         "stopDeclined": "تعذّر إيقاف هذه المهمة، ربما تكون قد انتهت بالفعل.",
         "stopFailed": "فشل إيقاف المهمة: {error}"
       },
+      "workflows": {
+        "starting": "جارٍ البدء",
+        "phase": "{name} ({current}/{total})",
+        "agents": "{done} مكتمل · {running} قيد التشغيل"
+      },
       "proposedPlan": {
         "title": "الخطة المقترحة",
         "planning": "جارٍ التخطيط…"

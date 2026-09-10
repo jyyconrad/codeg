@@ -3749,6 +3749,11 @@
         "stopDeclined": "That task could not be stopped — it may have already finished.",
         "stopFailed": "Failed to stop the task: {error}"
       },
+      "workflows": {
+        "starting": "Starting",
+        "phase": "{name} ({current}/{total})",
+        "agents": "{done} done · {running} running"
+      },
       "proposedPlan": {
         "title": "Proposed plan",
         "planning": "Planning…"

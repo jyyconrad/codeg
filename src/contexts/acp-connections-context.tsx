@@ -51,6 +51,8 @@ import type {
   ActiveDelegationState,
   AsyncTaskDelta,
   AsyncTaskRecord,
+  WorkflowDelta,
+  WorkflowRun,
   AvailableCommandInfo,
   ConfigStaleKind,
   ConnectionStatus,
@@ -86,6 +88,12 @@ import {
   mergeAsyncTasks,
   upsertAsyncTask,
 } from "@/lib/async-tasks"
+import {
+  adoptUnknownWorkflows,
+  liveWorkflows,
+  mergeWorkflows,
+  upsertWorkflow,
+} from "@/lib/workflow-progress"
 import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
@@ -299,11 +307,15 @@ export interface ConnectionState {
    *  merge/settle contract). Retained resolved — entries double as per-id
    *  revision watermarks; the banner splits active from resolved itself. */
   sessionFailures: SessionFailureRecord[]
-  /** AIR async tasks — Claude's background shells / workflows / monitors (see
-   *  `lib/async-tasks.ts` for the merge contract). Retained after they settle,
-   *  because the adapter keeps revising a finished task; the strip filters to
-   *  the live ones itself. */
+  /** AIR async tasks — Claude's background shells / monitors and Codex
+   *  background terminals (see `lib/async-tasks.ts`). Workflow-typed tasks are
+   *  adapted onto `workflows` instead. Retained after they settle, because the
+   *  adapter keeps revising a finished task; the strip filters to the live ones
+   *  itself. */
   asyncTasks: AsyncTaskRecord[]
+  /** Canonical workflow runs (see `lib/workflow-progress.ts`). Retained after
+   *  they settle; the progress strip filters to the live ones. */
+  workflows: WorkflowRun[]
   error: string | null
   /**
    * Set when the agent rejected `session/load` in a way codeg cannot paper
@@ -472,6 +484,11 @@ type Action =
       type: "ASYNC_TASK"
       contextKey: string
       delta: AsyncTaskDelta
+    }
+  | {
+      type: "WORKFLOW"
+      contextKey: string
+      delta: WorkflowDelta
     }
   | {
       // Lifecycle settle for the AIR failure table (mirrors
@@ -1413,6 +1430,7 @@ function connectionsReducer(
         claudeApiRetry: null,
         sessionFailures: [],
         asyncTasks: [],
+        workflows: [],
         error: null,
         loadError: null,
         loadErrorCommand: null,
@@ -1473,6 +1491,7 @@ function connectionsReducer(
         claudeApiRetry: null,
         sessionFailures: [],
         asyncTasks: [],
+        workflows: [],
         error: null,
         loadError: null,
         loadErrorCommand: null,
@@ -1577,6 +1596,11 @@ function connectionsReducer(
         : isStaleSnapshot
           ? adoptUnknownAsyncTasks(current.asyncTasks, action.patch.asyncTasks)
           : mergeAsyncTasks(current.asyncTasks, action.patch.asyncTasks)
+      const mergedWorkflows = !sameSession
+        ? current.workflows
+        : isStaleSnapshot
+          ? adoptUnknownWorkflows(current.workflows, action.patch.workflows)
+          : mergeWorkflows(current.workflows, action.patch.workflows)
 
       if (isStaleSnapshot) {
         if (
@@ -1587,7 +1611,8 @@ function connectionsReducer(
           mergedAvailableCommands === current.availableCommands &&
           mergedPromptCapabilities === current.promptCapabilities &&
           mergedSessionFailures === current.sessionFailures &&
-          mergedAsyncTasks === current.asyncTasks
+          mergedAsyncTasks === current.asyncTasks &&
+          mergedWorkflows === current.workflows
         ) {
           return state
         }
@@ -1602,6 +1627,7 @@ function connectionsReducer(
           supportsFork: mergedSupportsFork,
           sessionFailures: mergedSessionFailures,
           asyncTasks: mergedAsyncTasks,
+          workflows: mergedWorkflows,
         })
         return next
       }
@@ -1657,6 +1683,7 @@ function connectionsReducer(
         backgroundOutstanding: action.patch.backgroundOutstanding,
         sessionFailures: mergedSessionFailures,
         asyncTasks: mergedAsyncTasks,
+        workflows: mergedWorkflows,
         error: action.patch.lastError,
         lastAppliedSeq: action.patch.eventSeq,
       })
@@ -2301,6 +2328,7 @@ function connectionsReducer(
         ...conn,
         sessionId: action.sessionId,
         asyncTasks: forked ? [] : conn.asyncTasks,
+        workflows: forked ? [] : conn.workflows,
       })
       return next
     }
@@ -2563,6 +2591,16 @@ function connectionsReducer(
       if (merged === conn.asyncTasks) return state
       const next = new Map(state)
       next.set(action.contextKey, { ...conn, asyncTasks: merged })
+      return next
+    }
+
+    case "WORKFLOW": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const merged = upsertWorkflow(conn.workflows, action.delta)
+      if (merged === conn.workflows) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, workflows: merged })
       return next
     }
 
@@ -4174,6 +4212,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           })
           break
         }
+        case "workflow": {
+          dispatch({
+            type: "WORKFLOW",
+            contextKey,
+            delta: e.delta,
+          })
+          break
+        }
         case "turn_retrying": {
           // codex-acp #289: a retryable turn error keeps the turn alive (codex
           // auto-retries). Reuse the Claude API-retry banner — codex doesn't
@@ -5014,6 +5060,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // strip is actively showing as running. Mirrors the backend's
         // `has_active_background_work`, which ORs the two the same way.
         if (liveAsyncTasks(conn.asyncTasks).length > 0) continue
+        if (liveWorkflows(conn.workflows).length > 0) continue
         const lastActive = lastActivityRef.current.get(contextKey) ?? 0
         if (now - lastActive > CONNECTION_IDLE_TIMEOUT_MS) {
           toDisconnect.push({

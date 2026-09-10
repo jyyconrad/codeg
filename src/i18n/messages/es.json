@@ -3749,6 +3749,11 @@
         "stopDeclined": "No se pudo detener esa tarea; puede que ya haya terminado.",
         "stopFailed": "No se pudo detener la tarea: {error}"
       },
+      "workflows": {
+        "starting": "Iniciando",
+        "phase": "{name} ({current}/{total})",
+        "agents": "{done} listos · {running} en curso"
+      },
       "proposedPlan": {
         "title": "Plan propuesto",
         "planning": "Planificando…"

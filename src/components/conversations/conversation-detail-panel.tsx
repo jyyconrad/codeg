@@ -24,6 +24,7 @@ import {
   useAcpEvent,
 } from "@/contexts/acp-connections-context"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { isAvailableAgent } from "@/lib/available-agents"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
@@ -2058,6 +2059,7 @@ const ConversationTabView = memo(function ConversationTabView({
       }
       onSessionFailureDismiss={handleSessionFailureDismiss}
       asyncTasks={conn.asyncTasks}
+      workflows={conn.workflows}
       onStopAsyncTask={
         // Owners of a live connection only — same gate as the failure actions:
         // a viewer has no connection to send the stop on.
@@ -2162,10 +2164,7 @@ const ConversationTabView = memo(function ConversationTabView({
                   onFallback={handleAgentFallback}
                   onAgentsLoaded={(agents) => {
                     setAgentsLoaded(true)
-                    setUsableAgentCount(
-                      agents.filter((agent) => agent.enabled && agent.available)
-                        .length
-                    )
+                    setUsableAgentCount(agents.filter(isAvailableAgent).length)
                   }}
                   onOpenAgentsSettings={handleOpenAgentsSettings}
                   disabled={isConnecting || dbConversationId != null}
@@ -2242,10 +2241,7 @@ const ConversationTabView = memo(function ConversationTabView({
               onFallback={handleAgentFallback}
               onAgentsLoaded={(agents) => {
                 setAgentsLoaded(true)
-                setUsableAgentCount(
-                  agents.filter((agent) => agent.enabled && agent.available)
-                    .length
-                )
+                setUsableAgentCount(agents.filter(isAvailableAgent).length)
               }}
               onOpenAgentsSettings={handleOpenAgentsSettings}
               disabled={isConnecting || dbConversationId != null}

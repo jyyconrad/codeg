@@ -52,6 +52,7 @@ use crate::acp::types::{
     SessionFailureRecord, SessionModeInfo, SessionModeStateInfo, ToolCallImageInfo,
     UserMessageBlock,
 };
+use crate::acp::workflow_adapt::{adapt_air_workflow, adapt_grok_workflow};
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
 use crate::network::proxy;
@@ -8909,7 +8910,7 @@ async fn run_conversation_loop<'a>(
                             // so these frames arrive on the IDLE loop as often
                             // as inside one.
                             if let Some(delta) = air_async_task_delta(&dispatch) {
-                                emit_with_state(&st, &h, AcpEvent::AsyncTask { delta }).await;
+                                emit_air_or_workflow_task(&st, &h, delta).await;
                             } else {
                             let drift = &mut config_drift_to_reassert;
                             let _ = MatchDispatch::new(dispatch)
@@ -9229,12 +9230,7 @@ async fn run_conversation_loop<'a>(
                                     // agent really did answer with nothing.
                                     if let Some(delta) = air_async_task_delta(&dispatch) {
                                         probe.saw_agent_output |= delta.spawned;
-                                        emit_with_state(
-                                            &st,
-                                            &h,
-                                            AcpEvent::AsyncTask { delta },
-                                        )
-                                        .await;
+                                        emit_air_or_workflow_task(&st, &h, delta).await;
                                     } else if let Err(e) = MatchDispatch::new(dispatch)
                                         .if_notification(
                                             async |notif: SessionNotification| {
@@ -11938,6 +11934,10 @@ struct CodeBuddyLiveState {
     /// (`subagent_finished` → BackgroundActivity) is unaffected — it targets
     /// promoted turns by design.
     grok_progress_eligible: HashSet<String>,
+    /// Grok workflow run ids already announced as a canonical workflow row. The
+    /// first `workflow_updated` for a run is `spawned`; later revisions are
+    /// progress.
+    grok_workflow_seen: HashSet<String>,
     /// Context window of the model this Grok turn runs on, resolved ONCE at turn
     /// start (`grok_current_model_context_window`) so the per-update usage peek
     /// never takes the state lock on the streaming hot path. `None` for non-Grok
@@ -12851,6 +12851,13 @@ async fn maybe_emit_ext_notification(
         for event in grok_subagent_events {
             emit_with_state(state, emitter, event).await;
         }
+    } else if let Some(delta) = adapt_grok_workflow(
+        agent_type,
+        notification.method(),
+        notification.params(),
+        &mut cb_state.grok_workflow_seen,
+    ) {
+        emit_with_state(state, emitter, AcpEvent::Workflow { delta }).await;
     } else if let Some(event) = map_claude_sdk_ext_notification(&notification)
         .or_else(|| map_grok_ext_notification(&notification, agent_type))
     {
@@ -12886,6 +12893,23 @@ fn fix_usage_update_nulls(mut dispatch: Dispatch) -> Dispatch {
         }
     }
     dispatch
+}
+
+/// Route an AIR async-task frame onto the workflow table when it is (or
+/// already was) a workflow, otherwise onto the generic async-task table.
+/// Claude's `local_workflow` arrives as `taskType: "workflow"`; Codex/OpenCode
+/// can join the same channel later without a UI change.
+async fn emit_air_or_workflow_task(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    delta: crate::acp::types::AsyncTaskDelta,
+) {
+    let known = state.read().await.workflows.contains_key(&delta.task_id);
+    if let Some(wf) = adapt_air_workflow(&delta, known) {
+        emit_with_state(state, emitter, AcpEvent::Workflow { delta: wf }).await;
+    } else {
+        emit_with_state(state, emitter, AcpEvent::AsyncTask { delta }).await;
+    }
 }
 
 /// Read one AIR async-task frame out of a raw `session/update` dispatch.
@@ -17760,6 +17784,35 @@ mod tests {
             Some("/tmp/tasks/t1.output")
         );
         assert_eq!(delta.tool_call_id.as_deref(), Some("tool-9"));
+    }
+
+    #[test]
+    fn air_workflow_spawn_is_adapted_onto_the_workflow_channel() {
+        let delta = air_async_task_delta(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "async_task_spawned",
+            "asyncTaskId": "wf-1",
+            "name": "explore",
+            "taskType": "workflow",
+            "description": "scan the repo",
+            "canStop": true,
+        })))
+        .expect("spawn frame");
+        let wf = crate::acp::workflow_adapt::adapt_air_workflow(&delta, false).expect("workflow");
+        assert!(wf.spawned);
+        assert_eq!(wf.run_id, "wf-1");
+        assert_eq!(wf.name.as_deref(), Some("explore"));
+        assert_eq!(wf.objective.as_deref(), Some("scan the repo"));
+        assert_eq!(wf.can_stop, Some(true));
+        assert!(crate::acp::workflow_adapt::adapt_air_workflow(
+            &air_async_task_delta(&async_task_notif(serde_json::json!({
+                "sessionUpdate": "async_task_spawned",
+                "asyncTaskId": "t1",
+                "taskType": "shell",
+            })))
+            .expect("shell"),
+            false
+        )
+        .is_none());
     }
 
     /// Progress and state frames revise an announced task. They must NOT read as
