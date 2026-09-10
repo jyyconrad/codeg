@@ -39,7 +39,9 @@ pub fn hash_file_core(
 ) -> Result<HashReport, AppCommandError> {
     let meta = std::fs::metadata(path).map_err(AppCommandError::io)?;
     if !meta.is_file() {
-        return Err(AppCommandError::invalid_input("Path is not a regular file."));
+        return Err(AppCommandError::invalid_input(
+            "Path is not a regular file.",
+        ));
     }
     let total = meta.len();
     let mut file = File::open(path).map_err(AppCommandError::io)?;

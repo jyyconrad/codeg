@@ -102,7 +102,9 @@ mod tauri_commands {
         }
         let pem = pem.unwrap_or_default();
         if pem.trim().is_empty() {
-            return Err(AppCommandError::invalid_input("Paste a PEM certificate or pick a file."));
+            return Err(AppCommandError::invalid_input(
+                "Paste a PEM certificate or pick a file.",
+            ));
         }
         cert::parse_cert_pem(&pem)
     }

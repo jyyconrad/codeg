@@ -91,9 +91,7 @@ X2ZAluIspCxdjwES1Av162SJOvMaPm/BltWQ1dp1ywoNd8ghSrABjAP7zA==
     fn rejects_garbage() {
         let err = parse_cert_pem("not a cert").unwrap_err();
         let msg = err.message.to_lowercase();
-        assert!(
-            msg.contains("pem") || msg.contains("certificate") || msg.contains("x.509")
-        );
+        assert!(msg.contains("pem") || msg.contains("certificate") || msg.contains("x.509"));
     }
 
     #[test]

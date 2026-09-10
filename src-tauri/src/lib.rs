@@ -74,8 +74,9 @@ mod tauri_app {
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
         science as science_commands, session_info as session_info_commands, system_settings,
-        terminal as terminal_commands, token_usage as token_usage_commands, toolbox, version_control,
-        windows, work_task as work_task_commands, workspace_state as workspace_state_commands,
+        terminal as terminal_commands, token_usage as token_usage_commands, toolbox,
+        version_control, windows, work_task as work_task_commands,
+        workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};

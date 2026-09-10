@@ -208,7 +208,10 @@ fn aes_gcm_crypt(
         ));
     }
     let nonce = Nonce::from_slice(nonce);
-    let payload = Payload { msg: data, aad: b"" };
+    let payload = Payload {
+        msg: data,
+        aad: b"",
+    };
     let out = match (alg, direction) {
         (Algorithm::Aes128, Direction::Encrypt) => {
             Aes128Gcm::new(GenericArray::from_slice(key)).encrypt(nonce, payload)
@@ -250,7 +253,9 @@ pub fn cipher_file_core(
     }
     let src_meta = std::fs::metadata(&params.src_path).map_err(AppCommandError::io)?;
     if !src_meta.is_file() {
-        return Err(AppCommandError::invalid_input("Source is not a regular file."));
+        return Err(AppCommandError::invalid_input(
+            "Source is not a regular file.",
+        ));
     }
     let total = src_meta.len();
     if params.mode == Mode::Gcm && total > GCM_MAX_BYTES {
@@ -374,12 +379,12 @@ fn cipher_after_key(
     }
 
     match params.direction {
-        Direction::Encrypt => {
-            encrypt_stream(params, emitter, cancel, &cipher, &mut chain, &mut src, &mut dest, total)
-        }
-        Direction::Decrypt => {
-            decrypt_stream(params, emitter, cancel, &cipher, &mut chain, &mut src, &mut dest, total)
-        }
+        Direction::Encrypt => encrypt_stream(
+            params, emitter, cancel, &cipher, &mut chain, &mut src, &mut dest, total,
+        ),
+        Direction::Decrypt => decrypt_stream(
+            params, emitter, cancel, &cipher, &mut chain, &mut src, &mut dest, total,
+        ),
     }
 }
 
@@ -486,7 +491,8 @@ fn decrypt_stream(
             pending.extend_from_slice(&block);
             if pending.len() > BLOCK {
                 let flush = pending.len() - BLOCK;
-                dest.write_all(&pending[..flush]).map_err(AppCommandError::io)?;
+                dest.write_all(&pending[..flush])
+                    .map_err(AppCommandError::io)?;
                 pending.drain(..flush);
             }
         }
