@@ -2,10 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
+import { FileJobBar } from "@/components/toolbox/file-job-bar"
 import { ToolPageShell } from "@/components/toolbox/tool-page-shell"
 import { useToolPendingInput } from "@/components/toolbox/use-tool-pending-input"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { toErrorMessage } from "@/lib/app-error"
+import { isLocalDesktop } from "@/lib/platform"
+import {
+  listenToolboxProgress,
+  toolboxCancelJob,
+  toolboxCipherFile,
+  toolboxRustAvailable,
+  type ToolboxProgress,
+} from "@/lib/toolbox-api"
 import { ParamField, ParamPanel, ParamSelect, Warn } from "./crypto-fields"
 import { type ByteEncoding, errorMessage } from "./encoding"
 import type { PaddingMode } from "./padding"
@@ -61,8 +71,12 @@ export default function SymmetricCipherTool() {
   const [inputEncoding, setInputEncoding] = useState<ByteEncoding>("utf8")
   const [outputEncoding, setOutputEncoding] = useState<ByteEncoding>("base64")
   const [prependIv, setPrependIv] = useState(false)
+  const [passphrase, setPassphrase] = useState("")
   const [result, setResult] = useState("")
   const [error, setError] = useState<string | null>(null)
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [progress, setProgress] = useState<ToolboxProgress | null>(null)
+  const [fileStatus, setFileStatus] = useState<string | null>(null)
 
   const onInput = useCallback((value: string) => setInput(value), [])
   useToolPendingInput(onInput)
@@ -138,6 +152,71 @@ export default function SymmetricCipherTool() {
     padding,
     prependIv,
   ])
+
+  useEffect(() => {
+    if (!jobId) return
+    let unsub: (() => void) | undefined
+    void listenToolboxProgress((event) => {
+      if (event.jobId === jobId) setProgress(event)
+    }).then((fn) => {
+      unsub = fn
+    })
+    return () => {
+      unsub?.()
+    }
+  }, [jobId])
+
+  async function runFileJob() {
+    if (!toolboxRustAvailable()) {
+      setError("File encryption needs the desktop app.")
+      return
+    }
+    const { open, save } = await import("@tauri-apps/plugin-dialog")
+    const srcPath = await open({
+      multiple: false,
+      title: direction === "encrypt" ? "Plaintext file" : "Ciphertext file",
+    })
+    if (typeof srcPath !== "string" || !srcPath) return
+    const destPath = await save({
+      defaultPath:
+        direction === "encrypt"
+          ? `${srcPath}.enc`
+          : srcPath.replace(/\.enc$/i, ""),
+      title: "Save output",
+    })
+    if (typeof destPath !== "string" || !destPath) return
+    const id = crypto.randomUUID()
+    setJobId(id)
+    setProgress({ jobId: id, kind: "cipher", bytesDone: 0, bytesTotal: 0 })
+    setError(null)
+    setFileStatus(`${srcPath} → ${destPath}`)
+    try {
+      await toolboxCipherFile({
+        srcPath,
+        destPath,
+        algorithm,
+        mode,
+        padding,
+        direction,
+        key,
+        keyEncoding,
+        iv,
+        ivEncoding,
+        prependIv,
+        passphrase: passphrase.trim() ? passphrase : null,
+        pbkdf2Iterations: passphrase.trim() ? 100_000 : null,
+        jobId: id,
+      })
+      setFileStatus(`Wrote ${destPath}`)
+    } catch (err) {
+      const message = toErrorMessage(err)
+      if (message !== "Cancelled") setError(message)
+      setFileStatus(null)
+    } finally {
+      setJobId(null)
+      setProgress(null)
+    }
+  }
 
   function onExample() {
     setDirection("encrypt")
@@ -278,8 +357,43 @@ export default function SymmetricCipherTool() {
           {mode === "gcm" ? (
             <p className="text-xs text-muted-foreground">
               GCM does not use padding. Nonce defaults to 12 bytes. Ciphertext
-              includes a 16-byte auth tag.
+              includes a 16-byte auth tag. File GCM is capped at 64 MiB.
             </p>
+          ) : null}
+          <ParamPanel title="File (desktop)">
+            <ParamField
+              label="Optional passphrase (PBKDF2)"
+              className="min-w-[16rem] flex-1"
+            >
+              <Input
+                type="password"
+                value={passphrase}
+                onChange={(event) => setPassphrase(event.target.value)}
+                autoComplete="off"
+              />
+            </ParamField>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!isLocalDesktop() || jobId != null}
+              onClick={() => void runFileJob()}
+            >
+              {direction === "encrypt" ? "Encrypt file…" : "Decrypt file…"}
+            </Button>
+          </ParamPanel>
+          {progress && jobId ? (
+            <FileJobBar
+              label="Processing file"
+              bytesDone={progress.bytesDone}
+              bytesTotal={progress.bytesTotal}
+              onCancel={() => {
+                void toolboxCancelJob(jobId)
+              }}
+            />
+          ) : null}
+          {fileStatus ? (
+            <p className="text-xs text-muted-foreground">{fileStatus}</p>
           ) : null}
         </div>
       }

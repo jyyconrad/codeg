@@ -56,7 +56,7 @@ export async function readFileBytes(file: File): Promise<Uint8Array> {
   if (file.size > SMALL_FILE_MAX_BYTES) {
     throw new CryptoToolError(
       "invalid-input",
-      `File is larger than ${SMALL_FILE_MAX_BYTES} bytes. Large-file hashing is not in v1.`
+      `File is larger than ${SMALL_FILE_MAX_BYTES} bytes. Use Hash from disk.`
     )
   }
   if (typeof file.stream === "function") {
@@ -71,7 +71,7 @@ export async function readFileBytes(file: File): Promise<Uint8Array> {
       if (total > SMALL_FILE_MAX_BYTES) {
         throw new CryptoToolError(
           "invalid-input",
-          `File is larger than ${SMALL_FILE_MAX_BYTES} bytes. Large-file hashing is not in v1.`
+          `File is larger than ${SMALL_FILE_MAX_BYTES} bytes. Use Hash from disk.`
         )
       }
     }
