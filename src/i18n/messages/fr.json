@@ -1753,8 +1753,6 @@
       "noConversationsFound": "Aucune conversation trouvée.",
       "importLocalSessions": "Importer les sessions locales",
       "importing": "Import en cours...",
-      "syncCodexGrok": "Synchroniser les sessions Codex / Grok",
-      "syncingCodexGrok": "Synchronisation...",
       "notifyChannels": "Canaux de notification…",
       "notifyChannelsDialog": {
         "title": "Canaux de notification",
@@ -1787,10 +1785,7 @@
         "updateGroupFailed": "Échec de la mise à jour du groupe : {message}",
         "deleteGroupFailed": "Échec de la suppression du groupe : {message}",
         "moveToGroupFailed": "Échec du déplacement du dossier : {message}",
-        "applyLayoutFailed": "Échec de l'enregistrement de l'ordre des dossiers : {message}",
-        "codexGrokSynced": "Synchronisé : {imported} nouvelles, {updated} mises à jour, {skipped} ignorées",
-        "codexGrokSyncFailed": "Échec de la synchronisation : {message}",
-        "codexGrokNone": "Aucune session Codex ou Grok pour ce dossier"
+        "applyLayoutFailed": "Échec de l'enregistrement de l'ordre des dossiers : {message}"
       },
       "statsLabel": "{folders} dossiers · {convos} conversations",
       "reorderHandle": "Glisser pour réorganiser",

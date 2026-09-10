@@ -2,6 +2,7 @@ pub mod backends;
 pub mod command_dispatcher;
 pub mod command_handlers;
 pub mod error;
+pub mod event_filter;
 pub mod event_subscriber;
 pub mod i18n;
 pub mod manager;

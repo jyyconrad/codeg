@@ -248,26 +248,6 @@ pub async fn import_selected_sessions(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SyncCodexGrokSessionsParams {
-    pub folder_id: i32,
-}
-
-pub async fn sync_codex_grok_sessions(
-    Extension(state): Extension<Arc<AppState>>,
-    Json(params): Json<SyncCodexGrokSessionsParams>,
-) -> Result<Json<ImportResult>, AppCommandError> {
-    Ok(Json(
-        conv_commands::sync_codex_grok_sessions_core(
-            &state.db.conn,
-            &state.emitter,
-            params.folder_id,
-        )
-        .await?,
-    ))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CreateConversationParams {
     pub folder_id: i32,
     pub agent_type: AgentType,

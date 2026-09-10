@@ -50,8 +50,12 @@ pub enum LiveContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_tool_use_id: Option<String>,
     },
-    ToolCallRef { tool_call_id: String },
-    Plan { entries: serde_json::Value },
+    ToolCallRef {
+        tool_call_id: String,
+    },
+    Plan {
+        entries: serde_json::Value,
+    },
 }
 
 /// Main-thread text after the last tool call. Empty / tool-only turns
@@ -636,6 +640,11 @@ pub struct SessionState {
     /// rises / `send_prompt`). Not serialized: backend-internal, like
     /// `turn_in_flight`.
     pub terminal_message_published: bool,
+
+    /// Write/edit/delete/move paths from the just-finished turn. Snapshotted
+    /// at TurnComplete before `active_tool_calls` is cleared, same timing as
+    /// `last_assistant_text`. Backend-internal: not on the client snapshot.
+    pub last_file_changes: Vec<crate::acp::run_settled::FileChange>,
 }
 
 impl SessionState {
@@ -702,6 +711,7 @@ impl SessionState {
             config_stale_kind: None,
             last_native_title: None,
             terminal_message_published: false,
+            last_file_changes: Vec::new(),
         }
     }
 
@@ -1083,6 +1093,9 @@ impl SessionState {
                         self.last_assistant_text = Some(assembled);
                     }
                 }
+                self.last_file_changes = crate::acp::run_settled::collect_file_changes_from_tools(
+                    &self.active_tool_calls,
+                );
                 self.live_message = None;
                 self.active_tool_calls.clear();
                 // The turn's user prompt is no longer "in flight" — the
@@ -1155,6 +1168,7 @@ impl SessionState {
                 self.pending_plan_approval = None;
                 // A new prompt starts a new connection run for IM fan-out.
                 self.terminal_message_published = false;
+                self.last_file_changes.clear();
                 // Starting a prompt past an active AIR failure acknowledges it
                 // — settle EVERYTHING, mirroring the frontend reducer's
                 // prompt-start settle so a client hydrating mid-turn doesn't
@@ -1474,6 +1488,17 @@ impl SessionState {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
+        }
+    }
+
+    /// File writes from the in-flight turn, else the TurnComplete snapshot.
+    /// Mirrors [`Self::concluding_assistant_text`]: cancel mid-turn must not
+    /// leak the previous turn's paths.
+    pub fn concluding_file_changes(&self) -> Vec<crate::acp::run_settled::FileChange> {
+        if !self.active_tool_calls.is_empty() {
+            crate::acp::run_settled::collect_file_changes_from_tools(&self.active_tool_calls)
+        } else {
+            self.last_file_changes.clone()
         }
     }
 
@@ -2315,7 +2340,10 @@ mod tests {
         assert_eq!(row.task_type, "shell");
         assert_eq!(row.last_tool_name.as_deref(), Some("Bash"));
         assert_eq!(row.usage.as_ref().unwrap().total_tokens, 1200);
-        assert_eq!(row.output_file_path.as_deref(), Some("/tmp/tasks/t1.output"));
+        assert_eq!(
+            row.output_file_path.as_deref(),
+            Some("/tmp/tasks/t1.output")
+        );
 
         // The adapter revises a task AFTER it settles — correcting a
         // best-effort `stopped` into the real outcome, or attaching a late
@@ -2458,7 +2486,12 @@ mod tests {
             }
         }
         let mut s = fresh_state();
-        s.apply_event(&failure("t1:error", 5, "warning", "Reconnecting, attempt 5 of 5."));
+        s.apply_event(&failure(
+            "t1:error",
+            5,
+            "warning",
+            "Reconnecting, attempt 5 of 5.",
+        ));
 
         // A cancelled/failed/empty exit is NOT recovery — the incident (e.g.
         // reconnect attempts with the network still down) must stay active
@@ -2910,7 +2943,10 @@ mod tests {
             text: "Answer ".into(),
             parent_tool_use_id: None,
         });
-        s.apply_event(&AcpEvent::Thinking { text: "hmm".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::Thinking {
+            text: "hmm".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&AcpEvent::ContentDelta {
             text: "continues here".into(),
             parent_tool_use_id: None,
@@ -3106,9 +3142,18 @@ mod tests {
     #[test]
     fn thinking_delta_creates_separate_block_from_text() {
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "T".into(), parent_tool_use_id: None });
-        s.apply_event(&AcpEvent::Thinking { text: "X".into(), parent_tool_use_id: None });
-        s.apply_event(&AcpEvent::ContentDelta { text: "Y".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "T".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::Thinking {
+            text: "X".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "Y".into(),
+            parent_tool_use_id: None,
+        });
         let live = s.live_message.as_ref().unwrap();
         assert_eq!(live.content.len(), 3);
         match &live.content[0] {
@@ -3327,7 +3372,10 @@ mod tests {
             text: "partial now".into(),
             parent_tool_use_id: None,
         });
-        assert_eq!(s.concluding_assistant_text().as_deref(), Some("partial now"));
+        assert_eq!(
+            s.concluding_assistant_text().as_deref(),
+            Some("partial now")
+        );
     }
 
     #[test]
@@ -3348,6 +3396,80 @@ mod tests {
             s.concluding_assistant_text().as_deref(),
             Some("final answer")
         );
+    }
+
+    #[test]
+    fn turn_complete_snapshots_edit_file_changes_and_skips_reads() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-read".into(),
+            title: "Read".into(),
+            kind: "read".into(),
+            status: "completed".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: Some(serde_json::json!([{"path": "src/skip.rs"}])),
+            meta: None,
+            images: None,
+        });
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-edit".into(),
+            title: "Edit".into(),
+            kind: "edit".into(),
+            status: "completed".into(),
+            content: None,
+            raw_input: Some(r#"{"file_path":"src/app.rs"}"#.into()),
+            raw_output: None,
+            locations: Some(serde_json::json!([{"path": "src/app.rs"}])),
+            meta: None,
+            images: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "done".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sess-1".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+        });
+
+        assert!(s.active_tool_calls.is_empty());
+        let files = s.concluding_file_changes();
+        assert_eq!(files.len(), 1, "reads must not count as file changes");
+        assert_eq!(files[0].path, "src/app.rs");
+        assert_eq!(
+            files[0].operation,
+            crate::acp::run_settled::FileChangeOp::Edit
+        );
+    }
+
+    #[test]
+    fn concluding_file_changes_prefers_in_flight_tools_over_previous_turn() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.last_file_changes = vec![crate::acp::run_settled::FileChange {
+            path: "old.rs".into(),
+            operation: crate::acp::run_settled::FileChangeOp::Edit,
+        }];
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-now".into(),
+            title: "Edit".into(),
+            kind: "edit".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: Some(serde_json::json!([{"path": "now.rs"}])),
+            meta: None,
+            images: None,
+        });
+
+        let files = s.concluding_file_changes();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "now.rs");
     }
 
     #[test]
@@ -3499,7 +3621,10 @@ mod tests {
     #[test]
     fn turn_complete_clears_live_and_tool_calls_and_pending_permission() {
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "hi".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&AcpEvent::ToolCall {
             tool_call_id: "tc-1".into(),
             title: "x".into(),
@@ -3868,7 +3993,10 @@ mod tests {
             text: String::new(),
             parent_tool_use_id: None,
         });
-        assert!(s.live_message.is_none(), "empty chunk opens no live message");
+        assert!(
+            s.live_message.is_none(),
+            "empty chunk opens no live message"
+        );
         s.apply_event(&AcpEvent::TurnComplete {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
@@ -3950,7 +4078,10 @@ mod tests {
         s.apply_event(&AcpEvent::PermissionQueueDepth { depth: 2 });
         let p = s.pending_permission.as_ref().expect("card still up");
         assert_eq!(p.queued, 2);
-        assert_eq!(p.request_id, "p-1", "depth must not change which card is up");
+        assert_eq!(
+            p.request_id, "p-1",
+            "depth must not change which card is up"
+        );
     }
 
     #[test]
@@ -4551,7 +4682,10 @@ mod tests {
     fn plan_update_appends_at_end_replacing_existing() {
         use crate::acp::types::PlanEntryInfo;
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "A".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "A".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
                 content: "step v1".into(),
@@ -4559,7 +4693,10 @@ mod tests {
                 status: "pending".into(),
             }],
         });
-        s.apply_event(&AcpEvent::ContentDelta { text: "B".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "B".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
                 content: "step v2".into(),
@@ -4621,7 +4758,10 @@ mod tests {
     fn turn_complete_clears_plan_and_tool_refs() {
         use crate::acp::types::PlanEntryInfo;
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "x".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&tool_call_event("tc-1", "ls"));
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
@@ -4651,7 +4791,10 @@ mod tests {
         let env = EventEnvelope {
             seq: 7,
             connection_id: "conn-x".into(),
-            payload: AcpEvent::ContentDelta { text: "abc".into(), parent_tool_use_id: None },
+            payload: AcpEvent::ContentDelta {
+                text: "abc".into(),
+                parent_tool_use_id: None,
+            },
         };
         let json = serde_json::to_string(&env).unwrap();
         let back: EventEnvelope = serde_json::from_str(&json).unwrap();

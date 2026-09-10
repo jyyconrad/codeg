@@ -63,22 +63,16 @@ pub async fn publish_run_terminal_message(
     manager: &ChatChannelManager,
     extra_targets: &[ChannelMessageTarget],
     conversation_id: i32,
-    kind: TerminalKind,
-    body: &str,
+    message: &RichMessage,
 ) -> usize {
     let targets = collect_terminal_targets(db, extra_targets, conversation_id).await;
     if targets.is_empty() {
         return 0;
     }
 
-    let message = match kind {
-        TerminalKind::Error => RichMessage::error(body),
-        TerminalKind::Completed | TerminalKind::Stopped => RichMessage::info(body),
-    };
-
     let mut sent = 0usize;
     for target in targets {
-        match manager.send_to_target(&target, &message).await {
+        match manager.send_to_target(&target, message).await {
             Ok(_) => sent += 1,
             Err(e) => {
                 tracing::warn!(
@@ -92,7 +86,7 @@ pub async fn publish_run_terminal_message(
                     target.channel_id,
                     "outbound",
                     "terminal_message",
-                    body,
+                    &message.to_plain_text(),
                     "failed",
                     Some(e.to_string()),
                 )

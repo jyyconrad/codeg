@@ -1113,6 +1113,301 @@ describe("buildRows — Recent section", () => {
   })
 })
 
+describe("buildRows — folder paging", () => {
+  const baseArgs = {
+    pinned: [] as DbConversationSummary[],
+    pinnedExpanded: true,
+    orderedFolderIds: [10],
+    folderExpanded: { 10: true } as Record<number, boolean>,
+    foldersExpanded: true,
+    chatConversations: [] as DbConversationSummary[],
+    chatsExpanded: true,
+  }
+
+  const many = Array.from({ length: 5 }, (_, i) => conv(i + 1, 10))
+
+  it("stops at folderPageSize and appends a show-more row with the remainder", () => {
+    const rows = buildRows({
+      ...baseArgs,
+      byFolder: new Map([[10, many]]),
+      folderTotalCounts: new Map([[10, many.length]]),
+      folderPageSize: 2,
+    })
+    const folderConvs = rows.filter(
+      (r) => r.kind === "conversation" && r.conversation.folder_id === 10
+    )
+    expect(folderConvs).toHaveLength(2)
+    expect(rows).toContainEqual({
+      kind: "folder-more",
+      folderId: 10,
+      remaining: 3,
+      depth: 0,
+    })
+  })
+
+  it("emits every conversation when no folderPageSize is given", () => {
+    const rows = buildRows({
+      ...baseArgs,
+      byFolder: new Map([[10, many]]),
+      folderTotalCounts: new Map([[10, many.length]]),
+    })
+    expect(
+      rows.filter((r) => r.kind === "conversation" && !r.recent)
+    ).toHaveLength(5)
+    expect(rows.some((r) => r.kind === "folder-more")).toBe(false)
+  })
+
+  it("does not page a collapsed folder", () => {
+    const rows = buildRows({
+      ...baseArgs,
+      byFolder: new Map([[10, many]]),
+      folderExpanded: { 10: false },
+      folderTotalCounts: new Map([[10, many.length]]),
+      folderPageSize: 2,
+    })
+    expect(rows.some((r) => r.kind === "folder-more")).toBe(false)
+    expect(rows.filter((r) => r.kind === "conversation")).toHaveLength(0)
+  })
+
+  it("pages each folder independently", () => {
+    const folder10 = Array.from({ length: 5 }, (_, i) => conv(i + 1, 10))
+    const folder20 = Array.from({ length: 5 }, (_, i) => conv(i + 11, 20))
+    const rows = buildRows({
+      ...baseArgs,
+      orderedFolderIds: [10, 20],
+      folderExpanded: { 10: true, 20: true },
+      byFolder: new Map([
+        [10, folder10],
+        [20, folder20],
+      ]),
+      folderTotalCounts: new Map([
+        [10, 5],
+        [20, 5],
+      ]),
+      folderPageSize: 2,
+      folderLimits: new Map([[10, 4]]),
+    })
+    expect(rows).toContainEqual({
+      kind: "folder-more",
+      folderId: 10,
+      remaining: 1,
+      depth: 0,
+      canReset: true,
+    })
+    expect(rows).toContainEqual({
+      kind: "folder-more",
+      folderId: 20,
+      remaining: 3,
+      depth: 0,
+    })
+    expect(
+      rows.filter(
+        (r) => r.kind === "conversation" && r.conversation.folder_id === 10
+      )
+    ).toHaveLength(4)
+    expect(
+      rows.filter(
+        (r) => r.kind === "conversation" && r.conversation.folder_id === 20
+      )
+    ).toHaveLength(2)
+  })
+
+  it("pages a worktree body at the nested depth", () => {
+    const rootConvs = Array.from({ length: 5 }, (_, i) => conv(i + 1, 10))
+    const wtConvs = Array.from({ length: 5 }, (_, i) => conv(i + 11, 11))
+    const rows = buildRows({
+      ...baseArgs,
+      byFolder: new Map([
+        [10, rootConvs],
+        [11, wtConvs],
+      ]),
+      folderExpanded: { 10: true, 11: true },
+      folderTotalCounts: new Map([
+        [10, 5],
+        [11, 5],
+      ]),
+      folderPageSize: 2,
+      containerChildren: new Map([[10, [11]]]),
+    })
+    expect(rows).toContainEqual({
+      kind: "folder-more",
+      folderId: 10,
+      remaining: 3,
+      depth: 1,
+    })
+    expect(rows).toContainEqual({
+      kind: "folder-more",
+      folderId: 11,
+      remaining: 3,
+      depth: 1,
+    })
+  })
+
+  describe("resetting", () => {
+    const lots = Array.from({ length: RECENT_PAGE_SIZE + 4 }, (_, i) =>
+      conv(i + 1, 10)
+    )
+    const pagedArgs = {
+      ...baseArgs,
+      byFolder: new Map([[10, lots]]),
+      folderTotalCounts: new Map([[10, lots.length]]),
+      folderPageSize: RECENT_PAGE_SIZE,
+    }
+
+    it("leaves the first page un-resettable", () => {
+      const rows = buildRows(pagedArgs)
+      expect(rows).toContainEqual({
+        kind: "folder-more",
+        folderId: 10,
+        remaining: 4,
+        depth: 0,
+      })
+    })
+
+    it("marks the footer resettable once past the first page", () => {
+      const rows = buildRows({
+        ...pagedArgs,
+        folderLimits: new Map([[10, RECENT_PAGE_SIZE + 2]]),
+      })
+      expect(rows).toContainEqual({
+        kind: "folder-more",
+        folderId: 10,
+        remaining: 2,
+        depth: 0,
+        canReset: true,
+      })
+    })
+
+    it("keeps the footer alive after the last page, as a reset-only row", () => {
+      const rows = buildRows({
+        ...pagedArgs,
+        folderLimits: new Map([[10, RECENT_PAGE_SIZE * 2]]),
+      })
+      expect(
+        rows.filter((r) => r.kind === "conversation" && !r.recent)
+      ).toHaveLength(lots.length)
+      expect(rows).toContainEqual({
+        kind: "folder-more",
+        folderId: 10,
+        remaining: 0,
+        depth: 0,
+        canReset: true,
+      })
+    })
+
+    it("drops the reset once a raised limit outlives the rows it revealed", () => {
+      const rows = buildRows({
+        ...pagedArgs,
+        byFolder: new Map([[10, many]]),
+        folderTotalCounts: new Map([[10, many.length]]),
+        folderLimits: new Map([[10, RECENT_PAGE_SIZE * 2]]),
+      })
+      expect(rows.some((r) => r.kind === "folder-more")).toBe(false)
+    })
+  })
+})
+
+describe("buildRows — chat paging", () => {
+  const many = Array.from({ length: 5 }, (_, i) => conv(i + 1, 99))
+  const baseArgs = {
+    pinned: [] as DbConversationSummary[],
+    pinnedExpanded: true,
+    orderedFolderIds: [] as number[],
+    byFolder: new Map<number, DbConversationSummary[]>(),
+    folderExpanded: {} as Record<number, boolean>,
+    folderTotalCounts: new Map<number, number>(),
+    foldersExpanded: false,
+    chatConversations: many,
+    chatsExpanded: true,
+  }
+
+  it("stops at chatLimit and appends a show-more row with the remainder", () => {
+    const rows = buildRows({ ...baseArgs, chatLimit: 2 })
+    expect(
+      rows.filter((r) => r.kind === "conversation" && !r.recent)
+    ).toHaveLength(2)
+    expect(rows).toContainEqual({ kind: "chats-more", remaining: 3 })
+    expect(rows).toContainEqual({
+      kind: "section",
+      section: "chats",
+      expanded: true,
+      count: 5,
+    })
+  })
+
+  it("emits every conversation when no chatLimit is given", () => {
+    const rows = buildRows(baseArgs)
+    expect(
+      rows.filter((r) => r.kind === "conversation" && !r.recent)
+    ).toHaveLength(5)
+    expect(rows.some((r) => r.kind === "chats-more")).toBe(false)
+  })
+
+  it("does not page a collapsed section", () => {
+    const rows = buildRows({
+      ...baseArgs,
+      chatsExpanded: false,
+      chatLimit: 2,
+    })
+    expect(rows.some((r) => r.kind === "chats-more")).toBe(false)
+    expect(rows.filter((r) => r.kind === "conversation")).toHaveLength(0)
+  })
+
+  describe("resetting", () => {
+    const lots = Array.from({ length: RECENT_PAGE_SIZE + 4 }, (_, i) =>
+      conv(i + 1, 99)
+    )
+    const pagedArgs = {
+      ...baseArgs,
+      chatConversations: lots,
+    }
+
+    it("leaves the first page un-resettable", () => {
+      const rows = buildRows({
+        ...pagedArgs,
+        chatLimit: RECENT_PAGE_SIZE,
+      })
+      expect(rows).toContainEqual({ kind: "chats-more", remaining: 4 })
+    })
+
+    it("marks the footer resettable once past the first page", () => {
+      const rows = buildRows({
+        ...pagedArgs,
+        chatLimit: RECENT_PAGE_SIZE + 2,
+      })
+      expect(rows).toContainEqual({
+        kind: "chats-more",
+        remaining: 2,
+        canReset: true,
+      })
+    })
+
+    it("keeps the footer alive after the last page, as a reset-only row", () => {
+      const rows = buildRows({
+        ...pagedArgs,
+        chatLimit: RECENT_PAGE_SIZE * 2,
+      })
+      expect(
+        rows.filter((r) => r.kind === "conversation" && !r.recent)
+      ).toHaveLength(lots.length)
+      expect(rows).toContainEqual({
+        kind: "chats-more",
+        remaining: 0,
+        canReset: true,
+      })
+    })
+
+    it("drops the reset once a raised limit outlives the rows it revealed", () => {
+      const rows = buildRows({
+        ...pagedArgs,
+        chatConversations: many,
+        chatLimit: RECENT_PAGE_SIZE * 2,
+      })
+      expect(rows.some((r) => r.kind === "chats-more")).toBe(false)
+    })
+  })
+})
+
 describe("buildRows — Show worktrees container tree", () => {
   // Trim the trailing (always-present) Chat section for exact folder assertions.
   const trimChats = (rows: SidebarRow[]): SidebarRow[] => {

@@ -140,8 +140,7 @@ async fn handle_acp_envelope(
                 // session was re-minted (codeg#500). Whichever of this
                 // subscriber and the lifecycle one wins the race, the loser
                 // gets `None` and the row is preserved exactly once.
-                let continues =
-                    crate::acp::continued_session_ids(session.agent_type, session_id);
+                let continues = crate::acp::continued_session_ids(session.agent_type, session_id);
                 match conversation_service::bind_external_id(
                     db,
                     session.conversation_id,
@@ -209,7 +208,8 @@ async fn handle_acp_envelope(
 
                         let is_current = match conn_mgr.get_state(connection_id).await {
                             Some(state) => {
-                                state.read().await.external_id.as_deref() == Some(session_id.as_str())
+                                state.read().await.external_id.as_deref()
+                                    == Some(session_id.as_str())
                             }
                             None => false,
                         };
@@ -254,8 +254,7 @@ async fn handle_acp_envelope(
                                 &target,
                                 &RichMessage::error(match lang {
                                     Lang::ZhCn | Lang::ZhTw => {
-                                        "无法启动任务：该智能体会话已归属于另一个对话。"
-                                            .to_string()
+                                        "无法启动任务：该智能体会话已归属于另一个对话。".to_string()
                                     }
                                     _ => "Could not start the task: this agent session \
                                           already belongs to another conversation."
@@ -643,7 +642,9 @@ async fn handle_acp_envelope(
                                  next TurnComplete"
                             );
                         } else {
-                            tracing::error!("[SessionEventSub] failed to send deferred kickoff: {e}");
+                            tracing::error!(
+                                "[SessionEventSub] failed to send deferred kickoff: {e}"
+                            );
                             let msg = RichMessage::error(format!("Failed to send task: {e}"));
                             let _ = manager.send_to_target(&target, &msg).await;
                         }
@@ -713,16 +714,14 @@ async fn handle_acp_envelope(
                     .map(|s| (s.target.clone(), s.conversation_id))
             } {
                 let lang = get_lang(db).await;
-                if let Some(body) =
-                    terminal_body(TerminalKind::Error, None, Some(&detail), lang)
-                {
+                if let Some(body) = terminal_body(TerminalKind::Error, None, Some(&detail), lang) {
+                    let message = crate::chat_channel::types::RichMessage::error(body);
                     let _ = publish_run_terminal_message(
                         db,
                         manager,
                         std::slice::from_ref(&target),
                         conv_id,
-                        TerminalKind::Error,
-                        &body,
+                        &message,
                     )
                     .await;
                 }
@@ -973,9 +972,7 @@ mod delegation_relay_tests {
         assert!(is_delegation_title("delegate_to_agent"));
         assert!(is_delegation_title("Delegate To Agent"));
         assert!(is_delegation_title("delegate-to-agent"));
-        assert!(is_delegation_title(
-            "mcp__codeg-mcp__delegate_to_agent"
-        ));
+        assert!(is_delegation_title("mcp__codeg-mcp__delegate_to_agent"));
         assert!(is_delegation_title("Run mcp__codeg__delegate_to_agent"));
         assert!(!is_delegation_title("agent"));
         assert!(!is_delegation_title("write"));
@@ -1295,7 +1292,15 @@ mod async_relay_dedup_tests {
         let (bridge, chat, rec) = harness().await;
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &delegation_completed_ok(),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
         // The later terminal update carries raw_input (re-creating the old
         // input-map token) AND terminal output.
         handle_acp_envelope(
@@ -1332,7 +1337,15 @@ mod async_relay_dedup_tests {
             &EventEmitter::Noop,
         )
         .await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &delegation_completed_ok(),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 2, "ack + result, got {msgs:?}");
         assert!(msgs[0].contains("running in background"));
@@ -1346,7 +1359,15 @@ mod async_relay_dedup_tests {
         let (bridge, chat, rec) = harness().await;
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &delegation_completed_ok(),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
         // Host re-emits the running ack after completion, with raw_input.
         handle_acp_envelope(
             &completed_update(ACK, true),
@@ -1419,7 +1440,15 @@ mod async_relay_dedup_tests {
                 session_id: "S1".into(),
             },
         };
-        handle_acp_envelope(&started, &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &started,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
 
         assert_eq!(
             bridge
@@ -1460,7 +1489,15 @@ mod async_relay_dedup_tests {
                 agent_type: "claude".into(),
             },
         };
-        handle_acp_envelope(&complete, &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &complete,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
 
         assert!(
             bridge
@@ -1755,7 +1792,11 @@ mod error_terminal_gate_tests {
             .all(&db.conn)
             .await
             .expect("list rows");
-        assert_eq!(rows.len(), 2, "the old session must keep a row, got {rows:?}");
+        assert_eq!(
+            rows.len(),
+            2,
+            "the old session must keep a row, got {rows:?}"
+        );
         let preserved = rows
             .iter()
             .find(|r| r.external_id.as_deref() == Some("S1"))
@@ -1972,7 +2013,12 @@ mod error_terminal_gate_tests {
 
         let conn_mgr = ConnectionManager::new();
         let _cmd_rx = conn_mgr
-            .insert_test_connection_live("conn-moved-on", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .insert_test_connection_live(
+                "conn-moved-on",
+                AgentType::ClaudeCode,
+                None,
+                EventEmitter::Noop,
+            )
             .await;
         // The LIVE session is S2 — S1 is a straggler.
         conn_mgr
@@ -2037,7 +2083,15 @@ mod error_terminal_gate_tests {
                 terminal: false,
             },
         };
-        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat_mgr,
+            &conn_mgr,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
 
         // Session bridge entry is preserved — the next user message on the
         // same connection can still flow through it.
@@ -2070,7 +2124,15 @@ mod error_terminal_gate_tests {
                 terminal: true,
             },
         };
-        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat_mgr,
+            &conn_mgr,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
 
         assert!(
             bridge.lock().await.get("c-term").is_none(),

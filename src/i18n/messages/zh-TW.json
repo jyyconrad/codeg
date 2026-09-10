@@ -1753,8 +1753,6 @@
       "noConversationsFound": "找不到會話。",
       "importLocalSessions": "匯入本地會話",
       "importing": "匯入中...",
-      "syncCodexGrok": "同步 Codex / Grok 會話",
-      "syncingCodexGrok": "同步中...",
       "notifyChannels": "通知渠道…",
       "notifyChannelsDialog": {
         "title": "通知渠道",
@@ -1787,10 +1785,7 @@
         "updateGroupFailed": "更新分組失敗：{message}",
         "deleteGroupFailed": "刪除分組失敗：{message}",
         "moveToGroupFailed": "移動資料夾失敗：{message}",
-        "applyLayoutFailed": "儲存資料夾順序失敗：{message}",
-        "codexGrokSynced": "已同步新增 {imported}，更新 {updated}，跳過 {skipped}",
-        "codexGrokSyncFailed": "同步失敗：{message}",
-        "codexGrokNone": "此資料夾沒有 Codex 或 Grok 會話"
+        "applyLayoutFailed": "儲存資料夾順序失敗：{message}"
       },
       "statsLabel": "{folders} 個資料夾 · {convos} 個對話",
       "reorderHandle": "拖拽排序",

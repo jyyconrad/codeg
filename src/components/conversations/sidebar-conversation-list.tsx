@@ -36,7 +36,6 @@ import {
   MonitorCloud,
   MoreHorizontal,
   Palette,
-  RefreshCw,
   Rocket,
   Settings,
   SquarePen,
@@ -45,7 +44,6 @@ import {
 } from "lucide-react"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
-import { useConversationRuntimeStore } from "@/stores/conversation-runtime-store"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 import { useTerminalContext } from "@/contexts/terminal-context"
@@ -65,7 +63,6 @@ import {
   updateFolderDefaultAgent,
   deleteConversation,
   listChildConversations,
-  syncCodexGrokSessions,
 } from "@/lib/api"
 import { isDesktop, revealItemInDir } from "@/lib/platform"
 import type {
@@ -188,6 +185,83 @@ import { toErrorMessage } from "@/lib/app-error"
 const useIsomorphicLayoutEffect =
   typeof window !== "undefined" ? useLayoutEffect : useEffect
 
+/** Shared "show more / reset" footer for Recent, Chat, and per-folder paging. */
+function PageMoreFooter({
+  remaining,
+  canReset,
+  depth = 0,
+  scope,
+  buttonRef,
+  onReveal,
+  onReset,
+  showMoreLabel,
+  resetLabel,
+}: {
+  remaining: number
+  canReset?: true
+  depth?: number
+  scope: string
+  buttonRef?: Ref<HTMLButtonElement>
+  onReveal: () => void
+  onReset: () => void
+  showMoreLabel: string
+  resetLabel: string
+}) {
+  const showMore = remaining > 0
+  const axisOffset =
+    depth > 0
+      ? `calc(var(--conv-rail-axis, 0.875rem) + ${depth} * ${CONV_RAIL_DEPTH_STEP})`
+      : "var(--conv-rail-axis, 0.875rem)"
+  return (
+    <div className="group/page-more relative h-[2rem]" data-page-more={scope}>
+      {depth > 0 ? <SubsessionAncestorRails depth={depth} /> : null}
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={showMore ? onReveal : onReset}
+        className={cn(
+          "relative flex h-[1.9375rem] w-full items-center rounded-full text-left text-[0.75rem] text-muted-foreground/80 outline-none transition-colors duration-[120ms] group-hover/page-more:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)] group-hover/page-more:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+          showMore && canReset ? "pr-[1.75rem]" : "pr-[0.25rem]"
+        )}
+        style={{
+          paddingLeft: `calc(${axisOffset} + 0.875rem)`,
+        }}
+      >
+        <span
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 flex items-center justify-center"
+          style={{
+            left: axisOffset,
+            width: "0.875rem",
+            height: "0.875rem",
+            transform: "translate(-50%, -50%)",
+          }}
+        >
+          {showMore ? (
+            <ChevronDown className="h-[0.75rem] w-[0.75rem]" />
+          ) : (
+            <ChevronsUp className="h-[0.75rem] w-[0.75rem]" />
+          )}
+        </span>
+        <span className="truncate">
+          {showMore ? showMoreLabel : resetLabel}
+        </span>
+      </button>
+      {showMore && canReset && (
+        <button
+          type="button"
+          onClick={onReset}
+          title={resetLabel}
+          aria-label={resetLabel}
+          className="absolute top-1/2 right-[0.375rem] z-[1] flex h-6 w-6 -translate-y-1/2 cursor-pointer items-center justify-end rounded-[0.375rem] text-muted-foreground/90 opacity-0 outline-none transition-[color,opacity] duration-150 group-hover/page-more:opacity-100 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [@media(hover:none)]:opacity-100"
+        >
+          <ChevronsUp className="h-[0.875rem] w-[0.875rem]" />
+        </button>
+      )}
+    </div>
+  )
+}
+
 // Shared empty merge map used when "Show worktrees" is on: worktree children
 // then keep their own conversation bucket / count / theme instead of being
 // folded into the parent. A module constant so the reference is stable across
@@ -216,8 +290,6 @@ const FolderHeader = memo(function FolderHeader({
   onRemoveFromWorkspace,
   onNewConversation,
   onImport,
-  onSyncCodexGrok,
-  syncingCodexGrok,
   onManageConversations,
   onManageLinks,
   onNotifyChannels,
@@ -269,8 +341,6 @@ const FolderHeader = memo(function FolderHeader({
   onRemoveFromWorkspace: (folderId: number) => void
   onNewConversation: (folderId: number) => void
   onImport: (folderId: number) => void
-  onSyncCodexGrok: (folderId: number) => void
-  syncingCodexGrok: boolean
   onManageConversations: (folderId: number) => void
   onManageLinks: (folderId: number) => void
   /** Omitted for `kind === "chat"` folders, which have no notify menu. */
@@ -623,17 +693,6 @@ const FolderHeader = memo(function FolderHeader({
             <Download className="h-4 w-4" />
             {t("importLocalSessions")}
           </ContextMenuItem>
-          <ContextMenuItem
-            onSelect={() => onSyncCodexGrok(folderId)}
-            disabled={syncingCodexGrok}
-          >
-            {syncingCodexGrok ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            {syncingCodexGrok ? t("syncingCodexGrok") : t("syncCodexGrok")}
-          </ContextMenuItem>
           <ContextMenuSub>
             <ContextMenuSubTrigger>
               <ExternalLink className="h-4 w-4" />
@@ -955,10 +1014,6 @@ export function SidebarConversationList({
 
   const activeTabId = useTabStore((s) => s.activeTabId)
   const tabs = useTabStore((s) => s.tabs)
-  const tabsRef = useRef(tabs)
-  tabsRef.current = tabs
-  const [syncingFolderId, setSyncingFolderId] = useState<number | null>(null)
-  const syncingFolderIdRef = useRef<number | null>(null)
   const {
     openTab,
     closeConversationTab,
@@ -1074,6 +1129,40 @@ export function SidebarConversationList({
     // `:focus-visible`, so pointer users see no ring.
     recentMoreButtonRef.current?.focus()
     setRecentLimit(RECENT_PAGE_SIZE)
+  }, [])
+  // Per-folder raised limits. Absent key = first page (`RECENT_PAGE_SIZE`).
+  // Session-only, same reason as `recentLimit`: a reading gesture, not a setting.
+  const [folderLimits, setFolderLimits] = useState<Map<number, number>>(
+    () => new Map()
+  )
+  const folderMoreButtonRefs = useRef(new Map<number, HTMLButtonElement>())
+  const revealMoreFolder = useCallback((folderId: number) => {
+    setFolderLimits((prev) => {
+      const next = new Map(prev)
+      next.set(
+        folderId,
+        (prev.get(folderId) ?? RECENT_PAGE_SIZE) + RECENT_PAGE_SIZE
+      )
+      return next
+    })
+  }, [])
+  const resetFolderLimit = useCallback((folderId: number) => {
+    folderMoreButtonRefs.current.get(folderId)?.focus()
+    setFolderLimits((prev) => {
+      const next = new Map(prev)
+      next.delete(folderId)
+      return next
+    })
+  }, [])
+  const [chatLimit, setChatLimit] = useState(RECENT_PAGE_SIZE)
+  const chatsMoreButtonRef = useRef<HTMLButtonElement>(null)
+  const revealMoreChats = useCallback(
+    () => setChatLimit((n) => n + RECENT_PAGE_SIZE),
+    []
+  )
+  const resetChatLimit = useCallback(() => {
+    chatsMoreButtonRef.current?.focus()
+    setChatLimit(RECENT_PAGE_SIZE)
   }, [])
   // ── Per-conversation delegation sub-session expansion ───────────────────
   // Default COLLAPSED (unlike folders): only ids the user opened are tracked
@@ -1556,6 +1645,9 @@ export function SidebarConversationList({
         recentExpanded,
         showRecent,
         recentLimit,
+        folderPageSize: RECENT_PAGE_SIZE,
+        folderLimits,
+        chatLimit,
         sectionOrder,
         conversationExpanded,
         childrenByParent,
@@ -1579,6 +1671,8 @@ export function SidebarConversationList({
       recentExpanded,
       showRecent,
       recentLimit,
+      folderLimits,
+      chatLimit,
       sectionOrder,
       conversationExpanded,
       childrenByParent,
@@ -2167,59 +2261,6 @@ export function SidebarConversationList({
     [folderIndex]
   )
 
-  const handleSyncCodexGrok = useCallback(
-    (folderId: number) => {
-      if (syncingFolderIdRef.current !== null) return
-      syncingFolderIdRef.current = folderId
-      setSyncingFolderId(folderId)
-      void (async () => {
-        try {
-          const result = await syncCodexGrokSessions(folderId)
-          if (
-            result.imported === 0 &&
-            result.updated === 0 &&
-            result.skipped === 0
-          ) {
-            toast.info(t("toasts.codexGrokNone"))
-          } else {
-            toast.success(
-              t("toasts.codexGrokSynced", {
-                imported: result.imported,
-                updated: result.updated,
-                skipped: result.skipped,
-              })
-            )
-          }
-          const conversations = useAppWorkspaceStore.getState().conversations
-          const byId = new Map(conversations.map((c) => [c.id, c]))
-          const { refetchDetail } =
-            useConversationRuntimeStore.getState().actions
-          for (const tab of tabsRef.current) {
-            if (tab.conversationId == null) continue
-            const conv = byId.get(tab.conversationId)
-            const inFolder = conv
-              ? conv.folder_id === folderId
-              : tab.folderId === folderId
-            const agent = conv?.agent_type ?? tab.agentType
-            if (inFolder && (agent === "codex" || agent === "grok")) {
-              refetchDetail(tab.conversationId)
-            }
-          }
-        } catch (err) {
-          toast.error(
-            t("toasts.codexGrokSyncFailed", {
-              message: toErrorMessage(err),
-            })
-          )
-        } finally {
-          syncingFolderIdRef.current = null
-          setSyncingFolderId(null)
-        }
-      })()
-    },
-    [t]
-  )
-
   const handleOpenImportWindow = useCallback(() => {
     void openImportSessionsWindow()
   }, [])
@@ -2783,8 +2824,6 @@ export function SidebarConversationList({
         onRemoveFromWorkspace={handleRemoveFolder}
         onNewConversation={handleNewConversationForFolder}
         onImport={handleImportForFolder}
-        onSyncCodexGrok={handleSyncCodexGrok}
-        syncingCodexGrok={syncingFolderId !== null}
         onManageConversations={handleManageConversations}
         onManageLinks={handleManageFolderLinks}
         onNotifyChannels={
@@ -2992,86 +3031,57 @@ export function SidebarConversationList({
         </div>
       )
     }
-    if (row.kind === "recent-more") {
-      // Footer of the paged Recent section — a row, not a hint: each click
-      // reveals another page. Its geometry is the conversation card's, so the
-      // section reads as one column — the chevron sits ON the rail axis exactly
-      // where a card's agent icon does (same 0.75rem glyph in the same 0.875rem
-      // box, centred on the var), and the label starts at the card's title
-      // inset (`axis + 0.875rem`). Same row height and full rounding too, so
-      // its hover pill is the one the rows above it use.
-      //
-      // Two directions live here. While pages remain, the row is "show more"
-      // and the reset hides at the right edge as an icon, on the same
-      // reveal-on-hover terms as the section headers' actions. Once the last
-      // page is out (`remaining === 0`) buildRows keeps the row alive for the
-      // reset alone, and it takes over the row: nothing is left to expand, so a
-      // hover-only affordance would be the section's only exit hiding itself.
-      const showMore = row.remaining > 0
+    if (
+      row.kind === "recent-more" ||
+      row.kind === "chats-more" ||
+      row.kind === "folder-more"
+    ) {
       const resetLabel = t("resetRecentLimit", { count: RECENT_PAGE_SIZE })
+      const showMoreLabel = t("showMoreRecent", { count: row.remaining })
+      if (row.kind === "recent-more") {
+        return (
+          <PageMoreFooter
+            remaining={row.remaining}
+            canReset={row.canReset}
+            scope="recent"
+            buttonRef={recentMoreButtonRef}
+            onReveal={revealMoreRecent}
+            onReset={resetRecentLimit}
+            showMoreLabel={showMoreLabel}
+            resetLabel={resetLabel}
+          />
+        )
+      }
+      if (row.kind === "chats-more") {
+        return (
+          <PageMoreFooter
+            remaining={row.remaining}
+            canReset={row.canReset}
+            scope="chats"
+            buttonRef={chatsMoreButtonRef}
+            onReveal={revealMoreChats}
+            onReset={resetChatLimit}
+            showMoreLabel={showMoreLabel}
+            resetLabel={resetLabel}
+          />
+        )
+      }
+      const folderId = row.folderId
       return (
-        <div className="group/recent-more relative h-[2rem]">
-          <button
-            ref={recentMoreButtonRef}
-            type="button"
-            onClick={showMore ? revealMoreRecent : resetRecentLimit}
-            className={cn(
-              // Lit from the ROW (`group-hover`), not from this button's own
-              // `:hover`. The reset icon is a sibling stacked on top, so with a
-              // plain `hover:` the pill went out the moment the pointer crossed
-              // onto it — the row read as un-hovered while the cursor was still
-              // inside it. Same reason the section headers put their group on
-              // the row container rather than the toggle button.
-              "relative flex h-[1.9375rem] w-full items-center rounded-full text-left text-[0.75rem] text-muted-foreground/80 outline-none transition-colors duration-[120ms] group-hover/recent-more:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)] group-hover/recent-more:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-              // Reserved unconditionally (not just while hovered) so revealing
-              // the reset icon never reflows the label under the cursor.
-              showMore && row.canReset ? "pr-[1.75rem]" : "pr-[0.25rem]"
-            )}
-            style={{
-              paddingLeft: "calc(var(--conv-rail-axis, 0.875rem) + 0.875rem)",
-            }}
-          >
-            <span
-              aria-hidden
-              className="pointer-events-none absolute top-1/2 flex items-center justify-center"
-              style={{
-                left: "var(--conv-rail-axis, 0.875rem)",
-                width: "0.875rem",
-                height: "0.875rem",
-                transform: "translate(-50%, -50%)",
-              }}
-            >
-              {showMore ? (
-                <ChevronDown className="h-[0.75rem] w-[0.75rem]" />
-              ) : (
-                <ChevronsUp className="h-[0.75rem] w-[0.75rem]" />
-              )}
-            </span>
-            <span className="truncate">
-              {showMore
-                ? t("showMoreRecent", { count: row.remaining })
-                : resetLabel}
-            </span>
-          </button>
-          {showMore && row.canReset && (
-            // A SIBLING of the row button, never a child: buttons cannot nest.
-            // Being a sibling is also why the row's pill has to be driven from
-            // the group above — `:hover` only walks ancestors, and this button
-            // is not one, so the pill would blink off under the cursor.
-            // Geometry copied from the section headers' right-edge actions
-            // (`sidebar-section-header.tsx`) so every right-edge affordance in
-            // the sidebar lands on the same axis and reads as one family.
-            <button
-              type="button"
-              onClick={resetRecentLimit}
-              title={resetLabel}
-              aria-label={resetLabel}
-              className="absolute top-1/2 right-[0.375rem] flex h-6 w-6 -translate-y-1/2 cursor-pointer items-center justify-end rounded-[0.375rem] text-muted-foreground/90 opacity-0 outline-none transition-[color,opacity] duration-150 group-hover/recent-more:opacity-100 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [@media(hover:none)]:opacity-100"
-            >
-              <ChevronsUp className="h-[0.875rem] w-[0.875rem]" />
-            </button>
-          )}
-        </div>
+        <PageMoreFooter
+          remaining={row.remaining}
+          canReset={row.canReset}
+          depth={row.depth}
+          scope={`folder-${folderId}`}
+          buttonRef={(el) => {
+            if (el) folderMoreButtonRefs.current.set(folderId, el)
+            else folderMoreButtonRefs.current.delete(folderId)
+          }}
+          onReveal={() => revealMoreFolder(folderId)}
+          onReset={() => resetFolderLimit(folderId)}
+          showMoreLabel={showMoreLabel}
+          resetLabel={resetLabel}
+        />
       )
     }
     if (row.kind === "subsession-loading") {
@@ -3141,6 +3151,8 @@ export function SidebarConversationList({
     if (row.kind === "folders-empty") return "folders-empty"
     if (row.kind === "recent-empty") return "recent-empty"
     if (row.kind === "recent-more") return "recent-more"
+    if (row.kind === "chats-more") return "chats-more"
+    if (row.kind === "folder-more") return `folder-more-${row.folderId}`
     const prefix = row.recent ? "recent-" : ""
     if (row.kind === "subsession-loading") {
       return `${prefix}subloading-${row.parentId}`

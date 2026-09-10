@@ -341,7 +341,7 @@ impl GrokParser {
 
     /// Locate the `<session-uuid>` directory matching `conversation_id` across
     /// the `base_dir/<group>/` buckets (two shallow levels).
-    fn find_session_dir(&self, conversation_id: &str) -> Option<PathBuf> {
+    pub(crate) fn find_session_dir(&self, conversation_id: &str) -> Option<PathBuf> {
         for group in read_subdirs(&self.base_dir) {
             let candidate = group.join(conversation_id);
             if candidate.join("updates.jsonl").is_file() {

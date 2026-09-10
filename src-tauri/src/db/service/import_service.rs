@@ -28,30 +28,8 @@ const ALL_PARSER_AGENTS: [AgentType; 15] = [
     AgentType::Antigravity,
 ];
 
-/// Agents included in folder-scoped Codex/Grok sync (manual or future timer).
-pub(crate) const CODEX_GROK_AGENTS: [AgentType; 2] = [AgentType::Codex, AgentType::Grok];
-
 fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
     build_agent_parser(agent_type)
-}
-
-/// Keep summaries whose agent is in `agents` and whose `folder_path` matches
-/// `folder_path` under [`path_eq_for_matching`].
-pub(crate) fn filter_summaries_for_folder_and_agents(
-    summaries: Vec<(AgentType, ConversationSummary)>,
-    folder_path: &str,
-    agents: &[AgentType],
-) -> Vec<(AgentType, ConversationSummary)> {
-    summaries
-        .into_iter()
-        .filter(|(at, c)| {
-            agents.contains(at)
-                && c.folder_path
-                    .as_deref()
-                    .map(|p| path_eq_for_matching(p, folder_path))
-                    .unwrap_or(false)
-        })
-        .collect()
 }
 
 /// List the given agents' local sessions — one `spawn_blocking` per parser so
@@ -256,19 +234,6 @@ pub async fn import_local_conversations(
         })
         .collect();
 
-    import_summaries(conn, folder_id, &matched, DeletedPolicy::Skip).await
-}
-
-/// Import / refresh Codex and Grok sessions whose cwd matches `folder_path`.
-/// Soft-deleted rows stay deleted ([`DeletedPolicy::Skip`]). Callable from a
-/// later timer as well as the folder menu.
-pub async fn import_codex_grok_for_folder(
-    conn: &DatabaseConnection,
-    folder_id: i32,
-    folder_path: &str,
-) -> Result<(ImportResult, Vec<i32>), DbError> {
-    let summaries = collect_summaries_for_agents(&CODEX_GROK_AGENTS, |_, _, _, _| {}).await;
-    let matched = filter_summaries_for_folder_and_agents(summaries, folder_path, &CODEX_GROK_AGENTS);
     import_summaries(conn, folder_id, &matched, DeletedPolicy::Skip).await
 }
 
@@ -1299,153 +1264,5 @@ mod tests {
             Some("child original"),
             "child title untouched"
         );
-    }
-
-    fn summary_for(
-        agent: AgentType,
-        id: &str,
-        folder_path: &str,
-        title: Option<&str>,
-    ) -> ConversationSummary {
-        ConversationSummary {
-            agent_type: agent,
-            folder_path: Some(folder_path.to_string()),
-            ..summary(id, title)
-        }
-    }
-
-    #[tokio::test]
-    async fn filter_keeps_codex_grok_in_folder_and_drops_the_rest() {
-        let path = "/tmp/codeg-sync";
-        let items = vec![
-            (AgentType::Codex, summary_for(AgentType::Codex, "c1", path, Some("c"))),
-            (AgentType::Grok, summary_for(AgentType::Grok, "g1", path, Some("g"))),
-            (
-                AgentType::ClaudeCode,
-                summary_for(AgentType::ClaudeCode, "cl", path, Some("cl")),
-            ),
-            (
-                AgentType::Codex,
-                summary_for(AgentType::Codex, "other", "/tmp/other", Some("x")),
-            ),
-        ];
-        let kept = filter_summaries_for_folder_and_agents(items, path, &CODEX_GROK_AGENTS);
-        let ids: Vec<_> = kept.iter().map(|(_, s)| s.id.as_str()).collect();
-        assert_eq!(ids, ["c1", "g1"]);
-    }
-
-    #[tokio::test]
-    async fn import_codex_grok_inserts_new_refreshes_existing_skips_deleted_and_other_agents() {
-        let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-sync").await;
-        let path = "/tmp/codeg-sync";
-        let now = Utc::now();
-
-        let mut old = timed_summary("codex-old", Some("old"), now - Duration::hours(2), 2);
-        old.agent_type = AgentType::Codex;
-        old.folder_path = Some(path.into());
-        import_one(&db.conn, folder, &AgentType::Codex, &old, DeletedPolicy::Skip)
-            .await
-            .unwrap();
-
-        let later = now;
-        let items = vec![
-            (
-                AgentType::Codex,
-                ConversationSummary {
-                    id: "codex-old".into(),
-                    agent_type: AgentType::Codex,
-                    folder_path: Some(path.into()),
-                    folder_name: None,
-                    title: Some("new title".into()),
-                    started_at: later - Duration::hours(1),
-                    ended_at: Some(later),
-                    message_count: 9,
-                    model: None,
-                    git_branch: None,
-                    parent_id: None,
-                    parent_tool_use_id: None,
-                    delegation_call_id: None,
-                },
-            ),
-            (
-                AgentType::Grok,
-                ConversationSummary {
-                    id: "grok-new".into(),
-                    agent_type: AgentType::Grok,
-                    folder_path: Some(path.into()),
-                    folder_name: None,
-                    title: Some("g".into()),
-                    started_at: later,
-                    ended_at: Some(later),
-                    message_count: 1,
-                    model: None,
-                    git_branch: None,
-                    parent_id: None,
-                    parent_tool_use_id: None,
-                    delegation_call_id: None,
-                },
-            ),
-            (
-                AgentType::ClaudeCode,
-                ConversationSummary {
-                    id: "claude".into(),
-                    agent_type: AgentType::ClaudeCode,
-                    folder_path: Some(path.into()),
-                    folder_name: None,
-                    title: Some("nope".into()),
-                    started_at: later,
-                    ended_at: Some(later),
-                    message_count: 1,
-                    model: None,
-                    git_branch: None,
-                    parent_id: None,
-                    parent_tool_use_id: None,
-                    delegation_call_id: None,
-                },
-            ),
-        ];
-        let filtered = filter_summaries_for_folder_and_agents(items, path, &CODEX_GROK_AGENTS);
-        let (tally, _ids) = import_summaries(&db.conn, folder, &filtered, DeletedPolicy::Skip)
-            .await
-            .unwrap();
-        assert_eq!(tally.imported, 1);
-        assert_eq!(tally.updated, 1);
-        assert_eq!(tally.skipped, 0);
-        assert!(conversation::Entity::find()
-            .filter(conversation::Column::ExternalId.eq("claude"))
-            .one(&db.conn)
-            .await
-            .unwrap()
-            .is_none());
-    }
-
-    #[tokio::test]
-    async fn import_summaries_skips_soft_deleted_codex_during_folder_sync() {
-        let db = fresh_in_memory_db().await;
-        let folder = seed_folder(&db, "/tmp/codeg-sync-del").await;
-        let path = "/tmp/codeg-sync-del";
-
-        let del = summary_for(AgentType::Codex, "codex-del", path, Some("gone"));
-        import_one(&db.conn, folder, &AgentType::Codex, &del, DeletedPolicy::Skip)
-            .await
-            .unwrap();
-        let id = find_id(&db.conn, "codex-del").await;
-        conversation_service::soft_delete(&db.conn, id)
-            .await
-            .expect("soft delete");
-
-        let items = vec![(
-            AgentType::Codex,
-            summary_for(AgentType::Codex, "codex-del", path, Some("resurrect?")),
-        )];
-        let filtered = filter_summaries_for_folder_and_agents(items, path, &CODEX_GROK_AGENTS);
-        let (tally, _) = import_summaries(&db.conn, folder, &filtered, DeletedPolicy::Skip)
-            .await
-            .unwrap();
-        assert!(tally.skipped >= 1);
-        let row = find_row(&db.conn, "codex-del").await;
-        assert!(row.deleted_at.is_some(), "must stay soft-deleted");
-        assert_eq!(row.title.as_deref(), Some("gone"), "title untouched");
     }
 }

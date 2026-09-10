@@ -173,6 +173,126 @@ pub fn user_stopped_message(lang: Lang) -> &'static str {
     }
 }
 
+pub fn run_settled_complete_title(lang: Lang, agent: &str) -> String {
+    match lang {
+        Lang::ZhCn => format!("会话完成 · {agent}"),
+        Lang::ZhTw => format!("對話完成 · {agent}"),
+        Lang::Ja => format!("完了 · {agent}"),
+        Lang::Ko => format!("완료 · {agent}"),
+        Lang::Es => format!("Completado · {agent}"),
+        Lang::De => format!("Fertig · {agent}"),
+        Lang::Fr => format!("Terminé · {agent}"),
+        Lang::Pt => format!("Concluído · {agent}"),
+        Lang::Ar => format!("اكتمل · {agent}"),
+        Lang::En => format!("Turn complete · {agent}"),
+    }
+}
+
+pub fn run_settled_stopped_title(lang: Lang, agent: &str) -> String {
+    match lang {
+        Lang::ZhCn => format!("用户已停止 · {agent}"),
+        Lang::ZhTw => format!("使用者已停止 · {agent}"),
+        Lang::Ja => format!("停止 · {agent}"),
+        Lang::Ko => format!("중지됨 · {agent}"),
+        Lang::Es => format!("Detenido · {agent}"),
+        Lang::De => format!("Gestoppt · {agent}"),
+        Lang::Fr => format!("Arrêté · {agent}"),
+        Lang::Pt => format!("Interrompido · {agent}"),
+        Lang::Ar => format!("توقف · {agent}"),
+        Lang::En => format!("Stopped · {agent}"),
+    }
+}
+
+pub fn run_settled_error_title(lang: Lang, agent: &str) -> String {
+    match lang {
+        Lang::ZhCn => format!("代理错误 · {agent}"),
+        Lang::ZhTw => format!("代理錯誤 · {agent}"),
+        Lang::Ja => format!("エラー · {agent}"),
+        Lang::Ko => format!("오류 · {agent}"),
+        Lang::Es => format!("Error · {agent}"),
+        Lang::De => format!("Fehler · {agent}"),
+        Lang::Fr => format!("Erreur · {agent}"),
+        Lang::Pt => format!("Erro · {agent}"),
+        Lang::Ar => format!("خطأ · {agent}"),
+        Lang::En => format!("Agent error · {agent}"),
+    }
+}
+
+pub fn session_field_label(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "会话",
+        Lang::ZhTw => "會話",
+        Lang::Ja => "セッション",
+        Lang::Ko => "세션",
+        Lang::Es => "Sesión",
+        Lang::De => "Sitzung",
+        Lang::Fr => "Session",
+        Lang::Pt => "Sessão",
+        Lang::Ar => "الجلسة",
+        Lang::En => "Session",
+    }
+}
+
+pub fn folder_field_label(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "文件夹",
+        Lang::ZhTw => "資料夾",
+        Lang::Ja => "フォルダー",
+        Lang::Ko => "폴더",
+        Lang::Es => "Carpeta",
+        Lang::De => "Ordner",
+        Lang::Fr => "Dossier",
+        Lang::Pt => "Pasta",
+        Lang::Ar => "المجلد",
+        Lang::En => "Folder",
+    }
+}
+
+pub fn files_field_label(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "改动文件",
+        Lang::ZhTw => "改動檔案",
+        Lang::Ja => "変更ファイル",
+        Lang::Ko => "변경 파일",
+        Lang::Es => "Archivos",
+        Lang::De => "Dateien",
+        Lang::Fr => "Fichiers",
+        Lang::Pt => "Arquivos",
+        Lang::Ar => "الملفات",
+        Lang::En => "Files changed",
+    }
+}
+
+pub fn problem_field_label(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "问题",
+        Lang::ZhTw => "問題",
+        Lang::Ja => "問題",
+        Lang::Ko => "문제",
+        Lang::Es => "Problema",
+        Lang::De => "Problem",
+        Lang::Fr => "Problème",
+        Lang::Pt => "Problema",
+        Lang::Ar => "المشكلة",
+        Lang::En => "Problem",
+    }
+}
+
+pub fn files_more_suffix(lang: Lang, extra: usize) -> String {
+    match lang {
+        Lang::ZhCn => format!(" 等 {extra} 个"),
+        Lang::ZhTw => format!(" 等 {extra} 個"),
+        Lang::Ja => format!(" ほか {extra}"),
+        Lang::Ko => format!(" 외 {extra}개"),
+        Lang::Es => format!(" +{extra}"),
+        Lang::De => format!(" +{extra}"),
+        Lang::Fr => format!(" +{extra}"),
+        Lang::Pt => format!(" +{extra}"),
+        Lang::Ar => format!(" +{extra}"),
+        Lang::En => format!(" +{extra} more"),
+    }
+}
+
 pub fn agent_error_fallback(lang: Lang) -> &'static str {
     match lang {
         Lang::ZhCn => "代理发生错误",

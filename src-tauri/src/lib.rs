@@ -1184,7 +1184,6 @@ mod tauri_app {
                 conversations::list_opened_tabs,
                 conversations::save_opened_tabs,
                 conversations::import_local_conversations,
-                conversations::sync_codex_grok_sessions,
                 conversations::scan_importable_sessions,
                 conversations::import_selected_sessions,
                 conversations::get_folder_conversation,

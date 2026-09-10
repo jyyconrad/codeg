@@ -2183,12 +2183,6 @@ export async function importLocalConversations(
   return getTransport().call("import_local_conversations", { folderId })
 }
 
-export async function syncCodexGrokSessions(
-  folderId: number
-): Promise<ImportResult> {
-  return getTransport().call("sync_codex_grok_sessions", { folderId })
-}
-
 /** Walk every local agent's session store and reconcile against the DB for the
  *  import picker. Slow (filesystem-bound); per-agent progress arrives on the
  *  `import-scan://progress` side-channel while this call is in flight. */

@@ -1753,8 +1753,6 @@
       "noConversationsFound": "会話が見つかりません。",
       "importLocalSessions": "ローカルセッションをインポート",
       "importing": "インポート中...",
-      "syncCodexGrok": "Codex / Grok セッションを同期",
-      "syncingCodexGrok": "同期中...",
       "notifyChannels": "通知チャネル…",
       "notifyChannelsDialog": {
         "title": "通知チャネル",
@@ -1787,10 +1785,7 @@
         "updateGroupFailed": "グループの更新に失敗しました: {message}",
         "deleteGroupFailed": "グループの削除に失敗しました: {message}",
         "moveToGroupFailed": "フォルダの移動に失敗しました: {message}",
-        "applyLayoutFailed": "フォルダの並び順の保存に失敗しました: {message}",
-        "codexGrokSynced": "同期完了：新規 {imported}、更新 {updated}、スキップ {skipped}",
-        "codexGrokSyncFailed": "同期に失敗しました: {message}",
-        "codexGrokNone": "このフォルダーに Codex または Grok のセッションはありません"
+        "applyLayoutFailed": "フォルダの並び順の保存に失敗しました: {message}"
       },
       "statsLabel": "{folders} フォルダ · {convos} 会話",
       "reorderHandle": "ドラッグして並べ替え",
