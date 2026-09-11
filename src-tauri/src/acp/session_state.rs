@@ -2532,10 +2532,12 @@ mod tests {
                 phases: Some(vec![
                     WorkflowPhase {
                         title: "Plan".into(),
+                        detail: None,
                         state: "pending".into(),
                     },
                     WorkflowPhase {
                         title: "Research".into(),
+                        detail: None,
                         state: "pending".into(),
                     },
                 ]),

@@ -27,7 +27,13 @@
 //!
 //! ## File layout
 //!
+//! Custom ACP agents:
 //! `<paths::codeg_acp_transcripts_root()>/<registry-id>/<session-id>.jsonl`
+//!
+//! Codeg Agent:
+//! `<paths::codeg_agent_sessions_root()>/<percent-encoded-cwd>/<session-id>.jsonl`
+//! with a read-only fallback at
+//! `<paths::codeg_acp_transcripts_root()>/codeg-agent/<session-id>.jsonl`.
 //!
 //! Line 0 is a [`TranscriptHeader`]; every later line is a [`TranscriptEntry`]:
 //!
@@ -190,10 +196,20 @@ fn safe_component(s: &str) -> bool {
         && !s.starts_with('.')
 }
 
+/// Group directory names: registry ids, or a percent-encoded working directory
+/// (`%2FUsers%2Fme%2Fproj`) used by Codeg Agent sessions.
+fn safe_group_component(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 255
+        && !s.starts_with('.')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'%' | b'~'))
+}
+
 /// `<root>/<agent_dir>/<session_id>.jsonl`, or `None` when either component is
-/// unsafe as a file name.
+/// unsafe as a file name. `agent_dir` may be a percent-encoded cwd group.
 pub fn transcript_path_in(root: &Path, agent_dir: &str, session_id: &str) -> Option<PathBuf> {
-    if !safe_component(agent_dir) || !safe_component(session_id) {
+    if !safe_group_component(agent_dir) || !safe_component(session_id) {
         return None;
     }
     Some(root.join(agent_dir).join(format!("{session_id}.jsonl")))
@@ -316,6 +332,9 @@ struct Queued {
     /// makes the count self-correcting. `None` for records the gate does not
     /// depend on.
     _prompt_guard: Option<PendingPromptGuard>,
+    /// Native critical writes wait for `write_all` + `sync_data` and must not
+    /// be dropped when the queue is full.
+    critical: bool,
 }
 
 /// One queued record. The path is resolved by the caller so the writer thread
@@ -428,6 +447,7 @@ impl SessionWriter {
             return;
         }
         let boundary = queued.record.is_boundary();
+        let critical = queued.critical;
         if self.pending.is_empty() {
             self.oldest_pending_at = Some(std::time::Instant::now());
         }
@@ -436,7 +456,9 @@ impl SessionWriter {
         // gap between turns), so buffering would be latency for its own sake —
         // and hydration, which awaits every ack, would then advance at one
         // record per flush window instead of at disk speed.
-        if boundary || !self.compactable {
+        // Native critical records (started/terminal/model_commit) are not turn
+        // boundaries but must still flush immediately so the ack means durable.
+        if boundary || !self.compactable || critical {
             self.flush();
         }
     }
@@ -516,6 +538,12 @@ impl SessionWriter {
 
         match file.write_all(lines.as_bytes()) {
             Ok(()) => {
+                let needs_sync = self.pending.iter().any(|q| q.critical);
+                if needs_sync {
+                    if let Err(e) = file.sync_data() {
+                        return self.defer(e);
+                    }
+                }
                 self.compactable = next_compactable;
                 self.header_written |= lines_contain_header(&self.pending);
                 self.consecutive_failures = 0;
@@ -773,6 +801,7 @@ fn enqueue(path: PathBuf, record: PendingRecord) -> tokio::sync::oneshot::Receiv
                 record,
                 ack: ack_tx,
                 _prompt_guard: prompt_guard,
+                critical: false,
             },
         })
         .is_err()
@@ -781,6 +810,43 @@ fn enqueue(path: PathBuf, record: PendingRecord) -> tokio::sync::oneshot::Receiv
         // releases the guard: a record that will never land must not keep
         // claiming the session has history.
         tracing::debug!("[acp-transcript] queue full or closed; record dropped");
+    }
+    ack_rx
+}
+
+/// Bounded, no-drop enqueue for native critical records (headers / turn
+/// boundaries). Backpressures instead of dropping when the writer is behind.
+fn enqueue_critical(path: PathBuf, record: PendingRecord) -> tokio::sync::oneshot::Receiver<()> {
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    let prompt_guard = matches!(
+        record,
+        PendingRecord::Entry(TranscriptEntry {
+            k: EntryKind::Prompt,
+            ..
+        })
+    )
+    .then(|| PendingPromptGuard::new(&path));
+    let tx = TRANSCRIPT_TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<TranscriptJob>(TRANSCRIPT_QUEUE_CAP);
+        let spawned = std::thread::Builder::new()
+            .name("acp-transcript-writer".into())
+            .spawn(move || run_writer(rx));
+        if let Err(e) = spawned {
+            tracing::debug!("[acp-transcript] failed to spawn writer thread: {e}");
+        }
+        tx
+    });
+    let job = TranscriptJob {
+        path,
+        queued: Queued {
+            record,
+            ack: ack_tx,
+            _prompt_guard: prompt_guard,
+            critical: true,
+        },
+    };
+    if let Err(err) = tx.send(job) {
+        tracing::debug!("[acp-transcript] critical enqueue failed: {err}");
     }
     ack_rx
 }
@@ -861,6 +927,68 @@ pub fn record_header_in(
         &header.session_id,
         PendingRecord::Header(header.clone()),
     )
+}
+
+/// Native critical header write: no-drop enqueue and ack after `sync_data`.
+pub fn record_header_critical(
+    agent_dir: &str,
+    header: &TranscriptHeader,
+) -> tokio::sync::oneshot::Receiver<()> {
+    record_header_critical_in(
+        &crate::paths::codeg_acp_transcripts_root(),
+        agent_dir,
+        header,
+    )
+}
+
+/// Root-injectable core of [`record_header_critical`].
+pub fn record_header_critical_in(
+    root: &Path,
+    agent_dir: &str,
+    header: &TranscriptHeader,
+) -> tokio::sync::oneshot::Receiver<()> {
+    let Some(path) = transcript_path_in(root, agent_dir, &header.session_id) else {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        return rx;
+    };
+    enqueue_critical(path, PendingRecord::Header(header.clone()))
+}
+
+/// Native critical prompt / update / turn-end write: no-drop enqueue and ack
+/// after `sync_data`.
+pub fn record_entry_critical(
+    agent_dir: &str,
+    session_id: &str,
+    kind: EntryKind,
+    payload: serde_json::Value,
+) -> tokio::sync::oneshot::Receiver<()> {
+    record_entry_critical_in(
+        &crate::paths::codeg_acp_transcripts_root(),
+        agent_dir,
+        session_id,
+        kind,
+        payload,
+    )
+}
+
+/// Root-injectable core of [`record_entry_critical`].
+pub fn record_entry_critical_in(
+    root: &Path,
+    agent_dir: &str,
+    session_id: &str,
+    kind: EntryKind,
+    payload: serde_json::Value,
+) -> tokio::sync::oneshot::Receiver<()> {
+    let Some(path) = transcript_path_in(root, agent_dir, session_id) else {
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        return rx;
+    };
+    let entry = TranscriptEntry {
+        t: now_epoch_ms(),
+        k: kind,
+        p: payload,
+    };
+    enqueue_critical(path, PendingRecord::Entry(entry))
 }
 
 /// Record one prompt or update.
@@ -1226,10 +1354,20 @@ pub fn superseded_session_ids_in(
         .collect()
 }
 
+/// Optional index files that may sit next to session JSONL and must not be
+/// treated as conversations.
+const INDEX_JSONL_STEMS: &[&str] = &["index", "session_index"];
+
+fn is_index_jsonl_stem(stem: &str) -> bool {
+    INDEX_JSONL_STEMS
+        .iter()
+        .any(|name| stem.eq_ignore_ascii_case(name))
+}
+
 /// Every session id with a transcript under `<root>/<agent_dir>/`. Used by the
 /// generic parser's `list_conversations`.
 pub fn list_session_ids_in(root: &Path, agent_dir: &str) -> Vec<String> {
-    if !safe_component(agent_dir) {
+    if !safe_group_component(agent_dir) {
         return Vec::new();
     }
     let Ok(entries) = std::fs::read_dir(root.join(agent_dir)) else {
@@ -1239,23 +1377,411 @@ pub fn list_session_ids_in(root: &Path, agent_dir: &str) -> Vec<String> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            name.strip_suffix(".jsonl").map(str::to_string)
+            let stem = name.strip_suffix(".jsonl")?;
+            if is_index_jsonl_stem(stem) || !safe_component(stem) {
+                return None;
+            }
+            Some(stem.to_string())
         })
         .collect();
     ids.sort();
     ids
 }
 
+/// Session files under `<root>/<group-dir>/<session-id>.jsonl`.
+///
+/// One directory level only. Top-level `index.jsonl` is ignored. Used by Codeg
+/// Agent's cwd-grouped session tree.
+pub fn list_grouped_session_ids_in(root: &Path) -> Vec<(String, String)> {
+    let Ok(groups) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut groups: Vec<_> = groups.flatten().collect();
+    groups.sort_by_key(|e| e.file_name());
+    let mut out = Vec::new();
+    for group in groups {
+        let path = group.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = group.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !safe_group_component(&name) {
+            continue;
+        }
+        for id in list_session_ids_in(root, &name) {
+            out.push((name.clone(), id));
+        }
+    }
+    out
+}
+
+/// Locate `<root>/<group>/<session_id>.jsonl` by scanning one directory level.
+/// First match in sorted group-name order wins.
+pub fn find_grouped_session_in(root: &Path, session_id: &str) -> Option<String> {
+    if !safe_component(session_id) {
+        return None;
+    }
+    list_grouped_session_ids_in(root)
+        .into_iter()
+        .find(|(_, id)| id == session_id)
+        .map(|(group, _)| group)
+}
+
+/// Search cwd-grouped roots first, then flat `<root>/<agent_dir>/` fallbacks.
+pub fn find_session_in_roots(
+    grouped_roots: &[&Path],
+    flat: &[(&Path, &str)],
+    session_id: &str,
+) -> Option<(PathBuf, String)> {
+    if !safe_component(session_id) {
+        return None;
+    }
+    for root in grouped_roots {
+        if let Some(group) = find_grouped_session_in(root, session_id) {
+            return Some((root.to_path_buf(), group));
+        }
+    }
+    for (root, dir) in flat {
+        match transcript_stat_in(root, dir, session_id) {
+            Ok(Some(_)) => return Some((root.to_path_buf(), (*dir).to_string())),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// [`read_chain_in`] that locates each hop with [`find_session_in_roots`].
+pub fn read_chain_in_roots(
+    grouped_roots: &[&Path],
+    flat: &[(&Path, &str)],
+    session_id: &str,
+) -> Transcript {
+    let mut chain: Vec<Transcript> = Vec::new();
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cursor = Some(session_id.to_string());
+
+    while let Some(id) = cursor.take() {
+        if !visited.insert(id.clone()) {
+            tracing::debug!("[acp-transcript] continuation cycle at {id}; stopping walk");
+            break;
+        }
+        if chain.len() >= MAX_CONTINUATION_DEPTH {
+            tracing::debug!(
+                "[acp-transcript] continuation chain exceeded {MAX_CONTINUATION_DEPTH}; truncating"
+            );
+            break;
+        }
+        let Some((root, dir)) = find_session_in_roots(grouped_roots, flat, &id) else {
+            break;
+        };
+        let transcript = read_transcript_in(&root, &dir, &id);
+        cursor = transcript
+            .header
+            .as_ref()
+            .and_then(|h| h.continues_from.clone());
+        chain.push(transcript);
+    }
+
+    let mut merged = Transcript::default();
+    for transcript in chain.iter_mut().rev() {
+        if merged.header.is_none() {
+            merged.header = transcript.header.take();
+        }
+        merged.entries.append(&mut transcript.entries);
+    }
+    merged
+}
+
+/// Copy `<src_root>/<src_dir>/<id>.jsonl` to `<dst_root>/<dst_dir>/<id>.jsonl`.
+/// Leaves the source in place. No-op when the destination already exists.
+pub fn copy_transcript_in(
+    src_root: &Path,
+    src_dir: &str,
+    dst_root: &Path,
+    dst_dir: &str,
+    session_id: &str,
+) -> std::io::Result<PathBuf> {
+    let src = transcript_path_in(src_root, src_dir, session_id).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "unsafe transcript id")
+    })?;
+    let dst = transcript_path_in(dst_root, dst_dir, session_id).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "unsafe transcript id")
+    })?;
+    if src == dst {
+        return Ok(dst);
+    }
+    if dst.exists() {
+        return Ok(dst);
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&src, &dst)?;
+    Ok(dst)
+}
+
 /// Delete a custom agent's whole transcript directory. Called when the user
 /// removes the agent definition and asks for its data to go with it.
 pub fn remove_agent_transcripts_in(root: &Path, agent_dir: &str) -> std::io::Result<()> {
-    if !safe_component(agent_dir) {
+    if !safe_group_component(agent_dir) {
         return Ok(());
     }
     let dir = root.join(agent_dir);
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Exclusive write lease for one native transcript. Released on drop.
+pub struct TranscriptLease {
+    _file: std::fs::File,
+    path: PathBuf,
+}
+
+impl TranscriptLease {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TranscriptLeaseError {
+    #[error("another session still holds the transcript write lease")]
+    Busy,
+    #[error("transcript lease unavailable: {0}")]
+    Unavailable(std::io::Error),
+    #[error("unsafe transcript id")]
+    UnsafeId,
+}
+
+/// Take a non-blocking exclusive lock on `<session>.jsonl.lock`.
+pub fn acquire_write_lease_in(
+    root: &Path,
+    agent_dir: &str,
+    session_id: &str,
+) -> Result<TranscriptLease, TranscriptLeaseError> {
+    let Some(jsonl) = transcript_path_in(root, agent_dir, session_id) else {
+        return Err(TranscriptLeaseError::UnsafeId);
+    };
+    let lock_path = jsonl.with_extension("jsonl.lock");
+    if let Some(dir) = lock_path.parent() {
+        std::fs::create_dir_all(dir).map_err(TranscriptLeaseError::Unavailable)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(TranscriptLeaseError::Unavailable)?;
+    match file.try_lock() {
+        Ok(()) => Ok(TranscriptLease {
+            _file: file,
+            path: lock_path,
+        }),
+        Err(std::fs::TryLockError::WouldBlock) => Err(TranscriptLeaseError::Busy),
+        Err(std::fs::TryLockError::Error(e)) => Err(TranscriptLeaseError::Unavailable(e)),
+    }
+}
+
+/// Result of a successful EOF-only repair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EofRepair {
+    Clean,
+    MissingNewline,
+    Truncated {
+        backup: PathBuf,
+        dropped_bytes: usize,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TranscriptRepairError {
+    #[error("mid-file transcript corruption cannot be auto-repaired")]
+    MidFileCorruption,
+    #[error("failed to preserve truncated tail: {0}")]
+    Backup(std::io::Error),
+    #[error("transcript repair io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("unsafe transcript id")]
+    UnsafeId,
+}
+
+/// Repair a missing trailing newline or an incomplete record at EOF.
+///
+/// Mid-file damage is refused. The original bytes of an EOF truncate are
+/// preserved as `<session_id>.jsonl.tail-<digest>.bak` (not imported).
+pub fn repair_eof_in(
+    root: &Path,
+    agent_dir: &str,
+    session_id: &str,
+    _lease: &TranscriptLease,
+) -> Result<EofRepair, TranscriptRepairError> {
+    let Some(path) = transcript_path_in(root, agent_dir, session_id) else {
+        return Err(TranscriptRepairError::UnsafeId);
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(EofRepair::Clean),
+        Err(e) => return Err(e.into()),
+    };
+    if bytes.is_empty() {
+        return Ok(EofRepair::Clean);
+    }
+
+    let scan = scan_record_boundary(&bytes)?;
+    match scan {
+        RecordBoundary::Clean => Ok(EofRepair::Clean),
+        RecordBoundary::MissingNewline { end } => {
+            let mut file = open_for_append(&path)?;
+            let len = file.stream_position()?;
+            if len as usize != end {
+                file.set_len(end as u64)?;
+                file.seek(std::io::SeekFrom::End(0))?;
+            }
+            file.write_all(b"\n")?;
+            file.sync_data()?;
+            Ok(EofRepair::MissingNewline)
+        }
+        RecordBoundary::EofJunk { keep, tail } => {
+            let digest = tail_digest(&bytes[keep..]);
+            let backup_name = format!("{session_id}.jsonl.tail-{digest}.bak");
+            let backup = path
+                .parent()
+                .map(|dir| dir.join(&backup_name))
+                .ok_or_else(|| {
+                    TranscriptRepairError::Backup(std::io::Error::other("missing parent"))
+                })?;
+            {
+                let mut bak = std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&backup)
+                    .map_err(TranscriptRepairError::Backup)?;
+                bak.write_all(&bytes)
+                    .map_err(TranscriptRepairError::Backup)?;
+                bak.sync_all().map_err(TranscriptRepairError::Backup)?;
+            }
+            let mut file = open_for_append(&path)?;
+            file.set_len(keep as u64)?;
+            if keep > 0 && bytes.get(keep - 1) != Some(&b'\n') {
+                file.seek(std::io::SeekFrom::End(0))?;
+                file.write_all(b"\n")?;
+            }
+            file.sync_data()?;
+            Ok(EofRepair::Truncated {
+                backup,
+                dropped_bytes: tail,
+            })
+        }
+    }
+}
+
+enum RecordBoundary {
+    Clean,
+    MissingNewline { end: usize },
+    EofJunk { keep: usize, tail: usize },
+}
+
+fn scan_record_boundary(bytes: &[u8]) -> Result<RecordBoundary, TranscriptRepairError> {
+    let mut offset = 0usize;
+    let mut last_complete_end = 0usize;
+    let mut saw_complete_bad = false;
+    while offset < bytes.len() {
+        let rel = bytes[offset..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| i + 1);
+        match rel {
+            Some(n) => {
+                let line = &bytes[offset..offset + n];
+                let decoded = String::from_utf8_lossy(line);
+                let trimmed = decoded.trim();
+                if !trimmed.is_empty() && !line_is_complete_record(trimmed) {
+                    saw_complete_bad = true;
+                } else if !trimmed.is_empty() && saw_complete_bad {
+                    return Err(TranscriptRepairError::MidFileCorruption);
+                }
+                offset += n;
+                last_complete_end = offset;
+            }
+            None => break,
+        }
+    }
+    if saw_complete_bad && last_complete_end < bytes.len() {
+        // A bad newline-terminated line followed by more bytes: mid-file.
+        return Err(TranscriptRepairError::MidFileCorruption);
+    }
+    if saw_complete_bad {
+        // The only bad record is the last newline-terminated line: treat as EOF.
+        let keep = previous_complete_end(bytes, last_complete_end);
+        return Ok(RecordBoundary::EofJunk {
+            keep,
+            tail: bytes.len() - keep,
+        });
+    }
+    if offset >= bytes.len() {
+        return Ok(RecordBoundary::Clean);
+    }
+    let leftover = String::from_utf8_lossy(&bytes[offset..]);
+    let trimmed = leftover.trim();
+    if trimmed.is_empty() {
+        return Ok(RecordBoundary::Clean);
+    }
+    if line_is_complete_record(trimmed) {
+        return Ok(RecordBoundary::MissingNewline { end: bytes.len() });
+    }
+    Ok(RecordBoundary::EofJunk {
+        keep: last_complete_end,
+        tail: bytes.len() - last_complete_end,
+    })
+}
+
+fn previous_complete_end(bytes: &[u8], last_nl: usize) -> usize {
+    if last_nl == 0 {
+        return 0;
+    }
+    let head = &bytes[..last_nl.saturating_sub(1)];
+    match head.iter().rposition(|&b| b == b'\n') {
+        Some(i) => i + 1,
+        None => 0,
+    }
+}
+
+fn line_is_complete_record(line: &str) -> bool {
+    parse_header_line(line).is_some() || serde_json::from_str::<TranscriptEntry>(line).is_ok()
+}
+
+fn tail_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let out = hasher.finalize();
+    format!(
+        "{:08x}",
+        u32::from_be_bytes([out[0], out[1], out[2], out[3]])
+    )
+}
+
+/// Probe a transcript file without treating permission errors as missing.
+pub fn transcript_stat_in(
+    root: &Path,
+    agent_dir: &str,
+    session_id: &str,
+) -> std::io::Result<Option<std::fs::Metadata>> {
+    let Some(path) = transcript_path_in(root, agent_dir, session_id) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unsafe transcript id",
+        ));
+    };
+    match std::fs::metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -1369,6 +1895,7 @@ mod tests {
         assert!(transcript_path_in(&root, "goose", "../escape").is_none());
         assert!(transcript_path_in(&root, ".hidden", "s").is_none());
         assert!(transcript_path_in(&root, "goose", "s1").is_some());
+        assert!(transcript_path_in(&root, "%2Ftmp", "s1").is_some());
         // An unsafe component must not create anything on disk.
         append_line_in(&root, "..", "s", &header_line("s"));
         assert!(read_transcript_in(&root, "..", "s").is_empty());
@@ -1386,6 +1913,22 @@ mod tests {
         assert!(list_session_ids_in(&root, "goose").is_empty());
         // Removing a directory that never existed is a no-op, not an error.
         remove_agent_transcripts_in(&root, "goose").unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn grouped_listing_skips_index_and_finds_percent_encoded_cwd() {
+        let root = temp_root();
+        let group = "%2Ftmp";
+        append_line_in(&root, group, "sess-a", &header_line("sess-a"));
+        std::fs::write(root.join("index.jsonl"), "{}\n").unwrap();
+        append_line_in(&root, group, "index", &header_line("index"));
+        let listed = list_grouped_session_ids_in(&root);
+        assert_eq!(listed, vec![(group.to_string(), "sess-a".to_string())]);
+        assert_eq!(
+            find_grouped_session_in(&root, "sess-a").as_deref(),
+            Some(group)
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1801,6 +2344,7 @@ mod tests {
             record,
             ack: tokio::sync::oneshot::channel().0,
             _prompt_guard: None,
+            critical: false,
         }
     }
 
@@ -2344,6 +2888,145 @@ mod tests {
         assert!(
             has_entries_in(&root, "goose", "gate"),
             "a sent prompt must be visible to the replay gate immediately"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_lease_is_exclusive() {
+        let root = temp_root();
+        let first = acquire_write_lease_in(&root, "goose", "lease-1").expect("first lease");
+        match acquire_write_lease_in(&root, "goose", "lease-1") {
+            Err(TranscriptLeaseError::Busy) => {}
+            Err(err) => panic!("expected busy, got {err}"),
+            Ok(_) => panic!("expected busy, got a second lease"),
+        }
+        drop(first);
+        acquire_write_lease_in(&root, "goose", "lease-1").expect("re-acquired");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn eof_missing_newline_is_completed_without_backup() {
+        let root = temp_root();
+        let lease = acquire_write_lease_in(&root, "goose", "eof-nl").expect("lease");
+        let header = header_line("eof-nl");
+        let prompt = entry_line(
+            EntryKind::Prompt,
+            serde_json::json!([{"type":"text","text":"hi"}]),
+        );
+        let path = transcript_path_in(&root, "goose", "eof-nl").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{header}\n{prompt}")).unwrap();
+        let repair = repair_eof_in(&root, "goose", "eof-nl", &lease).expect("repair");
+        assert_eq!(repair, EofRepair::MissingNewline);
+        let t = read_transcript_in(&root, "goose", "eof-nl");
+        assert_eq!(t.entries.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn eof_truncated_record_is_backed_up_then_trimmed() {
+        let root = temp_root();
+        let lease = acquire_write_lease_in(&root, "goose", "eof-cut").expect("lease");
+        let header = header_line("eof-cut");
+        let prompt = entry_line(
+            EntryKind::Prompt,
+            serde_json::json!([{"type":"text","text":"keep"}]),
+        );
+        let path = transcript_path_in(&root, "goose", "eof-cut").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{header}\n{prompt}\n{{\"t\":1,\"k\":\"upd")).unwrap();
+        let repair = repair_eof_in(&root, "goose", "eof-cut", &lease).expect("repair");
+        match repair {
+            EofRepair::Truncated {
+                backup,
+                dropped_bytes,
+            } => {
+                assert!(dropped_bytes > 0);
+                let name = backup.file_name().unwrap().to_string_lossy();
+                assert!(
+                    name.ends_with(".bak") && name.contains(".jsonl.tail-"),
+                    "{name}"
+                );
+                assert!(std::fs::read(&backup).unwrap().len() > prompt.len());
+            }
+            other => panic!("expected truncate, got {other:?}"),
+        }
+        let t = read_transcript_in(&root, "goose", "eof-cut");
+        assert_eq!(t.entries.len(), 1);
+        assert_eq!(t.entries[0].p[0]["text"], serde_json::json!("keep"));
+        let listed = list_session_ids_in(&root, "goose");
+        assert_eq!(listed, vec!["eof-cut".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mid_file_corruption_is_not_truncated() {
+        let root = temp_root();
+        let lease = acquire_write_lease_in(&root, "goose", "mid-bad").expect("lease");
+        let header = header_line("mid-bad");
+        let prompt = entry_line(
+            EntryKind::Prompt,
+            serde_json::json!([{"type":"text","text":"one"}]),
+        );
+        let later = entry_line(
+            EntryKind::TurnEnd,
+            serde_json::json!({"stopReason":"end_turn"}),
+        );
+        let path = transcript_path_in(&root, "goose", "mid-bad").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!("{header}\n{prompt}\nthis is not json\n{later}\n"),
+        )
+        .unwrap();
+        let err = repair_eof_in(&root, "goose", "mid-bad", &lease).unwrap_err();
+        assert!(matches!(err, TranscriptRepairError::MidFileCorruption));
+        let original = std::fs::read_to_string(&path).unwrap();
+        assert!(original.contains("this is not json"));
+        assert!(original.contains("end_turn"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn critical_update_acks_only_after_it_is_on_disk() {
+        let root = temp_root();
+        record_header_critical_in(
+            &root,
+            "goose",
+            &TranscriptHeader::new("custom:goose", "crit", "/repo", 1),
+        )
+        .await
+        .unwrap();
+        record_entry_critical_in(
+            &root,
+            "goose",
+            "crit",
+            EntryKind::Prompt,
+            serde_json::json!([{"type":"text","text":"go"}]),
+        )
+        .await
+        .unwrap();
+        record_entry_critical_in(
+            &root,
+            "goose",
+            "crit",
+            EntryKind::Update,
+            serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "call_a",
+                "status": "in_progress"
+            }),
+        )
+        .await
+        .unwrap();
+        let t = read_transcript_in(&root, "goose", "crit");
+        assert!(
+            t.entries
+                .iter()
+                .any(|e| e.p.get("toolCallId").and_then(|v| v.as_str()) == Some("call_a")),
+            "critical tool started must be readable immediately after ack: {t:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

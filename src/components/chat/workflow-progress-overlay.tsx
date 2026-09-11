@@ -11,7 +11,7 @@
  *   nodes out horizontally.
  */
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useTranslations } from "next-intl"
 import {
   AlertCircle,
@@ -29,10 +29,16 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { formatElapsedLabel } from "@/lib/format-elapsed"
-import { formatTokenCount } from "@/lib/token-format"
 import {
+  isWorkflowClockRunning,
+  syncWorkflowClock,
+  workflowElapsedMs,
+} from "@/lib/workflow-clock"
+import {
+  agentDisplayText,
   groupAgentsByPhase,
   liveWorkflows,
+  phaseDisplayText,
   phaseProgress,
 } from "@/lib/workflow-progress"
 import type { WorkflowAgent, WorkflowPhase, WorkflowRun } from "@/lib/types"
@@ -40,6 +46,20 @@ import {
   useWorkflowProgressDock,
   type WorkflowProgressDock,
 } from "@/components/chat/workflow-progress-dock"
+
+function useWorkflowElapsed(run: WorkflowRun): number {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    syncWorkflowClock(run.run_id, run.state)
+    if (!isWorkflowClockRunning(run.state)) return
+    const id = window.setInterval(() => {
+      syncWorkflowClock(run.run_id, run.state)
+      setTick((n) => n + 1)
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [run.run_id, run.state])
+  return workflowElapsedMs(run.run_id)
+}
 
 export function WorkflowProgressOverlay({
   placement,
@@ -79,10 +99,8 @@ function WorkflowProgressPanel({
   const isExpanded = userCollapsed !== undefined ? !userCollapsed : true
   const primary = runs[0]
   const progress = phaseProgress(primary)
-  const elapsed =
-    typeof primary.elapsed_ms === "number" && primary.elapsed_ms > 0
-      ? formatElapsedLabel(primary.elapsed_ms, tElapsed)
-      : null
+  const elapsedMs = useWorkflowElapsed(primary)
+  const elapsed = formatElapsedLabel(elapsedMs, tElapsed)
   const progressLabel = progress
     ? `${progress.current}/${progress.total}`
     : null
@@ -122,11 +140,9 @@ function WorkflowProgressPanel({
             {runs.length}
           </Badge>
         ) : null}
-        {!overlay && elapsed ? (
-          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-            {elapsed}
-          </span>
-        ) : null}
+        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+          {elapsed}
+        </span>
       </div>
       <div className="flex shrink-0 items-center">
         <Button
@@ -275,107 +291,55 @@ function PhaseGroup({
   current: boolean
   layout: "vertical" | "horizontal"
 }) {
-  const t = useTranslations("Folder.chat.workflows")
   const horizontal = layout === "horizontal"
   return (
     <div
       className={cn(
         "rounded-lg border bg-transparent px-2.5 py-2",
-        horizontal && "min-w-44 shrink-0"
+        horizontal && "min-w-44 max-w-56 shrink-0"
       )}
     >
       {phase ? (
-        <>
-          <div className="flex items-start gap-2">
-            <PhaseStatusIcon state={phase.state} current={current} />
-            <p
-              className={cn(
-                "min-w-0 flex-1 text-sm leading-5 break-words [overflow-wrap:anywhere]",
-                phase.state === "done"
-                  ? "text-muted-foreground line-through"
-                  : "text-foreground"
-              )}
-            >
-              {phase.title}
-            </p>
-          </div>
-          <div className="mt-2 flex items-center gap-1.5 pl-5">
-            <Badge variant="outline" className="h-5 text-3xs uppercase">
-              {t(
-                phase.state === "done"
-                  ? "phaseState.done"
-                  : phase.state === "active"
-                    ? "phaseState.active"
-                    : phase.state === "failed"
-                      ? "phaseState.failed"
-                      : "phaseState.pending"
-              )}
-            </Badge>
-          </div>
-        </>
+        <div className="flex min-w-0 items-center gap-2">
+          <PhaseStatusIcon state={phase.state} current={current} />
+          <p
+            className={cn(
+              "min-w-0 flex-1 truncate text-sm leading-5",
+              phase.state === "done"
+                ? "text-muted-foreground"
+                : "text-foreground"
+            )}
+            title={phaseDisplayText(phase)}
+          >
+            {phaseDisplayText(phase)}
+          </p>
+        </div>
       ) : null}
       {agents.length > 0 ? (
         <ul
           className={cn(
             horizontal
-              ? "mt-2 flex gap-1.5 overflow-x-auto"
-              : cn("space-y-1.5", phase ? "mt-2" : undefined)
+              ? cn("flex min-w-0 flex-col gap-1", phase && "mt-2")
+              : cn("space-y-1", phase && "mt-2")
           )}
         >
           {agents.map((agent) => (
             <li
               key={agent.agent_id}
-              className={cn(
-                "flex items-start gap-2",
-                horizontal && "min-w-28 shrink-0 rounded-md border px-1.5 py-1"
-              )}
+              className="flex min-w-0 items-center gap-2"
             >
               <NodeStatusIcon state={agent.state} />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-xs font-medium leading-4">
-                  {agent.label}
-                </p>
-                <div className="mt-1 flex flex-wrap items-center gap-1">
-                  <Badge variant="outline" className="h-5 text-3xs uppercase">
-                    {t(
-                      agent.state === "done"
-                        ? "nodeState.done"
-                        : agent.state === "failed"
-                          ? "nodeState.failed"
-                          : agent.state === "cancelled" ||
-                              agent.state === "canceled"
-                            ? "nodeState.cancelled"
-                            : agent.state === "pending"
-                              ? "nodeState.pending"
-                              : "nodeState.running"
-                    )}
-                  </Badge>
-                  {typeof agent.tokens_used === "number" &&
-                  agent.tokens_used > 0 ? (
-                    <span className="text-2xs tabular-nums text-muted-foreground">
-                      {formatTokenCount(agent.tokens_used)}
-                    </span>
-                  ) : null}
-                  {typeof agent.duration_ms === "number" &&
-                  agent.duration_ms > 0 ? (
-                    <NodeDuration ms={agent.duration_ms} />
-                  ) : null}
-                </div>
-              </div>
+              <p
+                className="min-w-0 flex-1 truncate text-xs leading-4"
+                title={agentDisplayText(agent)}
+              >
+                {agentDisplayText(agent)}
+              </p>
             </li>
           ))}
         </ul>
       ) : null}
     </div>
-  )
-}
-
-function NodeDuration({ ms }: { ms: number }) {
-  const tElapsed = useTranslations("Folder.chat.liveTurnStats")
-  return (
-    <span className="text-2xs tabular-nums text-muted-foreground">
-      {formatElapsedLabel(ms, tElapsed)}
-    </span>
   )
 }
 
@@ -406,19 +370,15 @@ function PhaseStatusIcon({
 
 function NodeStatusIcon({ state }: { state: string }) {
   if (state === "done") {
-    return (
-      <CheckCircle2Icon className="mt-0.5 h-3 w-3 shrink-0 text-emerald-500" />
-    )
+    return <CheckCircle2Icon className="h-3 w-3 shrink-0 text-emerald-500" />
   }
   if (state === "failed") {
-    return <AlertCircle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
+    return <AlertCircle className="h-3 w-3 shrink-0 text-destructive" />
   }
   if (state === "cancelled" || state === "canceled" || state === "pending") {
     return (
-      <CircleDashedIcon className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+      <CircleDashedIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
     )
   }
-  return (
-    <Loader2Icon className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-blue-500" />
-  )
+  return <Loader2Icon className="h-3 w-3 shrink-0 animate-spin text-blue-500" />
 }

@@ -108,6 +108,7 @@ pub fn build_delegation_stack(
     connection_manager: &ConnectionManager,
     db_conn: sea_orm::DatabaseConnection,
     data_dir: PathBuf,
+    emitter: EventEmitter,
 ) -> (
     Arc<DelegationBroker>,
     Arc<TokenRegistry>,
@@ -167,8 +168,31 @@ pub fn build_delegation_stack(
     let sessions = crate::acp::session_info::SessionInfoRuntimeConfig::new();
     let authoring = crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new();
 
-    // Install the injection on the manager so spawn_agent picks it up
-    // without an extra parameter at every call site.
+    let manager_arc = Arc::new(connection_manager.clone_ref());
+    let db_for_access = Arc::new(AppDatabase {
+        conn: db_conn.clone(),
+    });
+    let questions = Arc::new(crate::acp::manager::ConnectionManagerQuestionLookup {
+        manager: manager_arc.clone(),
+    }) as Arc<dyn crate::acp::question::SessionQuestionAccess>;
+    let plan_approvals = Arc::new(crate::acp::manager::ConnectionManagerPlanApprovalLookup {
+        manager: manager_arc.clone(),
+    }) as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>;
+    let feedback_access = Arc::new(crate::acp::manager::ConnectionManagerFeedbackLookup {
+        manager: manager_arc.clone(),
+    }) as Arc<dyn crate::acp::feedback::SessionFeedbackAccess>;
+    let session_info_access = Arc::new(crate::commands::session_info::DbSessionInfoLookup::new(
+        db_for_access.clone(),
+    )) as Arc<dyn crate::acp::session_info::SessionInfoAccess>;
+    let tasks = Arc::new(crate::work_task::EngineWorkTaskTools)
+        as Arc<dyn crate::acp::work_task_tools::WorkTaskToolAccess>;
+    let authoring_access = Arc::new(crate::commands::chat_authoring::DbChatAuthoring::new(
+        db_for_access,
+        emitter,
+        authoring.clone(),
+    )) as Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>;
+
+    // Install once, with flags AND the same service handles the listener uses.
     connection_manager.install_delegation(DelegationInjection {
         broker: broker.clone(),
         tokens: tokens.clone(),
@@ -178,16 +202,12 @@ pub fn build_delegation_stack(
         ask: ask.clone(),
         sessions: sessions.clone(),
         authoring: authoring.clone(),
-        // Same backing manager as the listener's question lookup; used only by
-        // the run_connection teardown guard to reclaim a parked ask.
-        questions: Arc::new(crate::acp::manager::ConnectionManagerQuestionLookup {
-            manager: Arc::new(connection_manager.clone_ref()),
-        }) as Arc<dyn crate::acp::question::SessionQuestionAccess>,
-        // Grok `exit_plan_mode` bridge — always wired (native plan mode, no
-        // feature flag), same backing manager as the question lookup.
-        plan_approvals: Arc::new(crate::acp::manager::ConnectionManagerPlanApprovalLookup {
-            manager: Arc::new(connection_manager.clone_ref()),
-        }) as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+        questions,
+        plan_approvals,
+        tasks,
+        feedback_access,
+        session_info_access,
+        authoring_access,
     });
 
     (
@@ -227,7 +247,12 @@ impl AppState {
             question_config,
             session_info_config,
             chat_authoring_config,
-        ) = build_delegation_stack(&connection_manager, db.conn.clone(), data_dir.clone());
+        ) = build_delegation_stack(
+            &connection_manager,
+            db.conn.clone(),
+            data_dir.clone(),
+            emitter.clone(),
+        );
 
         Self {
             db,

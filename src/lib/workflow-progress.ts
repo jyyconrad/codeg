@@ -117,6 +117,18 @@ export function liveWorkflows(runs: WorkflowRun[]): WorkflowRun[] {
   return runs.filter((r) => !isWorkflowTerminal(r))
 }
 
+/** One-line body text for a phase: script `detail` when present, else title. */
+export function phaseDisplayText(phase: WorkflowPhase): string {
+  const detail = phase.detail?.trim()
+  return detail || phase.title
+}
+
+/** One-line body text for a node: task/summary when present, else label. */
+export function agentDisplayText(agent: WorkflowAgent): string {
+  const summary = agent.summary?.trim()
+  return summary || agent.label
+}
+
 export function phaseProgress(run: WorkflowRun): {
   current: number
   total: number

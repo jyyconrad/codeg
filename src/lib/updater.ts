@@ -233,7 +233,7 @@ const MANIFEST_TIMEOUT_MS = 15_000
  * release the handle immediately — nothing downstream needs it (the actual
  * download runs in Rust via `perform_app_update`, which re-checks itself), so
  * holding it would only leak an entry in Tauri's resource table on every
- * periodic check.
+ * check.
  *
  * Server/remote hits `check_app_update`, which already answers in this shape.
  */

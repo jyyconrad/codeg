@@ -103,7 +103,11 @@ fn grok_delta(run_id: String, spawned: bool, update: &Value) -> WorkflowDelta {
                     .and_then(Value::as_str)
                     .unwrap_or("pending")
                     .to_string();
-                Some(WorkflowPhase { title, state })
+                Some(WorkflowPhase {
+                    title,
+                    detail: opt_trim(p.get("detail")),
+                    state,
+                })
             })
             .collect::<Vec<_>>()
     });
@@ -177,6 +181,11 @@ fn grok_agents(update: &Value) -> Option<Vec<WorkflowAgent>> {
                         .and_then(Value::as_str)
                         .unwrap_or("running")
                         .to_string(),
+                    summary: opt_trim(a.get("summary"))
+                        .or_else(|| opt_trim(a.get("task")))
+                        .or_else(|| opt_trim(a.get("prompt")))
+                        .or_else(|| opt_trim(a.get("objective")))
+                        .or_else(|| opt_trim(a.get("description"))),
                     tokens_used: a.get("tokens_used").and_then(Value::as_u64),
                     duration_ms: a.get("duration_ms").and_then(Value::as_u64),
                 })
@@ -227,7 +236,7 @@ mod tests {
                 "objective": "survey sensors",
                 "status": "active",
                 "phases": [
-                    {"title": "Plan", "state": "pending"},
+                    {"title": "Plan", "detail": "Choose research questions", "state": "pending"},
                     {"title": "Research", "state": "pending"}
                 ],
                 "agent_budget": 128,
@@ -248,6 +257,10 @@ mod tests {
         let phases = delta.phases.expect("phases");
         assert_eq!(phases.len(), 2);
         assert_eq!(phases[0].title, "Plan");
+        assert_eq!(
+            phases[0].detail.as_deref(),
+            Some("Choose research questions")
+        );
         assert_eq!(delta.agents_done, Some(0));
         assert_eq!(delta.agents_running, Some(0));
         assert_eq!(delta.agent_budget, Some(128));
@@ -282,6 +295,7 @@ mod tests {
                     "label": "research-planner",
                     "phase": "Plan",
                     "state": "done",
+                    "task": "Break the query into independent questions",
                     "tokens_used": 22284,
                     "duration_ms": 43281
                 }]
@@ -301,6 +315,10 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].agent_id, "ag_1");
         assert_eq!(agents[0].label, "research-planner");
+        assert_eq!(
+            agents[0].summary.as_deref(),
+            Some("Break the query into independent questions")
+        );
         assert_eq!(agents[0].phase.as_deref(), Some("Plan"));
         assert_eq!(agents[0].state, "done");
         assert_eq!(agents[0].tokens_used, Some(22284));

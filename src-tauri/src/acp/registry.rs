@@ -53,6 +53,9 @@ pub enum AgentDistribution {
         /// install`, an official installer) launch it without `uv`.
         system_cmd: Option<(&'static str, &'static [&'static str])>,
     },
+    /// Built-in runtime that lives in this process. `version` is the application
+    /// version (`CARGO_PKG_VERSION`).
+    InProcess { version: &'static str },
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +145,8 @@ impl AcpAgentMeta {
         match &self.distribution {
             AgentDistribution::Npx { version, .. }
             | AgentDistribution::Binary { version, .. }
-            | AgentDistribution::Uvx { version, .. } => Some(*version),
+            | AgentDistribution::Uvx { version, .. }
+            | AgentDistribution::InProcess { version } => Some(*version),
         }
     }
 
@@ -172,7 +176,7 @@ impl AcpAgentMeta {
     pub fn supports_custom_version(&self) -> bool {
         match &self.distribution {
             AgentDistribution::Npx { .. } => true,
-            AgentDistribution::Uvx { .. } => false,
+            AgentDistribution::Uvx { .. } | AgentDistribution::InProcess { .. } => false,
             AgentDistribution::Binary {
                 version, platforms, ..
             } => platforms
@@ -224,29 +228,13 @@ pub fn current_platform() -> &'static str {
     }
 }
 
-/// The fifteen built-in agents. Excludes user-registered custom agents — use
+/// The sixteen built-in agents. Excludes user-registered custom agents — use
 /// [`all_acp_agents`] for the live set.
 pub fn builtin_acp_agents() -> Vec<AgentType> {
-    vec![
-        AgentType::ClaudeCode,
-        AgentType::Codex,
-        AgentType::Gemini,
-        AgentType::OpenClaw,
-        AgentType::OpenCode,
-        AgentType::Cline,
-        AgentType::Hermes,
-        AgentType::CodeBuddy,
-        AgentType::KimiCode,
-        AgentType::Pi,
-        AgentType::Grok,
-        AgentType::Cursor,
-        AgentType::DeepSeek,
-        AgentType::Qoder,
-        AgentType::Antigravity,
-    ]
+    crate::models::agent::BUILTIN_AGENT_TYPES.to_vec()
 }
 
-/// Every agent codeg can currently drive: the fifteen built-ins followed by
+/// Every agent codeg can currently drive: the sixteen built-ins followed by
 /// the user's registered custom ACP agents (sorted by id).
 pub fn all_acp_agents() -> Vec<AgentType> {
     let mut agents = builtin_acp_agents();
@@ -271,6 +259,7 @@ pub fn registry_id_for(agent_type: AgentType) -> &'static str {
         AgentType::DeepSeek => "deepseek-acp",
         AgentType::Qoder => "qoder-cli",
         AgentType::Antigravity => "antigravity-acp",
+        AgentType::CodegAgent => "codeg-agent",
         // A custom agent's registry id IS its identity.
         AgentType::Custom(id) => id,
     }
@@ -293,6 +282,7 @@ pub fn from_registry_id(id: &str) -> Option<AgentType> {
         "deepseek-acp" => Some(AgentType::DeepSeek),
         "qoder-cli" => Some(AgentType::Qoder),
         "antigravity-acp" => Some(AgentType::Antigravity),
+        "codeg-agent" => Some(AgentType::CodegAgent),
         // Only ids the user has actually registered resolve. An unregistered
         // id must stay `None` so the ACP-registry picker still offers it as
         // "addable" rather than treating it as already supported.
@@ -451,6 +441,7 @@ fn distribution_uses_cursor_acp(distribution: &AgentDistribution) -> bool {
             launch_spec_uses_cursor_acp(cmd, args)
                 || system_cmd.is_some_and(|(c, a)| launch_spec_uses_cursor_acp(c, a))
         }
+        AgentDistribution::InProcess { .. } => false,
     }
 }
 
@@ -1735,6 +1726,15 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
                 }),
             },
         },
+        AgentType::CodegAgent => AcpAgentMeta {
+            agent_type,
+            supports_mcp: true,
+            name: "Codeg Agent",
+            description: "Built-in coding agent (in-process runtime)",
+            distribution: AgentDistribution::InProcess {
+                version: env!("CARGO_PKG_VERSION"),
+            },
+        },
         // Handled by the early return above; kept so the match stays
         // exhaustive without a catch-all that could swallow a new built-in.
         AgentType::Custom(_) => unreachable!("custom agents resolve via custom_registry"),
@@ -1802,6 +1802,28 @@ mod tests {
     // use whole-tree extraction (the single-file copy-out would strand the
     // harness and the server would log "Localharness not found."). The Linux
     // targets, and only those, carry the absl `--uid=` flag.
+    #[test]
+    fn codeg_agent_is_in_process_at_app_version() {
+        let meta = get_agent_meta(AgentType::CodegAgent);
+        assert!(meta.supports_mcp);
+        assert_eq!(meta.name, "Codeg Agent");
+        assert_eq!(registry_id_for(AgentType::CodegAgent), "codeg-agent");
+        assert_eq!(from_registry_id("codeg-agent"), Some(AgentType::CodegAgent));
+        assert!(!meta.supports_custom_version());
+        match meta.distribution {
+            AgentDistribution::InProcess { version } => {
+                assert_eq!(version, env!("CARGO_PKG_VERSION"));
+                assert_eq!(meta.registry_version(), Some(version));
+            }
+            other => panic!("expected in-process distribution for Codeg Agent, got {other:?}"),
+        }
+        assert!(builtin_acp_agents().contains(&AgentType::CodegAgent));
+        assert_eq!(
+            builtin_acp_agents(),
+            crate::models::agent::BUILTIN_AGENT_TYPES.to_vec()
+        );
+    }
+
     #[test]
     fn antigravity_pins_dir_tree_binary_and_linux_only_uid_flag() {
         let meta = get_agent_meta(AgentType::Antigravity);

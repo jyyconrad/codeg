@@ -38,6 +38,11 @@ use crate::acp::file_system_runtime::{
     FileSystemRuntime, FileSystemRuntimeError, FsAccessPolicy, FS_POLICY_ENV,
 };
 use crate::acp::host_tools_policy::{HostToolsPolicy, HOST_TOOLS_ENV};
+use crate::acp::native_config::{
+    env_has_provider_bind, resolve_codeg_agent_config, BoundProvider, API_BASE_URL_KEY,
+    API_KEY_KEY, MODEL_KEY,
+};
+use crate::acp::native_shutdown::NativeShutdownHandle;
 use crate::acp::registry::{self, AgentDistribution};
 use crate::acp::session_state::SessionState;
 use crate::acp::stderr_tail::{summarize_parser_error, StderrTail, TailScope};
@@ -1229,7 +1234,7 @@ fn tag_mcp_suspect(
 ///   and remove the entry asynchronously. The guard must hold owned
 ///   `Arc<Mutex<_>>` and `String` so the spawned task has `'static`
 ///   captures.
-struct ConnectionCleanupGuard {
+pub(crate) struct ConnectionCleanupGuard {
     connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
     connection_id: String,
 }
@@ -1298,6 +1303,9 @@ pub struct AgentConnection {
     /// the tree without waiting, so the agent may still be alive and still
     /// needs the backstop.
     pub child_pid: Arc<std::sync::atomic::AtomicU32>,
+    /// In-process sessions only. Independent of the 32-deep command queue:
+    /// disconnect cancels this token even when `Disconnect` cannot be enqueued.
+    pub native_shutdown: Option<Arc<crate::acp::native_shutdown::NativeShutdownHandle>>,
 }
 
 impl AgentConnection {
@@ -1361,13 +1369,14 @@ fn pi_launch_preflight(runtime_env: &BTreeMap<String, String>) -> Option<String>
 /// Transcript directory for an agent that codeg must record itself, or `None`
 /// for agents with their own store parser.
 ///
-/// Only custom ACP agents are recorded: every built-in has a dedicated parser
-/// reading the agent's native transcript, and recording those too would double
-/// the storage while risking two disagreeing histories.
+/// Custom ACP agents and Codeg Agent share the host transcript
+/// ([`AgentType::records_host_transcript`]). Other built-ins have a dedicated
+/// parser reading the agent's native store; recording those too would double
+/// storage while risking two disagreeing histories.
 fn transcript_dir_for(agent_type: AgentType) -> Option<&'static str> {
     agent_type
-        .custom_id()
-        .map(|_| registry::registry_id_for(agent_type))
+        .records_host_transcript()
+        .then(|| registry::registry_id_for(agent_type))
 }
 
 /// Ensure a custom agent's transcript file exists with its header. No-op for
@@ -2053,6 +2062,9 @@ async fn build_agent(
                 })
                 .map_err(|e| AcpError::SpawnFailed(e.to_string()))
         }
+        AgentDistribution::InProcess { .. } => {
+            return Err(AcpError::protocol("in-process agent has no child"));
+        }
     }?;
 
     // Run the agent subprocess in the session's working directory rather than
@@ -2111,6 +2123,7 @@ pub async fn spawn_agent_connection(
     preferred_config_values: BTreeMap<String, String>,
     delegation_injection: Option<DelegationInjection>,
     terminal_shell_config: TerminalShellRuntimeConfig,
+    native_sessions: Arc<tokio::sync::Mutex<HashMap<String, Arc<NativeShutdownHandle>>>>,
 ) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
     // Create the authoritative session state up front. Subsequent emit_with_state
     // calls write through this state and increment its seq counter so the first
@@ -2164,22 +2177,10 @@ pub async fn spawn_agent_connection(
     // turn is diagnosed as silently empty. Created here so both the spawn side
     // and the conversation loop share the same buffer.
     let stderr_tail = Arc::new(StderrTail::new());
-    let agent = build_agent(agent_type, &runtime_env, &launch_cwd, &stderr_tail)
-        .await?
-        .on_spawn({
-            let child_pid = Arc::clone(&child_pid);
-            move |pid| child_pid.store(pid, std::sync::atomic::Ordering::SeqCst)
-        })
-        // Paired with `on_spawn`: publish 0 again once the process has been
-        // reaped, so the shutdown backstop can never `kill_tree` a pid the OS
-        // has already handed to someone else. Fires ONLY on a real reap — a
-        // connection that merely ended keeps its pid published, because the
-        // vendored `ChildGuard` signals the tree without waiting and the agent
-        // may still be running.
-        .on_exit({
-            let child_pid = Arc::clone(&child_pid);
-            move || child_pid.store(0, std::sync::atomic::Ordering::SeqCst)
-        });
+    let in_process = matches!(
+        registry::get_agent_meta(agent_type).distribution,
+        AgentDistribution::InProcess { .. }
+    );
 
     // Path policy for the ACP `fs/*` channel. Built HERE rather than inside
     // `run_connection` because it needs the full `runtime_env` (only the git
@@ -2192,7 +2193,12 @@ pub async fn spawn_agent_connection(
     // them back to the agent so the agent's OWN sandbox covers them (#436).
     // Resolved here for the same reason as `fs_policy`: it reads the full
     // per-agent `runtime_env`, which does not survive into `run_connection`.
-    let host_tools = HostToolsPolicy::from_env(&runtime_env);
+    // In-process Codeg Agent always hosts the channels (K12).
+    let host_tools = if in_process {
+        HostToolsPolicy::Default
+    } else {
+        HostToolsPolicy::from_env(&runtime_env)
+    };
 
     // Forward only the codeg git credential helper keys into the terminal
     // runtime — not the agent's API tokens or model provider credentials.
@@ -2224,6 +2230,51 @@ pub async fn spawn_agent_connection(
     // settings save can be compared against it to detect a stale running session.
     let config_fingerprint = crate::commands::acp::fingerprint_config(agent_type, &runtime_env);
 
+    if in_process {
+        return spawn_in_process_session(
+            connection_id,
+            agent_type,
+            working_dir,
+            session_id,
+            launch_cwd,
+            runtime_env,
+            owner_window_label,
+            emitter,
+            connections,
+            preferred_config_values,
+            delegation_injection,
+            terminal_shell_config,
+            terminal_base_env,
+            fs_policy,
+            host_tools,
+            cmd_tx,
+            cmd_rx,
+            session_state,
+            session_started_rx,
+            config_fingerprint,
+            child_pid,
+            native_sessions,
+        )
+        .await;
+    }
+
+    let agent = build_agent(agent_type, &runtime_env, &launch_cwd, &stderr_tail)
+        .await?
+        .on_spawn({
+            let child_pid = Arc::clone(&child_pid);
+            move |pid| child_pid.store(pid, std::sync::atomic::Ordering::SeqCst)
+        })
+        // Paired with `on_spawn`: publish 0 again once the process has been
+        // reaped, so the shutdown backstop can never `kill_tree` a pid the OS
+        // has already handed to someone else. Fires ONLY on a real reap — a
+        // connection that merely ended keeps its pid published, because the
+        // vendored `ChildGuard` signals the tree without waiting and the agent
+        // may still be running.
+        .on_exit({
+            let child_pid = Arc::clone(&child_pid);
+            move || child_pid.store(0, std::sync::atomic::Ordering::SeqCst)
+        });
+
     // Insert the entry BEFORE spawning the background task so that a
     // fast-failing `run_connection` can never remove it before it was
     // inserted (would otherwise leak the entry).
@@ -2241,6 +2292,7 @@ pub async fn spawn_agent_connection(
             last_observed_fingerprint: config_fingerprint.clone(),
             config_fingerprint,
             child_pid,
+            native_shutdown: None,
         },
     );
 
@@ -2370,6 +2422,121 @@ pub async fn spawn_agent_connection(
     }
 
     Ok(session_started_rx)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn spawn_in_process_session(
+    connection_id: String,
+    agent_type: AgentType,
+    working_dir: Option<String>,
+    session_id: Option<String>,
+    launch_cwd: PathBuf,
+    runtime_env: BTreeMap<String, String>,
+    owner_window_label: String,
+    emitter: EventEmitter,
+    connections: Arc<tokio::sync::Mutex<HashMap<String, AgentConnection>>>,
+    preferred_config_values: BTreeMap<String, String>,
+    delegation_injection: Option<DelegationInjection>,
+    terminal_shell_config: TerminalShellRuntimeConfig,
+    terminal_base_env: BTreeMap<String, String>,
+    fs_policy: FsAccessPolicy,
+    host_tools: HostToolsPolicy,
+    cmd_tx: mpsc::Sender<ConnectionCommand>,
+    cmd_rx: mpsc::Receiver<ConnectionCommand>,
+    session_state: Arc<RwLock<SessionState>>,
+    session_started_rx: tokio::sync::oneshot::Receiver<()>,
+    config_fingerprint: String,
+    child_pid: Arc<std::sync::atomic::AtomicU32>,
+    native_sessions: Arc<tokio::sync::Mutex<HashMap<String, Arc<NativeShutdownHandle>>>>,
+) -> Result<tokio::sync::oneshot::Receiver<()>, AcpError> {
+    let effective_config = resolve_native_config_from_env(&runtime_env)?;
+    let shutdown = NativeShutdownHandle::new();
+    native_sessions
+        .lock()
+        .await
+        .insert(connection_id.clone(), Arc::clone(&shutdown));
+
+    connections.lock().await.insert(
+        connection_id.clone(),
+        AgentConnection {
+            id: connection_id.clone(),
+            agent_type,
+            status: ConnectionStatus::Connecting,
+            owner_window_label: owner_window_label.clone(),
+            cmd_tx,
+            state: Arc::clone(&session_state),
+            emitter: emitter.clone(),
+            prompt_lock: Arc::new(tokio::sync::Mutex::new(())),
+            last_observed_fingerprint: config_fingerprint.clone(),
+            config_fingerprint: config_fingerprint.clone(),
+            child_pid,
+            native_shutdown: Some(Arc::clone(&shutdown)),
+        },
+    );
+
+    let cleanup_guard = ConnectionCleanupGuard {
+        connections: connections.clone(),
+        connection_id: connection_id.clone(),
+    };
+    let args = crate::agent::NativeSessionArgs {
+        connection_id: connection_id.clone(),
+        agent_type,
+        working_dir,
+        launch_cwd,
+        resume_session_id: session_id,
+        effective_config,
+        preferred_config_values,
+        owner_window_label,
+        emitter,
+        session_state,
+        cmd_rx,
+        delegation_injection,
+        terminal_shell_config,
+        terminal_base_env,
+        fs_policy,
+        host_tools,
+        config_fingerprint,
+        shutdown,
+        map_cleanup: Some(cleanup_guard),
+        include_echo_tool: false,
+        init_hold: None,
+        mcp_server_specs: None,
+        fail_turn_end: false,
+    };
+    if let Err(err) = crate::agent::spawn_native_session(args) {
+        native_sessions.lock().await.remove(&connection_id);
+        connections.lock().await.remove(&connection_id);
+        return Err(err);
+    }
+    Ok(session_started_rx)
+}
+
+fn resolve_native_config_from_env(
+    runtime_env: &BTreeMap<String, String>,
+) -> Result<crate::acp::native_config::EffectiveNativeConfig, AcpError> {
+    // `CODEG_AGENT_API_*` is a projection of overlay_bound_provider, not a
+    // second auth path. Leftover keys without this launch's bind marker
+    // must fail MissingProvider the same way a missing bind does.
+    let provider = if env_has_provider_bind(runtime_env) {
+        let api_url = runtime_env
+            .get(API_BASE_URL_KEY)
+            .cloned()
+            .unwrap_or_default();
+        let api_key = runtime_env.get(API_KEY_KEY).cloned().unwrap_or_default();
+        let model = runtime_env
+            .get(MODEL_KEY)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        Some(BoundProvider {
+            api_url,
+            api_key,
+            model,
+        })
+    } else {
+        None
+    };
+    resolve_codeg_agent_config(runtime_env, provider.as_ref())
+        .map_err(|err| AcpError::protocol(err.message()))
 }
 
 /// A pending permission-card responder. `Acp` is a real ACP
@@ -4436,6 +4603,15 @@ pub struct DelegationInjection {
     /// through this, and the cleanup guard calls `cancel_plan_approvals_by_parent`
     /// on disconnect (mirroring the question teardown cascade).
     pub plan_approvals: Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+    /// Work-task reporting (`task_progress` / `task_complete`). Same instance
+    /// the delegation listener uses (K19).
+    pub tasks: Arc<dyn crate::acp::work_task_tools::WorkTaskToolAccess>,
+    /// Live-feedback read/commit. Same instance as the listener.
+    pub feedback_access: Arc<dyn crate::acp::feedback::SessionFeedbackAccess>,
+    /// `get_session_info` lookup. Same instance as the listener.
+    pub session_info_access: Arc<dyn crate::acp::session_info::SessionInfoAccess>,
+    /// `create_automation` / `create_work_task`. Same instance as the listener.
+    pub authoring_access: Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>,
 }
 
 /// Locate the `codeg-mcp` companion binary across the supported deployment
@@ -4522,19 +4698,19 @@ fn is_executable_file(path: &Path) -> bool {
 /// positional bool list: the groups keep growing and seven adjacent `bool`s at a
 /// call site is a silent argument-swap waiting to happen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct CompanionFeatureFlags {
-    delegation: bool,
-    feedback: bool,
-    ask: bool,
-    sessions: bool,
+pub(crate) struct CompanionFeatureFlags {
+    pub delegation: bool,
+    pub feedback: bool,
+    pub ask: bool,
+    pub sessions: bool,
     /// Per-spawn (task-engine launches only), not a settings toggle — on its own
     /// it still injects the companion so a task session always has its reporting
     /// tools.
-    tasks: bool,
+    pub tasks: bool,
     /// `create_automation`, gated by the chat-authoring setting.
-    automations: bool,
+    pub automations: bool,
     /// `create_work_task`, gated by the chat-authoring setting.
-    taskboard: bool,
+    pub taskboard: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -4542,7 +4718,7 @@ struct CompanionFeatureFlags {
 /// so the inject/skip decision is unit-testable without a real binary on disk or
 /// a live broker. The order here is the order the companion's
 /// `CompanionFeatures::parse` recognizes.
-fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
+pub(crate) fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
     let mut features: Vec<&str> = Vec::new();
     if flags.delegation {
         features.push("delegation");
@@ -4569,6 +4745,42 @@ fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<String> {
         return None;
     }
     Some(features.join(","))
+}
+
+/// Shared feature snapshot for MCP companion injection and the in-process
+/// Codeg Agent tool set. Same window rule (`owner_window_label == "work_task"`
+/// is the caller's `tasks_enabled`) and the same `delegation && hosts_channels`
+/// gate — do not fork a second boolean expression.
+pub(crate) async fn snapshot_companion_features(
+    injection: &DelegationInjection,
+    host_tools: HostToolsPolicy,
+    tasks_enabled: bool,
+) -> CompanionFeatureFlags {
+    let authoring = injection.authoring.snapshot().await;
+    let delegation_configured = injection.broker.config_snapshot().await.enabled;
+    CompanionFeatureFlags {
+        delegation: delegation_configured && host_tools.hosts_channels(),
+        feedback: injection.feedback.is_enabled().await,
+        ask: injection.ask.is_enabled().await,
+        sessions: injection.sessions.is_enabled().await,
+        tasks: tasks_enabled,
+        automations: authoring.automations_enabled,
+        taskboard: authoring.work_tasks_enabled,
+    }
+}
+
+impl From<CompanionFeatureFlags> for crate::acp::delegation::companion::CompanionFeatures {
+    fn from(flags: CompanionFeatureFlags) -> Self {
+        Self {
+            delegation: flags.delegation,
+            feedback: flags.feedback,
+            ask: flags.ask,
+            sessions: flags.sessions,
+            tasks: flags.tasks,
+            automations: flags.automations,
+            taskboard: flags.taskboard,
+        }
+    }
 }
 
 /// Outcome of injecting the `codeg-mcp` companion: the per-launch token to
@@ -4619,8 +4831,6 @@ where
     // surface to the LLM. (Historically this was gated on delegation alone.)
     // `tasks_enabled` is per-spawn: true only for task-engine launches, which
     // must get their reporting tools regardless of the settings toggles.
-    let feedback_enabled = injection.feedback.is_enabled().await;
-    let authoring = injection.authoring.snapshot().await;
     // Delegation is a THIRD door into the same room as `fs/*` and `terminal/*`:
     // `delegate_to_agent` has codeg spawn a second agent — in codeg's process
     // tree, under ITS own (by default `Default`) policy — and hand its output
@@ -4630,8 +4840,10 @@ where
     // withholds this group too. The other groups stay: they surface codeg's own
     // state (feedback, ask, session info, task reporting), not arbitrary file
     // or command execution on the user's machine.
+    let flags = snapshot_companion_features(injection, host_tools, tasks_enabled).await;
+    let feedback_enabled = flags.feedback;
     let delegation_configured = injection.broker.config_snapshot().await.enabled;
-    let delegation_enabled = delegation_configured && host_tools.hosts_channels();
+    let delegation_enabled = flags.delegation;
     if delegation_configured && !delegation_enabled {
         // The one combination that looks like a bug from the settings UI: the
         // multi-agent switch reads "on" and the tools are still absent. Say so
@@ -4655,15 +4867,6 @@ where
             .await
     } else {
         Vec::new()
-    };
-    let flags = CompanionFeatureFlags {
-        delegation: delegation_enabled,
-        feedback: feedback_enabled,
-        ask: injection.ask.is_enabled().await,
-        sessions: injection.sessions.is_enabled().await,
-        tasks: tasks_enabled,
-        automations: authoring.automations_enabled,
-        taskboard: authoring.work_tasks_enabled,
     };
     // `None` (no feature enabled) short-circuits BEFORE the binary lookup, the
     // token registration and the server append: there is no companion to launch,
@@ -4738,7 +4941,7 @@ where
 /// SUBTRACT from its embedded list. Disabled customs need no subtraction
 /// entry — they are simply never appended. The subtraction list is sorted so
 /// the arg string is deterministic regardless of settings-row order.
-fn delegate_target_args(disabled_wire_slugs: &[String]) -> (Vec<String>, Vec<String>) {
+pub(crate) fn delegate_target_args(disabled_wire_slugs: &[String]) -> (Vec<String>, Vec<String>) {
     let disabled: HashSet<&str> = disabled_wire_slugs.iter().map(String::as_str).collect();
     let custom_slugs: Vec<String> = crate::acp::custom_registry::all()
         .iter()
@@ -22049,6 +22252,76 @@ mod tests {
         async fn cancel_plan_approvals_by_parent(&self, _parent_connection_id: &str) {}
     }
 
+    struct TestNoTasks;
+
+    #[async_trait::async_trait]
+    impl crate::acp::work_task_tools::WorkTaskToolAccess for TestNoTasks {
+        async fn report_progress(
+            &self,
+            _parent_connection_id: &str,
+            _message: &str,
+        ) -> crate::acp::work_task_tools::TaskReportAck {
+            crate::acp::work_task_tools::TaskReportAck::rejected("test stub")
+        }
+
+        async fn complete(
+            &self,
+            _parent_connection_id: &str,
+            _verdict: &str,
+            _summary: Option<&str>,
+        ) -> crate::acp::work_task_tools::TaskReportAck {
+            crate::acp::work_task_tools::TaskReportAck::rejected("test stub")
+        }
+    }
+
+    struct TestNoFeedbackAccess;
+
+    #[async_trait::async_trait]
+    impl crate::acp::feedback::SessionFeedbackAccess for TestNoFeedbackAccess {
+        async fn read_pending_feedback(
+            &self,
+            _parent_connection_id: &str,
+        ) -> Vec<crate::acp::feedback::PendingFeedback> {
+            Vec::new()
+        }
+
+        async fn commit_feedback_delivered(&self, _parent_connection_id: &str, _ids: Vec<String>) {}
+    }
+
+    struct TestNoSessionInfo;
+
+    #[async_trait::async_trait]
+    impl crate::acp::session_info::SessionInfoAccess for TestNoSessionInfo {
+        async fn resolve(
+            &self,
+            session_id: i32,
+            _max_messages: u32,
+        ) -> crate::acp::session_info::SessionInfo {
+            crate::acp::session_info::SessionInfo::not_found(session_id)
+        }
+    }
+
+    struct TestNoAuthoring;
+
+    #[async_trait::async_trait]
+    impl crate::acp::chat_authoring::ChatAuthoringAccess for TestNoAuthoring {
+        async fn create_automation(
+            &self,
+            _ctx: crate::acp::chat_authoring::AuthoringContext,
+            _spec: crate::acp::chat_authoring::NewAutomationSpec,
+        ) -> crate::acp::chat_authoring::AuthoringOutcome {
+            crate::acp::chat_authoring::AuthoringOutcome::rejected("automation", "test stub")
+        }
+
+        async fn create_work_task(
+            &self,
+            _ctx: crate::acp::chat_authoring::AuthoringContext,
+            _spec: crate::acp::chat_authoring::NewWorkTaskSpec,
+        ) -> crate::acp::chat_authoring::AuthoringOutcome {
+            crate::acp::chat_authoring::AuthoringOutcome::rejected("work_task", "test stub")
+        }
+    }
+
     struct TestAllAgentsAvailable;
 
     #[async_trait::async_trait]
@@ -22083,6 +22356,14 @@ mod tests {
                 as Arc<dyn crate::acp::question::SessionQuestionAccess>,
             plan_approvals: Arc::new(TestNoPlanApprovals)
                 as Arc<dyn crate::acp::plan_approval::SessionPlanApprovalAccess>,
+            tasks: Arc::new(TestNoTasks)
+                as Arc<dyn crate::acp::work_task_tools::WorkTaskToolAccess>,
+            feedback_access: Arc::new(TestNoFeedbackAccess)
+                as Arc<dyn crate::acp::feedback::SessionFeedbackAccess>,
+            session_info_access: Arc::new(TestNoSessionInfo)
+                as Arc<dyn crate::acp::session_info::SessionInfoAccess>,
+            authoring_access: Arc::new(TestNoAuthoring)
+                as Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>,
         }
     }
 
@@ -22737,5 +23018,47 @@ mod tests {
         let mut untyped = serde_json::json!({"configOptions": [{"id": "weird"}]});
         strip_unknown_config_options(&mut untyped, "session/new");
         assert_eq!(untyped["configOptions"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn leftover_api_keys_without_bind_marker_are_missing_provider() {
+        let mut env = BTreeMap::new();
+        env.insert(API_BASE_URL_KEY.into(), "https://api.example.com/v1".into());
+        env.insert(API_KEY_KEY.into(), "sk-from-env".into());
+        env.insert(MODEL_KEY.into(), "gpt-4.1".into());
+        env.insert(
+            crate::acp::native_config::CONTEXT_WINDOWS_KEY.into(),
+            r#"{"gpt-4.1": 128000}"#.into(),
+        );
+        let err = resolve_native_config_from_env(&env)
+            .expect_err("leftover CODEG_AGENT_API_* must not authenticate");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "ACP protocol error: {}",
+                crate::acp::native_config::NativeConfigError::MissingProvider.message()
+            )
+        );
+    }
+
+    #[test]
+    fn overlay_bound_provider_lets_spawn_resolve_projected_keys() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            crate::acp::native_config::CONTEXT_WINDOWS_KEY.into(),
+            r#"{"gpt-4.1": 128000}"#.into(),
+        );
+        crate::acp::native_config::overlay_bound_provider(
+            &mut env,
+            &BoundProvider {
+                api_url: "https://api.example.com/v1".into(),
+                api_key: "sk-bound".into(),
+                model: Some("gpt-4.1".into()),
+            },
+        );
+        let cfg = resolve_native_config_from_env(&env).expect("bound overlay must resolve");
+        assert_eq!(cfg.api_key, "sk-bound");
+        assert_eq!(cfg.model_id, "gpt-4.1");
+        assert_eq!(cfg.api_base_url, "https://api.example.com/v1");
     }
 }

@@ -38,7 +38,7 @@ use serde_json::Value;
 /// MCP tool call can't block the companion's round-trip unbounded. The child
 /// keeps running past this; the LLM simply re-issues the wait. An explicit
 /// `wait_ms = 0` opts out of the ceiling and blocks until the task is terminal.
-const STATUS_WAIT_MAX_MS: u64 = 60_000;
+pub(crate) const STATUS_WAIT_MAX_MS: u64 = 60_000;
 
 /// The bound-but-not-yet-served socket handed from [`DelegationListener::bind`]
 /// to [`DelegationListener::accept_loop`]. A UDS listener on unix; on Windows,

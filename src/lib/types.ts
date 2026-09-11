@@ -3087,6 +3087,8 @@ export interface AsyncTaskDelta {
 
 export interface WorkflowPhase {
   title: string
+  /** Static one-line summary from the workflow script, when published. */
+  detail?: string | null
   /** `pending` | `active` | `done` | `failed`. */
   state: string
 }
@@ -3098,6 +3100,8 @@ export interface WorkflowAgent {
   phase?: string | null
   /** `pending` | `running` | `done` | `failed` | `cancelled`. */
   state: string
+  /** Task/summary line when the speaker sent one. `label` is the name fallback. */
+  summary?: string | null
   tokens_used?: number | null
   duration_ms?: number | null
 }
@@ -4647,6 +4651,49 @@ export function parseClaudeProviderModel(
   } catch {
     return {}
   }
+}
+
+/** Default token window written when binding a channel that has no catalog window. */
+export const DEFAULT_CODEG_CONTEXT_WINDOW = 128000
+
+/**
+ * Chat Completions model id from a model-provider row. Claude JSON uses `main`,
+ * Codex catalogs use `default` then the first custom slug, plain strings pass
+ * through. Unrecognized JSON yields an empty string rather than the raw blob.
+ */
+export function completionsModelIdFromProvider(provider: {
+  agent_type: string
+  model?: string | null
+}): string {
+  const raw = provider.model?.trim() ?? ""
+  if (!raw) return ""
+  if (provider.agent_type === "claude_code" || raw.startsWith("{")) {
+    const claude = parseClaudeProviderModel(raw)
+    if (claude.main?.trim()) return claude.main.trim()
+    if (claude.customOption?.trim()) return claude.customOption.trim()
+  }
+  if (provider.agent_type === "codex" || raw.startsWith("{")) {
+    const codex = parseCodexModelConfig(raw)
+    if (codex.default?.trim()) return codex.default.trim()
+    const slug = codex.customs[0]?.slug?.trim()
+    if (slug) return slug
+    if (raw.startsWith("{")) return ""
+  }
+  return raw
+}
+
+/** Window to write for a newly bound Codeg Agent model, preferring Codex catalog. */
+export function suggestedCodegContextWindow(provider: {
+  agent_type: string
+  model?: string | null
+}): number {
+  if (provider.agent_type === "codex" || provider.model?.trim().startsWith("{")) {
+    const parsed = parseCodexModelConfig(provider.model ?? null)
+    const slug = completionsModelIdFromProvider(provider)
+    const hit = parsed.customs.find((entry) => entry.slug === slug)
+    if (hit?.contextWindow && hit.contextWindow > 0) return hit.contextWindow
+  }
+  return DEFAULT_CODEG_CONTEXT_WINDOW
 }
 
 export function serializeClaudeProviderModel(

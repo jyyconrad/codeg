@@ -19,10 +19,13 @@ pub mod idle_sweep;
 pub mod internal_bus;
 pub mod lifecycle;
 pub mod manager;
+pub mod native_config;
+pub mod native_shutdown;
 pub mod opencode_catalog;
 pub mod opencode_plugins;
 pub mod plan_approval;
 pub mod preflight;
+pub mod process_owner;
 pub mod prompt_hydration;
 pub mod question;
 pub mod registry;
@@ -65,14 +68,14 @@ pub use types::{
 /// sidebar on every restart. The second is codeg#500, where the split is the
 /// whole point.
 ///
-/// Empty — and free — for every built-in agent: their history lives in the
-/// agent's own store, codeg records no transcript, and so nothing can ever be
-/// carried forward. Only custom agents can produce a non-empty answer.
+/// Empty — and free — for agents whose history lives in their own store.
+/// Custom ACP agents and Codeg Agent share the host transcript, so a forgotten
+/// session can still carry earlier turns forward through `continues_from`.
 pub fn continued_session_ids(
     agent_type: crate::models::AgentType,
     session_id: &str,
 ) -> Vec<String> {
-    if agent_type.custom_id().is_none() {
+    if !agent_type.records_host_transcript() {
         return Vec::new();
     }
     crate::acp_transcript::continuation_ancestors(registry::registry_id_for(agent_type), session_id)

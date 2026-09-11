@@ -440,6 +440,31 @@ const AntigravityMonoIcon = memo(function AntigravityMonoIcon({
   )
 })
 
+const CodegAgentColorIcon = memo(function CodegAgentColorIcon({
+  size = "1em",
+}: IconProps) {
+  return (
+    <svg
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 24 24"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>Codeg Agent</title>
+      <rect fill="#0F766E" height="24" rx="6" width="24" />
+      <path
+        d="M8 8.5 12 12 8 15.5M12.5 15.5H16"
+        fill="none"
+        stroke="#fff"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  )
+})
+
 const CursorMonoIcon = memo(function CursorMonoIcon({
   size = "1em",
 }: IconProps) {
@@ -472,6 +497,7 @@ const COLOR_ICONS: Partial<Record<AgentType, AnyIcon>> = {
   kimi_code: KimiCodeColorIcon,
   pi: PiColorIcon,
   deepseek: DeepSeekColorIcon,
+  codeg_agent: CodegAgentColorIcon,
 }
 
 const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {

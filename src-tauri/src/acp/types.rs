@@ -280,6 +280,10 @@ pub fn async_task_state_is_terminal(state: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPhase {
     pub title: String,
+    /// Static one-line summary from the workflow script (`meta.phases[].detail`)
+    /// when the adapter published it. Absent on speakers that only send a title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// `pending` | `active` | `done` | `failed`. Plain string so an unmapped
     /// future value still round-trips.
     #[serde(default)]
@@ -297,6 +301,10 @@ pub struct WorkflowAgent {
     /// `pending` | `running` | `done` | `failed` | `cancelled`.
     #[serde(default)]
     pub state: String,
+    /// Static task/summary line when the speaker sent one (`summary` / `task` /
+    /// `prompt` / `objective` / `description`). `label` is the fallback name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_used: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

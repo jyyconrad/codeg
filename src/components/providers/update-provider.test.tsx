@@ -453,42 +453,22 @@ describe("UpdateProvider — check scheduling", () => {
     vi.useRealTimers()
   })
 
-  it("runs the first check only after the startup delay", async () => {
+  it("never contacts the release source on its own", async () => {
     render(availabilityTree())
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000)
-    })
-    // Still inside the delay: workspace boot isn't competing with a manifest
-    // fetch.
-    expect(checkCalls()).toBe(0)
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(9000)
-    })
-    expect(checkCalls()).toBe(1)
-  })
-
-  it("skips the scheduled check while an update is already downloading", async () => {
-    snapshot = { seq: 3, status: "downloading", downloaded: 10, total: 100 }
-    render(availabilityTree())
-    // Let the mount snapshot land (and its effects flush) before the startup
-    // timer fires, so the guard sees the real lifecycle rather than the
-    // placeholder `idle`.
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-    expect(screen.getByTestId("lifecycle").textContent).toBe("downloading")
-
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000)
     })
-    // Nothing to discover: the status bar is already showing this update's
-    // progress.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000)
+    })
+    document.dispatchEvent(new Event("visibilitychange"))
+    await act(async () => {
+      await Promise.resolve()
+    })
     expect(checkCalls()).toBe(0)
   })
 
-  it("honours a recent check recorded by another window", async () => {
+  it("still adopts a sibling window's cached answer without fetching", async () => {
     localStorage.setItem(
       LAST_CHECK_KEY,
       JSON.stringify({ at: Date.now(), currentVersion: "0.21.7", info: null })
@@ -500,7 +480,7 @@ describe("UpdateProvider — check scheduling", () => {
     expect(checkCalls()).toBe(0)
   })
 
-  it("re-checks once the cached answer has gone stale", async () => {
+  it("does not re-check a stale cache on a timer", async () => {
     localStorage.setItem(
       LAST_CHECK_KEY,
       JSON.stringify({
@@ -513,7 +493,7 @@ describe("UpdateProvider — check scheduling", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000)
     })
-    expect(checkCalls()).toBe(1)
+    expect(checkCalls()).toBe(0)
   })
 })
 
@@ -557,9 +537,10 @@ describe("UpdateProvider — stale cache after an upgrade", () => {
     await waitFor(() =>
       expect(screen.getByTestId("available").textContent).toBe("none")
     )
-    // Re-asked immediately rather than waiting out the interval, so the UI
-    // isn't left blank for 6h.
-    await waitFor(() => expect(checkCalls()).toBe(1))
+    // Drops the stale offer locally. Does not hit GitHub in the background
+    // to fill the gap — a manual "Check for updates" is what talks to the
+    // release source.
+    expect(checkCalls()).toBe(0)
   })
 
   it("keeps a cached release that still applies to the running version", async () => {
@@ -759,8 +740,7 @@ describe("UpdateProvider — reconnect during an in-flight status refresh", () =
     // The mount refresh is still in flight when the server self-updates and the
     // socket reconnects. Coalescing the reconnect into that request would pin
     // the version and capabilities to a process that no longer exists — and
-    // nothing would ask again until the next reconnect, a manual check, or the
-    // six-hour poll.
+    // nothing would ask again until the next reconnect or a manual check.
     let backendVersion = "0.21.7"
     const answer: Array<() => void> = []
     callImpl = async (endpoint: string) => {
@@ -987,7 +967,7 @@ describe("UpdateProvider — cross-window dismissal", () => {
   it("adopts a sibling's fresh result from the cache event alone", async () => {
     // Nothing was ever dismissed here, so the cache write is the ONLY event.
     // Watching just the dismissal key would leave this window badge-less until
-    // its next visibility change or the six-hour poll.
+    // its next visibility change.
     render(availabilityTree())
     await waitFor(() => expect(ctx).not.toBeNull())
     expect(screen.getByTestId("available").textContent).toBe("none")

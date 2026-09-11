@@ -267,6 +267,7 @@ async fn async_main() -> ExitCode {
         &connection_manager,
         db.conn.clone(),
         data_dir.clone(),
+        emitter.clone(),
     );
     let state = Arc::new(AppState {
         db,
@@ -349,31 +350,21 @@ async fn async_main() -> ExitCode {
     // through the broker. Path is PID-scoped, so the listener owns it for
     // the lifetime of the process.
     {
+        let injection = state
+            .connection_manager
+            .delegation_snapshot()
+            .expect("delegation injection installed");
         let listener = codeg_lib::acp::delegation::listener::DelegationListener::new(
             delegation_broker,
             delegation_tokens,
             Arc::new(codeg_lib::acp::manager::ConnectionManagerParentLookup {
                 manager: Arc::new(state.connection_manager.clone_ref()),
             }),
-            Arc::new(codeg_lib::acp::manager::ConnectionManagerFeedbackLookup {
-                manager: Arc::new(state.connection_manager.clone_ref()),
-            }),
-            Arc::new(codeg_lib::acp::manager::ConnectionManagerQuestionLookup {
-                manager: Arc::new(state.connection_manager.clone_ref()),
-            }),
-            Arc::new(codeg_lib::commands::session_info::DbSessionInfoLookup::new(
-                Arc::new(codeg_lib::db::AppDatabase {
-                    conn: state.db.conn.clone(),
-                }),
-            )),
-            Arc::new(codeg_lib::work_task::EngineWorkTaskTools),
-            Arc::new(codeg_lib::commands::chat_authoring::DbChatAuthoring::new(
-                Arc::new(codeg_lib::db::AppDatabase {
-                    conn: state.db.conn.clone(),
-                }),
-                state.emitter.clone(),
-                chat_authoring_config.clone(),
-            )),
+            injection.feedback_access,
+            injection.questions,
+            injection.session_info_access,
+            injection.tasks,
+            injection.authoring_access,
         );
         // Bind through the service handle rather than a bare `listener.run`
         // spawn: it keeps the bind error and the accept-loop handle around, so
@@ -591,7 +582,13 @@ async fn async_main() -> ExitCode {
     }
 
     // Start serving
-    if let Err(e) = axum::serve(listener, router).await {
+    let shutdown_state = state.clone();
+    if let Err(e) = axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            shutdown_native_and_http(shutdown_state).await;
+        })
+        .await
+    {
         tracing::error!("[SERVER] Server error: {}", e);
         return ExitCode::from(1);
     }
@@ -599,6 +596,29 @@ async fn async_main() -> ExitCode {
     // (kill_on_drop is the backstop, but this frees their ports promptly).
     codeg_lib::office_watch::stop_all_office_watches();
     ExitCode::SUCCESS
+}
+
+async fn shutdown_native_and_http(state: Arc<AppState>) {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    let _lock = state.connection_manager.lock_out_new_connections().await;
+    let _ = state.connection_manager.disconnect_all().await;
 }
 
 fn default_data_dir() -> PathBuf {

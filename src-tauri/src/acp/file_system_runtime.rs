@@ -158,6 +158,14 @@ impl FsAccessPolicy {
         !self.read_roots.is_empty()
     }
 
+    /// Canonical read gate used by ACP `fs/read_text_file` and by native
+    /// glob/grep. Empty read roots are unrestricted (no canonicalize).
+    /// Otherwise the path — including symlink targets — must resolve inside a
+    /// read root.
+    pub fn check_read(&self, path: &Path) -> Result<(), FileSystemRuntimeError> {
+        ensure_path_allowed(path, &self.read_roots, false)
+    }
+
     /// One-line summary for the connection log.
     pub fn describe(&self) -> String {
         fn render(roots: &[PathBuf]) -> String {
@@ -602,6 +610,11 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
             trims: false,
             default_rel: &[".gemini"],
         }],
+        AgentType::CodegAgent => &[RootSlot {
+            candidates: &[("CODEG_HOME", "codeg-agent", EXPANDS_TILDE)],
+            trims: false,
+            default_rel: &[".codeg", "codeg-agent"],
+        }],
         AgentType::ClaudeCode => &[RootSlot {
             candidates: &[("CLAUDE_CONFIG_DIR", "", VERBATIM)],
             trims: false,
@@ -738,6 +751,15 @@ impl FileSystemRuntime {
             policy: Arc::new(policy),
             io_semaphore: Arc::new(Semaphore::new(FS_MAX_CONCURRENT_OPS)),
         }
+    }
+
+    pub fn access_policy(&self) -> &FsAccessPolicy {
+        self.policy.as_ref()
+    }
+
+    /// Same canonical read gate as [`FsAccessPolicy::check_read`].
+    pub fn check_read(&self, path: &Path) -> Result<(), FileSystemRuntimeError> {
+        self.policy.check_read(path)
     }
 
     pub async fn read_text_file(
@@ -1271,6 +1293,37 @@ mod tests {
 
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(other);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_read_rejects_symlink_escape_under_strict() {
+        let workspace = temp_workspace();
+        let outside = temp_workspace();
+        let secret = outside.join("secret.txt");
+        fs::write(&secret, "nope").expect("write secret");
+        let link = workspace.join("escape.txt");
+        std::os::unix::fs::symlink(&secret, &link).expect("symlink");
+
+        let policy = FsAccessPolicy::strict(&workspace);
+        let err = policy
+            .check_read(&link)
+            .expect_err("strict read must follow the symlink target");
+        let message = invalid_params(err);
+        assert!(
+            message.contains("outside the allowed read roots"),
+            "unexpected message: {message}"
+        );
+
+        let runtime = FileSystemRuntime::with_policy(FsAccessPolicy::strict(&workspace));
+        let runtime_err = runtime
+            .check_read(&link)
+            .expect_err("runtime check_read must use the same gate");
+        assert!(invalid_params(runtime_err).contains("outside the allowed read roots"));
+
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(outside);
     }
 
     /// A symlink inside the workspace pointing out of it must not become a
@@ -2253,7 +2306,7 @@ mod tests {
     #[cfg(not(windows))]
     const CHILD_HOME_FIXTURE: (&str, &str) = ("HOME", "/srv/agy");
 
-    const ALL_AGENT_TYPES: [AgentType; 13] = [
+    const ALL_AGENT_TYPES: [AgentType; 16] = [
         AgentType::ClaudeCode,
         AgentType::Codex,
         AgentType::OpenCode,
@@ -2267,6 +2320,9 @@ mod tests {
         AgentType::Grok,
         AgentType::Cursor,
         AgentType::DeepSeek,
+        AgentType::Qoder,
+        AgentType::Antigravity,
+        AgentType::CodegAgent,
     ];
 
     #[test]

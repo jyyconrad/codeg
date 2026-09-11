@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest"
 
 import {
   adoptUnknownWorkflows,
+  agentDisplayText,
   groupAgentsByPhase,
   liveWorkflows,
+  phaseDisplayText,
   phaseProgress,
   upsertWorkflow,
 } from "./workflow-progress"
@@ -96,6 +98,36 @@ describe("phaseProgress", () => {
 
   it("returns null when the run has no phase rail", () => {
     expect(phaseProgress(run({ phases: [] }))).toBeNull()
+  })
+})
+
+describe("display text", () => {
+  it("prefers phase detail and agent summary, falling back to title/label", () => {
+    expect(
+      phaseDisplayText({
+        title: "Survey",
+        detail: "read-only gap analysis",
+        state: "active",
+      })
+    ).toBe("read-only gap analysis")
+    expect(phaseDisplayText({ title: "Survey", state: "active" })).toBe(
+      "Survey"
+    )
+    expect(
+      agentDisplayText({
+        agent_id: "a1",
+        label: "survey:host",
+        state: "running",
+        summary: "Map host types and registry",
+      })
+    ).toBe("Map host types and registry")
+    expect(
+      agentDisplayText({
+        agent_id: "a1",
+        label: "survey:host",
+        state: "running",
+      })
+    ).toBe("survey:host")
   })
 })
 

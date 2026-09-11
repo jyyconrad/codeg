@@ -625,6 +625,7 @@ pub(crate) async fn verify_agent_installed(agent_type: AgentType) -> Result<(), 
                 )))
             }
         }
+        registry::AgentDistribution::InProcess { .. } => Ok(()),
     }
 }
 
@@ -724,6 +725,7 @@ async fn detect_local_version(agent_type: AgentType) -> Option<String> {
         registry::AgentDistribution::Uvx {
             cmd, system_cmd, ..
         } => uvx_displayed_version(agent_type, cmd, system_cmd).await,
+        registry::AgentDistribution::InProcess { version } => Some(version.to_string()),
     }
 }
 
@@ -1111,6 +1113,11 @@ async fn collect_agent_diag(
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| format!("{cmd} (system CLI on PATH)"))
             });
+        }
+        registry::AgentDistribution::InProcess { version } => {
+            diag.distribution = "in_process";
+            diag.launchable = Some(format!("in-process {version}"));
+            diag.detected_version = Some(version.to_string());
         }
     }
 
@@ -8378,6 +8385,14 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".gemini/skills", ".agents/skills"],
         }),
+        AgentType::CodegAgent => Some(SkillStorageSpec {
+            kind: SkillStorageKind::SkillDirectoryOnly,
+            global_dirs: vec![
+                crate::paths::codeg_agent_dir().join("skills"),
+                home_dir_or_default().join(".agents").join("skills"),
+            ],
+            project_rel_dirs: vec![".codeg/skills", ".agents/skills"],
+        }),
         // codeg cannot detect where an arbitrary ACP agent loads skills from,
         // so custom agents are gated on the user's own declaration: that the
         // agent reads the shared `.agents/skills` store (the cross-agent
@@ -8588,7 +8603,7 @@ pub(crate) fn read_skill_description(content_path: &Path) -> Option<String> {
 
 /// Read a single-line YAML scalar (with optional matching quotes). Returns
 /// `None` for empty values or block-scalar markers (`|` / `>`) we can't span.
-fn parse_frontmatter_scalar(rest: &str) -> Option<String> {
+pub(crate) fn parse_frontmatter_scalar(rest: &str) -> Option<String> {
     let val = rest.trim();
     if val.starts_with('|') || val.starts_with('>') {
         return None;
@@ -8645,7 +8660,7 @@ fn is_read_only_skill_path(agent_type: AgentType, skill_path: &Path) -> bool {
     skill_path.starts_with(&ro_root)
 }
 
-fn skill_content_path(layout: AgentSkillLayout, skill_path: &Path) -> PathBuf {
+pub(crate) fn skill_content_path(layout: AgentSkillLayout, skill_path: &Path) -> PathBuf {
     match layout {
         AgentSkillLayout::SkillDirectory => skill_path.join("SKILL.md"),
         AgentSkillLayout::MarkdownFile => skill_path.to_path_buf(),
@@ -9525,6 +9540,11 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
         // same reason `CURSOR_MODEL`/`QODER_BASE_URL` above are: it keeps the
         // generic cascade off the `OPENAI_*` keys.
         AgentType::Antigravity => ("AGY_BASE_URL", "GEMINI_API_KEY", "AGY_ACP_DEFAULT_MODEL"),
+        AgentType::CodegAgent => (
+            crate::acp::native_config::API_BASE_URL_KEY,
+            crate::acp::native_config::API_KEY_KEY,
+            crate::acp::native_config::MODEL_KEY,
+        ),
         _ => ("OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"),
     }
 }
@@ -9597,6 +9617,17 @@ pub(crate) async fn apply_model_provider_env(
         Ok(Some(p)) => p,
         _ => return,
     };
+    if agent_type == AgentType::CodegAgent {
+        crate::acp::native_config::overlay_bound_provider(
+            runtime_env,
+            &crate::acp::native_config::BoundProvider {
+                api_url: provider.api_url,
+                api_key: provider.api_key,
+                model: provider.model,
+            },
+        );
+        return;
+    }
     let (url_key, key_key, _) = agent_env_keys(agent_type);
     if !provider.api_url.trim().is_empty() {
         runtime_env.insert(url_key.to_string(), provider.api_url.clone());
@@ -9691,6 +9722,12 @@ pub(crate) fn parse_provider_model(
                 &crate::acp::codex_model_catalog::parse_model_config(trimmed_raw),
             );
             out.insert("OPENAI_MODEL".to_string(), slug);
+        }
+        AgentType::CodegAgent => {
+            out.insert(
+                crate::acp::native_config::MODEL_KEY.to_string(),
+                crate::acp::native_config::completions_model_id(trimmed_raw),
+            );
         }
         _ => {
             out.insert("OPENAI_MODEL".to_string(), trimmed_raw.map(str::to_string));
@@ -9969,6 +10006,10 @@ fn cascade_update_agent_config(
             // METHOD, never a credential, so there is nothing here to
             // reconcile either.
         }
+        AgentType::CodegAgent => {
+            // Codeg Agent has no on-disk vendor config: URL/key/model live in
+            // agent env_json as CODEG_AGENT_* projections of the bound provider.
+        }
         AgentType::Custom(_) => {
             // Custom agents are deliberately configuration-free: codeg writes
             // no config file for them and they are excluded from the
@@ -10055,15 +10096,25 @@ pub(crate) async fn cascade_update_model_provider(
     Ok(())
 }
 
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_preflight(
+pub async fn acp_preflight_core(
     agent_type: AgentType,
     force_refresh: Option<bool>,
+    db: &AppDatabase,
 ) -> Result<PreflightResult, AcpError> {
     if force_refresh.unwrap_or(false) {
         preflight::clear_npm_env_cache();
     }
-    Ok(preflight::run_preflight(agent_type).await)
+    Ok(preflight::run_preflight(agent_type, &db.conn).await)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_preflight(
+    agent_type: AgentType,
+    force_refresh: Option<bool>,
+    db: State<'_, AppDatabase>,
+) -> Result<PreflightResult, AcpError> {
+    acp_preflight_core(agent_type, force_refresh, &db).await
 }
 
 /// Resolve the full runtime env every ACP spawn should receive — settings
@@ -10108,6 +10159,11 @@ pub(crate) async fn build_session_runtime_env(
     let local_config_json = load_agent_local_config_json(agent_type);
     let mut runtime_env =
         build_runtime_env_from_setting(agent_type, setting.as_ref(), local_config_json.as_deref());
+    if agent_type == AgentType::CodegAgent {
+        // Bind marker is launch-only. Drop any copy persisted in env_json so
+        // leftover CODEG_AGENT_API_* keys cannot look bound.
+        runtime_env.remove(crate::acp::native_config::PROVIDER_BOUND_KEY);
+    }
     apply_model_provider_env(agent_type, setting.as_ref(), &mut runtime_env, &db.conn).await;
 
     // codex resume no longer needs a `MODEL_PROVIDER` pin: codex-acp 1.0.1
@@ -10742,6 +10798,7 @@ pub(crate) async fn acp_get_agent_status_core(
             }
             (platforms.iter().any(|p| p.platform == platform), detected)
         }
+        registry::AgentDistribution::InProcess { version } => (true, Some(version.to_string())),
         registry::AgentDistribution::Uvx {
             cmd, system_cmd, ..
         } => {
@@ -10849,6 +10906,9 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
                 // Mirror the status path (shared helper, launch-order parity).
                 let version = uvx_displayed_version(agent_type, cmd, *system_cmd).await;
                 (uvx_agent_launchable(*system_cmd), "uvx", version)
+            }
+            registry::AgentDistribution::InProcess { version } => {
+                (true, "in_process", Some(version.to_string()))
             }
         };
 
@@ -12175,6 +12235,9 @@ pub(crate) async fn acp_download_agent_binary_core(
         registry::AgentDistribution::Uvx { .. } => Err(AcpError::protocol(
             "download is only supported for binary agents",
         )),
+        registry::AgentDistribution::InProcess { .. } => Err(AcpError::protocol(
+            "in-process runtime does not require install",
+        )),
     };
 
     match &result {
@@ -12517,6 +12580,9 @@ pub(crate) async fn acp_prepare_npx_agent_core(
         registry::AgentDistribution::Binary { .. } => Err(AcpError::protocol(
             "prepare is only supported for npx agents",
         )),
+        registry::AgentDistribution::InProcess { .. } => Err(AcpError::protocol(
+            "in-process runtime does not require install",
+        )),
         registry::AgentDistribution::Uvx {
             package,
             cmd,
@@ -12640,6 +12706,11 @@ pub(crate) async fn acp_uninstall_agent_core(
             }
             registry::AgentDistribution::Uvx { .. } => {
                 binary_cache::clear_uvx_agent_prepared(agent_type)?;
+            }
+            registry::AgentDistribution::InProcess { .. } => {
+                return Err(AcpError::protocol(
+                    "in-process runtime does not require install",
+                ));
             }
         }
 
@@ -15365,6 +15436,55 @@ wire_api = "chat"
     }
 
     #[test]
+    fn codeg_agent_skill_storage_spec_targets_codeg_agent_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let codeg_home = tmp.path().join("home");
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path())),
+                ("CODEG_HOME", Some(codeg_home.as_path())),
+                ("CODEG_DATA_DIR", None::<&std::path::Path>),
+            ],
+            || {
+                let spec =
+                    skill_storage_spec(AgentType::CodegAgent).expect("Codeg Agent supports skills");
+                assert_eq!(spec.kind, SkillStorageKind::SkillDirectoryOnly);
+                assert_eq!(
+                    spec.project_rel_dirs,
+                    vec![".codeg/skills", ".agents/skills"]
+                );
+                let expected = vec![
+                    crate::paths::codeg_agent_dir().join("skills"),
+                    home_dir_or_default().join(".agents").join("skills"),
+                ];
+                assert_eq!(spec.global_dirs, expected);
+                assert_eq!(
+                    spec.global_dirs[0],
+                    codeg_home.join("codeg-agent").join("skills")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn codeg_agent_skill_storage_falls_back_to_data_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data = tmp.path().join("data");
+        temp_env::with_vars(
+            [
+                ("HOME", Some(tmp.path())),
+                ("CODEG_HOME", None::<&std::path::Path>),
+                ("CODEG_DATA_DIR", Some(data.as_path())),
+            ],
+            || {
+                let spec =
+                    skill_storage_spec(AgentType::CodegAgent).expect("Codeg Agent supports skills");
+                assert_eq!(spec.global_dirs[0], data.join("codeg-agent").join("skills"));
+            },
+        );
+    }
+
+    #[test]
     fn kimi_code_skill_storage_spec_targets_kimi_home() {
         // `resolve_kimi_code_home_dir()` reads the process-wide `$HOME` (when
         // `KIMI_CODE_HOME` is unset), and other tests mutate HOME via `temp_env`.
@@ -18079,6 +18199,27 @@ wire_api = "chat"
                 );
             }
         }
+    }
+
+    #[test]
+    fn codeg_agent_parse_provider_model_sets_and_clears_codeg_model() {
+        let set = parse_provider_model(AgentType::CodegAgent, Some("gateway-model"));
+        assert_eq!(
+            set.get(crate::acp::native_config::MODEL_KEY),
+            Some(&Some("gateway-model".to_string()))
+        );
+        assert!(!set.contains_key("OPENAI_MODEL"));
+        let from_claude =
+            parse_provider_model(AgentType::CodegAgent, Some(r#"{"main":"claude-sonnet-5"}"#));
+        assert_eq!(
+            from_claude.get(crate::acp::native_config::MODEL_KEY),
+            Some(&Some("claude-sonnet-5".to_string()))
+        );
+        let cleared = parse_provider_model(AgentType::CodegAgent, None);
+        assert_eq!(
+            cleared.get(crate::acp::native_config::MODEL_KEY),
+            Some(&None)
+        );
     }
 
     #[test]

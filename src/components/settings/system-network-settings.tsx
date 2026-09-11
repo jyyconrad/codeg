@@ -47,7 +47,6 @@ import {
 } from "@/lib/api"
 import { isLocalDesktop, openUrl } from "@/lib/platform"
 import type { AppLocale } from "@/lib/types"
-import { readLastCheck } from "@/lib/update-check-storage"
 import {
   appUpdateErrorMessageKey,
   normalizeAppUpdateError,
@@ -119,8 +118,8 @@ export function SystemNetworkSettings() {
   // Both halves of the update flow — "is a newer release out there" and the
   // in-flight download / install / restart lifecycle — live in the app-wide
   // UpdateProvider (settings/layout.tsx wraps this page), so this page and the
-  // workspace status bar always agree and only one manifest fetch happens. It
-  // is always mounted inside the provider, hence the non-null assertion.
+  // workspace status bar always agree. Manifest fetches are user-initiated.
+  // Always mounted inside the provider, hence the non-null assertion.
   const update = useAppUpdate()!
   const {
     state: updateState,
@@ -269,18 +268,9 @@ export function SystemNetworkSettings() {
     loadSettings().catch((err) => {
       console.error("[Settings] load system settings failed:", err)
     })
-    // The version, capability bits and "is there an update" answer all come
-    // from the provider: it seeds local status on mount, restores the last
-    // result from storage and runs the periodic manifest check. So opening
-    // this page no longer costs a second check — unless nothing has ever been
-    // checked (read from storage, not from provider state, which the provider
-    // seeds in its own effect and therefore may not have applied yet), or the
-    // last attempt failed, in which case opening this page is a natural retry.
-    if (!readLastCheck() || checkError) {
-      checkNow({ silent: true }).catch((err) => {
-        console.error("[Settings] auto check update failed:", err)
-      })
-    }
+    // Version and capability bits come from the provider's local-status
+    // refresh. Availability is only fetched when the user clicks "Check for
+    // updates" — opening this page must not hit GitHub in the background.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -370,8 +360,7 @@ export function SystemNetworkSettings() {
   // The shared check records the raw failure; classify it for display here.
   const updateError = checkError ? formatUpdateError(checkError, "check") : null
 
-  // A user-initiated check, so failures toast (the provider's own periodic
-  // checks stay silent).
+  // A user-initiated check, so failures toast.
   const checkForUpdates = useCallback(() => {
     void checkNow({ silent: false })
   }, [checkNow])

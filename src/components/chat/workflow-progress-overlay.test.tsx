@@ -1,10 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
-import { beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { WorkflowProgressDockProvider } from "./workflow-progress-dock"
 import { WorkflowProgressOverlay } from "./workflow-progress-overlay"
 import enMessages from "@/i18n/messages/en.json"
+import { resetWorkflowClocks } from "@/lib/workflow-clock"
 import type { WorkflowRun } from "@/lib/types"
 
 function run(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
@@ -65,6 +66,11 @@ function renderOverlay(
 describe("WorkflowProgressOverlay", () => {
   beforeEach(() => {
     window.localStorage.removeItem("codeg:workflow-progress-dock")
+    resetWorkflowClocks()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it("renders nothing once every run has settled", () => {
@@ -86,6 +92,40 @@ describe("WorkflowProgressOverlay", () => {
     expect(screen.getByText("research-planner")).toBeInTheDocument()
     expect(screen.getByText("researcher-0")).toBeInTheDocument()
     expect(screen.queryByText("survey sensors")).not.toBeInTheDocument()
+    expect(screen.queryByText("Active")).not.toBeInTheDocument()
+    expect(screen.queryByText("Done")).not.toBeInTheDocument()
+    expect(screen.queryByText("Running")).not.toBeInTheDocument()
+    expect(screen.queryByText("Pending")).not.toBeInTheDocument()
+  })
+
+  it("prefers phase detail and node summary as the single text line", () => {
+    renderOverlay([
+      run({
+        phases: [
+          {
+            title: "Survey",
+            detail: "read-only gap analysis vs the design",
+            state: "active",
+          },
+        ],
+        current_phase: "Survey",
+        agents: [
+          {
+            agent_id: "a1",
+            label: "survey:host",
+            phase: "Survey",
+            state: "running",
+            summary: "Map host types and registry",
+          },
+        ],
+      }),
+    ])
+    expect(
+      screen.getByText("read-only gap analysis vs the design")
+    ).toBeInTheDocument()
+    expect(screen.getByText("Map host types and registry")).toBeInTheDocument()
+    expect(screen.queryByText("Survey")).not.toBeInTheDocument()
+    expect(screen.queryByText("survey:host")).not.toBeInTheDocument()
   })
 
   it("collapses the overlay to the icon chip", () => {
@@ -109,13 +149,31 @@ describe("WorkflowProgressOverlay", () => {
     fireEvent.click(screen.getByLabelText("Dock above the input"))
     expect(screen.getByText("deep-research")).toBeInTheDocument()
     expect(screen.getByText("2/4")).toBeInTheDocument()
-    expect(screen.getAllByText("43s").length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText("0s")).toBeInTheDocument()
     expect(screen.getByText("research-planner")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Collapse workflow" }))
     expect(screen.queryByText("research-planner")).not.toBeInTheDocument()
     expect(screen.getByText("deep-research")).toBeInTheDocument()
     expect(screen.getByText("2/4")).toBeInTheDocument()
-    expect(screen.getByText("43s")).toBeInTheDocument()
+    expect(screen.getByText("0s")).toBeInTheDocument()
+  })
+
+  it("ticks a local clock while the run is live", () => {
+    vi.useFakeTimers()
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <WorkflowProgressDockProvider runs={[run()]}>
+          <WorkflowProgressOverlay placement="overlay" />
+          <WorkflowProgressOverlay placement="composer" />
+        </WorkflowProgressDockProvider>
+      </NextIntlClientProvider>
+    )
+    fireEvent.click(screen.getByLabelText("Dock above the input"))
+    expect(screen.getByText("0s")).toBeInTheDocument()
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(screen.getByText("3s")).toBeInTheDocument()
   })
 })

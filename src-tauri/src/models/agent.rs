@@ -8,7 +8,7 @@ pub const CUSTOM_AGENT_WIRE_PREFIX: &str = "custom:";
 
 /// Which agent backs a conversation.
 ///
-/// The fifteen named variants are compile-time built-ins with hand-written
+/// The sixteen named variants are compile-time built-ins with hand-written
 /// launch metadata (`acp::registry`) and a dedicated transcript parser
 /// (`parsers::*`). [`AgentType::Custom`] is the open end: a user-registered
 /// ACP agent whose launch metadata lives in the database
@@ -36,12 +36,15 @@ pub enum AgentType {
     DeepSeek,
     Qoder,
     Antigravity,
+    /// Built-in in-process coding agent. History uses the ACP-native transcript
+    /// (`parsers::acp_native`), same as [`AgentType::Custom`].
+    CodegAgent,
     /// A user-registered ACP agent, identified by its ACP-registry id
     /// (interned). Ordered last so built-ins keep their relative order.
     Custom(&'static str),
 }
 
-/// The fifteen compile-time agents, in declaration order. Does NOT include
+/// The sixteen compile-time agents, in declaration order. Does NOT include
 /// custom agents — use [`crate::acp::registry::all_acp_agents`] for the live
 /// set that includes them.
 pub const BUILTIN_AGENT_TYPES: &[AgentType] = &[
@@ -60,6 +63,7 @@ pub const BUILTIN_AGENT_TYPES: &[AgentType] = &[
     AgentType::DeepSeek,
     AgentType::Qoder,
     AgentType::Antigravity,
+    AgentType::CodegAgent,
 ];
 
 impl AgentType {
@@ -74,6 +78,14 @@ impl AgentType {
             AgentType::Custom(id) => Some(id),
             _ => None,
         }
+    }
+
+    /// Agents whose history is recorded by codeg's ACP-native transcript.
+    ///
+    /// Shared by `transcript_dir_for`, continuation binding, import, and the
+    /// native hydrate path. Built-ins with their own store parsers return false.
+    pub fn records_host_transcript(&self) -> bool {
+        matches!(self, AgentType::CodegAgent | AgentType::Custom(_))
     }
 
     /// Build a custom agent type from a raw registry id, interning the slug.
@@ -107,6 +119,7 @@ impl AgentType {
             AgentType::DeepSeek => Cow::Borrowed("deepseek"),
             AgentType::Qoder => Cow::Borrowed("qoder"),
             AgentType::Antigravity => Cow::Borrowed("antigravity"),
+            AgentType::CodegAgent => Cow::Borrowed("codeg_agent"),
             AgentType::Custom(id) => Cow::Owned(format!("{CUSTOM_AGENT_WIRE_PREFIX}{id}")),
         }
     }
@@ -130,6 +143,7 @@ impl AgentType {
             "deepseek" => Some(AgentType::DeepSeek),
             "qoder" => Some(AgentType::Qoder),
             "antigravity" => Some(AgentType::Antigravity),
+            "codeg_agent" => Some(AgentType::CodegAgent),
             other => other
                 .strip_prefix(CUSTOM_AGENT_WIRE_PREFIX)
                 .and_then(AgentType::custom),
@@ -172,6 +186,7 @@ pub fn is_valid_custom_agent_id(id: &str) -> bool {
                 | "deepseek"
                 | "qoder"
                 | "antigravity"
+                | "codeg_agent"
         )
 }
 
@@ -207,6 +222,7 @@ impl fmt::Display for AgentType {
             AgentType::DeepSeek => write!(f, "DeepSeek Harness"),
             AgentType::Qoder => write!(f, "Qoder"),
             AgentType::Antigravity => write!(f, "Google Antigravity"),
+            AgentType::CodegAgent => write!(f, "Codeg Agent"),
             // Prefer the registered display name; fall back to the raw id when
             // the registry has not been hydrated (or the agent was deleted
             // while conversations still reference it).
@@ -242,6 +258,7 @@ mod tests {
             (AgentType::DeepSeek, "deepseek"),
             (AgentType::Qoder, "qoder"),
             (AgentType::Antigravity, "antigravity"),
+            (AgentType::CodegAgent, "codeg_agent"),
         ];
         for (agent, wire) in expected {
             assert_eq!(agent.as_wire(), wire);
@@ -287,6 +304,22 @@ mod tests {
     }
 
     #[test]
+    fn host_transcript_is_codeg_agent_and_custom_only() {
+        assert!(AgentType::CodegAgent.records_host_transcript());
+        assert!(AgentType::custom("goose")
+            .unwrap()
+            .records_host_transcript());
+        for agent in BUILTIN_AGENT_TYPES {
+            if *agent != AgentType::CodegAgent {
+                assert!(
+                    !agent.records_host_transcript(),
+                    "{agent} must keep its own store parser"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn unknown_wire_forms_are_rejected() {
         assert_eq!(AgentType::from_wire("nope"), None);
         assert_eq!(AgentType::from_wire(""), None);
@@ -315,6 +348,7 @@ mod tests {
             "deepseek",
             "qoder",
             "antigravity",
+            "codeg_agent",
         ] {
             assert!(
                 !is_valid_custom_agent_id(bad),
@@ -333,7 +367,8 @@ mod tests {
 
     #[test]
     fn ordering_places_custom_after_builtins() {
-        assert!(AgentType::Antigravity < AgentType::custom("goose").unwrap());
+        assert!(AgentType::Antigravity < AgentType::CodegAgent);
+        assert!(AgentType::CodegAgent < AgentType::custom("goose").unwrap());
         assert!(AgentType::ClaudeCode < AgentType::Cursor);
         assert!(AgentType::Cursor < AgentType::DeepSeek);
         assert!(AgentType::DeepSeek < AgentType::Qoder);

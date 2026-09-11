@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   DEFAULT_DESKTOP_NOTIFICATION_PREFS,
   getDesktopNotificationPrefs,
+  isAttentionNotifyEvent,
   loadDesktopNotificationPrefs,
   parseDesktopNotificationPrefs,
   resetDesktopNotificationPrefsCacheForTests,
@@ -17,15 +18,25 @@ beforeEach(() => {
   resetDesktopNotificationPrefsCacheForTests()
 })
 
+describe("attention events", () => {
+  it("marks question, turn complete, error and permission as attention events", () => {
+    expect(isAttentionNotifyEvent("question_request")).toBe(true)
+    expect(isAttentionNotifyEvent("turn_complete")).toBe(true)
+    expect(isAttentionNotifyEvent("error")).toBe(true)
+    expect(isAttentionNotifyEvent("permission_request")).toBe(true)
+    expect(isAttentionNotifyEvent("background_task")).toBe(false)
+    expect(isAttentionNotifyEvent("work_task")).toBe(false)
+  })
+})
+
 describe("defaults", () => {
-  it("preserves the behaviour that shipped before the preference existed", () => {
-    // Desktop notifications already worked. The release that introduced this
-    // file must not be the one that silently stops delivering them, so the
-    // defaults spell out the old hard-coded behaviour: everything on, gated on
-    // `document.hidden`.
+  it("notifies when the window is unfocused, with every event on", () => {
+    // `hidden` never fired for a desktop window sitting visible on another
+    // monitor (or behind another app). `unfocused` is the gate that actually
+    // reaches the user for question / turn-complete / error prompts.
     expect(DEFAULT_DESKTOP_NOTIFICATION_PREFS).toEqual({
       enabled: true,
-      when: "hidden",
+      when: "unfocused",
       hideBody: false,
       events: {
         turn_complete: true,
@@ -61,7 +72,7 @@ describe("parseDesktopNotificationPrefs", () => {
     expect(parsed.enabled).toBe(false)
     expect(parsed.events.error).toBe(false)
     // ...and each malformed one lands on its own default, not on a reset.
-    expect(parsed.when).toBe("hidden")
+    expect(parsed.when).toBe("unfocused")
     expect(parsed.hideBody).toBe(false)
     expect(parsed.events.question_request).toBe(true)
     expect(parsed).not.toHaveProperty("bogus")

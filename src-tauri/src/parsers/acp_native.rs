@@ -1,5 +1,5 @@
 //! History parser for agents that have **no codeg-side store parser**: custom
-//! ACP agents.
+//! ACP agents and the built-in Codeg Agent.
 //!
 //! Every other parser in this module reverse-engineers one agent's private
 //! session store. This one reads codeg's own ACP transcript
@@ -50,39 +50,141 @@ use crate::parsers::{AgentParser, ParseError};
 pub struct AcpNativeParser {
     agent_type: AgentType,
     root: PathBuf,
+    /// Old `acp-transcripts` tree for Codeg Agent; unused for custom agents.
+    fallback_root: Option<PathBuf>,
+    /// Walk `<root>/<encoded-cwd>/*.jsonl` instead of `<root>/<registry-id>/`.
+    grouped: bool,
 }
 
 impl AcpNativeParser {
     pub fn new(agent_type: AgentType) -> Self {
-        Self {
-            agent_type,
-            root: crate::paths::codeg_acp_transcripts_root(),
+        if matches!(agent_type, AgentType::CodegAgent) {
+            Self {
+                agent_type,
+                root: crate::paths::codeg_agent_sessions_root(),
+                fallback_root: Some(crate::paths::codeg_acp_transcripts_root()),
+                grouped: true,
+            }
+        } else {
+            Self {
+                agent_type,
+                root: crate::paths::codeg_acp_transcripts_root(),
+                fallback_root: None,
+                grouped: false,
+            }
         }
     }
 
     /// Root-injectable constructor for tests.
     pub fn new_in(agent_type: AgentType, root: PathBuf) -> Self {
-        Self { agent_type, root }
+        Self {
+            grouped: matches!(agent_type, AgentType::CodegAgent),
+            fallback_root: None,
+            agent_type,
+            root,
+        }
+    }
+
+    /// Test constructor: grouped Codeg Agent tree plus a separate legacy root.
+    pub fn new_in_with_fallback(agent_type: AgentType, root: PathBuf, fallback: PathBuf) -> Self {
+        Self {
+            grouped: matches!(agent_type, AgentType::CodegAgent),
+            fallback_root: Some(fallback),
+            agent_type,
+            root,
+        }
     }
 
     /// Directory name for this agent's transcripts: its ACP registry id.
     fn agent_dir(&self) -> &'static str {
         crate::acp::registry::registry_id_for(self.agent_type)
     }
+
+    fn grouped_roots(&self) -> Vec<&Path> {
+        if self.grouped {
+            vec![self.root.as_path()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn flat_roots(&self) -> Vec<(&Path, &str)> {
+        if self.grouped {
+            self.fallback_root
+                .as_ref()
+                .map(|root| (root.as_path(), self.agent_dir()))
+                .into_iter()
+                .collect()
+        } else {
+            vec![(self.root.as_path(), self.agent_dir())]
+        }
+    }
+
+    fn read_chain(&self, session_id: &str) -> Transcript {
+        if self.grouped {
+            acp_transcript::read_chain_in_roots(
+                &self.grouped_roots(),
+                &self.flat_roots(),
+                session_id,
+            )
+        } else {
+            acp_transcript::read_chain_in(&self.root, self.agent_dir(), session_id)
+        }
+    }
+
+    fn list_session_ids(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut ids = Vec::new();
+        if self.grouped {
+            for (_, id) in acp_transcript::list_grouped_session_ids_in(&self.root) {
+                if seen.insert(id.clone()) {
+                    ids.push(id);
+                }
+            }
+            if let Some(fallback) = self.fallback_root.as_ref() {
+                for id in acp_transcript::list_session_ids_in(fallback, self.agent_dir()) {
+                    if seen.insert(id.clone()) {
+                        ids.push(id);
+                    }
+                }
+            }
+        } else {
+            ids = acp_transcript::list_session_ids_in(&self.root, self.agent_dir());
+        }
+        ids
+    }
+
+    fn superseded_ids(&self) -> std::collections::HashSet<String> {
+        self.list_session_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let header = if self.grouped {
+                    let (root, dir) = acp_transcript::find_session_in_roots(
+                        &self.grouped_roots(),
+                        &self.flat_roots(),
+                        &id,
+                    )?;
+                    acp_transcript::read_header_in(&root, &dir, &id)
+                } else {
+                    acp_transcript::read_header_in(&self.root, self.agent_dir(), &id)
+                };
+                header.and_then(|h| h.continues_from)
+            })
+            .collect()
+    }
 }
 
 impl AgentParser for AcpNativeParser {
     fn list_conversations(&self) -> Result<Vec<ConversationSummary>, ParseError> {
-        let dir = self.agent_dir();
         // A transcript another one continues is a prefix of it, so listing both
         // would show one conversation twice.
-        let superseded = acp_transcript::superseded_session_ids_in(&self.root, dir);
+        let superseded = self.superseded_ids();
         let mut out = Vec::new();
-        for session_id in acp_transcript::list_session_ids_in(&self.root, dir) {
+        for session_id in self.list_session_ids() {
             if superseded.contains(&session_id) {
                 continue;
             }
-            let transcript = acp_transcript::read_chain_in(&self.root, dir, &session_id);
+            let transcript = self.read_chain(&session_id);
             // A transcript's header is written when the ACP session opens,
             // which is BEFORE the user has said anything — opening a
             // conversation and closing it without sending leaves a
@@ -100,11 +202,10 @@ impl AgentParser for AcpNativeParser {
     }
 
     fn get_conversation(&self, conversation_id: &str) -> Result<ConversationDetail, ParseError> {
-        let dir = self.agent_dir();
         // Reads the whole continuation chain: when the agent had forgotten the
         // session and codeg started a fresh one, the earlier turns still live
         // under the previous session id.
-        let transcript = acp_transcript::read_chain_in(&self.root, dir, conversation_id);
+        let transcript = self.read_chain(conversation_id);
         if transcript.header.is_none() && transcript.is_empty() {
             return Err(ParseError::ConversationNotFound(
                 conversation_id.to_string(),
@@ -1464,6 +1565,165 @@ mod tests {
         // races the `external_id` update still shows history, never an error.
         let old = parser.get_conversation("sess-old").expect("still readable");
         assert_eq!(old.turns.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codeg_agent_lists_percent_encoded_cwd_sessions() {
+        let root = temp_root();
+        let group = "%2Frepo%2Fproject";
+        crate::acp_transcript::append_line_in(
+            &root,
+            group,
+            "sess-cwd",
+            &serde_json::to_string(&TranscriptHeader::new(
+                "codeg_agent",
+                "sess-cwd",
+                "/repo/project",
+                1_750_000_000_000,
+            ))
+            .unwrap(),
+        );
+        crate::acp_transcript::append_line_in(
+            &root,
+            group,
+            "sess-cwd",
+            &serde_json::to_string(&prompt(1_750_000_000_100, "from new path")).unwrap(),
+        );
+        std::fs::write(root.join("index.jsonl"), "{}\n").unwrap();
+
+        let parser = AcpNativeParser::new_in(AgentType::CodegAgent, root.clone());
+        let listed = parser.list_conversations().expect("listed");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "sess-cwd");
+        assert_eq!(listed[0].folder_path.as_deref(), Some("/repo/project"));
+        let detail = parser.get_conversation("sess-cwd").expect("found");
+        assert_eq!(detail.summary.title.as_deref(), Some("from new path"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn codeg_agent_falls_back_to_legacy_layout_and_prefers_new_path() {
+        let sessions = temp_root();
+        let fallback = temp_root();
+        crate::acp_transcript::append_line_in(
+            &fallback,
+            "codeg-agent",
+            "legacy-only",
+            &serde_json::to_string(&TranscriptHeader::new(
+                "codeg_agent",
+                "legacy-only",
+                "/old",
+                1_750_000_000_000,
+            ))
+            .unwrap(),
+        );
+        crate::acp_transcript::append_line_in(
+            &fallback,
+            "codeg-agent",
+            "legacy-only",
+            &serde_json::to_string(&prompt(1_750_000_000_100, "legacy prompt")).unwrap(),
+        );
+        crate::acp_transcript::append_line_in(
+            &fallback,
+            "codeg-agent",
+            "both",
+            &serde_json::to_string(&TranscriptHeader::new(
+                "codeg_agent",
+                "both",
+                "/old",
+                1_750_000_000_000,
+            ))
+            .unwrap(),
+        );
+        crate::acp_transcript::append_line_in(
+            &fallback,
+            "codeg-agent",
+            "both",
+            &serde_json::to_string(&prompt(1_750_000_000_100, "old copy")).unwrap(),
+        );
+        let group = "%2Ftmp";
+        crate::acp_transcript::append_line_in(
+            &sessions,
+            group,
+            "both",
+            &serde_json::to_string(&TranscriptHeader::new(
+                "codeg_agent",
+                "both",
+                "/tmp",
+                1_750_000_100_000,
+            ))
+            .unwrap(),
+        );
+        crate::acp_transcript::append_line_in(
+            &sessions,
+            group,
+            "both",
+            &serde_json::to_string(&prompt(1_750_000_100_100, "new copy")).unwrap(),
+        );
+
+        let parser = AcpNativeParser::new_in_with_fallback(
+            AgentType::CodegAgent,
+            sessions.clone(),
+            fallback.clone(),
+        );
+        let listed = parser.list_conversations().expect("listed");
+        let mut ids: Vec<_> = listed.iter().map(|c| c.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["both", "legacy-only"]);
+        let both = parser.get_conversation("both").expect("both");
+        assert_eq!(both.summary.title.as_deref(), Some("new copy"));
+        let legacy = parser.get_conversation("legacy-only").expect("legacy");
+        assert_eq!(legacy.summary.title.as_deref(), Some("legacy prompt"));
+        let _ = std::fs::remove_dir_all(&sessions);
+        let _ = std::fs::remove_dir_all(&fallback);
+    }
+
+    #[test]
+    fn custom_agents_ignore_codeg_agent_session_groups() {
+        let root = temp_root();
+        let agent = AgentType::custom("acp-native-flat").unwrap();
+        let dir = "acp-native-flat";
+        crate::acp_transcript::append_line_in(
+            &root,
+            "%2Ftmp",
+            "grouped",
+            &serde_json::to_string(&TranscriptHeader::new(
+                "custom:acp-native-flat",
+                "grouped",
+                "/tmp",
+                1_750_000_000_000,
+            ))
+            .unwrap(),
+        );
+        crate::acp_transcript::append_line_in(
+            &root,
+            "%2Ftmp",
+            "grouped",
+            &serde_json::to_string(&prompt(1_750_000_000_100, "must not list")).unwrap(),
+        );
+        crate::acp_transcript::append_line_in(
+            &root,
+            dir,
+            "flat",
+            &serde_json::to_string(&TranscriptHeader::new(
+                "custom:acp-native-flat",
+                "flat",
+                "/repo",
+                1_750_000_000_000,
+            ))
+            .unwrap(),
+        );
+        crate::acp_transcript::append_line_in(
+            &root,
+            dir,
+            "flat",
+            &serde_json::to_string(&prompt(1_750_000_000_100, "custom stays flat")).unwrap(),
+        );
+        let parser = AcpNativeParser::new_in(agent, root.clone());
+        let listed = parser.list_conversations().expect("listed");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "flat");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

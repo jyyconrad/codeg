@@ -76,6 +76,8 @@ pub enum McpAppType {
     /// assignable target and gets no MCP over the ACP wire. See the pi section
     /// below.
     Pi,
+    /// Serializes as `codeg_agent`, matching `AgentType::as_wire`.
+    CodegAgent,
 }
 
 /// Every app the local-MCP write paths walk, in the order they walk it.
@@ -88,7 +90,7 @@ pub enum McpAppType {
 /// server come back on the next refresh. Both used to keep their own hand-typed
 /// copy of this list; one shared constant plus [`tests::all_mcp_apps_is_exhaustive`]
 /// (which fails to compile when a variant is added) is what keeps them honest.
-const ALL_MCP_APPS: [McpAppType; 15] = [
+const ALL_MCP_APPS: [McpAppType; 16] = [
     McpAppType::ClaudeCode,
     McpAppType::Codex,
     McpAppType::Gemini,
@@ -104,6 +106,7 @@ const ALL_MCP_APPS: [McpAppType; 15] = [
     McpAppType::Qoder,
     McpAppType::Antigravity,
     McpAppType::Pi,
+    McpAppType::CodegAgent,
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -579,7 +582,10 @@ fn normalize_apps(apps: Vec<McpAppType>) -> Vec<McpAppType> {
 /// misrepresented entry or aborting the whole multi-agent operation. See issue #325.
 fn app_can_host_spec(app: McpAppType, canonical_spec: &Value) -> bool {
     let is_sse = canonical_spec.get("type").and_then(Value::as_str) == Some("sse");
-    !(matches!(app, McpAppType::Codex | McpAppType::DeepSeek) && is_sse)
+    !(matches!(
+        app,
+        McpAppType::Codex | McpAppType::DeepSeek | McpAppType::CodegAgent
+    ) && is_sse)
 }
 
 #[derive(Debug, Clone)]
@@ -2619,6 +2625,101 @@ fn remove_deepseek_server_at(path: &Path, id: &str) -> Result<bool, AppCommandEr
 }
 
 // ---------------------------------------------------------------------------
+// Codeg Agent  (~/.codeg/codeg-agent/mcp.json  →  top-level `mcpServers`)
+//
+// DeepSeek-shaped store owned by codeg. v1 sessions consume it in-process
+// (stdio only); the ACP wire is not used to forward these servers.
+// ---------------------------------------------------------------------------
+
+fn codeg_agent_mcp_json_path() -> PathBuf {
+    crate::paths::codeg_agent_dir().join("mcp.json")
+}
+
+fn read_codeg_agent_servers() -> Result<BTreeMap<String, Value>, AppCommandError> {
+    read_codeg_agent_servers_at(&codeg_agent_mcp_json_path())
+}
+
+fn read_codeg_agent_servers_at(path: &Path) -> Result<BTreeMap<String, Value>, AppCommandError> {
+    let root = read_json_file(path)?;
+    let mut out = BTreeMap::new();
+
+    let Some(servers) = root.get("mcpServers").and_then(Value::as_object) else {
+        return Ok(out);
+    };
+
+    for (id, spec) in servers {
+        match canonicalize_spec(spec, "Codeg Agent config") {
+            Ok(normalized) => {
+                out.insert(id.to_string(), normalized);
+            }
+            Err(err) => {
+                eprintln!("[MCP] skip invalid Codeg Agent MCP entry id={id}: {err}");
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn upsert_codeg_agent_server(id: &str, spec: &Value) -> Result<(), AppCommandError> {
+    upsert_codeg_agent_server_at(&codeg_agent_mcp_json_path(), id, spec)
+}
+
+fn upsert_codeg_agent_server_at(
+    path: &Path,
+    id: &str,
+    spec: &Value,
+) -> Result<(), AppCommandError> {
+    let mut root = read_json_file(path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let canonical = canonicalize_spec(spec, "Codeg Agent write")?;
+
+    let obj = root.as_object_mut().ok_or_else(|| {
+        mcp_configuration_invalid(format!("invalid JSON root in {}", path.display()))
+    })?;
+    if !obj.get("mcpServers").map(Value::is_object).unwrap_or(false) {
+        obj.insert("mcpServers".to_string(), Value::Object(Map::new()));
+    }
+
+    let map = obj
+        .get_mut("mcpServers")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            mcp_configuration_invalid(format!("invalid mcpServers in {}", path.display()))
+        })?;
+    map.insert(id.to_string(), canonical);
+
+    write_deepseek_json_file(path, &root)
+}
+
+fn remove_codeg_agent_server(id: &str) -> Result<bool, AppCommandError> {
+    remove_codeg_agent_server_at(&codeg_agent_mcp_json_path(), id)
+}
+
+fn remove_codeg_agent_server_at(path: &Path, id: &str) -> Result<bool, AppCommandError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut root = read_json_file(path)?;
+    let Some(obj) = root.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(servers) = obj.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok(false);
+    };
+
+    let removed = servers.remove(id).is_some();
+    if removed {
+        write_deepseek_json_file(path, &root)?;
+    }
+    Ok(removed)
+}
+
+// ---------------------------------------------------------------------------
 // pi  (<PI_CODING_AGENT_DIR|~/.pi/agent>/mcp.json  →  top-level `mcpServers`)
 //
 // The odd one out: this file belongs to neither pi nor codeg but to a
@@ -3076,7 +3177,7 @@ impl LocalMcpReader {
     }
 }
 
-fn local_mcp_readers() -> [LocalMcpReader; 15] {
+fn local_mcp_readers() -> [LocalMcpReader; 16] {
     [
         LocalMcpReader::new("Claude Code", McpAppType::ClaudeCode, read_claude_servers),
         LocalMcpReader::new("Codex", McpAppType::Codex, read_codex_servers),
@@ -3097,6 +3198,11 @@ fn local_mcp_readers() -> [LocalMcpReader; 15] {
         ),
         LocalMcpReader::new("Qoder", McpAppType::Qoder, read_qoder_servers),
         LocalMcpReader::new("pi", McpAppType::Pi, read_pi_servers),
+        LocalMcpReader::new(
+            "Codeg Agent",
+            McpAppType::CodegAgent,
+            read_codeg_agent_servers,
+        ),
     ]
 }
 
@@ -3241,6 +3347,7 @@ fn upsert_server_for_app(app: McpAppType, id: &str, spec: &Value) -> Result<(), 
         McpAppType::Qoder => upsert_qoder_server(id, spec),
         McpAppType::Antigravity => upsert_antigravity_server(id, spec),
         McpAppType::Pi => upsert_pi_server(id, spec),
+        McpAppType::CodegAgent => upsert_codeg_agent_server(id, spec),
     }
 }
 
@@ -3278,6 +3385,7 @@ pub fn read_servers_for_agent_type(
         // itself at session setup — see the Antigravity section above for why
         // it rides the forward skip list rather than the wire.
         AgentType::Antigravity => read_antigravity_servers(),
+        AgentType::CodegAgent => read_codeg_agent_servers(),
         // Custom agents get MCP purely over the ACP wire (`session/new`'s
         // `mcpServers`); codeg deliberately knows nothing about their native
         // config files, so there is no per-agent store to read back here.
@@ -4368,6 +4476,7 @@ fn remove_server_for_app(app: McpAppType, id: &str) -> Result<bool, AppCommandEr
         McpAppType::Qoder => remove_qoder_server(id),
         McpAppType::Antigravity => remove_antigravity_server(id),
         McpAppType::Pi => remove_pi_server(id),
+        McpAppType::CodegAgent => remove_codeg_agent_server(id),
     }
 }
 
@@ -6550,6 +6659,123 @@ mod tests {
     }
 
     #[test]
+    fn codeg_agent_mcp_json_lives_under_codeg_agent_home() {
+        assert_eq!(
+            codeg_agent_mcp_json_path(),
+            crate::paths::codeg_agent_dir().join("mcp.json")
+        );
+        let sse = json!({ "type": "sse", "url": "https://mcp.example.com/sse" });
+        assert!(
+            !app_can_host_spec(McpAppType::CodegAgent, &sse),
+            "Codeg Agent v1 does not host SSE"
+        );
+        assert!(app_can_host_spec(
+            McpAppType::CodegAgent,
+            &json!({ "type": "http", "url": "https://mcp.example.com/mcp" })
+        ));
+        assert!(app_can_host_spec(
+            McpAppType::CodegAgent,
+            &json!({ "type": "stdio", "command": "npx" })
+        ));
+    }
+
+    #[test]
+    fn codeg_agent_mcp_json_round_trips_the_canonical_spec() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("mcp.json");
+
+        assert!(read_codeg_agent_servers_at(&path)
+            .expect("read missing")
+            .is_empty());
+        assert!(!remove_codeg_agent_server_at(&path, "ctx7").expect("remove missing"));
+
+        upsert_codeg_agent_server_at(
+            &path,
+            "ctx7",
+            &json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "ctx7-mcp"],
+                "env": { "TOKEN": "t" },
+            }),
+        )
+        .expect("upsert");
+        upsert_codeg_agent_server_at(
+            &path,
+            "remote",
+            &json!({ "url": "https://mcp.example.com/mcp" }),
+        )
+        .expect("upsert remote");
+
+        let servers = read_codeg_agent_servers_at(&path).expect("read back");
+        assert_eq!(
+            servers
+                .get("ctx7")
+                .and_then(|s| s.get("type"))
+                .and_then(Value::as_str),
+            Some("stdio")
+        );
+        assert_eq!(
+            servers
+                .get("ctx7")
+                .and_then(|s| s.get("command"))
+                .and_then(Value::as_str),
+            Some("npx")
+        );
+        assert_eq!(
+            servers
+                .get("remote")
+                .and_then(|s| s.get("type"))
+                .and_then(Value::as_str),
+            Some("http")
+        );
+        let root: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("read file"))
+            .expect("parse json");
+        assert_eq!(
+            root.pointer("/mcpServers/ctx7/type")
+                .and_then(Value::as_str),
+            Some("stdio")
+        );
+
+        assert!(remove_codeg_agent_server_at(&path, "ctx7").expect("remove"));
+        assert!(remove_codeg_agent_server_at(&path, "remote").expect("remove remote"));
+        assert!(read_codeg_agent_servers_at(&path)
+            .expect("read after remove")
+            .is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codeg_agent_mcp_store_is_not_world_readable() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("mcp.json");
+        upsert_codeg_agent_server_at(
+            &path,
+            "ctx7",
+            &json!({ "command": "npx", "env": { "TOKEN": "super-secret" } }),
+        )
+        .expect("upsert");
+
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "fresh Codeg Agent store must be owner-only, got {mode:o}"
+        );
+        let parent_mode = std::fs::metadata(path.parent().expect("parent"))
+            .expect("stat parent")
+            .permissions()
+            .mode();
+        assert_eq!(
+            parent_mode & 0o077,
+            0,
+            "created parent must be owner-only, got {parent_mode:o}"
+        );
+    }
+
+    #[test]
     fn deepseek_mcp_json_round_trips_the_canonical_spec() {
         // `$DSH_HOME/mcp.json` is codeg's OWN store (deepseek-acp reads no MCP
         // file; the wire is the delivery path), so unlike every other agent it
@@ -7217,7 +7443,8 @@ mod tests {
                 | McpAppType::DeepSeek
                 | McpAppType::Qoder
                 | McpAppType::Antigravity
-                | McpAppType::Pi => {}
+                | McpAppType::Pi
+                | McpAppType::CodegAgent => {}
             }
         }
 
@@ -7272,6 +7499,7 @@ mod tests {
             (McpAppType::Qoder, AgentType::Qoder),
             (McpAppType::Antigravity, AgentType::Antigravity),
             (McpAppType::Pi, AgentType::Pi),
+            (McpAppType::CodegAgent, AgentType::CodegAgent),
         ] {
             let wire = serde_json::to_value(app).expect("serialize app type");
             assert_eq!(

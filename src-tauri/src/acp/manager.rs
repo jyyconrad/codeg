@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -19,9 +20,11 @@ use crate::acp::feedback::{
     bounded_feedback_batch, FeedbackItem, FeedbackStatus, PendingFeedback, SessionFeedbackAccess,
     MAX_FEEDBACK_CHARS, MAX_FEEDBACK_RESPONSE_BYTES,
 };
+use crate::acp::native_shutdown::{NativeCleanupState, NativeShutdownHandle};
 use crate::acp::plan_approval::{
     PlanApprovalAnswer, RegisteredPlanApproval, SessionPlanApprovalAccess,
 };
+use crate::acp::process_owner::force_kill_and_reap;
 use crate::acp::question::{
     build_outcome, QuestionAnswer, QuestionOutcome, QuestionSpec, RegisteredQuestion,
     SessionQuestionAccess,
@@ -31,6 +34,7 @@ use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
     ForkResultInfo, PromptCapabilitiesInfo, PromptInputBlock,
 };
+use crate::agent::inspect_native_prompt;
 use crate::db::entities::conversation::{self, ConversationKind, ConversationStatus};
 use crate::db::service::conversation_service;
 use crate::db::AppDatabase;
@@ -51,6 +55,10 @@ const USER_PROMPT_PREVIEW_MAX_CHARS: usize = 500;
 /// make the agent's death gentler — the graceful path ends in the same
 /// `kill_tree`.
 const DISCONNECT_ALL_GRACE: Duration = Duration::from_millis(500);
+/// Native in-process sessions get a longer graceful window than external CLIs.
+const NATIVE_DISCONNECT_GRACE: Duration = Duration::from_secs(3);
+/// After the graceful window, force-kill/reap native children for this long.
+const NATIVE_DISCONNECT_FORCE: Duration = Duration::from_secs(2);
 
 /// How long the polite signal gets before [`kill_tree_and_wait`] escalates to
 /// `SIGKILL`. Counted from the first signal, which itself only lands after
@@ -305,6 +313,19 @@ pub(crate) const SPAWN_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 /// `pending_user_message_started_at` is not (`user_message` is `None` for
 /// delegation children and unbound conversations, so those turns would have
 /// carried no identity at all).
+fn reject_codeg_agent_prompt(
+    agent_type: AgentType,
+    blocks: &[PromptInputBlock],
+) -> Result<(), AcpError> {
+    if agent_type != AgentType::CodegAgent {
+        return Ok(());
+    }
+    if let Some(reason) = inspect_native_prompt(blocks).reject_reason() {
+        return Err(AcpError::protocol(reason.to_string()));
+    }
+    Ok(())
+}
+
 fn steered_turn_changed(
     admitted_turns_completed: u64,
     now_in_flight: bool,
@@ -470,6 +491,9 @@ pub struct ConnectionManager {
     /// touch the same map. At most one per connection (the agent is blocked in
     /// its `exit_plan_mode` call) — no cap, no cumulative growth.
     pending_plan_approvals: Arc<Mutex<HashMap<String, PendingPlanApprovalEntry>>>,
+    /// In-process sessions whose map entry may already be gone but whose
+    /// terminals / MCP children are still being reaped.
+    native_sessions: Arc<Mutex<HashMap<String, Arc<NativeShutdownHandle>>>>,
 }
 
 /// A parked `ask_user_question` awaiting its answer. The `sender` resolves the
@@ -509,6 +533,7 @@ impl ConnectionManager {
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
+            native_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -526,6 +551,7 @@ impl ConnectionManager {
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
+            native_sessions: self.native_sessions.clone(),
         }
     }
 
@@ -547,7 +573,7 @@ impl ConnectionManager {
         self.chat_channel.get().map(|c| c.clone_ref())
     }
 
-    fn delegation_snapshot(&self) -> Option<crate::acp::connection::DelegationInjection> {
+    pub fn delegation_snapshot(&self) -> Option<crate::acp::connection::DelegationInjection> {
         self.delegation_injection.get().cloned()
     }
 
@@ -574,6 +600,7 @@ impl ConnectionManager {
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
+            native_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -617,6 +644,7 @@ impl ConnectionManager {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            native_shutdown: None,
         };
         let mut map = self.connections.lock().await;
         map.insert(id.to_string(), conn);
@@ -660,6 +688,7 @@ impl ConnectionManager {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            native_shutdown: None,
         };
         self.connections.lock().await.insert(id.to_string(), conn);
         rx
@@ -756,6 +785,7 @@ impl ConnectionManager {
             preferred_config_values,
             self.delegation_snapshot(),
             self.terminal_shell_config.clone(),
+            self.native_sessions.clone(),
         )
         .await?;
 
@@ -990,13 +1020,14 @@ impl ConnectionManager {
                 "[ACP][{conn_id}] removed the reserved routing separator from an outgoing prompt"
             );
         }
-        let (cmd_tx, state_arc) = {
+        let (cmd_tx, state_arc, agent_type) = {
             let connections = self.connections.lock().await;
             let conn = connections
                 .get(conn_id)
                 .ok_or_else(|| AcpError::ConnectionNotFound(conn_id.into()))?;
-            (conn.cmd_tx.clone(), conn.state.clone())
+            (conn.cmd_tx.clone(), conn.state.clone(), conn.agent_type)
         };
+        reject_codeg_agent_prompt(agent_type, &blocks)?;
         // Concurrency gate: reject a second prompt while a turn is already in
         // flight on this connection. Reserve channel capacity FIRST — that
         // `reserve().await` is the only point that can block or be cancelled.
@@ -1204,8 +1235,9 @@ impl ConnectionManager {
             );
             return Err(AcpError::TurnInProgress);
         }
+        reject_codeg_agent_prompt(agent_type, &blocks)?;
 
-        // Re-hydrate uploaded image attachments (web / remote-workspace mode
+        // Re-hydrate uploaded image attachments (web / remote-workspace mode)
         // sends empty-payload marker blocks with a `file://` uri into the
         // uploads root; see `prompt_hydration`). Deliberately placed AFTER
         // admission — the connection-exists check (`clone_prompt_lock` above)
@@ -2351,6 +2383,7 @@ impl ConnectionManager {
         };
         if let Some(conn) = removed {
             tracing::info!("[ACP] disconnect connection={}", conn_id);
+            signal_native_shutdown(&conn);
             let _ = conn.cmd_tx.send(ConnectionCommand::Disconnect).await;
             Ok(())
         } else {
@@ -2586,6 +2619,8 @@ impl ConnectionManager {
                     // Same handoff as `disconnect`: closing a window leaves
                     // the agents exiting, not exited.
                     self.park_draining(&conn).await;
+                    // Native sessions must not wait on the 32-deep command queue.
+                    signal_native_shutdown(&conn);
                     txs.push(conn.cmd_tx);
                 }
             }
@@ -2658,7 +2693,10 @@ impl ConnectionManager {
     /// [`Self::lock_out_new_connections`] BEFORE calling, as `disconnect_all`'s
     /// shutdown caller does by construction.
     pub async fn disconnect_by_agent_type(&self, agent_type: AgentType) -> usize {
-        let cmd_txs: Vec<tokio::sync::mpsc::Sender<ConnectionCommand>> = {
+        let (cmd_txs, natives): (
+            Vec<tokio::sync::mpsc::Sender<ConnectionCommand>>,
+            Vec<Arc<NativeShutdownHandle>>,
+        ) = {
             let mut connections = self.connections.lock().await;
             let ids: Vec<String> = connections
                 .iter()
@@ -2667,16 +2705,20 @@ impl ConnectionManager {
                 .collect();
 
             let mut txs = Vec::with_capacity(ids.len());
+            let mut natives = Vec::new();
             for id in ids {
                 if let Some(conn) = connections.remove(&id) {
                     // Same handoff as every other teardown: the entry goes
                     // immediately, so the child is parked as draining to stay
                     // visible while it exits — and, here, to be swept below.
                     self.park_draining(&conn).await;
+                    if let Some(native) = signal_native_shutdown(&conn) {
+                        natives.push(native);
+                    }
                     txs.push(conn.cmd_tx);
                 }
             }
-            txs
+            (txs, natives)
         };
 
         let disconnected = cmd_txs.len();
@@ -2702,33 +2744,39 @@ impl ConnectionManager {
                 .map(|c| c.pid.clone())
                 .collect()
         };
-        if pid_cells.is_empty() {
+        if pid_cells.is_empty() && natives.is_empty() {
             return disconnected;
         }
 
-        tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
+        let external = async {
+            if pid_cells.is_empty() {
+                return;
+            }
+            tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
 
-        match tokio::task::spawn_blocking(move || {
-            pid_cells
-                .iter()
-                .filter(|cell| !kill_tree_and_wait(cell))
-                .count()
-        })
-        .await
-        {
-            Ok(0) => {}
-            Ok(unconfirmed) => tracing::warn!(
-                "[ACP] disconnect by agent type agent={:?}: {} process(es) could not be confirmed gone",
-                agent_type, unconfirmed
-            ),
-            // Only reachable if the sweep panicked or the runtime is shutting
-            // down under it. Nothing to retry against — but it must not pass
-            // silently for "everything was confirmed".
-            Err(e) => tracing::warn!(
-                "[ACP] disconnect by agent type agent={:?}: sweep did not finish: {e}",
-                agent_type
-            ),
-        }
+            match tokio::task::spawn_blocking(move || {
+                pid_cells
+                    .iter()
+                    .filter(|cell| !kill_tree_and_wait(cell))
+                    .count()
+            })
+            .await
+            {
+                Ok(0) => {}
+                Ok(unconfirmed) => tracing::warn!(
+                    "[ACP] disconnect by agent type agent={:?}: {} process(es) could not be confirmed gone",
+                    agent_type, unconfirmed
+                ),
+                // Only reachable if the sweep panicked or the runtime is shutting
+                // down under it. Nothing to retry against — but it must not pass
+                // silently for "everything was confirmed".
+                Err(e) => tracing::warn!(
+                    "[ACP] disconnect by agent type agent={:?}: sweep did not finish: {e}",
+                    agent_type
+                ),
+            }
+        };
+        tokio::join!(external, reap_native_sessions(natives));
 
         disconnected
     }
@@ -2774,66 +2822,139 @@ impl ConnectionManager {
     /// `child_pid == 0` (never spawned, already finished, or a test/viewer entry
     /// that owns no process) is skipped.
     pub async fn disconnect_all(&self) -> usize {
-        let handles: Vec<(
+        type DisconnectHandle = (
             tokio::sync::mpsc::Sender<ConnectionCommand>,
-            Arc<std::sync::atomic::AtomicU32>,
-        )> = {
+            Arc<AtomicU32>,
+            Option<Arc<NativeShutdownHandle>>,
+        );
+        let handles: Vec<DisconnectHandle> = {
             let mut connections = self.connections.lock().await;
             connections
                 .drain()
-                .map(|(_, conn)| (conn.cmd_tx, conn.child_pid))
+                .map(|(_, conn)| (conn.cmd_tx, conn.child_pid, conn.native_shutdown))
                 .collect()
         };
+        let natives: Vec<Arc<NativeShutdownHandle>> = {
+            let mut native = self.native_sessions.lock().await;
+            let mut out: Vec<_> = native.drain().map(|(_, handle)| handle).collect();
+            for (_, _, handle) in &handles {
+                if let Some(handle) = handle {
+                    if !out.iter().any(|h| Arc::ptr_eq(h, handle)) {
+                        out.push(Arc::clone(handle));
+                    }
+                }
+            }
+            out
+        };
         let disconnected = handles.len();
+        // Native shutdown is independent of the 32-deep command queue: cancel
+        // the token even when `Disconnect` cannot be enqueued.
+        for handle in &natives {
+            handle.signal_shutdown();
+        }
         // `try_send`, not `send().await`: this is the shutdown path, and the
         // backstop below is only reachable if every send returns. A connection
         // whose command queue is full (32 deep) would otherwise park the whole
         // quit here — precisely the wedged connection whose tree most needs
         // killing. A dropped `Disconnect` just means that connection skips the
         // graceful path and gets hard-killed instead.
-        for (cmd_tx, _) in &handles {
+        for (cmd_tx, _, _) in &handles {
             let _ = cmd_tx.try_send(ConnectionCommand::Disconnect);
         }
         tracing::info!("[ACP] disconnect_all count={}", disconnected);
 
-        if disconnected == 0 {
+        if disconnected == 0 && natives.is_empty() {
             return 0;
         }
 
-        // Grace window: let the drivers unwind and run their own cleanup.
-        tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
-
-        // Backstop: hard-kill whatever is still running. Runs on a blocking
-        // thread so the synchronous `kill_tree` doesn't stall the async runtime
-        // while a `block_on(disconnect_all())` shutdown caller waits on it.
-        let pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> =
-            handles.into_iter().map(|(_, pid)| pid).collect();
-        let _ = tokio::task::spawn_blocking(move || {
-            for cell in pid_cells {
-                // Load here, not before the window — see the doc comment.
-                let pid = cell.load(std::sync::atomic::Ordering::SeqCst);
-                if pid == 0 {
-                    continue;
-                }
-                match kill_tree::blocking::kill_tree(pid) {
-                    Ok(_) => {
-                        tracing::info!(
-                            "[ACP] disconnect_all backstop killed process tree pid={pid}"
-                        );
-                    }
-                    Err(e) => {
-                        // The process can still exit between the load and the
-                        // kill; that error is expected, not a failure.
-                        tracing::debug!("[ACP] disconnect_all backstop kill_tree pid={pid}: {e}");
-                    }
-                }
+        let pid_cells: Vec<Arc<std::sync::atomic::AtomicU32>> = handles
+            .into_iter()
+            .filter(|(_, _, native)| native.is_none())
+            .map(|(_, pid, _)| pid)
+            .collect();
+        let external = async move {
+            if pid_cells.is_empty() {
+                return;
             }
-        })
-        .await;
+            tokio::time::sleep(DISCONNECT_ALL_GRACE).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                for cell in pid_cells {
+                    let pid = cell.load(std::sync::atomic::Ordering::SeqCst);
+                    if pid == 0 {
+                        continue;
+                    }
+                    match kill_tree::blocking::kill_tree(pid) {
+                        Ok(_) => {
+                            tracing::info!(
+                                "[ACP] disconnect_all backstop killed process tree pid={pid}"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "[ACP] disconnect_all backstop kill_tree pid={pid}: {e}"
+                            );
+                        }
+                    }
+                }
+            })
+            .await;
+        };
+        let native = reap_native_sessions(natives);
+        tokio::join!(external, native);
 
         disconnected
     }
+}
 
+fn signal_native_shutdown(conn: &AgentConnection) -> Option<Arc<NativeShutdownHandle>> {
+    let native = conn.native_shutdown.clone()?;
+    native.signal_shutdown();
+    Some(native)
+}
+
+async fn reap_native_sessions(handles: Vec<Arc<NativeShutdownHandle>>) {
+    if handles.is_empty() {
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + NATIVE_DISCONNECT_GRACE;
+    for handle in &handles {
+        let mut rx = handle.subscribe_cleanup();
+        loop {
+            if !matches!(*rx.borrow(), NativeCleanupState::Pending) {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            if tokio::time::timeout(remaining, rx.changed()).await.is_err() {
+                break;
+            }
+        }
+    }
+    let mut leftover = Vec::new();
+    for handle in &handles {
+        if matches!(handle.cleanup_state(), NativeCleanupState::Pending) {
+            leftover.extend(handle.force_kill_owners(NATIVE_DISCONNECT_FORCE).await);
+            if leftover
+                .iter()
+                .any(|&pid| crate::acp::process_owner::pid_is_alive(pid))
+            {
+                handle.mark_failed();
+            } else if matches!(handle.cleanup_state(), NativeCleanupState::Pending) {
+                handle.mark_complete();
+            }
+        }
+    }
+    if !leftover.is_empty() {
+        let still = force_kill_and_reap(&leftover, NATIVE_DISCONNECT_FORCE).await;
+        if !still.is_empty() {
+            tracing::error!("[ACP] native cleanup_failed leftover_pids={still:?}");
+        }
+    }
+}
+
+impl ConnectionManager {
     /// Block new connections from being established until the returned guard
     /// is dropped. The caller must enumerate live connections only AFTER
     /// holding this, never before.
@@ -4381,6 +4502,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            native_shutdown: None,
         }
     }
 
@@ -4542,6 +4664,61 @@ mod tests {
 
         let _ = kill_tree::blocking::kill_tree(child.id());
         let _ = child.wait();
+    }
+
+    /// Native sessions keep child_pid=0; quit must still reap owner-registered
+    /// SIGTERM-immune children even when Disconnect cannot be enqueued.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disconnect_all_reaps_native_sigterm_immune_child_when_queue_is_full() {
+        let shutdown = crate::acp::native_shutdown::NativeShutdownHandle::new();
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; sleep 60")
+            .spawn()
+            .expect("spawn immune child");
+        let pid = child.id();
+        crate::acp::process_owner::lock_owners(&shutdown.owners()).register(pid);
+
+        let mgr = ConnectionManager::new();
+        let (tx, _rx) = mpsc::channel(32);
+        for _ in 0..32 {
+            let _ = tx.try_send(crate::acp::connection::ConnectionCommand::Prompt {
+                blocks: vec![crate::acp::types::PromptInputBlock::Text { text: "x".into() }],
+                user_message: None,
+            });
+        }
+        let mut conn = fake_connection("native-full", None);
+        conn.cmd_tx = tx;
+        conn.agent_type = crate::models::agent::AgentType::CodegAgent;
+        conn.native_shutdown = Some(Arc::clone(&shutdown));
+        mgr.connections
+            .lock()
+            .await
+            .insert("native-full".to_string(), conn);
+        mgr.native_sessions
+            .lock()
+            .await
+            .insert("native-full".to_string(), Arc::clone(&shutdown));
+
+        assert_eq!(mgr.disconnect_all().await, 1);
+        let gone = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if child.try_wait().ok().flatten().is_some()
+                    || !crate::acp::process_owner::pid_is_alive(pid)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            gone.is_ok(),
+            "native SIGTERM-immune child must be reaped on disconnect_all"
+        );
     }
 
     /// The Antigravity sign-out needs "no process of this agent is running",
@@ -4839,6 +5016,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            native_shutdown: None,
         };
         mgr.connections
             .lock()
@@ -5735,6 +5913,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            native_shutdown: None,
         };
         let mgr = ConnectionManager::new();
         mgr.connections
@@ -5859,6 +6038,89 @@ mod tests {
                 .await
                 .turn_in_flight,
             "the gate must NOT be set while blocked on channel capacity (cancellation-safe)"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_inner_enqueues_codeg_agent_image_only_before_gate() {
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-codeg-img";
+        let _rx = insert_live_connection(&mgr, conn_id, AgentType::CodegAgent, None).await;
+        mgr.send_prompt_inner(
+            conn_id,
+            vec![PromptInputBlock::Image {
+                data: "abc".into(),
+                mime_type: "image/png".into(),
+                uri: None,
+            }],
+            None,
+        )
+        .await
+        .expect("image-only is enqueued");
+        assert!(
+            mgr.get_state(conn_id)
+                .await
+                .unwrap()
+                .read()
+                .await
+                .turn_in_flight,
+            "image-only must set turn_in_flight"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_inner_rejects_codeg_agent_empty_text_before_gate() {
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-codeg-empty";
+        let _rx = insert_live_connection(&mgr, conn_id, AgentType::CodegAgent, None).await;
+        let err = mgr
+            .send_prompt_inner(
+                conn_id,
+                vec![PromptInputBlock::Text { text: "  ".into() }],
+                None,
+            )
+            .await
+            .expect_err("empty text must be rejected");
+        assert!(err.to_string().contains("at least one text block"), "{err}");
+        assert!(
+            !mgr.get_state(conn_id)
+                .await
+                .unwrap()
+                .read()
+                .await
+                .turn_in_flight,
+            "empty text must not set turn_in_flight"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_inner_enqueues_codeg_agent_mixed_text_and_image() {
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-codeg-mixed";
+        let _rx = insert_live_connection(&mgr, conn_id, AgentType::CodegAgent, None).await;
+        mgr.send_prompt_inner(
+            conn_id,
+            vec![
+                PromptInputBlock::Text {
+                    text: "describe this".into(),
+                },
+                PromptInputBlock::Image {
+                    data: "abc".into(),
+                    mime_type: "image/png".into(),
+                    uri: None,
+                },
+            ],
+            None,
+        )
+        .await
+        .expect("mixed text/image is enqueued");
+        assert!(
+            mgr.get_state(conn_id)
+                .await
+                .unwrap()
+                .read()
+                .await
+                .turn_in_flight
         );
     }
 
@@ -7376,6 +7638,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            native_shutdown: None,
         };
         let mgr = Arc::new(ConnectionManager::new());
         {
@@ -8064,6 +8327,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            native_shutdown: None,
         };
         let mgr = ConnectionManager::new();
         {

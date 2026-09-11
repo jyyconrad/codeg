@@ -21,7 +21,7 @@ const ROUTE_FRAME_BODY_PREFIX: &str = "{\"kind\":\"codeg_internal_agent_routes\"
 const ROUTE_FRAME_VERSION: u8 = 3;
 const MAX_ROUTE_FRAME_BYTES: usize = 16 * 1024;
 /// Distinct agents one frame may route, applied AFTER deduplication.
-const MAX_AGENT_ROUTES: usize = 16;
+const MAX_AGENT_ROUTES: usize = 32;
 const MAX_AGENT_REFERENCE_OCCURRENCES: usize = 256;
 
 /// One routed agent inside the frame — nothing but the wire slug.

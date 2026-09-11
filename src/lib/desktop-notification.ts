@@ -21,6 +21,7 @@ import {
 } from "./notification"
 import {
   getDesktopNotificationPrefs,
+  isAttentionNotifyEvent,
   type NotifyEventId,
 } from "./desktop-notification-prefs"
 
@@ -121,7 +122,12 @@ export async function notifyDesktop(
   const prefs = getDesktopNotificationPrefs()
   if (!prefs.enabled) return false
   if (!prefs.events[eventId]) return false
-  if (!windowStateAllows(prefs.when)) return false
+  // Question / turn-complete / error (and permission) must still reach the
+  // user when the window is focused — that is the whole point of the prompt.
+  // Background-task and work-task stay gated on `prefs.when`.
+  if (!isAttentionNotifyEvent(eventId) && !windowStateAllows(prefs.when)) {
+    return false
+  }
 
   // A browser that will not deliver should not consume the cooldown: the next
   // event, after the user grants permission, must still be able to fire.

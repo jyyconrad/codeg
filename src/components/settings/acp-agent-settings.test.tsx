@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
+
 import { describe, expect, it } from "vitest"
 
 import {
@@ -16,8 +19,19 @@ import {
   extractCodexImportantValues,
   getAgentChecks,
   hostToolsAgentModeEnabled,
+  ensureCodegLaunchEnv,
+  overlayCodegPromptEnv,
+  parseCodegContextWindows,
+  persistThenRunPreflight,
+  patchCodegContextWindow,
+  CODEG_BIND_SELECT_ID,
+  CODEG_WINDOW_INPUT_ID,
+  CODEG_SYSTEM_PROMPT_KEY,
+  CODEG_COMPACT_PROMPT_KEY,
   importantEnvKeysByAgent,
   importantFieldsFor,
+  modelProviderOptionLabel,
+  modelProvidersForAgent,
   inferGrokMode,
   materializeClaudeHardeningFlags,
   patchCodexConfigTomlText,
@@ -35,7 +49,12 @@ import type {
   AcpAgentInfo,
   AdapterInfo,
   AgentType,
+  ModelProviderInfo,
   PreflightResult,
+} from "@/lib/types"
+import {
+  completionsModelIdFromProvider,
+  suggestedCodegContextWindow,
 } from "@/lib/types"
 
 function makeAgent(overrides: Partial<AcpAgentInfo>): AcpAgentInfo {
@@ -2018,6 +2037,247 @@ describe("rebaseDeepSeekDraft", () => {
       env: { DEEPSEEK_API_KEY: "sk-1" },
     })
     expect(rebaseDeepSeekDraft(draft, agent)).toBe(draft)
+  })
+})
+
+describe("codeg agent settings", () => {
+  it("projects CODEG_AGENT_* env keys and hides no model field", () => {
+    expect(importantEnvKeysByAgent("codeg_agent" as AgentType)).toEqual({
+      apiBaseUrl: ["CODEG_AGENT_API_BASE_URL"],
+      apiKey: ["CODEG_AGENT_API_KEY"],
+      model: ["CODEG_AGENT_MODEL"],
+    })
+    expect(importantFieldsFor("codeg_agent" as AgentType)).toEqual({
+      apiBaseUrl: true,
+      apiKey: true,
+      model: true,
+    })
+  })
+
+  it("lists Claude / Codex / Gemini channels for Codeg Agent", () => {
+    const providers: ModelProviderInfo[] = [
+      {
+        id: 1,
+        name: "Claude GW",
+        api_url: "https://claude.example/v1",
+        api_key: "sk-a",
+        api_key_masked: "sk-a",
+        agent_type: "claude_code",
+        model: JSON.stringify({ main: "claude-sonnet-5" }),
+        created_at: "",
+        updated_at: "",
+      },
+      {
+        id: 2,
+        name: "Gemini GW",
+        api_url: "https://gemini.example/v1",
+        api_key: "sk-b",
+        api_key_masked: "sk-b",
+        agent_type: "gemini",
+        model: "gemini-2.5-pro",
+        created_at: "",
+        updated_at: "",
+      },
+      {
+        id: 3,
+        name: "Other",
+        api_url: "https://other.example/v1",
+        api_key: "sk-c",
+        api_key_masked: "sk-c",
+        agent_type: "grok",
+        model: "grok-4",
+        created_at: "",
+        updated_at: "",
+      },
+    ]
+    expect(
+      modelProvidersForAgent("codeg_agent" as AgentType, providers).map(
+        (p) => p.id
+      )
+    ).toEqual([1, 2])
+    expect(
+      modelProvidersForAgent("gemini" as AgentType, providers).map((p) => p.id)
+    ).toEqual([2])
+    expect(
+      modelProviderOptionLabel(providers[0], "codeg_agent" as AgentType)
+    ).toContain("Claude")
+  })
+
+  it("extracts Chat Completions ids and writes a window on bind", () => {
+    expect(
+      completionsModelIdFromProvider({
+        agent_type: "claude_code",
+        model: JSON.stringify({ main: "claude-sonnet-5" }),
+      })
+    ).toBe("claude-sonnet-5")
+    expect(
+      completionsModelIdFromProvider({
+        agent_type: "codex",
+        model: JSON.stringify({
+          customs: [
+            { slug: "gpt-4.1", base: "gpt-4.1", contextWindow: 200000 },
+          ],
+          default: "gpt-4.1",
+        }),
+      })
+    ).toBe("gpt-4.1")
+    expect(
+      suggestedCodegContextWindow({
+        agent_type: "codex",
+        model: JSON.stringify({
+          customs: [
+            { slug: "gpt-4.1", base: "gpt-4.1", contextWindow: 200000 },
+          ],
+          default: "gpt-4.1",
+        }),
+      })
+    ).toBe(200000)
+    const env = ensureCodegLaunchEnv("", "gateway-model", 128000)
+    expect(env).toContain("CODEG_AGENT_CONTEXT_WINDOWS=")
+    expect(env).toContain("gateway-model")
+    expect(env).toContain("128000")
+    expect(env).toContain("CODEG_AGENT_MAX_OUTPUT_TOKENS=4096")
+    const kept = ensureCodegLaunchEnv(
+      'CODEG_AGENT_CONTEXT_WINDOWS={"gateway-model":64000}',
+      "gateway-model",
+      128000
+    )
+    expect(kept).toContain("64000")
+    expect(kept).not.toContain("128000")
+  })
+
+  it("injects bind/add-provider/edit-window preflight fixes", () => {
+    const codeg = makeAgent({
+      agent_type: "codeg_agent" as AgentType,
+      name: "Codeg Agent",
+      distribution_type: "in_process",
+      registry_version: "0.30.6",
+      installed_version: "0.30.6",
+    })
+    const result: PreflightResult = {
+      agent_type: "codeg_agent" as AgentType,
+      agent_name: "Codeg Agent",
+      passed: false,
+      checks: [
+        {
+          check_id: "model_provider",
+          label: "Model provider",
+          status: "fail",
+          message: "Bind a model provider",
+          fixes: [],
+        },
+        {
+          check_id: "model_id",
+          label: "Model",
+          status: "warn",
+          message: "Not checked until the bound model provider is valid",
+          fixes: [],
+        },
+        {
+          check_id: "context_window",
+          label: "Context window",
+          status: "fail",
+          message: "No context window configured",
+          fixes: [],
+        },
+      ],
+      adapter: null,
+    }
+    const withProviders = getAgentChecks(
+      codeg,
+      { result },
+      {
+        codegHasModelProviders: true,
+      }
+    )
+    const bind = withProviders.find((c) => c.check_id === "model_provider")
+    expect(bind?.fixes.map((f) => f.kind)).toEqual(["focus_codeg_bind"])
+    expect(bind?.fixes[0].payload).toBe(CODEG_BIND_SELECT_ID)
+    const window = withProviders.find((c) => c.check_id === "context_window")
+    expect(window?.fixes.map((f) => f.kind)).toEqual(["focus_codeg_window"])
+    expect(window?.fixes[0].payload).toBe(CODEG_WINDOW_INPUT_ID)
+
+    const withoutProviders = getAgentChecks(
+      codeg,
+      { result },
+      {
+        codegHasModelProviders: false,
+      }
+    )
+    expect(
+      withoutProviders
+        .find((c) => c.check_id === "model_provider")
+        ?.fixes.map((f) => f.kind)
+    ).toEqual(["open_model_providers"])
+  })
+
+  it("writes the config-card window and overlays empty prompts as delete", () => {
+    const env = patchCodegContextWindow("", "gateway-model", 64000)
+    expect(parseCodegContextWindows(env)).toEqual({ "gateway-model": 64000 })
+    expect(ensureCodegLaunchEnv(env, "gateway-model", 128000)).toContain(
+      "64000"
+    )
+    expect(ensureCodegLaunchEnv(env, "gateway-model", 128000)).not.toContain(
+      "128000"
+    )
+    const overlaid = overlayCodegPromptEnv(
+      { KEEP: "1", [CODEG_SYSTEM_PROMPT_KEY]: "old" },
+      "  ",
+      "Keep paths"
+    )
+    expect(overlaid[CODEG_SYSTEM_PROMPT_KEY]).toBeUndefined()
+    expect(overlaid[CODEG_COMPACT_PROMPT_KEY]).toBe("Keep paths")
+    expect(overlaid.KEEP).toBe("1")
+  })
+
+  it("runs persistEnv then runPreflight on card save", async () => {
+    const order: string[] = []
+    await persistThenRunPreflight(
+      async () => {
+        order.push("persist")
+      },
+      async () => {
+        order.push("preflight")
+      }
+    )
+    expect(order).toEqual(["persist", "preflight"])
+  })
+
+  it("refreshes Codeg preflight after the enable switch persists bind/env", () => {
+    // The settings panel is too heavy to mount here; lock the enable-switch
+    // persist path the same way other source tests pin wiring.
+    const src = readFileSync(
+      resolve(process.cwd(), "src/components/settings/acp-agent-settings.tsx"),
+      "utf8"
+    )
+    const switchClick = src.match(
+      /role="switch"[\s\S]*?onClick=\{\(\) => \{[\s\S]*?done\.catch/
+    )?.[0]
+    expect(switchClick).toBeTruthy()
+    expect(switchClick).toContain('selectedAgent.agent_type === "codeg_agent"')
+    expect(switchClick).toMatch(
+      /persistThenRunPreflight\(persist, \(\) =>\s*runPreflight\(selectedAgent\.agent_type\)/
+    )
+    expect(switchClick).toMatch(/: persist\(\)/)
+    expect(src).toMatch(
+      /disabled=\{selectedIsSaving \|\| selectedGrokSaving\}/
+    )
+  })
+
+  it("treats in-process distribution as already installed", () => {
+    const check = buildVersionCheck(
+      makeAgent({
+        agent_type: "codeg_agent" as AgentType,
+        name: "Codeg Agent",
+        distribution_type: "in_process",
+        registry_version: "0.30.6",
+        installed_version: "0.30.6",
+      })
+    )
+    expect(check?.status).toBe("pass")
+    expect(check?.fixes).toEqual([])
+    expect(check?.message).toContain("0.30.6")
+    expect(check?.message).toMatch(/in-process runtime/i)
   })
 })
 

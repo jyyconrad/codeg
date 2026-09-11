@@ -12,7 +12,7 @@ import {
 import { Reorder, useDragControls } from "motion/react"
 import { useLocale, useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
-import { useSearchParams } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   AlertCircle,
   CheckCircle2,
@@ -41,6 +41,7 @@ import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { toast } from "sonner"
 import {
   customAgentId,
+  getAgentLabel,
   isCustomAgentType,
   setCustomAgentDisplay,
 } from "@/lib/custom-agents"
@@ -126,9 +127,12 @@ import type {
 } from "@/lib/types"
 import {
   HERMES_PROVIDERS,
+  MODEL_PROVIDER_AGENT_TYPES,
+  completionsModelIdFromProvider,
   parseClaudeProviderModel,
   parseCodexModelConfig,
   serializeCodexModelConfig,
+  suggestedCodegContextWindow,
   type CodexModelConfig,
 } from "@/lib/types"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
@@ -260,6 +264,9 @@ interface AgentDraft {
   grokCustomApiBackend: string
   grokCustomContextWindow: string
   grokAutoCompactThreshold: string
+  /** Multiline; stored in env_json, not the KEY=VALUE env textarea. */
+  codegSystemPrompt: string
+  codegCompactPrompt: string
   openCodeAuthJsonText: string
   openClawGatewayUrl: string
   openClawGatewayToken: string
@@ -301,6 +308,9 @@ type UiFixAction =
         | "uninstall_npx"
         | "install_opencode_plugins"
         | "custom_install"
+        | "focus_codeg_bind"
+        | "open_model_providers"
+        | "focus_codeg_window"
       payload: string
       // When true, the fix renders as a greyed-out button (e.g. the uvx
       // agent-install action while the uv runtime isn't ready yet).
@@ -455,6 +465,167 @@ export function rebaseDeepSeekDraft(
     apiKey: findEnvValue(merged, keys.apiKey),
     model: findEnvValue(merged, keys.model),
   }
+}
+
+const CODEG_DEFAULT_MAX_OUTPUT = "4096"
+export const CODEG_SYSTEM_PROMPT_KEY = "CODEG_AGENT_SYSTEM_PROMPT"
+export const CODEG_COMPACT_PROMPT_KEY = "CODEG_AGENT_COMPACT_PROMPT"
+export const CODEG_BIND_SELECT_ID = "codeg-agent-bind-provider"
+export const CODEG_WINDOW_INPUT_ID = "codeg-agent-context-window"
+
+/**
+ * Model providers Codeg Agent can bind: its own rows plus Claude / Codex /
+ * Gemini channels already configured in Settings → Model Providers.
+ */
+export function modelProvidersForAgent(
+  agentType: AgentType,
+  providers: ModelProviderInfo[]
+): ModelProviderInfo[] {
+  if (agentType === "codeg_agent") {
+    const allowed = new Set<string>(MODEL_PROVIDER_AGENT_TYPES)
+    return providers.filter((provider) => allowed.has(provider.agent_type))
+  }
+  return providers.filter((provider) => provider.agent_type === agentType)
+}
+
+export function modelProviderOptionLabel(
+  provider: ModelProviderInfo,
+  forAgent: AgentType
+): string {
+  if (forAgent === "codeg_agent" && provider.agent_type !== "codeg_agent") {
+    return `${provider.name} · ${getAgentLabel(provider.agent_type)}`
+  }
+  return provider.name
+}
+
+/**
+ * Parse `CODEG_AGENT_CONTEXT_WINDOWS` JSON. Invalid JSON yields `{}` so the
+ * card can rewrite a single model id without inventing a 128k default here.
+ */
+export function parseCodegContextWindows(
+  envText: string
+): Record<string, number> {
+  const rawWindows = parseEnvText(envText).CODEG_AGENT_CONTEXT_WINDOWS?.trim()
+  if (!rawWindows) return {}
+  try {
+    const value = JSON.parse(rawWindows) as unknown
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+    const windows: Record<string, number> = {}
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      const name = key.trim()
+      const window =
+        typeof raw === "number"
+          ? raw
+          : typeof raw === "string"
+            ? Number.parseInt(raw.trim(), 10)
+            : Number.NaN
+      if (name && Number.isFinite(window) && window > 0) {
+        windows[name] = window
+      }
+    }
+    return windows
+  } catch {
+    return {}
+  }
+}
+
+export function codegWindowForModel(
+  envText: string,
+  modelId: string
+): number | null {
+  const id = modelId.trim()
+  if (!id) return null
+  return parseCodegContextWindows(envText)[id] ?? null
+}
+
+export function patchCodegContextWindow(
+  envText: string,
+  modelId: string,
+  windowTokens: number
+): string {
+  const id = modelId.trim()
+  if (!id || !Number.isFinite(windowTokens) || windowTokens <= 0) return envText
+  const windows = parseCodegContextWindows(envText)
+  windows[id] = windowTokens
+  return patchEnvText(envText, {
+    CODEG_AGENT_CONTEXT_WINDOWS: JSON.stringify(windows),
+  })
+}
+
+export function codegMaxOutputTokens(envText: string): string {
+  return (
+    parseEnvText(envText).CODEG_AGENT_MAX_OUTPUT_TOKENS?.trim() ||
+    CODEG_DEFAULT_MAX_OUTPUT
+  )
+}
+
+export function patchCodegMaxOutputTokens(
+  envText: string,
+  value: string
+): string {
+  const trimmed = value.trim()
+  return patchEnvText(envText, {
+    CODEG_AGENT_MAX_OUTPUT_TOKENS: trimmed || CODEG_DEFAULT_MAX_OUTPUT,
+  })
+}
+
+/**
+ * Overlay multiline prompts onto a parsed env map. Empty trim deletes the key
+ * so spawn uses the builtin default. The KEY=VALUE textarea never holds these.
+ */
+export function overlayCodegPromptEnv(
+  env: Record<string, string>,
+  systemPrompt: string,
+  compactPrompt: string
+): Record<string, string> {
+  const next = { ...env }
+  const system = systemPrompt.trim()
+  const compact = compactPrompt.trim()
+  if (system) next[CODEG_SYSTEM_PROMPT_KEY] = system
+  else delete next[CODEG_SYSTEM_PROMPT_KEY]
+  if (compact) next[CODEG_COMPACT_PROMPT_KEY] = compact
+  else delete next[CODEG_COMPACT_PROMPT_KEY]
+  return next
+}
+
+/** Save then refresh preflight. Used by the Codeg config card and enable switch. */
+export async function persistThenRunPreflight(
+  persist: () => Promise<unknown>,
+  runPreflight: () => Promise<unknown>
+): Promise<void> {
+  await persist()
+  await runPreflight()
+}
+
+function focusCodegField(id: string) {
+  const el = document.getElementById(id)
+  el?.scrollIntoView({ behavior: "smooth", block: "center" })
+  if (el instanceof HTMLElement) el.focus()
+}
+
+/**
+ * Ensure the bound model has a window (and a default max-output) in env text.
+ * Existing entries are kept; 128000 is only written when the id is missing.
+ */
+export function ensureCodegLaunchEnv(
+  envText: string,
+  modelId: string,
+  windowTokens: number
+): string {
+  const id = modelId.trim()
+  const parsed = parseEnvText(envText)
+  const windows = parseCodegContextWindows(envText)
+  if (id && windows[id] == null) {
+    windows[id] = windowTokens > 0 ? windowTokens : 128000
+  }
+  const patch: Record<string, string | undefined> = {}
+  if (Object.keys(windows).length > 0) {
+    patch.CODEG_AGENT_CONTEXT_WINDOWS = JSON.stringify(windows)
+  }
+  if (!parsed.CODEG_AGENT_MAX_OUTPUT_TOKENS?.trim()) {
+    patch.CODEG_AGENT_MAX_OUTPUT_TOKENS = CODEG_DEFAULT_MAX_OUTPUT
+  }
+  return patchEnvText(envText, patch)
 }
 
 /**
@@ -788,6 +959,13 @@ export function importantEnvKeysByAgent(
       apiBaseUrl: ["DEEPSEEK_BASE_URL"],
       apiKey: ["DEEPSEEK_API_KEY"],
       model: ["DEEPSEEK_ACP_MODEL"],
+    }
+  }
+  if (agentType === "codeg_agent") {
+    return {
+      apiBaseUrl: ["CODEG_AGENT_API_BASE_URL"],
+      apiKey: ["CODEG_AGENT_API_KEY"],
+      model: ["CODEG_AGENT_MODEL"],
     }
   }
   if (agentType === "qoder") {
@@ -3641,6 +3819,8 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
   // Grok mirrors this: record the auth-method knob, and in subscription mode
   // strip XAI_API_KEY so the editable env can't override the `grok login`
   // credential (the launch path enforces the same — see apply_grok_env_policy).
+  // Codeg prompts are multiline and live on dedicated textareas; strip them
+  // from the KEY=VALUE projection so the advanced editor cannot split them.
   const envText =
     agent.agent_type === "codex" && codexAuthMode === "chatgpt_subscription"
       ? patchEnvText(rawEnvText, {
@@ -3652,7 +3832,12 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
             GROK_AUTH_MODE: grokAuthMode,
             ...(grokAuthMode === "subscription" ? { XAI_API_KEY: "" } : {}),
           })
-        : rawEnvText
+        : agent.agent_type === "codeg_agent"
+          ? patchEnvText(rawEnvText, {
+              [CODEG_SYSTEM_PROMPT_KEY]: "",
+              [CODEG_COMPACT_PROMPT_KEY]: "",
+            })
+          : rawEnvText
   return {
     enabled: agent.enabled,
     envText,
@@ -3746,6 +3931,8 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
       agent.grok_settings?.auto_compact_threshold_percent != null
         ? String(agent.grok_settings.auto_compact_threshold_percent)
         : "",
+    codegSystemPrompt: agent.env[CODEG_SYSTEM_PROMPT_KEY] ?? "",
+    codegCompactPrompt: agent.env[CODEG_COMPACT_PROMPT_KEY] ?? "",
     openCodeAuthJsonText,
     openClawGatewayUrl: openClawImportant.gatewayUrl,
     openClawGatewayToken: openClawImportant.gatewayToken,
@@ -3880,6 +4067,20 @@ export function buildVersionCheck(
   agent: AcpAgentInfo,
   uvReady: boolean = true
 ): UiCheckItem | null {
+  if (agent.distribution_type === "in_process") {
+    const version =
+      agent.installed_version ?? agent.registry_version ?? "unknown"
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: "pass",
+      message: `${acpText(
+        "codegAgent.inProcess",
+        "Built-in in-process runtime. No CLI install required."
+      )} (${version})`,
+      fixes: [],
+    }
+  }
   if (
     agent.distribution_type !== "binary" &&
     agent.distribution_type !== "npx" &&
@@ -4154,9 +4355,53 @@ export function buildVersionCheck(
   }
 }
 
+export type GetAgentChecksOptions = {
+  codegHasModelProviders?: boolean
+}
+
+export function injectCodegPreflightFixes(
+  checks: UiCheckItem[],
+  options: { hasProviders: boolean }
+): UiCheckItem[] {
+  return checks.map((check) => {
+    if (check.check_id === "model_provider" && check.status === "fail") {
+      const fix: UiFixAction = options.hasProviders
+        ? {
+            label: acpText(
+              "codegAgent.bindProviderFix",
+              "Bind a model provider"
+            ),
+            kind: "focus_codeg_bind",
+            payload: CODEG_BIND_SELECT_ID,
+          }
+        : {
+            label: acpText("codegAgent.addProviderFix", "Add a model provider"),
+            kind: "open_model_providers",
+            payload: "/settings/model-providers",
+          }
+      return { ...check, fixes: [...check.fixes, fix] }
+    }
+    if (check.check_id === "context_window" && check.status === "fail") {
+      return {
+        ...check,
+        fixes: [
+          ...check.fixes,
+          {
+            label: acpText("codegAgent.editWindowFix", "Edit context window"),
+            kind: "focus_codeg_window",
+            payload: CODEG_WINDOW_INPUT_ID,
+          },
+        ],
+      }
+    }
+    return check
+  })
+}
+
 export function getAgentChecks(
   agent: AcpAgentInfo,
-  current?: AgentCheckState
+  current?: AgentCheckState,
+  options?: GetAgentChecksOptions
 ): UiCheckItem[] {
   // For uvx agents, only treat uv as not-ready when the preflight result is
   // present AND its uv check isn't passing. With no result yet (or an errored
@@ -4176,11 +4421,17 @@ export function getAgentChecks(
       fixes: [...check.fixes],
     })
   )
+  const withCodegFixes =
+    agent.agent_type === "codeg_agent"
+      ? injectCodegPreflightFixes(remoteChecks, {
+          hasProviders: options?.codegHasModelProviders === true,
+        })
+      : remoteChecks
   // The adapter explainer goes FIRST: it answers "why does this say not
   // installed when I have the CLI?" before the Version Status card below it
   // offers the Install that fixes it.
   const adapterCheck = buildAcpAdapterCheck(current?.result?.adapter)
-  return [adapterCheck, versionCheck, ...remoteChecks].filter(
+  return [adapterCheck, versionCheck, ...withCodegFixes].filter(
     (check): check is UiCheckItem => check != null
   )
 }
@@ -4257,6 +4508,7 @@ function AgentReorderItem({
 export function AcpAgentSettings() {
   const ime = useImeGuard()
   const locale = useLocale()
+  const router = useRouter()
   const t = useTranslations("AcpAgentSettings")
   const rawTranslator = t as unknown as AcpTranslator
   acpTranslator = (key, values) => rawTranslator(key, values)
@@ -4311,6 +4563,8 @@ export function AcpAgentSettings() {
   const [drafts, setDrafts] = useState<Partial<Record<AgentType, AgentDraft>>>(
     {}
   )
+  const draftsRef = useRef(drafts)
+  draftsRef.current = drafts
   const [configErrors, setConfigErrors] = useState<
     Partial<Record<AgentType, string | null>>
   >({})
@@ -4319,6 +4573,7 @@ export function AcpAgentSettings() {
   >({})
   // Whether the Grok panel's "advanced (raw config.toml)" escape hatch is open.
   const [grokAdvancedOpen, setGrokAdvancedOpen] = useState(false)
+  const [codegEnvOpen, setCodegEnvOpen] = useState(false)
   // Show/hide toggle for the Grok custom-model API key (kept separate from the
   // per-agent `showApiKeys` map, which is keyed by AgentType only).
   const [showGrokCustomKey, setShowGrokCustomKey] = useState(false)
@@ -4655,7 +4910,15 @@ export function AcpAgentSettings() {
        * draft sync below. */
       draftEnvPatch?: Record<string, string | undefined>
     ) => {
-      const parsedEnv = parseEnvText(envText)
+      let parsedEnv = parseEnvText(envText)
+      if (agentType === "codeg_agent") {
+        const promptDraft = draftsRef.current[agentType]
+        parsedEnv = overlayCodegPromptEnv(
+          parsedEnv,
+          promptDraft?.codegSystemPrompt ?? "",
+          promptDraft?.codegCompactPrompt ?? ""
+        )
+      }
       setSavingEnv((prev) => ({ ...prev, [agentType]: true }))
       try {
         const affected = await acpUpdateAgentEnv(agentType, {
@@ -5250,6 +5513,18 @@ export function AcpAgentSettings() {
       setCustomInstallAgent(agent)
       return
     }
+    if (action.kind === "focus_codeg_bind") {
+      focusCodegField(action.payload || CODEG_BIND_SELECT_ID)
+      return
+    }
+    if (action.kind === "focus_codeg_window") {
+      focusCodegField(action.payload || CODEG_WINDOW_INPUT_ID)
+      return
+    }
+    if (action.kind === "open_model_providers") {
+      router.push(action.payload || "/settings/model-providers")
+      return
+    }
     await runPreflight(agent.agent_type)
   }
 
@@ -5466,9 +5741,7 @@ export function AcpAgentSettings() {
 
   const selectedModelProviders = useMemo(() => {
     if (!selectedAgent) return []
-    return modelProviders.filter(
-      (p) => p.agent_type === selectedAgent.agent_type
-    )
+    return modelProvidersForAgent(selectedAgent.agent_type, modelProviders)
   }, [modelProviders, selectedAgent])
 
   const selectedNeedsModelProvider = useMemo(() => {
@@ -5480,6 +5753,7 @@ export function AcpAgentSettings() {
     if (at === "codex") return selectedDraft.codexAuthMode === "model_provider"
     if (at === "gemini")
       return selectedDraft.geminiAuthMode === "model_provider"
+    if (at === "codeg_agent") return true
     return false
   }, [selectedAgent, selectedDraft])
 
@@ -5584,8 +5858,10 @@ export function AcpAgentSettings() {
 
   const selectedChecks = useMemo(() => {
     if (!selectedAgent || !locale) return []
-    return getAgentChecks(selectedAgent, selectedCurrent)
-  }, [locale, selectedAgent, selectedCurrent])
+    return getAgentChecks(selectedAgent, selectedCurrent, {
+      codegHasModelProviders: selectedModelProviders.length > 0,
+    })
+  }, [locale, selectedAgent, selectedCurrent, selectedModelProviders.length])
 
   useEffect(() => {
     if (!selectedAgent || selectedChecks.length === 0) return
@@ -6103,6 +6379,29 @@ export function AcpAgentSettings() {
             configText: nextConfigJson.configText,
           }
         })
+      } else if (agentType === "codeg_agent") {
+        const codegModel = provider
+          ? completionsModelIdFromProvider(provider)
+          : ""
+        const windowTokens = provider
+          ? suggestedCodegContextWindow(provider)
+          : 128000
+        updateSelectedDraft((current) => ({
+          ...current,
+          modelProviderId: providerId,
+          apiBaseUrl: apiUrl,
+          apiKey,
+          model: codegModel,
+          envText: ensureCodegLaunchEnv(
+            patchEnvText(current.envText, {
+              CODEG_AGENT_API_BASE_URL: apiUrl,
+              CODEG_AGENT_API_KEY: apiKey,
+              CODEG_AGENT_MODEL: codegModel,
+            }),
+            codegModel,
+            windowTokens
+          ),
+        }))
       } else {
         updateSelectedDraft((current) => ({
           ...current,
@@ -7666,7 +7965,11 @@ export function AcpAgentSettings() {
               const current = checkState[agent.agent_type]
               const isChecking = Boolean(checking[agent.agent_type])
               const draft = drafts[agent.agent_type] ?? buildAgentDraft(agent)
-              const allChecks = getAgentChecks(agent, current)
+              const allChecks = getAgentChecks(agent, current, {
+                codegHasModelProviders:
+                  modelProvidersForAgent(agent.agent_type, modelProviders)
+                    .length > 0,
+              })
               const summary = summarizeChecks(allChecks)
               const displaySummary: CheckStatus | "unchecked" | "checking" =
                 isChecking ? "checking" : summary
@@ -7866,12 +8169,20 @@ export function AcpAgentSettings() {
                           ...prev,
                           [selectedAgent.agent_type]: nextDraft,
                         }))
-                        persistEnv(
-                          selectedAgent.agent_type,
-                          nextEnabled,
-                          nextDraft.envText,
-                          nextDraft.modelProviderId
-                        ).catch((err) => {
+                        const persist = () =>
+                          persistEnv(
+                            selectedAgent.agent_type,
+                            nextEnabled,
+                            nextDraft.envText,
+                            nextDraft.modelProviderId
+                          )
+                        const done =
+                          selectedAgent.agent_type === "codeg_agent"
+                            ? persistThenRunPreflight(persist, () =>
+                                runPreflight(selectedAgent.agent_type)
+                              )
+                            : persist()
+                        done.catch((err) => {
                           console.error(
                             "[Settings] persist enabled failed:",
                             err
@@ -7957,143 +8268,461 @@ export function AcpAgentSettings() {
                     )}
                 </div>
 
+                {selectedAgent.agent_type === "codeg_agent" &&
+                  (() => {
+                    const boundProvider = selectedModelProviders.find(
+                      (provider) =>
+                        provider.id === selectedDraft.modelProviderId
+                    )
+                    const codegModel = boundProvider
+                      ? completionsModelIdFromProvider(boundProvider)
+                      : selectedDraft.model
+                    const windowValue = codegWindowForModel(
+                      selectedDraft.envText,
+                      codegModel
+                    )
+                    return (
+                      <div className="space-y-3 rounded-md border bg-muted/10 p-3">
+                        <div>
+                          <label className="text-xs font-medium">
+                            {t("codegAgent.configCardTitle")}
+                          </label>
+                          <p className="mt-1 text-2xs text-muted-foreground">
+                            {t("codegAgent.inProcess")}
+                          </p>
+                          <div className="mt-2 space-y-1 text-2xs text-muted-foreground">
+                            <p>{t("codegAgent.experimental")}</p>
+                            <p>{t("codegAgent.protocol")}</p>
+                            <p>{t("codegAgent.noSandbox")}</p>
+                            <p>{t("codegAgent.recovery")}</p>
+                            <p>{t("codegAgent.contextWindowsHint")}</p>
+                            <p>{t("codegAgent.usageLastRequest")}</p>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-2xs text-muted-foreground">
+                            {t("codegAgent.bindProvider")}
+                          </label>
+                          {selectedModelProviders.length > 0 ? (
+                            <Select
+                              value={
+                                selectedDraft.modelProviderId != null
+                                  ? String(selectedDraft.modelProviderId)
+                                  : ""
+                              }
+                              onValueChange={handleModelProviderSelect}
+                            >
+                              <SelectTrigger
+                                id={CODEG_BIND_SELECT_ID}
+                                className="w-full"
+                              >
+                                <SelectValue
+                                  placeholder={t("selectModelProvider")}
+                                />
+                              </SelectTrigger>
+                              <SelectContent align="start">
+                                {selectedModelProviders.map((provider) => (
+                                  <SelectItem
+                                    key={provider.id}
+                                    value={String(provider.id)}
+                                  >
+                                    {modelProviderOptionLabel(
+                                      provider,
+                                      selectedAgent.agent_type
+                                    )}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <div className="space-y-2">
+                              <p className="text-2xs text-muted-foreground">
+                                {t("noModelProviderAvailable")}
+                              </p>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  router.push("/settings/model-providers")
+                                }
+                              >
+                                {t("codegAgent.addModelProvider")}
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-2xs text-muted-foreground">
+                            {t("codegAgent.modelReadOnly")}
+                          </label>
+                          <Input
+                            value={codegModel}
+                            readOnly
+                            placeholder={t("codegAgent.modelSelectorHint")}
+                          />
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="space-y-1.5">
+                            <label
+                              className="text-2xs text-muted-foreground"
+                              htmlFor={CODEG_WINDOW_INPUT_ID}
+                            >
+                              {t("codegAgent.contextWindow")}
+                            </label>
+                            <Input
+                              id={CODEG_WINDOW_INPUT_ID}
+                              type="number"
+                              min={1}
+                              value={windowValue ?? ""}
+                              disabled={!codegModel}
+                              onChange={(event) => {
+                                const next = Number.parseInt(
+                                  event.target.value,
+                                  10
+                                )
+                                if (!Number.isFinite(next) || next <= 0) return
+                                updateSelectedDraft((current) => ({
+                                  ...current,
+                                  envText: patchCodegContextWindow(
+                                    current.envText,
+                                    codegModel,
+                                    next
+                                  ),
+                                }))
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-2xs text-muted-foreground">
+                              {t("codegAgent.maxOutput")}
+                            </label>
+                            <Input
+                              type="number"
+                              min={1}
+                              value={codegMaxOutputTokens(
+                                selectedDraft.envText
+                              )}
+                              onChange={(event) => {
+                                updateSelectedDraft((current) => ({
+                                  ...current,
+                                  envText: patchCodegMaxOutputTokens(
+                                    current.envText,
+                                    event.target.value
+                                  ),
+                                }))
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        {boundProvider && (
+                          <div className="space-y-1 text-2xs text-muted-foreground">
+                            <p>{t("codegAgent.boundCredentials")}</p>
+                            <p className="break-all">{boundProvider.api_url}</p>
+                            <p>
+                              {boundProvider.api_key_masked ||
+                                boundProvider.api_key}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="space-y-1.5">
+                          <label className="text-2xs text-muted-foreground">
+                            {t("codegAgent.systemPrompt")}
+                          </label>
+                          <Textarea
+                            value={selectedDraft.codegSystemPrompt}
+                            onChange={(event) => {
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                codegSystemPrompt: event.target.value,
+                              }))
+                            }}
+                            placeholder={t("codegAgent.emptyUsesBuiltin")}
+                            className="min-h-24"
+                          />
+                          <p className="text-2xs text-muted-foreground">
+                            {t("codegAgent.systemPromptHint")}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-2xs text-muted-foreground">
+                            {t("codegAgent.compactPrompt")}
+                          </label>
+                          <Textarea
+                            value={selectedDraft.codegCompactPrompt}
+                            onChange={(event) => {
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                codegCompactPrompt: event.target.value,
+                              }))
+                            }}
+                            placeholder={t("codegAgent.emptyUsesBuiltin")}
+                            className="min-h-24"
+                          />
+                          <p className="text-2xs text-muted-foreground">
+                            {t("codegAgent.compactPromptHint")}
+                          </p>
+                        </div>
+
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              if (selectedMissingModelProvider) {
+                                toast.error(t("toasts.modelProviderRequired"))
+                                return
+                              }
+                              persistThenRunPreflight(
+                                () =>
+                                  persistEnv(
+                                    selectedAgent.agent_type,
+                                    selectedDraft.enabled,
+                                    selectedDraft.envText,
+                                    selectedDraft.modelProviderId
+                                  ),
+                                () => runPreflight(selectedAgent.agent_type)
+                              )
+                                .then(() => {
+                                  toast.success(t("toasts.configSaved"), {
+                                    description: t("toasts.configSavedHint"),
+                                  })
+                                })
+                                .catch((err) => {
+                                  console.error(
+                                    "[Settings] save codeg config failed:",
+                                    err
+                                  )
+                                  const message = toErrorMessage(err)
+                                  toast.error(
+                                    t("toasts.saveConfigManagementFailed"),
+                                    { description: message }
+                                  )
+                                })
+                            }}
+                            disabled={selectedIsSavingEnv}
+                          >
+                            {selectedIsSavingEnv ? (
+                              <>
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                {t("actions.saving")}
+                              </>
+                            ) : (
+                              <>
+                                <Save className="h-3.5 w-3.5" />
+                                {t("codegAgent.save")}
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
                 <div className="space-y-2">
-                  <label className="text-xs font-medium">{t("envVars")}</label>
-                  <div className="relative group">
-                    <Textarea
-                      value={selectedDraft.envText}
-                      onChange={(event) => {
-                        updateSelectedDraft((current) => ({
-                          ...current,
-                          envText: event.target.value,
-                        }))
-                      }}
-                      placeholder={"KEY1=VALUE1\nKEY2=VALUE2"}
-                      className="min-h-24"
-                      disabled={selectedGrokSaving}
-                    />
-                    <div className="pointer-events-none absolute inset-0 rounded-md bg-background/10 backdrop-blur-[3px] transition-opacity duration-200 group-focus-within:opacity-0" />
-                  </div>
-                  {/*
+                  {selectedAgent.agent_type === "codeg_agent" ? (
+                    <Collapsible
+                      open={codegEnvOpen}
+                      onOpenChange={setCodegEnvOpen}
+                    >
+                      <CollapsibleTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1 px-1 text-2xs text-muted-foreground"
+                        >
+                          <ChevronRight
+                            className={cn(
+                              "h-3.5 w-3.5 transition-transform",
+                              codegEnvOpen && "rotate-90"
+                            )}
+                          />
+                          {t("codegAgent.envAdvanced")}
+                        </Button>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <p className="mb-2 text-2xs text-muted-foreground">
+                          {t("codegAgent.envAdvancedHint")}
+                        </p>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  ) : (
+                    <label className="text-xs font-medium">
+                      {t("envVars")}
+                    </label>
+                  )}
+                  {(selectedAgent.agent_type !== "codeg_agent" ||
+                    codegEnvOpen) && (
+                    <>
+                      <div className="relative group">
+                        <Textarea
+                          value={selectedDraft.envText}
+                          onChange={(event) => {
+                            updateSelectedDraft((current) => ({
+                              ...current,
+                              envText: event.target.value,
+                            }))
+                          }}
+                          placeholder={
+                            selectedAgent.agent_type === "codeg_agent"
+                              ? 'CODEG_AGENT_CONTEXT_WINDOWS={"gateway-model": 128000}\nCODEG_AGENT_MAX_OUTPUT_TOKENS=4096'
+                              : "KEY1=VALUE1\nKEY2=VALUE2"
+                          }
+                          className="min-h-24"
+                          disabled={selectedGrokSaving}
+                        />
+                        <div className="pointer-events-none absolute inset-0 rounded-md bg-background/10 backdrop-blur-[3px] transition-opacity duration-200 group-focus-within:opacity-0" />
+                      </div>
+                      {selectedAgent.agent_type === "codeg_agent" && (
+                        <p className="text-2xs text-muted-foreground">
+                          {t("codegAgent.envWindowsHint")}
+                        </p>
+                      )}
+                      {/*
                     Backed by the same `envText` draft as the textarea above,
                     not self-persisting: saving on toggle would also commit
                     whatever unsaved edits the textarea happens to hold. One
                     Save button owns both.
                   */}
-                  <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/10 p-3">
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium">
-                        {t("hostTools.label")}
-                      </label>
-                      <p className="text-2xs text-muted-foreground">
-                        {t("hostTools.description")}
-                      </p>
-                    </div>
-                    <Switch
-                      checked={hostToolsAgentModeEnabled(selectedDraft.envText)}
-                      onCheckedChange={(checked) => {
-                        updateSelectedDraft((current) => ({
-                          ...current,
-                          envText: setHostToolsAgentMode(
-                            current.envText,
-                            checked
-                          ),
-                        }))
-                      }}
-                      disabled={selectedGrokSaving}
-                      aria-label={t("hostTools.label")}
-                    />
-                  </div>
-                  {/*
+                      {selectedAgent.agent_type !== "codeg_agent" && (
+                        <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/10 p-3">
+                          <div className="space-y-1">
+                            <label className="text-xs font-medium">
+                              {t("hostTools.label")}
+                            </label>
+                            <p className="text-2xs text-muted-foreground">
+                              {t("hostTools.description")}
+                            </p>
+                          </div>
+                          <Switch
+                            checked={hostToolsAgentModeEnabled(
+                              selectedDraft.envText
+                            )}
+                            onCheckedChange={(checked) => {
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                envText: setHostToolsAgentMode(
+                                  current.envText,
+                                  checked
+                                ),
+                              }))
+                            }}
+                            disabled={selectedGrokSaving}
+                            aria-label={t("hostTools.label")}
+                          />
+                        </div>
+                      )}
+                      {/*
                     Same contract as the host-tools switch above: backed by the
                     `envText` draft, persisted by the one Save button. Npx
                     agents only — a binary or uvx install has no npm dist-tag
                     to track.
                   */}
-                  {selectedAgent.distribution_type === "npx" && (
-                    <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/10 p-3">
-                      <div className="min-w-0 space-y-1">
-                        <label className="text-xs font-medium">
-                          {t("adapterChannel.label")}
-                        </label>
-                        <p className="text-2xs text-muted-foreground">
-                          {t("adapterChannel.description")}
-                        </p>
-                        {adapterChannelFromEnvText(selectedDraft.envText) ===
-                          "latest" && (
-                          <p className="text-2xs text-yellow-600 dark:text-yellow-400">
-                            {t("adapterChannel.latestWarning")}
-                          </p>
-                        )}
-                      </div>
-                      <Select
-                        value={adapterChannelFromEnvText(selectedDraft.envText)}
-                        onValueChange={(value) => {
-                          updateSelectedDraft((current) => ({
-                            ...current,
-                            envText: setAdapterChannel(
-                              current.envText,
-                              value === "latest" ? "latest" : "pinned"
-                            ),
-                          }))
-                        }}
-                        disabled={selectedGrokSaving}
-                      >
-                        <SelectTrigger
-                          className="w-44 shrink-0"
-                          aria-label={t("adapterChannel.label")}
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="pinned">
-                            {t("adapterChannel.pinned")}
-                          </SelectItem>
-                          <SelectItem value="latest">
-                            {t("adapterChannel.latest")}
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
-                  <div className="flex justify-end">
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        persistEnv(
-                          selectedAgent.agent_type,
-                          selectedDraft.enabled,
-                          selectedDraft.envText,
-                          selectedDraft.modelProviderId
-                        )
-                          .then(() => {
-                            toast.success(t("toasts.configSaved"), {
-                              description: t("toasts.configSavedHint"),
-                            })
-                          })
-                          .catch((err) => {
-                            console.error("[Settings] save env failed:", err)
-                            const message = toErrorMessage(err)
-                            toast.error(t("toasts.saveEnvFailed"), {
-                              description: message,
-                            })
-                          })
-                      }}
-                      disabled={selectedIsSavingEnv || selectedGrokSaving}
-                    >
-                      {selectedIsSavingEnv ? (
-                        <>
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          {t("actions.saving")}
-                        </>
-                      ) : (
-                        <>
-                          <Save className="h-3.5 w-3.5" />
-                          {t("actions.saveEnvVars")}
-                        </>
+                      {selectedAgent.distribution_type === "npx" && (
+                        <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/10 p-3">
+                          <div className="min-w-0 space-y-1">
+                            <label className="text-xs font-medium">
+                              {t("adapterChannel.label")}
+                            </label>
+                            <p className="text-2xs text-muted-foreground">
+                              {t("adapterChannel.description")}
+                            </p>
+                            {adapterChannelFromEnvText(
+                              selectedDraft.envText
+                            ) === "latest" && (
+                              <p className="text-2xs text-yellow-600 dark:text-yellow-400">
+                                {t("adapterChannel.latestWarning")}
+                              </p>
+                            )}
+                          </div>
+                          <Select
+                            value={adapterChannelFromEnvText(
+                              selectedDraft.envText
+                            )}
+                            onValueChange={(value) => {
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                envText: setAdapterChannel(
+                                  current.envText,
+                                  value === "latest" ? "latest" : "pinned"
+                                ),
+                              }))
+                            }}
+                            disabled={selectedGrokSaving}
+                          >
+                            <SelectTrigger
+                              className="w-44 shrink-0"
+                              aria-label={t("adapterChannel.label")}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="pinned">
+                                {t("adapterChannel.pinned")}
+                              </SelectItem>
+                              <SelectItem value="latest">
+                                {t("adapterChannel.latest")}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
                       )}
-                    </Button>
-                  </div>
+                      <div className="flex justify-end">
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            const persist = () =>
+                              persistEnv(
+                                selectedAgent.agent_type,
+                                selectedDraft.enabled,
+                                selectedDraft.envText,
+                                selectedDraft.modelProviderId
+                              )
+                            const done =
+                              selectedAgent.agent_type === "codeg_agent"
+                                ? persistThenRunPreflight(persist, () =>
+                                    runPreflight(selectedAgent.agent_type)
+                                  )
+                                : persist()
+                            done
+                              .then(() => {
+                                toast.success(t("toasts.configSaved"), {
+                                  description: t("toasts.configSavedHint"),
+                                })
+                              })
+                              .catch((err) => {
+                                console.error(
+                                  "[Settings] save env failed:",
+                                  err
+                                )
+                                const message = toErrorMessage(err)
+                                toast.error(t("toasts.saveEnvFailed"), {
+                                  description: message,
+                                })
+                              })
+                          }}
+                          disabled={selectedIsSavingEnv || selectedGrokSaving}
+                        >
+                          {selectedIsSavingEnv ? (
+                            <>
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              {t("actions.saving")}
+                            </>
+                          ) : (
+                            <>
+                              <Save className="h-3.5 w-3.5" />
+                              {t("actions.saveEnvVars")}
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {selectedAgent.agent_type === "codex" ? (
@@ -8274,7 +8903,10 @@ export function AcpAgentSettings() {
                                   key={provider.id}
                                   value={String(provider.id)}
                                 >
-                                  {provider.name}
+                                  {modelProviderOptionLabel(
+                                    provider,
+                                    selectedAgent.agent_type
+                                  )}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -8861,7 +9493,10 @@ supports_websockets = true`}
                                   key={provider.id}
                                   value={String(provider.id)}
                                 >
-                                  {provider.name}
+                                  {modelProviderOptionLabel(
+                                    provider,
+                                    selectedAgent.agent_type
+                                  )}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -11349,7 +11984,7 @@ supports_websockets = true`}
                       />
                     </SettingCard>
                   </>
-                ) : (
+                ) : selectedAgent.agent_type === "codeg_agent" ? null : (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                     <div>
                       <label className="text-xs font-medium">
@@ -11433,7 +12068,10 @@ supports_websockets = true`}
                                     key={provider.id}
                                     value={String(provider.id)}
                                   >
-                                    {provider.name}
+                                    {modelProviderOptionLabel(
+                                      provider,
+                                      selectedAgent.agent_type
+                                    )}
                                   </SelectItem>
                                 ))}
                               </SelectContent>
@@ -11459,9 +12097,11 @@ supports_websockets = true`}
                             <Input
                               value={selectedDraft.apiBaseUrl}
                               readOnly={
-                                selectedAgent.agent_type === "claude_code" &&
-                                selectedDraft.claudeAuthMode ===
-                                  "model_provider"
+                                (selectedAgent.agent_type === "claude_code" &&
+                                  selectedDraft.claudeAuthMode ===
+                                    "model_provider") ||
+                                (selectedAgent.agent_type === "codeg_agent" &&
+                                  selectedDraft.modelProviderId != null)
                               }
                               onChange={(event) => {
                                 handleImportantConfigChange(
@@ -11489,9 +12129,11 @@ supports_websockets = true`}
                                 }
                                 value={selectedDraft.apiKey}
                                 readOnly={
-                                  selectedAgent.agent_type === "claude_code" &&
-                                  selectedDraft.claudeAuthMode ===
-                                    "model_provider"
+                                  (selectedAgent.agent_type === "claude_code" &&
+                                    selectedDraft.claudeAuthMode ===
+                                      "model_provider") ||
+                                  (selectedAgent.agent_type === "codeg_agent" &&
+                                    selectedDraft.modelProviderId != null)
                                 }
                                 onChange={(event) => {
                                   handleImportantConfigChange(
@@ -11751,7 +12393,10 @@ supports_websockets = true`}
                           </label>
                           <Input
                             value={selectedDraft.model}
-                            readOnly={selectedDraft.modelProviderId != null}
+                            readOnly={
+                              selectedDraft.modelProviderId != null ||
+                              selectedAgent.agent_type === "codeg_agent"
+                            }
                             onChange={(event) => {
                               handleImportantConfigChange(
                                 "model",
@@ -11760,6 +12405,11 @@ supports_websockets = true`}
                             }}
                             placeholder="gpt-5 / claude-sonnet / gemini-2.5-pro"
                           />
+                          {selectedAgent.agent_type === "codeg_agent" && (
+                            <p className="text-2xs text-muted-foreground">
+                              {t("codegAgent.modelSelectorHint")}
+                            </p>
+                          )}
                         </div>
                       )
                     )}

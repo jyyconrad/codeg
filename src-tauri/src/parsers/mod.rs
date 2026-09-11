@@ -306,9 +306,10 @@ pub fn build_agent_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
         AgentType::DeepSeek => Box::new(deepseek::DeepSeekParser::new()),
         AgentType::Qoder => Box::new(qoder::QoderParser::new()),
         AgentType::Antigravity => Box::new(antigravity::AntigravityParser::new()),
-        // Custom ACP agents have no native store to reverse-engineer; their
-        // history is codeg's own ACP transcript.
-        AgentType::Custom(_) => Box::new(acp_native::AcpNativeParser::new(agent_type)),
+        // Codeg Agent records ACP-native history, same as custom ACP agents.
+        AgentType::CodegAgent | AgentType::Custom(_) => {
+            Box::new(acp_native::AcpNativeParser::new(agent_type))
+        }
     };
     Box::new(RouteSanitized(inner))
 }

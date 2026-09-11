@@ -9,6 +9,7 @@
 
 pub mod acp;
 pub mod acp_transcript;
+pub mod agent;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,
 };
@@ -766,6 +767,7 @@ mod tauri_app {
                         &cm_state,
                         db_conn.clone(),
                         effective_data_dir.clone(),
+                        crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
                     );
                     app.manage(broker.clone());
                     app.manage(tokens.clone());
@@ -813,6 +815,9 @@ mod tauri_app {
                         .await;
                     });
 
+                    let injection = cm_state
+                        .delegation_snapshot()
+                        .expect("delegation injection installed");
                     let listener_broker = broker.clone();
                     let listener = crate::acp::delegation::listener::DelegationListener::new(
                         listener_broker,
@@ -822,35 +827,11 @@ mod tauri_app {
                                 manager: std::sync::Arc::new(cm_state.clone_ref()),
                             },
                         ),
-                        std::sync::Arc::new(
-                            crate::acp::manager::ConnectionManagerFeedbackLookup {
-                                manager: std::sync::Arc::new(cm_state.clone_ref()),
-                            },
-                        ),
-                        std::sync::Arc::new(
-                            crate::acp::manager::ConnectionManagerQuestionLookup {
-                                manager: std::sync::Arc::new(cm_state.clone_ref()),
-                            },
-                        ),
-                        std::sync::Arc::new(
-                            crate::commands::session_info::DbSessionInfoLookup::new(
-                                std::sync::Arc::new(db::AppDatabase {
-                                    conn: db_conn.clone(),
-                                }),
-                            ),
-                        ),
-                        std::sync::Arc::new(crate::work_task::EngineWorkTaskTools),
-                        std::sync::Arc::new(
-                            crate::commands::chat_authoring::DbChatAuthoring::new(
-                                std::sync::Arc::new(db::AppDatabase {
-                                    conn: db_conn.clone(),
-                                }),
-                                crate::web::event_bridge::EventEmitter::Tauri(
-                                    app.handle().clone(),
-                                ),
-                                chat_authoring_config.clone(),
-                            ),
-                        ),
+                        injection.feedback_access,
+                        injection.questions,
+                        injection.session_info_access,
+                        injection.tasks,
+                        injection.authoring_access,
                     );
                     // Bind through the service handle rather than a bare
                     // `listener.run` spawn: it keeps the bind error and the
@@ -1694,7 +1675,10 @@ mod tauri_app {
                     }
                     crate::office_watch::stop_all_office_watches();
                     if let Some(cm) = app.try_state::<ConnectionManager>() {
-                        tauri::async_runtime::block_on(cm.disconnect_all());
+                        tauri::async_runtime::block_on(async {
+                            let _lock = cm.lock_out_new_connections().await;
+                            cm.disconnect_all().await;
+                        });
                     }
                 }
                 #[cfg(target_os = "macos")]
