@@ -11,6 +11,7 @@ import {
   Bot,
   BookOpenText,
   Boxes,
+  Braces,
   FileSpreadsheet,
   GitBranch,
   Globe,
@@ -46,6 +47,7 @@ interface SettingsNavItem {
     | "codeg_agent"
     | "model_providers"
     | "mcp"
+    | "code_intelligence"
     | "skills"
     | "skill_packs"
     | "quick_messages"
@@ -77,6 +79,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/mcp",
     labelKey: "mcp",
     icon: PlugZap,
+  },
+  {
+    href: "/settings/code-intelligence",
+    labelKey: "code_intelligence",
+    icon: Braces,
   },
   {
     href: "/settings/skills",
