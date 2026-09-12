@@ -1,8 +1,9 @@
 //! WikiWorker process lock, vault lock, cron tick, crash recovery.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -12,6 +13,7 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 use crate::db::entities::wiki_job;
+use crate::db::service::wiki_service;
 use crate::db::AppDatabase;
 use crate::web::event_bridge::{emit_event, EventEmitter};
 use crate::wiki::commit::{self, RecoverStatus};
@@ -21,13 +23,13 @@ use crate::wiki::paths::{resolve_state_root, resolve_vault_path};
 use crate::wiki::settings::{self, WikiSettings};
 use crate::wiki::vault;
 use crate::wiki::worker;
-use crate::db::service::wiki_service;
 
 pub const WIKI_JOB_CHANGED_EVENT: &str = "wiki://job-changed";
 const TICK_SECS: u64 = 5;
 const JOB_BUDGET_MINUTES: i64 = 30;
 
 static WAKE: OnceLock<Arc<Notify>> = OnceLock::new();
+static CANCELLATIONS: OnceLock<Mutex<HashMap<String, Arc<Notify>>>> = OnceLock::new();
 
 fn wake_signal() -> Arc<Notify> {
     WAKE.get_or_init(|| Arc::new(Notify::new())).clone()
@@ -35,6 +37,33 @@ fn wake_signal() -> Arc<Notify> {
 
 pub fn notify_jobs() {
     wake_signal().notify_one();
+}
+
+fn cancellation_map() -> &'static Mutex<HashMap<String, Arc<Notify>>> {
+    CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cancellation_token(job_id: &str) -> Arc<Notify> {
+    let mut map = cancellation_map()
+        .lock()
+        .expect("wiki cancellation map poisoned");
+    map.entry(job_id.to_string())
+        .or_insert_with(|| Arc::new(Notify::new()))
+        .clone()
+}
+
+/// Signal an in-flight worker to stop before it can continue to a commit.
+pub fn request_cancel(job_id: &str) {
+    let token = cancellation_token(job_id);
+    // `notify_one` retains a permit when cancellation races waiter setup.
+    token.notify_one();
+    notify_jobs();
+}
+
+pub fn clear_cancellation(job_id: &str) {
+    if let Ok(mut map) = cancellation_map().lock() {
+        map.remove(job_id);
+    }
 }
 
 enum Ownership {
@@ -144,7 +173,24 @@ pub fn spawn_with_roots(
 
 impl WikiEngine {
     async fn run(self) {
-        if let Err(e) = recover_on_start(&self.db.conn, &self.state_root, &self.emitter).await {
+        let recovery_root = settings::load_settings(&self.db.conn)
+            .await
+            .map(|s| resolve_state_root(s.vault_path.as_deref()))
+            .unwrap_or_else(|_| self.state_root.clone());
+        // Enqueue writes to the stable default pending directory before it
+        // can consult async settings. Scan both roots so a vault switch cannot
+        // strand snapshots created before the worker observes the new path.
+        if let Err(e) = crate::wiki::source::recover_pending(&self.db.conn).await {
+            tracing::warn!("[wiki] pending ACP recovery error: {e}");
+        }
+        if recovery_root != resolve_state_root(None) {
+            if let Err(e) =
+                crate::wiki::source::recover_pending_at(&self.db.conn, &recovery_root).await
+            {
+                tracing::warn!("[wiki] configured pending ACP recovery error: {e}");
+            }
+        }
+        if let Err(e) = recover_on_start(&self.db.conn, &recovery_root, &self.emitter).await {
             tracing::warn!("[wiki] recovery error: {e}");
         }
         let mut tick = tokio::time::interval(Duration::from_secs(TICK_SECS));
@@ -171,7 +217,10 @@ impl WikiEngine {
         }
         let vault = resolve_vault_path(settings.vault_path.as_deref());
         let _ = vault::initialize_vault(&vault);
-        let _ = vault::initialize_state_root(&self.state_root);
+        // Resolve vault and state together from the same settings snapshot.
+        // This prevents a vault switch from reusing a stale state root.
+        let state_root = resolve_state_root(settings.vault_path.as_deref());
+        let _ = vault::initialize_state_root(&state_root);
 
         expire_overdue_jobs(conn, &self.emitter).await;
 
@@ -191,8 +240,7 @@ impl WikiEngine {
                 .map_err(|e| e.to_string())?
             {
                 emit_job(&self.emitter, &job.id, "running");
-                handle_compile(conn, &job, &settings, &vault, &self.state_root, &self.emitter)
-                    .await;
+                handle_compile(conn, &job, &settings, &vault, &state_root, &self.emitter).await;
             }
         }
         Ok(())
@@ -217,21 +265,17 @@ async fn recover_on_start(
                                 let _ = compile::register_consumed(conn, &job_id, &manifest).await;
                             }
                         }
-                        let _ = wiki_service::mark_job(conn, &job_id, "succeeded", None, None).await;
+                        let _ =
+                            wiki_service::mark_job(conn, &job_id, "succeeded", None, None).await;
                         emit_job(emitter, &job_id, "succeeded");
                     }
                 }
             }
             Ok(RecoverStatus::PartialConflict { rel, reason }) => {
                 let msg = format!("{rel}: {reason}");
-                let _ = wiki_service::mark_job(
-                    conn,
-                    &job_id,
-                    "failed",
-                    Some("conflict"),
-                    Some(&msg),
-                )
-                .await;
+                let _ =
+                    wiki_service::mark_job(conn, &job_id, "failed", Some("conflict"), Some(&msg))
+                        .await;
                 emit_job(emitter, &job_id, "failed");
             }
             Err(e) => {
@@ -315,6 +359,14 @@ async fn handle_compile(
     state_root: &Path,
     emitter: &EventEmitter,
 ) {
+    // A cancellation can race with claiming the job. Check the durable DB
+    // state before binding a model or starting any model calls.
+    if let Ok(current) = wiki_service::get_job_model(conn, &job.id).await {
+        if current.status == "cancelled" {
+            clear_cancellation(&job.id);
+            return;
+        }
+    }
     if !settings.compile.enabled {
         let _ = wiki_service::mark_job(
             conn,
@@ -348,12 +400,46 @@ async fn handle_compile(
     let _ = wiki_service::set_job_model_meta(conn, &job.id, Some(&model_id), Some(&protocol)).await;
     let skill = include_str!("../../agent-skills/wiki-compile/SKILL.md").to_string();
     let llm = ProductionWikiLlm::new(bound, skill, settings.compile.prompt.clone());
-    match worker::run_compile_attempt(conn, job, &llm, vault, state_root).await {
-        Ok(()) => {
-            let _ = wiki_service::mark_job(conn, &job.id, "succeeded", None, None).await;
-            emit_job(emitter, &job.id, "succeeded");
+    let cancel = cancellation_token(&job.id);
+    let attempt = worker::run_compile_attempt(conn, job, &llm, vault, state_root);
+    tokio::pin!(attempt);
+    let outcome = tokio::select! {
+        result = &mut attempt => Some(result),
+        _ = cancel.notified() => None,
+    };
+    clear_cancellation(&job.id);
+    match outcome {
+        None => {
+            let current = wiki_service::get_job_model(conn, &job.id).await.ok();
+            if current.as_ref().map(|j| j.status.as_str()) == Some("failed") {
+                emit_job(emitter, &job.id, "failed");
+            } else {
+                let _ = wiki_service::mark_job(
+                    conn,
+                    &job.id,
+                    "cancelled",
+                    Some("cancelled"),
+                    Some("compile cancelled before commit"),
+                )
+                .await;
+                emit_job(emitter, &job.id, "cancelled");
+            }
         }
-        Err(e) => {
+        Some(Ok(())) => {
+            // Cancellation may have won the DB race just as the attempt
+            // completed. Preserve the user's terminal state.
+            let cancelled = wiki_service::get_job_model(conn, &job.id)
+                .await
+                .map(|j| j.status == "cancelled")
+                .unwrap_or(false);
+            if cancelled {
+                emit_job(emitter, &job.id, "cancelled");
+            } else {
+                let _ = wiki_service::mark_job(conn, &job.id, "succeeded", None, None).await;
+                emit_job(emitter, &job.id, "succeeded");
+            }
+        }
+        Some(Err(e)) => {
             let code = e.error_code();
             let retryable = match &e {
                 worker::WorkerError::Compile(c) => c.retryable(),
@@ -410,8 +496,8 @@ async fn maybe_enqueue_scheduled_compile(
         // First run: seed next_compile_at.
         if vault_row.next_compile_at.is_none() {
             if let Some(next) = settings::next_compile_at(settings) {
-                let _ = wiki_service::set_vault_next_compile_at(conn, &vault_row.id, Some(next))
-                    .await;
+                let _ =
+                    wiki_service::set_vault_next_compile_at(conn, &vault_row.id, Some(next)).await;
             }
         }
         return;
@@ -478,6 +564,7 @@ async fn expire_overdue_jobs(conn: &DatabaseConnection, emitter: &EventEmitter) 
             Some("job exceeded the 30 minute budget"),
         )
         .await;
+        request_cancel(&job.id);
         emit_job(emitter, &job.id, "failed");
     }
 }
@@ -524,5 +611,16 @@ mod tests {
         assert!(matches!(a, Ownership::Exclusive(_)));
         let b = acquire_lock(&path);
         assert!(matches!(b, Ownership::Taken));
+    }
+
+    #[tokio::test]
+    async fn cancellation_signal_is_retained_until_waiter_is_ready() {
+        let id = "cancel-retained-test";
+        request_cancel(id);
+        let token = cancellation_token(id);
+        tokio::time::timeout(Duration::from_millis(100), token.notified())
+            .await
+            .expect("cancel signal should wake a waiter");
+        clear_cancellation(id);
     }
 }

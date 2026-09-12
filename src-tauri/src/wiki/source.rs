@@ -1,6 +1,8 @@
 //! Host ingest of an ACP turn snapshot: filter → redact → source/job → raw.
 
 use sea_orm::DatabaseConnection;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::db::error::DbError;
 use crate::db::service::wiki_service::{InsertedSource, NewAcpSource};
@@ -208,9 +210,21 @@ async fn enrich_from_db(
 
 /// Off-hot-path enqueue. Failures do not change conversation success.
 pub fn enqueue_persist(conn: DatabaseConnection, snap: WikiTurnSnapshot) {
-    tokio::spawn(async move {
+    // Freeze the snapshot before scheduling async work. This closes the crash
+    // window between ACP turn completion and the database transaction.
+    let pending = pending_path();
+    if let Err(e) = persist_pending_snapshot(&pending, &snap) {
+        tracing::warn!(error = %e, "[wiki] failed to durably enqueue ACP snapshot");
+        return;
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::warn!("[wiki] no tokio runtime; ACP snapshot remains pending for recovery");
+        return;
+    };
+    handle.spawn(async move {
         match persist_acp_turn(&conn, snap).await {
             Ok(out) => {
+                let _ = fs::remove_file(&pending);
                 if let Some(reason) = out.skipped {
                     tracing::info!(reason = %reason, "[wiki] persist skipped");
                 }
@@ -231,6 +245,82 @@ pub fn enqueue_persist(conn: DatabaseConnection, snap: WikiTurnSnapshot) {
             }
         }
     });
+}
+
+fn pending_dir() -> PathBuf {
+    pending_dir_at(&resolve_state_root(None))
+}
+
+fn pending_dir_at(state_root: &Path) -> PathBuf {
+    state_root.join("pending-acp")
+}
+
+fn pending_path() -> PathBuf {
+    pending_dir().join(format!("{}.json", uuid::Uuid::new_v4()))
+}
+
+fn persist_pending_snapshot(path: &Path, snap: &WikiTurnSnapshot) -> Result<(), DbError> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| DbError::Validation("pending snapshot path has no parent".into()))?;
+    fs::create_dir_all(dir).map_err(DbError::from)?;
+    let tmp = path.with_extension("tmp");
+    let json = serde_json::to_vec(snap).map_err(|e| DbError::Validation(e.to_string()))?;
+    fs::write(&tmp, json).map_err(DbError::from)?;
+    fs::rename(&tmp, path).map_err(DbError::from)?;
+    Ok(())
+}
+
+/// Replay snapshots persisted before an ACP enqueue task could run.
+pub async fn recover_pending(conn: &DatabaseConnection) -> Result<usize, DbError> {
+    recover_pending_at(conn, &resolve_state_root(None)).await
+}
+
+/// Replay snapshots from a specific wiki-state root. The default enqueue path
+/// is retained for crash safety, while the engine can also scan the currently
+/// configured root after a vault switch.
+pub async fn recover_pending_at(
+    conn: &DatabaseConnection,
+    state_root: &Path,
+) -> Result<usize, DbError> {
+    let dir = pending_dir_at(state_root);
+    let entries = match fs::read_dir(&dir) {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(DbError::from(e)),
+    };
+    let mut replayed = 0;
+    for entry in entries {
+        let entry = entry.map_err(DbError::from)?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = match fs::read(&path) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "[wiki] pending snapshot read failed");
+                continue;
+            }
+        };
+        let snap: WikiTurnSnapshot = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "[wiki] pending snapshot decode failed");
+                continue;
+            }
+        };
+        match persist_acp_turn(conn, snap).await {
+            Ok(_) => {
+                let _ = fs::remove_file(&path);
+                replayed += 1;
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "[wiki] pending snapshot replay failed")
+            }
+        }
+    }
+    Ok(replayed)
 }
 
 #[cfg(test)]
@@ -275,6 +365,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pending_snapshot_is_written_atomically_and_round_trips() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("pending-acp").join("snapshot.json");
+        let snap = snap_for("durable-run", 1, 1);
+        persist_pending_snapshot(&path, &snap).unwrap();
+        assert!(path.is_file());
+        assert!(!path.with_extension("tmp").exists());
+        let restored: WikiTurnSnapshot = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(restored, snap);
+    }
+
     async fn enable_wiki(conn: &DatabaseConnection, vault: &std::path::Path) {
         let mut s = WikiSettings::default();
         s.enabled = true;
@@ -296,7 +398,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.skipped.as_deref(), Some("wiki_disabled"));
-        let sources = wiki_service::list_sources(&db.conn, 10, 0, None)
+        let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
             .await
             .unwrap();
         assert!(sources.is_empty());
@@ -340,7 +442,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.skipped.as_deref(), Some("conversation_kind_delegate"));
-        let sources = wiki_service::list_sources(&db.conn, 10, 0, None)
+        let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
             .await
             .unwrap();
         assert!(sources.is_empty());
@@ -362,7 +464,7 @@ mod tests {
             .unwrap();
         assert!(!second.created);
         assert_eq!(first.source_id, second.source_id);
-        let sources = wiki_service::list_sources(&db.conn, 10, 0, None)
+        let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
             .await
             .unwrap();
         assert_eq!(sources.len(), 1);

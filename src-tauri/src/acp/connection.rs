@@ -58,6 +58,7 @@ use crate::acp::types::{
     UserMessageBlock,
 };
 use crate::acp::workflow_adapt::{adapt_air_workflow, adapt_grok_workflow};
+use crate::agent::code_intel::{load_code_intel_config, resolve_codegraph_binary};
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
 use crate::network::proxy;
@@ -4540,6 +4541,55 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     out
 }
 
+/// Append Codeg-hosted code intelligence MCP servers to an ACP session.
+///
+/// CodeGraph is exposed through the upstream server (`serve --mcp`) so the
+/// external agent receives the official `codegraph_explore` tool names and
+/// semantics. The binary is resolved from the user's configured absolute path
+/// or PATH; a missing binary simply leaves the session without code intelligence
+/// (failure-open). No user-level agent configuration is modified.
+///
+/// LSP remains an in-process `LspPool` capability for Codeg Agent sessions. A
+/// dedicated MCP façade is deliberately not advertised until it can route
+/// requests to the workspace pool; injecting a phantom server would make ACP
+/// sessions fail on stricter agents.
+fn append_code_intel_mcp_servers(mcp_servers: &mut Vec<McpServer>, cwd: &Path) {
+    let cfg = load_code_intel_config();
+    if !cfg.enabled || !cfg.codegraph.enabled {
+        return;
+    }
+    let Some(binary) = resolve_codegraph_binary(&cfg.codegraph) else {
+        tracing::debug!(cwd = %cwd.display(), "codegraph MCP unavailable: binary not found");
+        return;
+    };
+
+    // Avoid duplicate injection when a user already configured a server under
+    // the canonical name. The ACP list is a single namespace per session.
+    if mcp_servers.iter().any(|server| match server {
+        McpServer::Stdio(existing) => existing.name == "codegraph",
+        McpServer::Http(existing) => existing.name == "codegraph",
+        McpServer::Sse(existing) => existing.name == "codegraph",
+        _ => false,
+    }) {
+        return;
+    }
+
+    let server = build_codegraph_mcp_server(binary);
+    tracing::info!(cwd = %cwd.display(), "injecting official codegraph MCP server");
+    mcp_servers.push(McpServer::Stdio(server));
+}
+
+fn build_codegraph_mcp_server(binary: PathBuf) -> McpServerStdio {
+    let env = vec![
+        sacp::schema::EnvVariable::new("CODEGRAPH_TELEMETRY", "0"),
+        sacp::schema::EnvVariable::new("DO_NOT_TRACK", "1"),
+        sacp::schema::EnvVariable::new("CODEGRAPH_NO_UPDATE_CHECK", "1"),
+    ];
+    McpServerStdio::new("codegraph", binary)
+        .args(vec!["serve".into(), "--mcp".into()])
+        .env(env)
+}
+
 /// Context the connection layer needs to inject the built-in `codeg-mcp`
 /// MCP entry. Built once per `run_connection` from the live AppState pieces
 /// (broker config, token registry, UDS path) and passed through.
@@ -5641,6 +5691,14 @@ async fn run_connection(
                 );
                 Vec::new()
             };
+
+            // Code intelligence is host-owned and follows the same per-session
+            // ACP MCP seam as user servers and the codeg companion. Keep this
+            // behind the negotiated supports_mcp gate so agents such as
+            // OpenClaw never see an entry they reject during session/new.
+            if agent_supports_mcp {
+                append_code_intel_mcp_servers(&mut mcp_servers, &cwd);
+            }
 
             // Inject the built-in `codeg-mcp` MCP server. Stdio is
             // unconditionally supported by the ACP wire — no `mcp_caps`
@@ -19319,6 +19377,19 @@ mod tests {
             ),
             other => panic!("expected Stdio variant, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn codegraph_mcp_server_uses_official_serve_contract() {
+        let server = build_codegraph_mcp_server(PathBuf::from("/opt/codegraph"));
+        assert_eq!(server.name, "codegraph");
+        assert_eq!(server.command, PathBuf::from("/opt/codegraph"));
+        assert_eq!(server.args, vec!["serve", "--mcp"]);
+        let json = serde_json::to_value(McpServer::Stdio(server)).unwrap();
+        assert_eq!(json["type"], "stdio");
+        assert_eq!(json["name"], "codegraph");
+        assert_eq!(json["args"], serde_json::json!(["serve", "--mcp"]));
+        assert_eq!(json["env"][0]["name"], "CODEGRAPH_TELEMETRY");
     }
 
     #[test]

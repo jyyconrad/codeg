@@ -1613,6 +1613,7 @@ mod tauri_app {
                 wiki_commands::wiki_list_jobs,
                 wiki_commands::wiki_get_job,
                 wiki_commands::wiki_list_sources,
+                wiki_commands::wiki_list_project_bindings,
                 wiki_commands::wiki_get_source,
                 wiki_commands::wiki_vault_tree,
                 wiki_commands::wiki_vault_read,

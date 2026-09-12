@@ -386,19 +386,17 @@ export function WikiJobsView() {
                     </Button>
                   ) : null}
                 </div>
-                {detail.error
-                || detail.error_message
-                || detail.error_code
-                || detail.message ? (
+                {detail.error ||
+                detail.error_message ||
+                detail.error_code ||
+                detail.message ? (
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-muted-foreground">
                       {t("jobs.error")}
                     </p>
                     <p className="text-sm">
                       {detail.error_code ? `${detail.error_code}: ` : ""}
-                      {detail.error
-                        || detail.error_message
-                        || detail.message}
+                      {detail.error || detail.error_message || detail.message}
                     </p>
                   </div>
                 ) : null}

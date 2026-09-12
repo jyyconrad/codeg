@@ -183,11 +183,13 @@ import type {
   TokenUsageSyncResult,
   TokenUsageSyncStatus,
   WikiImportResult,
+  WikiImportBatchResult,
   WikiJob,
   WikiJobStatus,
   WikiSettings,
   WikiSettingsView,
   WikiSource,
+  WikiProjectBinding,
   WikiSourceKind,
   WikiVaultTreeNode,
 } from "./types"
@@ -5986,11 +5988,21 @@ export async function wikiListSources(params?: {
   limit?: number
   offset?: number
   source_kind?: WikiSourceKind
+  project_id?: string
 }): Promise<unknown> {
   return getTransport().call("wiki_list_sources", {
     limit: params?.limit ?? null,
     offset: params?.offset ?? null,
     source_kind: params?.source_kind ?? null,
+    project_id: params?.project_id ?? null,
+  })
+}
+
+export async function wikiListProjectBindings(params?: {
+  vault_id?: string | null
+}): Promise<WikiProjectBinding[]> {
+  return getTransport().call("wiki_list_project_bindings", {
+    vault_id: params?.vault_id ?? null,
   })
 }
 
@@ -6053,7 +6065,7 @@ export async function wikiImportFiles(params: {
   batch_id?: string | null
   project_ids?: string[] | null
   area_ids?: string[] | null
-}): Promise<WikiImportResult> {
+}): Promise<WikiImportResult | WikiImportBatchResult> {
   return getTransport().call(
     "wiki_import_files",
     {

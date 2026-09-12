@@ -109,6 +109,16 @@ export interface WikiSource {
   area_ids?: string[] | null
 }
 
+export interface WikiProjectBinding {
+  id: string
+  vault_id: string
+  db_instance_id: string
+  root_folder_id: number
+  project_note_id?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export interface WikiImportFile {
   filename: string
   mime?: string | null
@@ -122,6 +132,26 @@ export interface WikiImportResult extends WikiSource {
   page_count?: number | null
   original_filename?: string | null
   format?: string | null
+}
+
+export interface WikiImportFileResult {
+  filename: string
+  request_id: string
+  source?: WikiSource | null
+  duplicate: boolean
+  status: "succeeded" | "duplicate" | "failed"
+  job_id?: string | null
+  job_status?: string | null
+  error?: string | null
+}
+
+export interface WikiImportBatchResult {
+  request_id: string
+  batch_id?: string | null
+  results: WikiImportFileResult[]
+  succeeded: number
+  failed: number
+  duplicates: number
 }
 
 export interface WikiListPage<T> {

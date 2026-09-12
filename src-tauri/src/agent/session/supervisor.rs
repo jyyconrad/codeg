@@ -1,6 +1,7 @@
 //! Command ring: `cmd_rx` + runner stream + shutdown select.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -54,6 +55,9 @@ const WORKER_CANCEL_WAIT: Duration = Duration::from_secs(5);
 const NATIVE_FORCE_REAP: Duration = Duration::from_secs(2);
 const TURN_END_WRITE_FAILED: &str = "failed to confirm transcript turn end";
 const TURN_DID_NOT_CONVERGE: &str = "turn did not converge after cancel";
+
+static HOST_INDEX_WORKSPACES: std::sync::OnceLock<Mutex<HashSet<PathBuf>>> =
+    std::sync::OnceLock::new();
 
 fn companion_ok_in_mode(mode: &str, name: &str) -> bool {
     if mode != MODE_PLAN {
@@ -147,12 +151,39 @@ fn spawn_session_host_index(args: &NativeSessionArgs) {
     let Some(binary) = binary else {
         return;
     };
-    let cwd = args.launch_cwd.clone();
+    let Some(cwd) = claim_host_index_workspace(&args.launch_cwd) else {
+        tracing::debug!(cwd = %args.launch_cwd.display(), "codegraph host index already running for workspace");
+        return;
+    };
     let owners = args.shutdown.owners();
     let cancel = args.shutdown.token();
+    let claimed_cwd = cwd.clone();
     tokio::spawn(async move {
         spawn_host_index(binary, cwd, action, owners, cancel).await;
+        release_host_index_workspace(&claimed_cwd);
     });
+}
+
+fn canonical_workspace(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn claim_host_index_workspace(path: &Path) -> Option<PathBuf> {
+    let canonical = canonical_workspace(path);
+    let claims = HOST_INDEX_WORKSPACES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = claims
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard.insert(canonical.clone()).then_some(canonical)
+}
+
+fn release_host_index_workspace(path: &Path) {
+    if let Some(claims) = HOST_INDEX_WORKSPACES.get() {
+        claims
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(path);
+    }
 }
 
 async fn run_session(
@@ -376,15 +407,8 @@ async fn run_session(
     let coordinator = Arc::new(TurnCoordinator::new());
     let lsp_pool = {
         let intel = load_code_intel_config();
-        should_inject_lsp(&intel).then(|| {
-            LspPool::new(
-                args.launch_cwd.clone(),
-                Arc::clone(&fs),
-                intel,
-                args.shutdown.owners(),
-                shutdown.token(),
-            )
-        })
+        should_inject_lsp(&intel)
+            .then(|| LspPool::for_workspace(args.launch_cwd.clone(), Arc::clone(&fs), intel))
     };
     let mut cmd_rx = std::mem::replace(&mut args.cmd_rx, mpsc::channel(1).1);
     let (inject_tx, mut inject_rx) = mpsc::channel::<NativeInject>(8);
@@ -771,9 +795,6 @@ async fn run_session(
     }
 
     subagents.lock().expect("subagent table").shutdown();
-    if let Some(pool) = &lsp_pool {
-        pool.shutdown_all().await;
-    }
     mcp.close().await;
     SessionOutcome { err: closing_err }
 }
@@ -1731,5 +1752,15 @@ mod tests {
             }
             other => panic!("expected select, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn host_index_claim_is_exclusive_per_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = claim_host_index_workspace(dir.path()).expect("first claim");
+        assert!(claim_host_index_workspace(&dir.path().join(".")).is_none());
+        release_host_index_workspace(&first);
+        assert!(claim_host_index_workspace(dir.path()).is_some());
+        release_host_index_workspace(&first);
     }
 }

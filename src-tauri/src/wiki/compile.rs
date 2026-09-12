@@ -177,8 +177,8 @@ pub async fn run_compile_job(
             .ok_or_else(|| CompileError::Validation(format!("source {} has no raw", source.id)))?;
         let abs = vault.join(raw_path);
         allowed_reads.push(abs.clone());
-        let raw_text = fs::read_to_string(&abs)
-            .map_err(|e| CompileError::Failed(format!("read raw: {e}")))?;
+        let raw_text =
+            fs::read_to_string(&abs).map_err(|e| CompileError::Failed(format!("read raw: {e}")))?;
         if source.raw_hash.as_deref() != Some(input.raw_hash.as_str()) {
             return Err(CompileError::Conflict(format!(
                 "source {} raw hash changed",
@@ -475,9 +475,9 @@ fn validate_candidates(
     }
     let mut kept = Vec::new();
     for c in arr {
-        let loc = c.get("locator").ok_or_else(|| {
-            CompileError::Validation("candidate missing locator".into())
-        })?;
+        let loc = c
+            .get("locator")
+            .ok_or_else(|| CompileError::Validation("candidate missing locator".into()))?;
         let et = c
             .get("evidence_type")
             .and_then(|v| v.as_str())
@@ -495,10 +495,8 @@ fn validate_candidates(
         }
         let mut c = c.clone();
         if let Some(obj) = c.get_mut("locator").and_then(|v| v.as_object_mut()) {
-            obj.entry("source_id")
-                .or_insert_with(|| json!(source_id));
-            obj.entry("segment_id")
-                .or_insert_with(|| json!(segment_id));
+            obj.entry("source_id").or_insert_with(|| json!(source_id));
+            obj.entry("segment_id").or_insert_with(|| json!(segment_id));
         }
         kept.push(c);
     }
@@ -822,17 +820,10 @@ fn render_new_page(args: RenderPage<'_>) -> String {
         }
     };
     let personal_role = candidate_personal_role(args.candidate, args.source);
-    let material_role = args
-        .source
-        .and_then(|s| s.material_role.as_deref())
-        .or_else(|| args.candidate.get("material_role").and_then(|v| v.as_str()));
-    let evidence_level = compute_evidence_level(
-        evidence_type,
-        actor,
-        personal_role,
-        pointer,
-        material_role,
-    );
+    // Source annotations are the only trusted material/personal classification.
+    let material_role = args.source.and_then(|s| s.material_role.as_deref());
+    let evidence_level =
+        compute_evidence_level(evidence_type, actor, personal_role, pointer, material_role);
     let verification = verification_status(args.candidate);
     let decision_state = if args.page_type == "decision" {
         Some(candidate_decision_state(args.candidate))
@@ -924,9 +915,7 @@ fn render_page_body(
     };
     match page_type {
         "project" => {
-            let role = personal_role
-                .filter(|s| !s.is_empty())
-                .unwrap_or("未说明");
+            let role = personal_role.filter(|s| !s.is_empty()).unwrap_or("未说明");
             format!(
                 "# {title}\n\n\
 ## 背景与目标\n\
@@ -942,7 +931,10 @@ fn render_page_body(
 ## 关联能力\n\
 {}\n\
 {related_block}",
-                or_claim("background", if claim.is_empty() { "未说明" } else { claim }),
+                or_claim(
+                    "background",
+                    if claim.is_empty() { "未说明" } else { claim }
+                ),
                 or_claim("progress", "未说明"),
                 or_claim("decisions", "未说明"),
                 or_claim("outcomes", "未说明"),
@@ -962,7 +954,10 @@ fn render_page_body(
 ## 持续问题\n\
 {}\n\
 {related_block}",
-            or_claim("responsibility", if claim.is_empty() { "未说明" } else { claim }),
+            or_claim(
+                "responsibility",
+                if claim.is_empty() { "未说明" } else { claim }
+            ),
             or_claim("standards", "未说明"),
             or_claim("projects", "未说明"),
             or_claim("methods", "未说明"),
@@ -1040,7 +1035,10 @@ decision_state: {state}（与笔记 status 分开；仅提议时不得写成已�
 {pending}\n\
 {source_line}\n\
 {related_block}",
-                or_claim("deliverable", if claim.is_empty() { "未说明" } else { claim }),
+                or_claim(
+                    "deliverable",
+                    if claim.is_empty() { "未说明" } else { claim }
+                ),
                 personal_role.filter(|s| !s.is_empty()).unwrap_or("未说明"),
                 or_claim("evidence", "未说明"),
                 or_claim("reusable", "未说明"),
@@ -1257,9 +1255,7 @@ fn render_source_page(
     let coverage = source
         .and_then(|s| s.coverage_status.as_deref())
         .unwrap_or("unspecified");
-    let raw_path = source
-        .and_then(|s| s.raw_path.as_deref())
-        .unwrap_or("");
+    let raw_path = source.and_then(|s| s.raw_path.as_deref()).unwrap_or("");
     let format = source.and_then(|s| s.format.as_deref()).unwrap_or("");
     let page_count = source.and_then(|s| s.page_count).unwrap_or(0);
     let source_kind = source.map(|s| s.source_kind.as_str()).unwrap_or("");
@@ -1394,13 +1390,8 @@ fn append_evidence(
     }
     next = replace_yaml_key(&next, "updated", today);
     let material_role = source.and_then(|s| s.material_role.as_deref());
-    let new_level = compute_evidence_level(
-        evidence_type,
-        actor,
-        personal_role,
-        pointer,
-        material_role,
-    );
+    let new_level =
+        compute_evidence_level(evidence_type, actor, personal_role, pointer, material_role);
     next = maybe_raise_evidence_level(&next, new_level);
     Ok(next)
 }
@@ -1470,11 +1461,7 @@ fn yaml_list(md: &str, key: &str) -> Vec<String> {
         let trimmed = line.trim();
         if in_list {
             if let Some(rest) = trimmed.strip_prefix('-') {
-                let v = rest
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
+                let v = rest.trim().trim_matches('"').trim_matches('\'').to_string();
                 if !v.is_empty() {
                     out.push(v);
                 }
@@ -1502,25 +1489,11 @@ fn candidate_personal_role<'a>(
     candidate: &'a Value,
     source: Option<&'a wiki_source::Model>,
 ) -> Option<&'a str> {
-    let from_cand = [
-        "personal_role",
-        "personal_role_in_source",
-        "personal_contribution",
-    ]
-    .iter()
-    .find_map(|k| {
-        candidate
-            .get(*k)
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != "unspecified" && *s != "未说明")
-    });
-    from_cand.or_else(|| {
-        source
-            .and_then(|s| s.personal_role.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty() && *s != "unspecified" && *s != "未说明")
-    })
+    let _ = candidate;
+    source
+        .and_then(|s| s.personal_role.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "unspecified" && *s != "未说明")
 }
 
 fn candidate_decision_state(candidate: &Value) -> &'static str {
@@ -1531,19 +1504,9 @@ fn candidate_decision_state(candidate: &Value) -> &'static str {
     }
 }
 
-fn verification_status(candidate: &Value) -> &'static str {
-    match cand_str(candidate, "verification_status") {
-        "user_confirmed" => "user_confirmed",
-        "artifact_checked" => "artifact_checked",
-        other
-            if other.contains("product")
-                || other.contains("verified")
-                || other == "product_verified" =>
-        {
-            "source_reported"
-        }
-        _ => "source_reported",
-    }
+fn verification_status(_candidate: &Value) -> &'static str {
+    // No host-side verification record exists yet; model output cannot claim one.
+    "source_reported"
 }
 
 fn compute_evidence_level(
@@ -1586,32 +1549,97 @@ fn sanitize_capability_evidence(
     proposals: &mut [commit::StagedProposal],
     sources: &HashMap<String, wiki_source::Model>,
 ) {
-    let host_allows_practice = sources.values().any(|s| {
-        let role = s.personal_role.as_deref().map(str::trim).unwrap_or("");
-        let material = s.material_role.as_deref().unwrap_or("");
-        !role.is_empty()
-            && role != "unspecified"
-            && role != "未说明"
-            && !material.eq_ignore_ascii_case("reference")
-    });
-    if host_allows_practice {
-        return;
-    }
     for p in proposals.iter_mut() {
         if p.page_type != "capability" {
             continue;
         }
-        p.after = p
-            .after
-            .replace(
-                "evidence_level: practice_supported",
-                "evidence_level: knowledge_only",
-            )
-            .replace(
-                "evidence_level: practice_reported",
-                "evidence_level: knowledge_only",
-            );
+        let source_ids = source_ids_in_markdown(&p.after);
+        // Every cited source must independently carry an own-work annotation;
+        // one trusted source must not unlock evidence attributed to another.
+        let host_allows_practice = !source_ids.is_empty()
+            && source_ids.iter().all(|id| {
+                sources.get(id).is_some_and(|s| {
+                    let role = s.personal_role.as_deref().map(str::trim).unwrap_or("");
+                    let material = s.material_role.as_deref().unwrap_or("");
+                    !role.is_empty()
+                        && role != "unspecified"
+                        && role != "未说明"
+                        && !material.eq_ignore_ascii_case("reference")
+                })
+            });
+        let trusted_role = if source_ids.len() == 1 {
+            sources
+                .get(&source_ids[0])
+                .and_then(|s| s.personal_role.as_deref())
+                .filter(|s| !s.trim().is_empty())
+        } else {
+            None
+        };
+        let mut rewritten = String::with_capacity(p.after.len());
+        for line in p.after.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("verification_status:")
+                || trimmed.starts_with("- verification_status:")
+            {
+                let prefix = &line[..line.len() - trimmed.len()];
+                let bullet = if trimmed.starts_with('-') { "- " } else { "" };
+                rewritten.push_str(prefix);
+                rewritten.push_str(bullet);
+                rewritten.push_str("verification_status: source_reported");
+            } else if trimmed.starts_with("personal_role:")
+                || trimmed.starts_with("- personal_role:")
+            {
+                let role = trusted_role.unwrap_or("未说明");
+                let prefix = &line[..line.len() - trimmed.len()];
+                let bullet = if trimmed.starts_with('-') { "- " } else { "" };
+                rewritten.push_str(prefix);
+                rewritten.push_str(bullet);
+                rewritten.push_str(&format!("personal_role: {role}"));
+            } else if line.contains("evidence_level: practice_supported")
+                || line.contains("evidence_level: practice_reported")
+            {
+                if host_allows_practice {
+                    rewritten.push_str(line);
+                } else {
+                    rewritten.push_str(
+                        &line
+                            .replace("practice_supported", "knowledge_only")
+                            .replace("practice_reported", "knowledge_only"),
+                    );
+                }
+            } else {
+                rewritten.push_str(line);
+            }
+            rewritten.push('\n');
+        }
+        if !p.after.ends_with('\n') {
+            rewritten.pop();
+        }
+        p.after = rewritten;
     }
+}
+
+fn source_id_from_text(text: &str) -> Option<String> {
+    let marker = "[[sources/";
+    let start = text.find(marker)? + marker.len();
+    let end = text[start..].find(|c: char| c == ']' || c == '|')?;
+    let id = text[start..start + end].trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+fn source_ids_in_markdown(md: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut rest = md;
+    while let Some(pos) = rest.find("[[sources/") {
+        let tail = &rest[pos..];
+        if let Some(id) = source_id_from_text(tail) {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        rest = &tail[2..];
+    }
+    ids
 }
 
 fn yaml_quote(s: &str) -> String {
@@ -1821,8 +1849,7 @@ fn rebuild_generated_region(path: &Path, inner: &str) -> Result<bool, CompileErr
     if !path.exists() {
         return Ok(false);
     }
-    let current =
-        fs::read_to_string(path).map_err(|e| CompileError::Failed(e.to_string()))?;
+    let current = fs::read_to_string(path).map_err(|e| CompileError::Failed(e.to_string()))?;
     if marker_conflict(&current) {
         return Ok(false);
     }
@@ -1903,9 +1930,8 @@ fn touch_index_and_journal(
 }
 
 fn rebuild_root_index(vault: &Path, notes: &[NoteIndexEntry]) -> Result<(), CompileError> {
-    let mut inner = String::from(
-        "- [[work/index|工作]]\n- [[capabilities/index|能力]]\n- [[sources|资料]]\n",
-    );
+    let mut inner =
+        String::from("- [[work/index|工作]]\n- [[capabilities/index|能力]]\n- [[sources|资料]]\n");
     inner.push_str("\n## 项目\n");
     let projects: Vec<_> = notes.iter().filter(|n| n.page_type == "project").collect();
     if projects.is_empty() {
@@ -1977,10 +2003,7 @@ fn rebuild_capability_index(vault: &Path, notes: &[NoteIndexEntry]) -> Result<()
     } else {
         for c in &caps {
             let level = c.evidence_level.as_deref().unwrap_or("knowledge_only");
-            inner.push_str(&format!(
-                "- {} — `{level}`\n",
-                wikilink(&c.rel, &c.title)
-            ));
+            inner.push_str(&format!("- {} — `{level}`\n", wikilink(&c.rel, &c.title)));
         }
     }
     inner.push_str("\n## 证据缺口\n");
@@ -2086,8 +2109,7 @@ fn append_journal(
 ) -> Result<(), CompileError> {
     let path = vault.join("journal").join(format!("{date}.md"));
     if path.exists() {
-        let current =
-            fs::read_to_string(&path).map_err(|e| CompileError::Failed(e.to_string()))?;
+        let current = fs::read_to_string(&path).map_err(|e| CompileError::Failed(e.to_string()))?;
         if marker_conflict(&current) {
             return Ok(());
         }
@@ -2110,8 +2132,7 @@ fn append_journal(
         fs::write(&path, next).map_err(|e| CompileError::Failed(e.to_string()))?;
         return Ok(());
     }
-    fs::create_dir_all(path.parent().unwrap())
-        .map_err(|e| CompileError::Failed(e.to_string()))?;
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| CompileError::Failed(e.to_string()))?;
     let mut inner = String::new();
     for b in bullets {
         inner.push_str(b);
@@ -2493,13 +2514,7 @@ mod tests {
             "knowledge_only"
         );
         assert_eq!(
-            compute_evidence_level(
-                "application",
-                "user",
-                Some("implemented"),
-                "§1",
-                None
-            ),
+            compute_evidence_level("application", "user", Some("implemented"), "§1", None),
             "practice_reported"
         );
         assert_eq!(
@@ -2519,6 +2534,62 @@ mod tests {
     }
 
     #[test]
+    fn candidate_personal_role_cannot_override_source_annotation() {
+        let candidate = json!({"personal_role": "主导开发"});
+        let source = wiki_source::Model {
+            id: "src".into(),
+            source_group_id: "src".into(),
+            vault_id: "v".into(),
+            source_kind: "document".into(),
+            source_seq: 1,
+            run_id: None,
+            original_hash: None,
+            raw_path: None,
+            raw_hash: None,
+            extractor_version: None,
+            coverage_status: None,
+            eligibility: "ready".into(),
+            material_role: Some("reference".into()),
+            personal_role: None,
+            annotation_revision: 0,
+            conversation_id: None,
+            folder_id: None,
+            root_folder_id: None,
+            agent_type: None,
+            model: None,
+            mode: None,
+            captured_at: None,
+            occurred_at: None,
+            truncated: false,
+            redacted: false,
+            request_id: None,
+            original_filename: None,
+            format: None,
+            source_title: None,
+            source_url: None,
+            author: None,
+            project_ids: None,
+            area_ids: None,
+            warnings: None,
+            page_count: None,
+            previous_source_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        assert_eq!(candidate_personal_role(&candidate, Some(&source)), None);
+        assert_eq!(
+            compute_evidence_level(
+                "result",
+                "user",
+                candidate_personal_role(&candidate, Some(&source)),
+                "build.log:1",
+                source.material_role.as_deref()
+            ),
+            "knowledge_only"
+        );
+    }
+
+    #[test]
     fn journal_date_uses_vault_timezone() {
         let at = DateTime::parse_from_rfc3339("2026-01-02T12:00:00Z")
             .unwrap()
@@ -2528,7 +2599,10 @@ mod tests {
         let evening = DateTime::parse_from_rfc3339("2026-01-01T16:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        assert_eq!(local_date(evening, "Asia/Shanghai").to_string(), "2026-01-02");
+        assert_eq!(
+            local_date(evening, "Asia/Shanghai").to_string(),
+            "2026-01-02"
+        );
         assert_eq!(local_date(evening, "UTC").to_string(), "2026-01-01");
     }
 
@@ -2596,11 +2670,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malicious_candidate_role_cannot_upgrade_reference_source() {
+        let fx = Fixture::new().await;
+        let source_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        fx.add_source(
+            source_id,
+            1,
+            None,
+            Some("reference"),
+            None,
+            Some("规范"),
+            Some("spec.md"),
+            Some("complete"),
+        )
+        .await;
+        let job = fx.add_job("job-malicious-role", source_id).await;
+        let llm = MockWikiLlm::default().with_stage("candidates", json!({
+            "candidates": [candidate_json(
+                "c1", "capability", "Interface design", "result", source_id,
+                json!({"actor": "user", "personal_role": "owner", "verification_status": "user_confirmed"}),
+            )]
+        }));
+        run_compile_job(&fx.db.conn, &job, &llm, &fx.vault, &fx.state)
+            .await
+            .unwrap();
+        let pages = md_pages(&fx.vault.join("capabilities"));
+        assert_eq!(pages.len(), 1);
+        let text = fs::read_to_string(&pages[0]).unwrap();
+        assert!(text.contains("evidence_level: knowledge_only"));
+        assert!(text.contains("personal_role: 未说明"));
+        assert!(text.contains("verification_status: source_reported"));
+        assert!(!text.contains("practice_supported"));
+    }
+
+    #[tokio::test]
     async fn same_title_without_note_id_creates_two_pages() {
         let fx = Fixture::new().await;
         let source_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-        fx.add_source(source_id, 1, None, Some("reference"), None, None, None, None)
-            .await;
+        fx.add_source(
+            source_id,
+            1,
+            None,
+            Some("reference"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         let existing = format!(
             "---\ntitle: Interface design\ntype: capability\nstatus: draft\nevidence_level: knowledge_only\ncodeg_note_id: \"11111111-1111-4111-8111-111111111111\"\n---\n\n{CONTENT_START}\n# Interface design\n\nexisting page body\n{CONTENT_END}\n"
         );
@@ -2641,8 +2758,7 @@ mod tests {
         let pages = md_pages(&fx.vault.join("capabilities"));
         assert_eq!(pages.len(), 2, "title-only same must not merge");
         let existing_now =
-            fs::read_to_string(fx.vault.join("capabilities/interface-design-11111111.md"))
-                .unwrap();
+            fs::read_to_string(fx.vault.join("capabilities/interface-design-11111111.md")).unwrap();
         assert!(existing_now.contains("existing page body"));
         assert!(!existing_now.contains("补充证据"));
     }
@@ -2711,8 +2827,17 @@ mod tests {
     async fn missing_occurred_at_does_not_dump_journal() {
         let fx = Fixture::new().await;
         let source_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-        fx.add_source(source_id, 1, None, Some("reference"), None, None, None, None)
-            .await;
+        fx.add_source(
+            source_id,
+            1,
+            None,
+            Some("reference"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         let job = fx.add_job("job-no-journal", source_id).await;
         run_compile_job(
             &fx.db.conn,
@@ -2779,8 +2904,17 @@ mod tests {
     async fn index_generated_region_updates_and_keeps_user_text() {
         let fx = Fixture::new().await;
         let source_id = "99999999-9999-4999-8999-999999999999";
-        fx.add_source(source_id, 1, None, Some("reference"), None, None, None, None)
-            .await;
+        fx.add_source(
+            source_id,
+            1,
+            None,
+            Some("reference"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         for rel in ["index.md", "work/index.md", "capabilities/index.md"] {
             let path = fx.vault.join(rel);
             let mut text = fs::read_to_string(&path).unwrap();
@@ -2817,8 +2951,17 @@ mod tests {
     async fn proposal_only_decision_has_proposed_state() {
         let fx = Fixture::new().await;
         let source_id = "12121212-1212-4121-8121-121212121212";
-        fx.add_source(source_id, 1, None, Some("reference"), None, None, None, None)
-            .await;
+        fx.add_source(
+            source_id,
+            1,
+            None,
+            Some("reference"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
         let job = fx.add_job("job-decision", source_id).await;
         let llm = MockWikiLlm::default()
             .with_stage(

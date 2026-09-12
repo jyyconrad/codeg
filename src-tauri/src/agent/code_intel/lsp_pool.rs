@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use async_lsp::concurrency::ConcurrencyLayer;
@@ -59,6 +59,13 @@ struct PoolInner {
     epoch: u64,
 }
 
+struct WorkspacePoolEntry {
+    config: CodeIntelConfig,
+    pool: Weak<LspPool>,
+}
+
+static WORKSPACE_POOLS: OnceLock<Mutex<HashMap<PathBuf, WorkspacePoolEntry>>> = OnceLock::new();
+
 pub struct LspPool {
     cwd: PathBuf,
     fs: Arc<FileSystemRuntime>,
@@ -92,6 +99,52 @@ impl LspPool {
             diagnostics: Arc::new(Mutex::new(HashMap::new())),
             detected: OnceLock::new(),
         })
+    }
+
+    /// Return the process pool shared by all native sessions using a workspace.
+    ///
+    /// The registry is keyed by the canonical workspace path, so opening a
+    /// second session for the same checkout reuses existing language servers.
+    /// A changed code-intel configuration gets a fresh pool; the previous pool
+    /// remains alive until its last session releases it.
+    pub fn for_workspace(
+        cwd: PathBuf,
+        fs: Arc<FileSystemRuntime>,
+        cfg: CodeIntelConfig,
+    ) -> Arc<Self> {
+        let canonical = canonical_workspace(&cwd);
+        let registry = WORKSPACE_POOLS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(entry) = guard.get(&canonical) {
+            if entry.config == cfg {
+                if let Some(pool) = entry.pool.upgrade() {
+                    return pool;
+                }
+            }
+        }
+
+        // The registry owns no shutdown token: a pool is cancelled by dropping
+        // its last Arc, which keeps one session from terminating another
+        // session's language servers.
+        let owners = Arc::new(Mutex::new(ProcessOwnerRegistry::new()));
+        let pool = Self::new(
+            canonical.clone(),
+            fs,
+            cfg.clone(),
+            owners,
+            CancellationToken::new(),
+        );
+        guard.insert(
+            canonical,
+            WorkspacePoolEntry {
+                config: cfg,
+                pool: Arc::downgrade(&pool),
+            },
+        );
+        pool
     }
 
     pub async fn ensure_server(&self, server_id: &str) -> Result<(), String> {
@@ -616,6 +669,19 @@ pub fn servers_to_start(
     }
 
     ids
+}
+
+fn canonical_workspace(path: &Path) -> PathBuf {
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path;
+    }
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
 }
 
 fn language_id_for_file(path: Option<&Path>, server_id: &str, cfg: &CodeIntelConfig) -> String {
@@ -1181,6 +1247,34 @@ if __name__ == "__main__":
             CancellationToken::new(),
         );
         (pool, owners)
+    }
+
+    #[test]
+    fn workspace_pool_reuses_the_same_instance_for_canonical_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = enabled_cfg();
+        let fs = Arc::new(FileSystemRuntime::with_policy(FsAccessPolicy::strict(
+            dir.path(),
+        )));
+        let first = LspPool::for_workspace(dir.path().to_path_buf(), fs.clone(), cfg.clone());
+        let alias = dir.path().join(".");
+        let second = LspPool::for_workspace(alias, fs, cfg);
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn workspace_pool_reconciles_when_code_intel_config_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let fs = Arc::new(FileSystemRuntime::with_policy(FsAccessPolicy::strict(
+            dir.path(),
+        )));
+        let first = LspPool::for_workspace(dir.path().to_path_buf(), fs.clone(), enabled_cfg());
+        let mut changed = enabled_cfg();
+        changed.lsp.max_concurrent = changed.lsp.max_concurrent.saturating_add(1);
+        let second = LspPool::for_workspace(dir.path().to_path_buf(), fs, changed);
+
+        assert!(!Arc::ptr_eq(&first, &second));
     }
 
     fn write_path_stub(dir: &Path, name: &str) {

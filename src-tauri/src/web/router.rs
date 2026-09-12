@@ -1612,6 +1612,10 @@ pub fn build_router(
             "/wiki_list_sources",
             post(handlers::wiki::wiki_list_sources),
         )
+        .route(
+            "/wiki_list_project_bindings",
+            post(handlers::wiki::wiki_list_project_bindings),
+        )
         .route("/wiki_get_source", post(handlers::wiki::wiki_get_source))
         .route("/wiki_vault_tree", post(handlers::wiki::wiki_vault_tree))
         .route("/wiki_vault_read", post(handlers::wiki::wiki_vault_read))

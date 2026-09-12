@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::error::DbError;
 use crate::db::service::app_metadata_service;
-use sea_orm::DatabaseConnection;
+use sea_orm::{ConnectionTrait, DatabaseConnection};
 
 pub const WIKI_SETTINGS_KEY: &str = "wiki_settings";
 pub const WIKI_DB_INSTANCE_ID_KEY: &str = "wiki_db_instance_id";
@@ -157,8 +157,10 @@ pub fn next_compile_at(settings: &WikiSettings) -> Option<DateTime<Utc>> {
     .flatten()
 }
 
-pub async fn ensure_db_instance_id(conn: &DatabaseConnection) -> Result<String, DbError> {
-    if let Some(existing) = app_metadata_service::get_value(conn, WIKI_DB_INSTANCE_ID_KEY).await? {
+pub async fn ensure_db_instance_id<C: ConnectionTrait>(conn: &C) -> Result<String, DbError> {
+    if let Some(existing) =
+        app_metadata_service::get_value_conn(conn, WIKI_DB_INSTANCE_ID_KEY).await?
+    {
         if !existing.is_empty() {
             return Ok(existing);
         }

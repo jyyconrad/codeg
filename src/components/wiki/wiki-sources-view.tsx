@@ -35,18 +35,20 @@ import {
   wikiSourceTitle,
   wikiVaultReadContent,
   type WikiMaterialRole,
+  type WikiImportBatchResult,
+  type WikiImportResult,
   type WikiSource,
 } from "@/lib/wiki-types"
 import { WikiEmptyState, WikiMarkdownPreview } from "./wiki-shared"
 
 const MAX_IMPORT_FILES = 20
 const MAX_FILE_BYTES = 20 * 1024 * 1024
-const MATERIAL_ROLES: WikiMaterialRole[] = [
+const MATERIAL_ROLES = [
   "reference",
   "own-work",
   "team-work",
   "unspecified",
-]
+] as const satisfies readonly WikiMaterialRole[]
 
 function newRequestId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -65,6 +67,12 @@ function arrayBufferToBase64(bytes: Uint8Array): string {
     )
   }
   return btoa(binary)
+}
+
+function isImportBatchResult(
+  value: WikiImportResult | WikiImportBatchResult
+): value is WikiImportBatchResult {
+  return "results" in value && Array.isArray(value.results)
 }
 
 const PAGE_SIZE = 50
@@ -272,30 +280,50 @@ export function WikiSourcesView() {
       setImportError(null)
       setImportMessage(null)
       const errors: string[] = []
-      let last: WikiSource | null = null
-      let lastDuplicate = false
+      const encodedFiles: Array<{
+        filename: string
+        mime: string | null
+        bytes_base64: string
+      }> = []
       for (const file of files) {
         if (file.size > MAX_FILE_BYTES) {
           errors.push(t("sources.fileTooLarge", { name: file.name }))
           continue
         }
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        encodedFiles.push({
+          filename: file.name,
+          mime: file.type || null,
+          bytes_base64: arrayBufferToBase64(bytes),
+        })
+      }
+      let last: WikiSource | null = null
+      let lastDuplicate = false
+      if (encodedFiles.length > 0) {
         try {
-          const bytes = new Uint8Array(await file.arrayBuffer())
           const result = await wikiImportFiles({
             request_id: newRequestId(),
-            files: [
-              {
-                filename: file.name,
-                mime: file.type || null,
-                bytes_base64: arrayBufferToBase64(bytes),
-              },
-            ],
+            files: encodedFiles,
             ...importMeta(),
           })
-          last = result
-          lastDuplicate = result.duplicate
+          if (isImportBatchResult(result)) {
+            const successful = result.results.filter((item) => item.source)
+            const selected = successful[successful.length - 1]
+            if (selected?.source) {
+              last = selected.source
+              lastDuplicate = selected.duplicate
+            }
+            errors.push(
+              ...result.results
+                .filter((item) => item.error)
+                .map((item) => `${item.filename}: ${item.error}`)
+            )
+          } else {
+            last = result
+            lastDuplicate = result.duplicate
+          }
         } catch (err) {
-          errors.push(`${file.name}: ${toErrorMessage(err)}`)
+          errors.push(toErrorMessage(err))
         }
       }
       if (fileInputRef.current) fileInputRef.current.value = ""

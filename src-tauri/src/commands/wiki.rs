@@ -8,11 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppCommandError;
 use crate::db::error::DbError;
-use crate::db::service::wiki_service::{self, WikiImportResult, WikiJobInfo, WikiSourceInfo};
+use crate::db::service::wiki_service::{
+    self, WikiImportResult, WikiJobInfo, WikiProjectBindingInfo, WikiSourceInfo,
+};
 #[cfg(feature = "tauri-runtime")]
 use crate::wiki::import::ImportFilePart;
 use crate::wiki::import::{
-    self, ImportFilesParams, ImportTextParams, LinkVersionParams, UpdateAnnotationsParams,
+    self, ImportFilesParams, ImportFilesResult, ImportTextParams, LinkVersionParams,
+    UpdateAnnotationsParams,
 };
 use crate::wiki::paths::{self, join_vault_relative, resolve_vault_path};
 use crate::wiki::settings::{self, WikiSettings, WikiSettingsView};
@@ -82,14 +85,23 @@ pub async fn wiki_list_sources_core(
     limit: Option<u64>,
     offset: Option<u64>,
     source_kind: Option<String>,
+    project_id: Option<String>,
 ) -> Result<Vec<WikiSourceInfo>, DbError> {
     wiki_service::list_sources(
         conn,
         limit.unwrap_or(50),
         offset.unwrap_or(0),
         source_kind.as_deref(),
+        project_id.as_deref(),
     )
     .await
+}
+
+pub async fn wiki_list_project_bindings_core(
+    conn: &DatabaseConnection,
+    vault_id: Option<String>,
+) -> Result<Vec<WikiProjectBindingInfo>, DbError> {
+    wiki_service::list_project_bindings(conn, vault_id.as_deref()).await
 }
 
 pub async fn wiki_get_source_core(
@@ -168,8 +180,8 @@ pub async fn wiki_import_text_core(
 pub async fn wiki_import_files_core(
     conn: &DatabaseConnection,
     params: ImportFilesParams,
-) -> Result<WikiImportResult, AppCommandError> {
-    import::import_files(conn, params).await
+) -> Result<ImportFilesResult, AppCommandError> {
+    import::import_files_with_result(conn, params).await
 }
 
 pub async fn wiki_accept_extraction_core(
@@ -222,9 +234,9 @@ pub async fn wiki_vault_read_core(
     let vault_canon = vault
         .canonicalize()
         .map_err(|e| AppCommandError::io_error(e.to_string()))?;
-    let file_canon = file
-        .canonicalize()
-        .map_err(|_| AppCommandError::new(crate::app_error::AppErrorCode::NotFound, "file not found"))?;
+    let file_canon = file.canonicalize().map_err(|_| {
+        AppCommandError::new(crate::app_error::AppErrorCode::NotFound, "file not found")
+    })?;
     if !file_canon.starts_with(&vault_canon) {
         return Err(AppCommandError::invalid_input(
             "path must stay inside the wiki vault",
@@ -298,8 +310,20 @@ pub async fn wiki_list_sources(
     limit: Option<u64>,
     offset: Option<u64>,
     source_kind: Option<String>,
+    project_id: Option<String>,
 ) -> Result<Vec<WikiSourceInfo>, AppCommandError> {
-    wiki_list_sources_core(&db.conn, limit, offset, source_kind)
+    wiki_list_sources_core(&db.conn, limit, offset, source_kind, project_id)
+        .await
+        .map_err(AppCommandError::from)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_list_project_bindings(
+    db: tauri::State<'_, AppDatabase>,
+    vault_id: Option<String>,
+) -> Result<Vec<WikiProjectBindingInfo>, AppCommandError> {
+    wiki_list_project_bindings_core(&db.conn, vault_id)
         .await
         .map_err(AppCommandError::from)
 }
@@ -388,7 +412,7 @@ pub async fn wiki_import_files(
     batch_id: Option<String>,
     project_ids: Option<Vec<String>>,
     area_ids: Option<Vec<String>>,
-) -> Result<WikiImportResult, AppCommandError> {
+) -> Result<ImportFilesResult, AppCommandError> {
     wiki_import_files_core(
         &db.conn,
         ImportFilesParams {

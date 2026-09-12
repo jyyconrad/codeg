@@ -26,9 +26,7 @@ pub async fn wiki_compile_now_core(
         .await
         .map_err(AppCommandError::from)?;
     if !settings.enabled {
-        return Err(AppCommandError::configuration_invalid(
-            "wiki is disabled",
-        ));
+        return Err(AppCommandError::configuration_invalid("wiki is disabled"));
     }
     if !settings.compile.enabled {
         return Err(AppCommandError::configuration_invalid(
@@ -66,9 +64,8 @@ pub async fn wiki_retry_job_core(
     conn: &DatabaseConnection,
     id: String,
 ) -> Result<WikiJobInfo, AppCommandError> {
-    let job = wiki_service::retry_job(conn, &id)
-        .await
-        .map_err(map_db)?;
+    let job = wiki_service::retry_job(conn, &id).await.map_err(map_db)?;
+    engine::clear_cancellation(&job.id);
     engine::notify_jobs();
     wiki_service::get_job(conn, &job.id)
         .await
@@ -79,9 +76,15 @@ pub async fn wiki_cancel_job_core(
     conn: &DatabaseConnection,
     id: String,
 ) -> Result<WikiJobInfo, AppCommandError> {
-    let job = wiki_service::cancel_job(conn, &id)
+    let was_running = wiki_service::get_job_model(conn, &id)
         .await
-        .map_err(map_db)?;
+        .map(|j| j.status == "running")
+        .unwrap_or(false);
+    let job = wiki_service::cancel_job(conn, &id).await.map_err(map_db)?;
+    // Wake an in-flight Worker so it can abandon the attempt before commit.
+    if was_running {
+        engine::request_cancel(&job.id);
+    }
     engine::notify_jobs();
     wiki_service::get_job(conn, &job.id)
         .await

@@ -2,13 +2,14 @@
 
 use chrono::Utc;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::db::entities::{
-    wiki_compile_input, wiki_contribution, wiki_job, wiki_source, wiki_source_segment, wiki_vault,
+    wiki_compile_input, wiki_contribution, wiki_job, wiki_project_binding, wiki_source,
+    wiki_source_segment, wiki_vault,
 };
 use crate::db::error::DbError;
 
@@ -100,6 +101,85 @@ pub struct WikiImportResult {
     #[serde(flatten)]
     pub source: WikiSourceInfo,
     pub duplicate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiProjectBindingInfo {
+    pub id: String,
+    pub vault_id: String,
+    pub db_instance_id: String,
+    pub root_folder_id: i32,
+    pub project_note_id: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn project_binding_info(m: wiki_project_binding::Model) -> WikiProjectBindingInfo {
+    WikiProjectBindingInfo {
+        id: m.id,
+        vault_id: m.vault_id,
+        db_instance_id: m.db_instance_id,
+        root_folder_id: m.root_folder_id,
+        project_note_id: m.project_note_id,
+        created_at: m.created_at,
+        updated_at: m.updated_at,
+    }
+}
+
+pub async fn ensure_project_binding<C: ConnectionTrait>(
+    conn: &C,
+    vault_id: &str,
+    db_instance_id: &str,
+    root_folder_id: i32,
+) -> Result<wiki_project_binding::Model, DbError> {
+    if let Some(row) = wiki_project_binding::Entity::find()
+        .filter(wiki_project_binding::Column::VaultId.eq(vault_id))
+        .filter(wiki_project_binding::Column::DbInstanceId.eq(db_instance_id))
+        .filter(wiki_project_binding::Column::RootFolderId.eq(root_folder_id))
+        .one(conn)
+        .await?
+    {
+        return Ok(row);
+    }
+    let now = Utc::now();
+    let model = wiki_project_binding::ActiveModel {
+        id: Set(uuid::Uuid::new_v4().to_string()),
+        vault_id: Set(vault_id.to_string()),
+        db_instance_id: Set(db_instance_id.to_string()),
+        root_folder_id: Set(root_folder_id),
+        project_note_id: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    match model.insert(conn).await {
+        Ok(row) => Ok(row),
+        Err(e) if e.to_string().contains("UNIQUE constraint failed") => {
+            wiki_project_binding::Entity::find()
+                .filter(wiki_project_binding::Column::VaultId.eq(vault_id))
+                .filter(wiki_project_binding::Column::DbInstanceId.eq(db_instance_id))
+                .filter(wiki_project_binding::Column::RootFolderId.eq(root_folder_id))
+                .one(conn)
+                .await?
+                .ok_or_else(|| DbError::Conflict("wiki project binding unique race".into()))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub async fn list_project_bindings(
+    conn: &DatabaseConnection,
+    vault_id: Option<&str>,
+) -> Result<Vec<WikiProjectBindingInfo>, DbError> {
+    let mut q = wiki_project_binding::Entity::find()
+        .order_by_asc(wiki_project_binding::Column::RootFolderId);
+    if let Some(vault) = vault_id.filter(|s| !s.is_empty()) {
+        q = q.filter(wiki_project_binding::Column::VaultId.eq(vault));
+    }
+    Ok(q.all(conn)
+        .await?
+        .into_iter()
+        .map(project_binding_info)
+        .collect())
 }
 
 fn job_info(m: wiki_job::Model) -> WikiJobInfo {
@@ -265,6 +345,7 @@ pub async fn insert_acp_source_and_ingest_job(
     let source_id = uuid::Uuid::new_v4().to_string();
     let job_id = uuid::Uuid::new_v4().to_string();
     let dedupe_key = format!("{}:ingest:{}", new.vault_id, new.run_id);
+    let db_instance_id = crate::wiki::settings::ensure_db_instance_id(conn).await?;
 
     let txn = conn.begin().await?;
     if let Some(existing) = find_source_by_run(&txn, &new.vault_id, &new.run_id).await? {
@@ -318,7 +399,13 @@ pub async fn insert_acp_source_and_ingest_job(
         source_title: Set(None),
         source_url: Set(None),
         author: Set(None),
-        project_ids: Set(None),
+        project_ids: Set(if let Some(root_id) = new.root_folder_id {
+            let binding =
+                ensure_project_binding(&txn, &new.vault_id, &db_instance_id, root_id).await?;
+            Some(serde_json::to_string(&vec![binding.id]).unwrap_or_else(|_| "[]".into()))
+        } else {
+            None
+        }),
         area_ids: Set(None),
         warnings: Set(None),
         page_count: Set(None),
@@ -509,13 +596,33 @@ pub async fn list_sources(
     limit: u64,
     offset: u64,
     source_kind: Option<&str>,
+    project_id: Option<&str>,
 ) -> Result<Vec<WikiSourceInfo>, DbError> {
     let mut q = wiki_source::Entity::find().order_by_desc(wiki_source::Column::SourceSeq);
     if let Some(kind) = source_kind.filter(|s| !s.is_empty()) {
         q = q.filter(wiki_source::Column::SourceKind.eq(kind));
     }
-    let rows = q.offset(offset).limit(limit).all(conn).await?;
-    Ok(rows.into_iter().map(source_info).collect())
+    let project_id = project_id.filter(|s| !s.is_empty());
+    let rows = if project_id.is_some() {
+        q.all(conn).await?
+    } else {
+        q.offset(offset).limit(limit).all(conn).await?
+    };
+    let iter = rows.into_iter().filter(|row| {
+        project_id
+            .map(|id| {
+                parse_string_list(&row.project_ids).is_some_and(|ids| ids.iter().any(|v| v == id))
+            })
+            .unwrap_or(true)
+    });
+    Ok(if project_id.is_some() {
+        iter.skip(offset as usize)
+            .take(limit as usize)
+            .map(source_info)
+            .collect()
+    } else {
+        iter.map(source_info).collect()
+    })
 }
 
 pub async fn get_source(conn: &DatabaseConnection, id: &str) -> Result<WikiSourceInfo, DbError> {
@@ -534,17 +641,16 @@ pub async fn pending_source_count(conn: &DatabaseConnection) -> Result<u64, DbEr
         .map(|row| row.source_id)
         .collect();
     let rows = wiki_source::Entity::find()
-        .filter(
-            wiki_source::Column::Eligibility
-                .is_in(["processing", "awaiting-acceptance", "ready"]),
-        )
+        .filter(wiki_source::Column::Eligibility.is_in([
+            "processing",
+            "awaiting-acceptance",
+            "ready",
+        ]))
         .all(conn)
         .await?;
     Ok(rows
         .into_iter()
-        .filter(|row| {
-            row.eligibility != "ready" || !consumed.contains(&row.id)
-        })
+        .filter(|row| row.eligibility != "ready" || !consumed.contains(&row.id))
         .count() as u64)
 }
 
@@ -922,9 +1028,7 @@ pub async fn insert_compile_job(
         status: Set("queued".into()),
         dedupe_key: Set(Some(dedupe_key.to_string())),
         input_manifest: Set(input_manifest.map(str::to_string)),
-        config_version: Set(Some(
-            crate::wiki::llm::COMPILE_CONTRACT_VERSION.to_string(),
-        )),
+        config_version: Set(Some(crate::wiki::llm::COMPILE_CONTRACT_VERSION.to_string())),
         model_id: Set(None),
         protocol: Set(None),
         attempt: Set(1),
@@ -1003,10 +1107,7 @@ pub async fn requeue_after_failure(
     Ok(())
 }
 
-pub async fn retry_job(
-    conn: &DatabaseConnection,
-    id: &str,
-) -> Result<wiki_job::Model, DbError> {
+pub async fn retry_job(conn: &DatabaseConnection, id: &str) -> Result<wiki_job::Model, DbError> {
     let row = get_job_model(conn, id).await?;
     if row.status != "failed" {
         return Err(DbError::Validation(format!(
@@ -1026,10 +1127,7 @@ pub async fn retry_job(
     Ok(active.update(conn).await?)
 }
 
-pub async fn cancel_job(
-    conn: &DatabaseConnection,
-    id: &str,
-) -> Result<wiki_job::Model, DbError> {
+pub async fn cancel_job(conn: &DatabaseConnection, id: &str) -> Result<wiki_job::Model, DbError> {
     let row = get_job_model(conn, id).await?;
     if matches!(row.status.as_str(), "succeeded" | "cancelled") {
         return Ok(row);
@@ -1219,4 +1317,26 @@ pub async fn upsert_source_segment(
         updated_at: Set(now),
     };
     Ok(row.insert(conn).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_helpers::fresh_in_memory_db;
+
+    #[tokio::test]
+    async fn project_binding_is_stable_for_workspace_key() {
+        let db = fresh_in_memory_db().await;
+        let first = ensure_project_binding(&db.conn, "vault", "db", 42)
+            .await
+            .unwrap();
+        let second = ensure_project_binding(&db.conn, "vault", "db", 42)
+            .await
+            .unwrap();
+        assert_eq!(first.id, second.id);
+        let other = ensure_project_binding(&db.conn, "vault", "db", 43)
+            .await
+            .unwrap();
+        assert_ne!(first.id, other.id);
+    }
 }

@@ -6,11 +6,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use sea_orm::DatabaseConnection;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app_error::AppCommandError;
+use crate::db::entities::wiki_job;
 use crate::db::error::DbError;
 use crate::db::service::wiki_service::{
     self, AnnotationPatch, NewImportSource, WikiImportResult, WikiSourceInfo,
@@ -78,6 +79,42 @@ pub struct ImportFilesParams {
     pub project_ids: Option<Vec<String>>,
     #[serde(default)]
     pub area_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportFileResult {
+    pub filename: String,
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<WikiSourceInfo>,
+    pub duplicate: bool,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportBatchResult {
+    pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    pub results: Vec<ImportFileResult>,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub duplicates: usize,
+}
+
+/// Single-file calls retain the historical flattened result shape. Multi-file
+/// calls return a batch with one result entry per requested file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ImportFilesResult {
+    Single(WikiImportResult),
+    Batch(ImportBatchResult),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -175,6 +212,25 @@ pub async fn import_files(
     conn: &DatabaseConnection,
     params: ImportFilesParams,
 ) -> Result<WikiImportResult, AppCommandError> {
+    match import_files_with_result(conn, params).await? {
+        ImportFilesResult::Single(result) => Ok(result),
+        ImportFilesResult::Batch(batch) => batch
+            .results
+            .into_iter()
+            .find_map(|item| {
+                item.source.map(|source| WikiImportResult {
+                    source,
+                    duplicate: item.duplicate,
+                })
+            })
+            .ok_or_else(|| AppCommandError::invalid_input("all files failed to import")),
+    }
+}
+
+pub async fn import_files_with_result(
+    conn: &DatabaseConnection,
+    params: ImportFilesParams,
+) -> Result<ImportFilesResult, AppCommandError> {
     let request_id = require_request_id(&params.request_id)?;
     if params.files.is_empty() {
         return Err(AppCommandError::invalid_input("no files provided"));
@@ -184,46 +240,116 @@ pub async fn import_files(
             "at most {MAX_IMPORT_FILES} files per batch"
         )));
     }
-    if params.files.len() != 1 {
-        return Err(AppCommandError::invalid_input(
-            "wiki_import_files accepts one file per request; the client should loop",
-        ));
+    let material_role = parse_material_role(params.material_role.clone())?;
+    let multi = params.files.len() > 1;
+    let batch_id = empty_to_none(params.batch_id.clone());
+    let mut results = Vec::with_capacity(params.files.len());
+    for (index, file) in params.files.into_iter().enumerate() {
+        let filename = safe_filename(&file.filename);
+        let file_request_id = if index == 0 {
+            request_id.clone()
+        } else {
+            format!("{request_id}:{index}")
+        };
+        let import_result = async {
+            let bytes = decode_base64(&file.bytes_base64)?;
+            if bytes.len() > MAX_FILE_BYTES {
+                return Err(AppCommandError::invalid_input(format!(
+                    "file exceeds {MAX_FILE_BYTES} bytes (got {})",
+                    bytes.len()
+                )));
+            }
+            if bytes.is_empty() {
+                return Err(AppCommandError::invalid_input("file is empty"));
+            }
+            ingest(
+                conn,
+                ImportPayload {
+                    request_id: file_request_id.clone(),
+                    source_kind: "document".into(),
+                    filename: filename.clone(),
+                    mime: empty_to_none(file.mime),
+                    original_hash: sha256_hex(&bytes),
+                    bytes,
+                    title: empty_to_none(params.title.clone()),
+                    source_url: empty_to_none(params.source_url.clone()),
+                    author: empty_to_none(params.author.clone()),
+                    material_role: material_role.clone(),
+                    personal_role: empty_to_none(params.personal_role.clone()),
+                    project_ids: params.project_ids.clone(),
+                    area_ids: params.area_ids.clone(),
+                    batch_id: batch_id.clone(),
+                    skip_hash_dedup: false,
+                    source_group_id: batch_id.clone(),
+                    previous_source_id: None,
+                },
+            )
+            .await
+        }
+        .await;
+
+        match import_result {
+            Ok(imported) if !multi => return Ok(ImportFilesResult::Single(imported)),
+            Ok(imported) => {
+                let (job_id, job_status) = latest_ingest_job(conn, &imported.source.id).await;
+                results.push(ImportFileResult {
+                    filename,
+                    request_id: file_request_id,
+                    source: Some(imported.source),
+                    duplicate: imported.duplicate,
+                    status: if imported.duplicate {
+                        "duplicate"
+                    } else {
+                        "succeeded"
+                    }
+                    .into(),
+                    job_id,
+                    job_status,
+                    error: None,
+                })
+            }
+            Err(err) if !multi => return Err(err),
+            Err(err) => results.push(ImportFileResult {
+                filename,
+                request_id: file_request_id,
+                source: None,
+                duplicate: false,
+                status: "failed".into(),
+                job_id: None,
+                job_status: None,
+                error: Some(err.to_string()),
+            }),
+        }
     }
-    let file = &params.files[0];
-    let bytes = decode_base64(&file.bytes_base64)?;
-    if bytes.len() > MAX_FILE_BYTES {
-        return Err(AppCommandError::invalid_input(format!(
-            "file exceeds {MAX_FILE_BYTES} bytes (got {})",
-            bytes.len()
-        )));
-    }
-    if bytes.is_empty() {
-        return Err(AppCommandError::invalid_input("file is empty"));
-    }
-    let filename = safe_filename(&file.filename);
-    ingest(
-        conn,
-        ImportPayload {
-            request_id,
-            source_kind: "document".into(),
-            filename,
-            mime: empty_to_none(file.mime.clone()),
-            original_hash: sha256_hex(&bytes),
-            bytes,
-            title: empty_to_none(params.title),
-            source_url: empty_to_none(params.source_url),
-            author: empty_to_none(params.author),
-            material_role: parse_material_role(params.material_role)?,
-            personal_role: empty_to_none(params.personal_role),
-            project_ids: params.project_ids,
-            area_ids: params.area_ids,
-            batch_id: empty_to_none(params.batch_id),
-            skip_hash_dedup: false,
-            source_group_id: None,
-            previous_source_id: None,
-        },
-    )
-    .await
+    let succeeded = results
+        .iter()
+        .filter(|r| r.status == "succeeded" || r.status == "duplicate")
+        .count();
+    let duplicates = results.iter().filter(|r| r.duplicate).count();
+    Ok(ImportFilesResult::Batch(ImportBatchResult {
+        request_id,
+        batch_id,
+        failed: results.len() - succeeded,
+        succeeded,
+        duplicates,
+        results,
+    }))
+}
+
+async fn latest_ingest_job(
+    conn: &DatabaseConnection,
+    source_id: &str,
+) -> (Option<String>, Option<String>) {
+    wiki_job::Entity::find()
+        .filter(wiki_job::Column::SourceId.eq(source_id))
+        .filter(wiki_job::Column::Kind.eq("ingest"))
+        .order_by_desc(wiki_job::Column::CreatedAt)
+        .one(conn)
+        .await
+        .ok()
+        .flatten()
+        .map(|job| (Some(job.id), Some(job.status)))
+        .unwrap_or((None, None))
 }
 
 pub async fn accept_extraction(
@@ -547,8 +673,9 @@ async fn ingest(
         skip_hash_dedup: payload.skip_hash_dedup,
         raw_path,
         raw_hash,
+        // Extraction is host work; ingest summary is still processed by the worker.
         job_status: if extract_outcome.ok {
-            "succeeded".into()
+            "queued".into()
         } else {
             "failed".into()
         },
@@ -1124,7 +1251,7 @@ mod tests {
                 .unwrap();
             assert!(second.duplicate);
             assert_eq!(first.source.id, second.source.id);
-            let sources = wiki_service::list_sources(&db.conn, 10, 0, None)
+            let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
                 .await
                 .unwrap();
             assert_eq!(sources.len(), 1);
@@ -1186,6 +1313,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multi_file_import_creates_one_queued_ingest_job_per_file() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempdir().unwrap();
+        enable_wiki(&db.conn, dir.path()).await;
+        with_home(dir.path(), || async {
+            use base64::Engine;
+            let params = ImportFilesParams {
+                request_id: "req-batch".into(),
+                files: vec![
+                    ImportFilePart {
+                        filename: "one.txt".into(),
+                        mime: Some("text/plain".into()),
+                        bytes_base64: base64::engine::general_purpose::STANDARD.encode("one"),
+                    },
+                    ImportFilePart {
+                        filename: "two.txt".into(),
+                        mime: Some("text/plain".into()),
+                        bytes_base64: base64::engine::general_purpose::STANDARD.encode("two"),
+                    },
+                ],
+                material_role: None,
+                personal_role: None,
+                title: None,
+                source_url: None,
+                author: None,
+                batch_id: Some("batch-1".into()),
+                project_ids: None,
+                area_ids: None,
+            };
+            let first = import_files(&db.conn, params).await.unwrap();
+            let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
+                .await
+                .unwrap();
+            assert_eq!(sources.len(), 2);
+            let jobs = wiki_service::list_jobs_by_status(&db.conn, "queued")
+                .await
+                .unwrap();
+            assert_eq!(jobs.len(), 2);
+            assert!(jobs.iter().all(|j| j.kind == "ingest"));
+            assert!(sources.iter().all(|s| s.source_group_id == "batch-1"));
+            assert!(sources.iter().any(|s| s.id == first.source.id));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn batch_result_keeps_partial_failures_and_retry_is_idempotent() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempdir().unwrap();
+        enable_wiki(&db.conn, dir.path()).await;
+        with_home(dir.path(), || async {
+            use base64::Engine;
+            let params = ImportFilesParams {
+                request_id: "req-partial".into(),
+                files: vec![
+                    ImportFilePart {
+                        filename: "ok.txt".into(),
+                        mime: Some("text/plain".into()),
+                        bytes_base64: base64::engine::general_purpose::STANDARD.encode("ok"),
+                    },
+                    ImportFilePart {
+                        filename: "broken.txt".into(),
+                        mime: Some("text/plain".into()),
+                        bytes_base64: "%%%invalid%%%".into(),
+                    },
+                ],
+                material_role: None,
+                personal_role: None,
+                title: None,
+                source_url: None,
+                author: None,
+                batch_id: Some("batch-partial".into()),
+                project_ids: None,
+                area_ids: None,
+            };
+            let first = import_files_with_result(&db.conn, params.clone())
+                .await
+                .unwrap();
+            let ImportFilesResult::Batch(first) = first else {
+                panic!("multi-file import should return a batch result")
+            };
+            assert_eq!(first.results.len(), 2);
+            assert_eq!(first.succeeded, 1);
+            assert_eq!(first.failed, 1);
+            assert_eq!(first.results[0].request_id, "req-partial");
+            assert_eq!(first.results[1].request_id, "req-partial:1");
+            assert_eq!(first.results[1].status, "failed");
+
+            let second = import_files_with_result(&db.conn, params).await.unwrap();
+            let ImportFilesResult::Batch(second) = second else {
+                panic!("multi-file retry should return a batch result")
+            };
+            assert_eq!(second.results.len(), 2);
+            assert!(second.results[0].duplicate);
+            assert_eq!(
+                wiki_service::list_sources(&db.conn, 10, 0, None, None)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn encrypted_and_empty_pdf_are_failed_not_ready() {
         let db = fresh_in_memory_db().await;
         let dir = tempdir().unwrap();
@@ -1236,7 +1469,7 @@ mod tests {
                 "{}",
                 err.message
             );
-            let sources = wiki_service::list_sources(&db.conn, 10, 0, None)
+            let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
                 .await
                 .unwrap();
             assert!(sources.is_empty());
@@ -1338,7 +1571,7 @@ mod tests {
                 "{}",
                 err.message
             );
-            let sources = wiki_service::list_sources(&db.conn, 10, 0, None)
+            let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
                 .await
                 .unwrap();
             assert!(sources.is_empty());

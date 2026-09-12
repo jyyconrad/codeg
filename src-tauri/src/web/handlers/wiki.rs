@@ -7,9 +7,12 @@ use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::wiki as core;
 use crate::commands::wiki_engine as engine_core;
-use crate::db::service::wiki_service::{WikiImportResult, WikiJobInfo, WikiSourceInfo};
+use crate::db::service::wiki_service::{
+    WikiImportResult, WikiJobInfo, WikiProjectBindingInfo, WikiSourceInfo,
+};
 use crate::wiki::import::{
-    ImportFilesParams, ImportTextParams, LinkVersionParams, UpdateAnnotationsParams,
+    ImportFilesParams, ImportFilesResult, ImportTextParams, LinkVersionParams,
+    UpdateAnnotationsParams,
 };
 use crate::wiki::settings::{WikiSettings, WikiSettingsView};
 
@@ -41,6 +44,8 @@ pub struct ListSourcesParams {
     pub offset: Option<u64>,
     #[serde(default)]
     pub source_kind: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -101,9 +106,25 @@ pub async fn wiki_list_sources(
             params.limit,
             params.offset,
             params.source_kind,
+            params.project_id,
         )
         .await
         .map_err(AppCommandError::from)?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct ListProjectBindingsParams {
+    #[serde(default)]
+    pub vault_id: Option<String>,
+}
+
+pub async fn wiki_list_project_bindings(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ListProjectBindingsParams>,
+) -> Result<Json<Vec<WikiProjectBindingInfo>>, AppCommandError> {
+    Ok(Json(
+        core::wiki_list_project_bindings_core(&state.db.conn, params.vault_id).await?,
     ))
 }
 
@@ -148,7 +169,7 @@ pub async fn wiki_import_text(
 pub async fn wiki_import_files(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ImportFilesParams>,
-) -> Result<Json<WikiImportResult>, AppCommandError> {
+) -> Result<Json<ImportFilesResult>, AppCommandError> {
     Ok(Json(
         core::wiki_import_files_core(&state.db.conn, params).await?,
     ))
