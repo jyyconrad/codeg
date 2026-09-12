@@ -284,8 +284,20 @@ pub(crate) async fn handle_event(
             };
             // No conversation row bound (defensive — should never happen in
             // practice since `send_prompt_linked` runs before TurnComplete can
-            // fire). Nothing to update.
+            // fire). Wiki still consumes the frozen snapshot so filter can
+            // record the skip; do not drop it on this return.
             let Some(cid) = conversation_id else {
+                if stop_reason == "end_turn" {
+                    maybe_publish_run_terminal(
+                        db_conn,
+                        manager,
+                        &state_arc,
+                        TerminalKind::Completed,
+                        None,
+                        wiki_snapshot,
+                    )
+                    .await;
+                }
                 return Ok(());
             };
             if let Some(ts) = target_status.clone() {
