@@ -54,7 +54,8 @@
       "office_tools": "办公工具",
       "skill_packs": "技能包",
       "quick_messages": "快捷消息",
-      "logs": "运行日志"
+      "logs": "运行日志",
+      "wiki": "知识库"
     }
   },
   "AppearanceSettings": {
@@ -1624,7 +1625,8 @@
   "SettingsPages": {
     "agentsLoading": "加载 Agent 设置中...",
     "skillPacksLoading": "正在加载技能包…",
-    "codegAgentLoading": "正在加载内置智能体设置..."
+    "codegAgentLoading": "正在加载内置智能体设置...",
+    "wikiLoading": "正在加载知识库设置..."
   },
   "CodegAgentSettings": {
     "sectionTitle": "内置智能体",
@@ -1980,6 +1982,7 @@
       "forge": "仓库面板",
       "canvas": "无限会话",
       "toolbox": "万能小工具",
+      "wiki": "知识库",
       "folderGroup": {
         "newGroup": "新建分组",
         "newGroupTitle": "新建文件夹分组",
@@ -6241,6 +6244,147 @@
         "description": "解析 PEM 证书：主题、SAN、有效期、SHA-256 指纹；不校 CRL/OCSP。",
         "aliases": "x509 pem 证书"
       }
+    }
+  },
+
+  "WikiSettings": {
+    "sectionTitle": "个人知识库",
+    "sectionDescription": "把已完成的工作会话和导入文档沉淀到本地 Markdown vault。整理会把这些来源编译成带来源引用的工作笔记和能力笔记。",
+    "loading": "加载中...",
+    "loadFailed": "加载知识库设置失败：{message}",
+    "retry": "重试",
+    "save": "保存",
+    "saving": "保存中...",
+    "saved": "知识库设置已保存",
+    "saveFailed": "保存知识库设置失败：{message}",
+    "enabled": "启用个人知识库",
+    "enabledHint": "开启后会将会话和导入正文持久化到本地 vault，提取后的文本稍后可能发送给已绑定模型做分析与整理。",
+    "enabledOffHint": "关闭后停止新采集、导入和任务领取。已有资料仍可浏览。已进入提交阶段的操作会完成或恢复到一致边界。",
+    "statusTitle": "日程",
+    "statusDescription": "下一次整理时刻和仍待分析的来源数量。",
+    "nextCompileAt": "下一次整理",
+    "pendingSources": "待分析来源",
+    "notScheduled": "未安排",
+    "vaultTitle": "Vault",
+    "vaultDescription": "工作笔记、能力笔记、共享知识和来源共用一份 vault。更换路径不会搬移文件。",
+    "vaultPath": "Vault 路径",
+    "vaultPathHint": "可选覆盖。留空则使用默认 Codeg wiki 目录。切换路径前请先暂停在飞任务。",
+    "vaultPathPlaceholder": "留空使用默认路径",
+    "timezone": "时区",
+    "timezoneHint": "用于整理日程的 IANA 时区。首次使用跟随系统时区，保存后保持稳定。",
+    "compileCron": "整理日程（cron）",
+    "compileCronHint": "五段 cron。默认 0 3 * * *（每天 03:00）。",
+    "captureTitle": "采集",
+    "captureDescription": "成功的 ACP 轮次可以保存为来源。Delegate / Loop 子会话默认跳过。",
+    "acpEnabled": "采集已完成的 ACP 会话",
+    "acpEnabledHint": "将成功的 ACP 轮次冻结为 vault 来源。",
+    "excludeAgentTypes": "排除智能体类型",
+    "excludeAgentTypesHint": "勾选的智能体不会被采集。",
+    "excludeFolders": "排除文件夹",
+    "excludeFoldersHint": "跳过这些项目目录。可用列表或逗号分隔的 id。",
+    "excludeFoldersPlaceholder": "例如 12, 34",
+    "unknownFolder": "文件夹 {id}",
+    "ingestTitle": "分析",
+    "ingestDescription": "分析用于保存来源。模型 id 为空时使用绑定的默认模型。",
+    "ingestModel": "分析模型 id",
+    "ingestModelHint": "留空则使用绑定的 Codeg Agent 默认模型。",
+    "ingestModelPlaceholder": "绑定默认",
+    "ingestPrompt": "分析提示词",
+    "ingestPromptPlaceholder": "可选，补充来源分析说明",
+    "compileTitle": "整理",
+    "compileDescription": "整理会根据已就绪来源更新工作笔记和能力笔记。",
+    "compileEnabled": "启用整理",
+    "compileEnabledHint": "关闭后仍可保存来源，但会停止新的整理任务；工作台上的「立即整理」不可用。",
+    "compileNowUnavailable": "关闭整理后，工作台上的「立即整理」不可用。",
+    "compileModel": "整理模型 id",
+    "compileModelHint": "留空则使用绑定的 Codeg Agent 默认模型。",
+    "compileModelPlaceholder": "绑定默认",
+    "compilePrompt": "整理提示词",
+    "compilePromptPlaceholder": "可选，补充工作与能力整理说明"
+  },
+  "Wiki": {
+    "title": "知识库",
+    "views": {
+      "work": "工作",
+      "capabilities": "能力",
+      "sources": "资料",
+      "jobs": "任务"
+    },
+    "openInObsidian": "用 Obsidian 打开",
+    "openInObsidianSoon": "桌面本地打开将在后续切片提供",
+    "loading": "加载中...",
+    "loadFailed": "加载失败：{message}",
+    "retry": "重试",
+    "refresh": "刷新",
+    "loadMore": "加载更多",
+    "empty": "还没有内容",
+    "treeTitle": "Vault · {path}",
+    "work": {
+      "emptyTitle": "还没有工作笔记",
+      "emptyDescription": "来源整理完成后，这里会出现项目、长期职责、工作记录、决策和成果。项目页回答背景、本人角色、进展、决策、成果和关联能力。职责是持续承担的工作。工作记录写清问题、行动和结果。决策保留约束、选项和理由。成果保留交付物和证据，不编造数字。"
+    },
+    "capabilities": {
+      "emptyTitle": "还没有能力笔记",
+      "emptyDescription": "能力页按可复用的工作任务命名，不用项目名或模型名。每页包含范围、方法、实践证据、当前边界和下一次实践建议。不会显示虚构的熟练度分数。",
+      "evidenceReference": "参考资料 — 有可学习的方法；不能证明你已经实践过。",
+      "evidenceApplication": "应用记录 — 某项工作使用过相关方法；执行者和角色保持明确。",
+      "evidenceResult": "结果记录 — 在明确环境下有测试、评审或交付；单个案例不能证明所有场景。",
+      "evidenceReflection": "复盘 — 写清取舍或失败原因；自述不能替代外部核验。"
+    },
+    "sources": {
+      "emptyTitle": "还没有资料",
+      "emptyDescription": "成功的 ACP 会话和导入文档会出现在这里。文件导入和粘贴正文将在后续提供。",
+      "importComingSoon": "导入即将推出",
+      "pastePlaceholder": "粘贴要导入的正文…（本切片尚未接线）",
+      "importHint": "文件上传和粘贴正文将在后续切片落地。此列表已可读取已登记来源。",
+      "listTitle": "{count, plural, other {# 条来源}}",
+      "previewTitle": "预览",
+      "untitled": "未命名来源",
+      "kind": {
+        "acp-turn": "ACP 会话",
+        "document": "文档",
+        "pasted-text": "粘贴正文",
+        "unknown": "来源"
+      },
+      "eligibility": {
+        "processing": "处理中",
+        "awaiting-acceptance": "待接受",
+        "ready": "就绪",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "withdrawn": "已撤回",
+        "unknown": "未知"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "还没有任务",
+      "emptyDescription": "分析和整理任务的进度、失败和冲突会显示在这里。重试和取消将在对应命令就绪后提供。",
+      "readOnlyHint": "本切片只读显示任务状态。重试和取消需要后续后端命令。",
+      "allStatuses": "全部状态",
+      "detailPlaceholder": "选择一项任务查看详情。",
+      "kind": {
+        "ingest": "分析",
+        "compile": "整理",
+        "unknown": "任务"
+      },
+      "status": {
+        "queued": "排队中",
+        "running": "进行中",
+        "succeeded": "已成功",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "unknown": "未知"
+      },
+      "error": "错误",
+      "attempt": "第 {n} 次尝试",
+      "createdAt": "创建时间",
+      "updatedAt": "更新时间",
+      "startedAt": "开始时间",
+      "finishedAt": "结束时间"
+    },
+    "note": {
+      "untitled": "未命名",
+      "preview": "选择一篇笔记进行预览。"
     }
   }
 }

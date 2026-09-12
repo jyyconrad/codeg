@@ -9,6 +9,7 @@ import {
 } from "react"
 import {
   Bot,
+  BookMarked,
   BookOpenText,
   Boxes,
   FileSpreadsheet,
@@ -48,6 +49,7 @@ interface SettingsNavItem {
     | "mcp"
     | "skills"
     | "skill_packs"
+    | "wiki"
     | "quick_messages"
     | "shortcuts"
     | "version_control"
@@ -87,6 +89,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/skill-packs",
     labelKey: "skill_packs",
     icon: Boxes,
+  },
+  {
+    href: "/settings/wiki",
+    labelKey: "wiki",
+    icon: BookMarked,
   },
   {
     href: "/settings/agents",

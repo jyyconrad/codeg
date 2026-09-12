@@ -54,7 +54,8 @@
       "office_tools": "辦公工具",
       "skill_packs": "技能包",
       "quick_messages": "快捷訊息",
-      "logs": "執行日誌"
+      "logs": "執行日誌",
+      "wiki": "知識庫"
     }
   },
   "AppearanceSettings": {
@@ -1624,7 +1625,8 @@
   "SettingsPages": {
     "agentsLoading": "載入 Agent 設定中...",
     "skillPacksLoading": "正在載入技能包…",
-    "codegAgentLoading": "正在載入內建智能體設定..."
+    "codegAgentLoading": "正在載入內建智能體設定...",
+    "wikiLoading": "正在載入知識庫設定..."
   },
   "CodegAgentSettings": {
     "sectionTitle": "內建智能體",
@@ -1980,6 +1982,7 @@
       "forge": "儲存庫面板",
       "canvas": "無限會話",
       "toolbox": "萬能小工具",
+      "wiki": "知識庫",
       "folderGroup": {
         "newGroup": "新增分組",
         "newGroupTitle": "新增資料夾分組",
@@ -6241,6 +6244,147 @@
         "description": "解析 PEM 憑證：主題、SAN、有效期、SHA-256 指紋；不校 CRL/OCSP。",
         "aliases": "x509 pem 憑證"
       }
+    }
+  },
+
+  "WikiSettings": {
+    "sectionTitle": "個人知識庫",
+    "sectionDescription": "把已完成的工作工作階段和匯入文件沉澱到本機 Markdown vault。整理會把這些來源編譯成帶來源引用的工作筆記和能力筆記。",
+    "loading": "載入中...",
+    "loadFailed": "載入知識庫設定失敗：{message}",
+    "retry": "重試",
+    "save": "儲存",
+    "saving": "儲存中...",
+    "saved": "知識庫設定已儲存",
+    "saveFailed": "儲存知識庫設定失敗：{message}",
+    "enabled": "啟用個人知識庫",
+    "enabledHint": "開啟後會將工作階段和匯入正文持久化到本機 vault，擷取後的文字稍後可能傳送給已綁定模型做分析與整理。",
+    "enabledOffHint": "關閉後停止新採集、匯入和任務領取。既有資料仍可瀏覽。已進入提交階段的操作會完成或恢復到一致邊界。",
+    "statusTitle": "行程",
+    "statusDescription": "下一次整理時刻和仍待分析的來源數量。",
+    "nextCompileAt": "下一次整理",
+    "pendingSources": "待分析來源",
+    "notScheduled": "未安排",
+    "vaultTitle": "Vault",
+    "vaultDescription": "工作筆記、能力筆記、共享知識和來源共用一份 vault。更換路徑不會搬移檔案。",
+    "vaultPath": "Vault 路徑",
+    "vaultPathHint": "可選覆寫。留空則使用預設 Codeg wiki 目錄。切換路徑前請先暫停進行中的任務。",
+    "vaultPathPlaceholder": "留空使用預設路徑",
+    "timezone": "時區",
+    "timezoneHint": "用於整理行程的 IANA 時區。首次使用跟隨系統時區，儲存後保持穩定。",
+    "compileCron": "整理行程（cron）",
+    "compileCronHint": "五段 cron。預設 0 3 * * *（每天 03:00）。",
+    "captureTitle": "採集",
+    "captureDescription": "成功的 ACP 輪次可以儲存為來源。Delegate / Loop 子工作階段預設略過。",
+    "acpEnabled": "採集已完成的 ACP 工作階段",
+    "acpEnabledHint": "將成功的 ACP 輪次凍結為 vault 來源。",
+    "excludeAgentTypes": "排除智能體類型",
+    "excludeAgentTypesHint": "勾選的智能體不會被採集。",
+    "excludeFolders": "排除資料夾",
+    "excludeFoldersHint": "略過這些專案目錄。可用清單或逗號分隔的 id。",
+    "excludeFoldersPlaceholder": "例如 12, 34",
+    "unknownFolder": "資料夾 {id}",
+    "ingestTitle": "分析",
+    "ingestDescription": "分析用於儲存來源。模型 id 為空時使用綁定的預設模型。",
+    "ingestModel": "分析模型 id",
+    "ingestModelHint": "留空則使用綁定的 Codeg Agent 預設模型。",
+    "ingestModelPlaceholder": "綁定預設",
+    "ingestPrompt": "分析提示詞",
+    "ingestPromptPlaceholder": "可選，補充來源分析說明",
+    "compileTitle": "整理",
+    "compileDescription": "整理會根據已就緒來源更新工作筆記和能力筆記。",
+    "compileEnabled": "啟用整理",
+    "compileEnabledHint": "關閉後仍可儲存來源，但會停止新的整理任務；工作台上的「立即整理」不可用。",
+    "compileNowUnavailable": "關閉整理後，工作台上的「立即整理」不可用。",
+    "compileModel": "整理模型 id",
+    "compileModelHint": "留空則使用綁定的 Codeg Agent 預設模型。",
+    "compileModelPlaceholder": "綁定預設",
+    "compilePrompt": "整理提示詞",
+    "compilePromptPlaceholder": "可選，補充工作與能力整理說明"
+  },
+  "Wiki": {
+    "title": "知識庫",
+    "views": {
+      "work": "工作",
+      "capabilities": "能力",
+      "sources": "資料",
+      "jobs": "任務"
+    },
+    "openInObsidian": "用 Obsidian 開啟",
+    "openInObsidianSoon": "桌面本機開啟將在後續切片提供",
+    "loading": "載入中...",
+    "loadFailed": "載入失敗：{message}",
+    "retry": "重試",
+    "refresh": "重新整理",
+    "loadMore": "載入更多",
+    "empty": "還沒有內容",
+    "treeTitle": "Vault · {path}",
+    "work": {
+      "emptyTitle": "還沒有工作筆記",
+      "emptyDescription": "來源整理完成後，這裡會出現專案、長期職責、工作紀錄、決策和成果。專案頁回答背景、本人角色、進展、決策、成果和關聯能力。職責是持續承擔的工作。工作紀錄寫清問題、行動和結果。決策保留約束、選項和理由。成果保留交付物和證據，不編造數字。"
+    },
+    "capabilities": {
+      "emptyTitle": "還沒有能力筆記",
+      "emptyDescription": "能力頁按可重用的工作任務命名，不用專案名或模型名。每頁包含範圍、方法、實踐證據、目前邊界和下一次實踐建議。不會顯示虛構的熟練度分數。",
+      "evidenceReference": "參考資料 — 有可學習的方法；不能證明你已經實踐過。",
+      "evidenceApplication": "應用紀錄 — 某項工作使用過相關方法；執行者和角色保持明確。",
+      "evidenceResult": "結果紀錄 — 在明確環境下有測試、評審或交付；單個案例不能證明所有場景。",
+      "evidenceReflection": "復盤 — 寫清取捨或失敗原因；自述不能替代外部核驗。"
+    },
+    "sources": {
+      "emptyTitle": "還沒有資料",
+      "emptyDescription": "成功的 ACP 工作階段和匯入文件會出現在這裡。檔案匯入和貼上正文將在後續提供。",
+      "importComingSoon": "匯入即將推出",
+      "pastePlaceholder": "貼上要匯入的正文…（本切片尚未接線）",
+      "importHint": "檔案上傳和貼上正文將在後續切片落地。此列表已可讀取已登記來源。",
+      "listTitle": "{count, plural, other {# 筆來源}}",
+      "previewTitle": "預覽",
+      "untitled": "未命名來源",
+      "kind": {
+        "acp-turn": "ACP 工作階段",
+        "document": "文件",
+        "pasted-text": "貼上正文",
+        "unknown": "來源"
+      },
+      "eligibility": {
+        "processing": "處理中",
+        "awaiting-acceptance": "待接受",
+        "ready": "就緒",
+        "failed": "失敗",
+        "cancelled": "已取消",
+        "withdrawn": "已撤回",
+        "unknown": "未知"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "還沒有任務",
+      "emptyDescription": "分析和整理任務的進度、失敗和衝突會顯示在這裡。重試和取消將在對應命令就緒後提供。",
+      "readOnlyHint": "本切片只讀顯示任務狀態。重試和取消需要後續後端命令。",
+      "allStatuses": "全部狀態",
+      "detailPlaceholder": "選擇一項任務查看詳情。",
+      "kind": {
+        "ingest": "分析",
+        "compile": "整理",
+        "unknown": "任務"
+      },
+      "status": {
+        "queued": "排隊中",
+        "running": "進行中",
+        "succeeded": "已成功",
+        "failed": "失敗",
+        "cancelled": "已取消",
+        "unknown": "未知"
+      },
+      "error": "錯誤",
+      "attempt": "第 {n} 次嘗試",
+      "createdAt": "建立時間",
+      "updatedAt": "更新時間",
+      "startedAt": "開始時間",
+      "finishedAt": "結束時間"
+    },
+    "note": {
+      "untitled": "未命名",
+      "preview": "選擇一篇筆記進行預覽。"
     }
   }
 }

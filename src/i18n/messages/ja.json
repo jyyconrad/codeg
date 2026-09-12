@@ -54,7 +54,8 @@
       "office_tools": "Officeツール",
       "skill_packs": "スキルパック",
       "quick_messages": "クイックメッセージ",
-      "logs": "実行ログ"
+      "logs": "実行ログ",
+      "wiki": "Wiki"
     }
   },
   "AppearanceSettings": {
@@ -1624,7 +1625,8 @@
   "SettingsPages": {
     "agentsLoading": "エージェント設定を読み込み中...",
     "skillPacksLoading": "スキルパックを読み込み中…",
-    "codegAgentLoading": "内蔵エージェント設定を読み込み中..."
+    "codegAgentLoading": "内蔵エージェント設定を読み込み中...",
+    "wikiLoading": "Wiki 設定を読み込み中..."
   },
   "CodegAgentSettings": {
     "sectionTitle": "内蔵エージェント",
@@ -1980,6 +1982,7 @@
       "forge": "リポジトリパネル",
       "canvas": "無限会話",
       "toolbox": "ツールボックス",
+      "wiki": "Wiki",
       "folderGroup": {
         "newGroup": "新しいグループ",
         "newGroupTitle": "新しいフォルダグループ",
@@ -6241,6 +6244,147 @@
         "description": "Parse a PEM certificate: subject, SAN, validity, SHA-256 fingerprint. No CRL/OCSP.",
         "aliases": "x509 pem certificate"
       }
+    }
+  },
+
+  "WikiSettings": {
+    "sectionTitle": "パーソナル Wiki",
+    "sectionDescription": "完了した作業セッションと取り込んだ文書をローカル Markdown vault に残します。コンパイルは出典付きの作業ノートと能力ノートにします。",
+    "loading": "読み込み中...",
+    "loadFailed": "Wiki 設定の読み込みに失敗しました: {message}",
+    "retry": "再試行",
+    "save": "保存",
+    "saving": "保存中...",
+    "saved": "Wiki 設定を保存しました",
+    "saveFailed": "Wiki 設定の保存に失敗しました: {message}",
+    "enabled": "パーソナル Wiki を有効化",
+    "enabledHint": "オンにするとセッションと取り込み本文がローカル vault に保存されます。抽出テキストは後でバインド済みモデルへ送られることがあります。",
+    "enabledOffHint": "オフの間は新規キャプチャ、取り込み、ジョブ受け取りを停止します。既存ノートは閲覧できます。",
+    "statusTitle": "スケジュール",
+    "statusDescription": "次回コンパイル時刻と未分析のソース数。",
+    "nextCompileAt": "次回コンパイル",
+    "pendingSources": "未処理ソース",
+    "notScheduled": "未設定",
+    "vaultTitle": "Vault",
+    "vaultDescription": "One vault for work notes, capability notes, shared knowledge, and sources. Changing the path does not move files.",
+    "vaultPath": "Vault パス",
+    "vaultPathHint": "Optional override. Leave empty to use the default Codeg wiki directory. Pause in-flight jobs before switching paths.",
+    "vaultPathPlaceholder": "空欄で既定パス",
+    "timezone": "タイムゾーン",
+    "timezoneHint": "IANA timezone for the compile schedule. First use follows the system timezone, then stays as saved.",
+    "compileCron": "コンパイル予定（cron）",
+    "compileCronHint": "Five-field cron. Default is 0 3 * * * (03:00 every day).",
+    "captureTitle": "キャプチャ",
+    "captureDescription": "Successful ACP turns can be saved as sources. Delegate and Loop sub-sessions are skipped.",
+    "acpEnabled": "完了した ACP セッションをキャプチャ",
+    "acpEnabledHint": "Freeze successful ACP turns into the vault as sources.",
+    "excludeAgentTypes": "除外するエージェント種別",
+    "excludeAgentTypesHint": "Checked agents are not captured.",
+    "excludeFolders": "除外するフォルダー",
+    "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
+    "excludeFoldersPlaceholder": "e.g. 12, 34",
+    "unknownFolder": "フォルダー {id}",
+    "ingestTitle": "取り込み分析",
+    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
+    "ingestModel": "取り込みモデル id",
+    "ingestModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "ingestModelPlaceholder": "Bound default",
+    "ingestPrompt": "取り込みプロンプト",
+    "ingestPromptPlaceholder": "Optional extra instructions for source analysis",
+    "compileTitle": "コンパイル",
+    "compileDescription": "Compile updates work and capability notes from ready sources.",
+    "compileEnabled": "コンパイルを有効化",
+    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
+    "compileNowUnavailable": "コンパイルが無効のとき、ワークベンチの「今すぐ整理」は使えません。",
+    "compileModel": "コンパイルモデル id",
+    "compileModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "compileModelPlaceholder": "Bound default",
+    "compilePrompt": "コンパイルプロンプト",
+    "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
+  },
+  "Wiki": {
+    "title": "Wiki",
+    "views": {
+      "work": "作業",
+      "capabilities": "能力",
+      "sources": "資料",
+      "jobs": "ジョブ"
+    },
+    "openInObsidian": "Obsidian で開く",
+    "openInObsidianSoon": "デスクトップのローカル起動は後続スライスです",
+    "loading": "読み込み中...",
+    "loadFailed": "読み込みに失敗しました: {message}",
+    "retry": "再試行",
+    "refresh": "更新",
+    "loadMore": "さらに読み込む",
+    "empty": "まだありません",
+    "treeTitle": "Vault · {path}",
+    "work": {
+      "emptyTitle": "作業ノートはまだありません",
+      "emptyDescription": "ソースがコンパイルされると、プロジェクト、継続職責、作業記録、意思決定、成果がここに現れます。成果の数字は捏造しません。"
+    },
+    "capabilities": {
+      "emptyTitle": "能力ノートはまだありません",
+      "emptyDescription": "能力ページは再利用できる作業で名付けます。習熟度スコアは表示しません。",
+      "evidenceReference": "参考資料 — 学べる方法。実践した証明にはなりません。",
+      "evidenceApplication": "適用記録 — 仕事で使ったこと。実行者と役割を明示します。",
+      "evidenceResult": "結果記録 — 特定状況でのテスト・レビュー・納品。一件で万能とは言えません。",
+      "evidenceReflection": "振り返り — 取捨や失敗の記述。自己申告は外部検証の代わりになりません。"
+    },
+    "sources": {
+      "emptyTitle": "ソースはまだありません",
+      "emptyDescription": "Successful ACP sessions and imported documents land here. File import and paste will arrive next.",
+      "importComingSoon": "取り込みは近日",
+      "pastePlaceholder": "取り込むテキストを貼り付け…（このスライスでは未接続）",
+      "importHint": "File upload and pasted text land in a later slice. This list already reads registered sources.",
+      "listTitle": "{count, plural, other {# 件のソース}}",
+      "previewTitle": "プレビュー",
+      "untitled": "無題のソース",
+      "kind": {
+        "acp-turn": "ACP セッション",
+        "document": "文書",
+        "pasted-text": "貼り付けテキスト",
+        "unknown": "ソース"
+      },
+      "eligibility": {
+        "processing": "Processing",
+        "awaiting-acceptance": "Awaiting acceptance",
+        "ready": "Ready",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "withdrawn": "Withdrawn",
+        "unknown": "Unknown"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "ジョブはまだありません",
+      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
+      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
+      "allStatuses": "すべての状態",
+      "detailPlaceholder": "ジョブを選んで詳細を表示します。",
+      "kind": {
+        "ingest": "取り込み",
+        "compile": "コンパイル",
+        "unknown": "ジョブ"
+      },
+      "status": {
+        "queued": "待機中",
+        "running": "実行中",
+        "succeeded": "成功",
+        "failed": "失敗",
+        "cancelled": "キャンセル",
+        "unknown": "不明"
+      },
+      "error": "エラー",
+      "attempt": "試行 {n}",
+      "createdAt": "作成",
+      "updatedAt": "更新",
+      "startedAt": "開始",
+      "finishedAt": "終了"
+    },
+    "note": {
+      "untitled": "無題",
+      "preview": "ノートを選んでプレビューします。"
     }
   }
 }

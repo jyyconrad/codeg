@@ -182,6 +182,13 @@ import type {
   TokenUsageReport,
   TokenUsageSyncResult,
   TokenUsageSyncStatus,
+  WikiJob,
+  WikiJobStatus,
+  WikiSettings,
+  WikiSettingsView,
+  WikiSource,
+  WikiSourceKind,
+  WikiVaultTreeNode,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -5882,4 +5889,56 @@ export async function forgeSettingsSet(
   settings: ForgePanelSettings | null
 ): Promise<ForgeSettingsStore> {
   return getTransport().call("forge_settings_set", { folderId, settings })
+}
+
+export async function getWikiSettings(): Promise<WikiSettingsView> {
+  return getTransport().call("get_wiki_settings")
+}
+
+export async function updateWikiSettings(
+  settings: WikiSettings
+): Promise<WikiSettingsView> {
+  return getTransport().call("update_wiki_settings", { settings })
+}
+
+export async function wikiListJobs(params?: {
+  limit?: number
+  offset?: number
+  status?: WikiJobStatus
+}): Promise<unknown> {
+  return getTransport().call("wiki_list_jobs", {
+    limit: params?.limit ?? null,
+    offset: params?.offset ?? null,
+    status: params?.status ?? null,
+  })
+}
+
+export async function wikiGetJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_get_job", { id })
+}
+
+export async function wikiListSources(params?: {
+  limit?: number
+  offset?: number
+  source_kind?: WikiSourceKind
+}): Promise<unknown> {
+  return getTransport().call("wiki_list_sources", {
+    limit: params?.limit ?? null,
+    offset: params?.offset ?? null,
+    source_kind: params?.source_kind ?? null,
+  })
+}
+
+export async function wikiGetSource(id: string): Promise<WikiSource> {
+  return getTransport().call("wiki_get_source", { id })
+}
+
+export async function wikiVaultTree(): Promise<
+  WikiVaultTreeNode[] | Record<string, unknown>
+> {
+  return getTransport().call("wiki_vault_tree")
+}
+
+export async function wikiVaultRead(path: string): Promise<unknown> {
+  return getTransport().call("wiki_vault_read", { path })
 }

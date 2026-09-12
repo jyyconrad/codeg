@@ -54,7 +54,8 @@
       "office_tools": "Ferramentas de escritório",
       "skill_packs": "Pacotes de habilidades",
       "quick_messages": "Mensagens rápidas",
-      "logs": "Registros de execução"
+      "logs": "Registros de execução",
+      "wiki": "Wiki"
     }
   },
   "AppearanceSettings": {
@@ -1624,7 +1625,8 @@
   "SettingsPages": {
     "agentsLoading": "Carregando configurações de agentes...",
     "skillPacksLoading": "Carregando pacotes de habilidades…",
-    "codegAgentLoading": "Carregando configurações do agente integrado..."
+    "codegAgentLoading": "Carregando configurações do agente integrado...",
+    "wikiLoading": "Carregando configurações da wiki..."
   },
   "CodegAgentSettings": {
     "sectionTitle": "Agente integrado",
@@ -1980,6 +1982,7 @@
       "forge": "Painel do repositório",
       "canvas": "Conversas infinitas",
       "toolbox": "Caixa de ferramentas",
+      "wiki": "Wiki",
       "folderGroup": {
         "newGroup": "Novo grupo",
         "newGroupTitle": "Novo grupo de pastas",
@@ -6241,6 +6244,147 @@
         "description": "Parse a PEM certificate: subject, SAN, validity, SHA-256 fingerprint. No CRL/OCSP.",
         "aliases": "x509 pem certificate"
       }
+    }
+  },
+
+  "WikiSettings": {
+    "sectionTitle": "Wiki pessoal",
+    "sectionDescription": "Capture completed work sessions and imported documents into a local Markdown vault. Compile turns those sources into work notes and capability notes with citations.",
+    "loading": "Carregando...",
+    "loadFailed": "Falha ao carregar as configurações da wiki: {message}",
+    "retry": "Tentar de novo",
+    "save": "Salvar",
+    "saving": "Salvando...",
+    "saved": "Configurações da wiki salvas",
+    "saveFailed": "Falha ao salvar as configurações da wiki: {message}",
+    "enabled": "Ativar wiki pessoal",
+    "enabledHint": "Turning this on stores session and imported text in a local vault. Extracted text may later be sent to the bound model for ingest and compile.",
+    "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
+    "statusTitle": "Schedule",
+    "statusDescription": "Next compile time and sources still waiting to be analyzed.",
+    "nextCompileAt": "Próxima compilação",
+    "pendingSources": "Fontes pendentes",
+    "notScheduled": "Não agendado",
+    "vaultTitle": "Vault",
+    "vaultDescription": "One vault for work notes, capability notes, shared knowledge, and sources. Changing the path does not move files.",
+    "vaultPath": "Vault path",
+    "vaultPathHint": "Optional override. Leave empty to use the default Codeg wiki directory. Pause in-flight jobs before switching paths.",
+    "vaultPathPlaceholder": "Leave empty for the default path",
+    "timezone": "Fuso horário",
+    "timezoneHint": "IANA timezone for the compile schedule. First use follows the system timezone, then stays as saved.",
+    "compileCron": "Compile schedule (cron)",
+    "compileCronHint": "Five-field cron. Default is 0 3 * * * (03:00 every day).",
+    "captureTitle": "Captura",
+    "captureDescription": "Successful ACP turns can be saved as sources. Delegate and Loop sub-sessions are skipped.",
+    "acpEnabled": "Capturar sessões ACP concluídas",
+    "acpEnabledHint": "Freeze successful ACP turns into the vault as sources.",
+    "excludeAgentTypes": "Excluir tipos de agente",
+    "excludeAgentTypesHint": "Checked agents are not captured.",
+    "excludeFolders": "Excluir pastas",
+    "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
+    "excludeFoldersPlaceholder": "e.g. 12, 34",
+    "unknownFolder": "Pasta {id}",
+    "ingestTitle": "Ingestão",
+    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
+    "ingestModel": "Ingest model id",
+    "ingestModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "ingestModelPlaceholder": "Bound default",
+    "ingestPrompt": "Ingest prompt",
+    "ingestPromptPlaceholder": "Optional extra instructions for source analysis",
+    "compileTitle": "Compilar",
+    "compileDescription": "Compile updates work and capability notes from ready sources.",
+    "compileEnabled": "Ativar compilação",
+    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
+    "compileNowUnavailable": "Compilar agora na bancada fica indisponível quando a compilação está desligada.",
+    "compileModel": "Compile model id",
+    "compileModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "compileModelPlaceholder": "Bound default",
+    "compilePrompt": "Compile prompt",
+    "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
+  },
+  "Wiki": {
+    "title": "Wiki",
+    "views": {
+      "work": "Trabalho",
+      "capabilities": "Capacidades",
+      "sources": "Fontes",
+      "jobs": "Tarefas"
+    },
+    "openInObsidian": "Abrir no Obsidian",
+    "openInObsidianSoon": "Desktop local opener in a later slice",
+    "loading": "Carregando...",
+    "loadFailed": "Falha ao carregar: {message}",
+    "retry": "Tentar de novo",
+    "refresh": "Atualizar",
+    "loadMore": "Carregar mais",
+    "empty": "Nada aqui ainda",
+    "treeTitle": "Vault · {path}",
+    "work": {
+      "emptyTitle": "Ainda não há notas de trabalho",
+      "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."
+    },
+    "capabilities": {
+      "emptyTitle": "Ainda não há notas de capacidade",
+      "emptyDescription": "Capability pages are named after reusable work, not projects or models. Each page covers scope, methods, practice evidence, current boundaries, and a next practice suggestion. There are no mastery scores or proficiency ranks.",
+      "evidenceReference": "Reference — a method that can be learned; not proof you practiced it.",
+      "evidenceApplication": "Application — the method was used in work; the actor and role stay explicit.",
+      "evidenceResult": "Result — a test, review, or delivery in a stated context; one case is not universal proof.",
+      "evidenceReflection": "Reflection — a write-up of tradeoffs or failures; self-report is not external verification."
+    },
+    "sources": {
+      "emptyTitle": "Ainda não há fontes",
+      "emptyDescription": "Successful ACP sessions and imported documents land here. File import and paste will arrive next.",
+      "importComingSoon": "Importação em breve",
+      "pastePlaceholder": "Paste text to import… (not wired in this slice)",
+      "importHint": "File upload and pasted text land in a later slice. This list already reads registered sources.",
+      "listTitle": "{count, plural, one {# fonte} other {# fontes}}",
+      "previewTitle": "Pré-visualização",
+      "untitled": "Fonte sem título",
+      "kind": {
+        "acp-turn": "ACP session",
+        "document": "Document",
+        "pasted-text": "Pasted text",
+        "unknown": "Source"
+      },
+      "eligibility": {
+        "processing": "Processing",
+        "awaiting-acceptance": "Awaiting acceptance",
+        "ready": "Ready",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "withdrawn": "Withdrawn",
+        "unknown": "Unknown"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "Ainda não há tarefas",
+      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
+      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
+      "allStatuses": "Todos os status",
+      "detailPlaceholder": "Select a job to see details.",
+      "kind": {
+        "ingest": "Ingestão",
+        "compile": "Compilar",
+        "unknown": "Tarefa"
+      },
+      "status": {
+        "queued": "Na fila",
+        "running": "Em execução",
+        "succeeded": "Concluído",
+        "failed": "Falhou",
+        "cancelled": "Cancelado",
+        "unknown": "Desconhecido"
+      },
+      "error": "Error",
+      "attempt": "Attempt {n}",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "startedAt": "Started",
+      "finishedAt": "Finished"
+    },
+    "note": {
+      "untitled": "Sem título",
+      "preview": "Selecione uma nota para pré-visualizar."
     }
   }
 }
