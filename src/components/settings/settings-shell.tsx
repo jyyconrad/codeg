@@ -11,6 +11,7 @@ import {
   Bot,
   BookOpenText,
   Boxes,
+  Cpu,
   FileSpreadsheet,
   GitBranch,
   Globe,
@@ -42,6 +43,7 @@ interface SettingsNavItem {
     | "general"
     | "appearance"
     | "agents"
+    | "codeg_agent"
     | "model_providers"
     | "mcp"
     | "skills"
@@ -86,6 +88,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/agents",
     labelKey: "agents",
     icon: Bot,
+  },
+  {
+    href: "/settings/codeg-agent",
+    labelKey: "codeg_agent",
+    icon: Cpu,
   },
   {
     href: "/settings/model-providers",

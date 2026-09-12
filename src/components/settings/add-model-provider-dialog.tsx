@@ -22,6 +22,12 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { createModelProvider } from "@/lib/api"
+import {
+  CODEG_PROVIDER_PRESETS,
+  codegProviderPreset,
+  isLoopbackHttpUrl,
+  type CodegProviderPresetId,
+} from "@/lib/codeg-agent-providers"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
 import {
   MODEL_PROVIDER_AGENT_TYPES,
@@ -30,30 +36,33 @@ import {
   type AgentType,
   type ClaudeProviderModel,
   type CodexModelConfig,
+  type ModelProviderInfo,
 } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 
 interface AddModelProviderDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onProviderAdded: () => void
+  onProviderAdded: (provider: ModelProviderInfo) => void
+  defaultAgentType?: AgentType
 }
 
 export function AddModelProviderDialog({
   open,
   onOpenChange,
   onProviderAdded,
+  defaultAgentType,
 }: AddModelProviderDialogProps) {
   const t = useTranslations("ModelProviderSettings")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const initialAgentType = defaultAgentType ?? MODEL_PROVIDER_AGENT_TYPES[0]
   const [name, setName] = useState("")
   const [apiUrl, setApiUrl] = useState("")
   const [apiKey, setApiKey] = useState("")
-  const [agentType, setAgentType] = useState<AgentType>(
-    MODEL_PROVIDER_AGENT_TYPES[0]
-  )
+  const [agentType, setAgentType] = useState<AgentType>(initialAgentType)
+  const [presetId, setPresetId] = useState<CodegProviderPresetId>("custom")
   const [singleModel, setSingleModel] = useState("")
   const [claudeModel, setClaudeModel] = useState<ClaudeProviderModel>({})
   const [codexModel, setCodexModel] = useState<CodexModelConfig>({
@@ -64,12 +73,13 @@ export function AddModelProviderDialog({
     setName("")
     setApiUrl("")
     setApiKey("")
-    setAgentType(MODEL_PROVIDER_AGENT_TYPES[0])
+    setAgentType(defaultAgentType ?? MODEL_PROVIDER_AGENT_TYPES[0])
+    setPresetId("custom")
     setSingleModel("")
     setClaudeModel({})
     setCodexModel({ customs: [] })
     setError(null)
-  }, [])
+  }, [defaultAgentType])
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -81,16 +91,39 @@ export function AddModelProviderDialog({
 
   const handleAgentTypeChange = useCallback((next: AgentType) => {
     setAgentType(next)
+    setPresetId("custom")
     setSingleModel("")
     setClaudeModel({})
     setCodexModel({ customs: [] })
   }, [])
 
+  const applyPreset = useCallback(
+    (id: CodegProviderPresetId) => {
+      const preset = codegProviderPreset(id)
+      if (!preset) return
+      setPresetId(id)
+      setApiUrl(preset.apiUrl)
+      setSingleModel(preset.model)
+      const presetNames = new Set(
+        CODEG_PROVIDER_PRESETS.map((row) =>
+          t(`presets.${row.id}` as Parameters<typeof t>[0])
+        )
+      )
+      if (id !== "custom" && (!name.trim() || presetNames.has(name.trim()))) {
+        setName(t(`presets.${id}` as Parameters<typeof t>[0]))
+      }
+    },
+    [name, t]
+  )
+
   const modelPlaceholder = useMemo(() => {
     if (agentType === "codex") return t("modelPlaceholderCodex")
     if (agentType === "gemini") return t("modelPlaceholderGemini")
+    if (agentType === "codeg_agent") return t("modelPlaceholderCodeg")
     return ""
   }, [agentType, t])
+
+  const localKeyOptional = isLoopbackHttpUrl(apiUrl)
 
   const handleSubmit = useCallback(async () => {
     if (!name.trim()) {
@@ -101,7 +134,7 @@ export function AddModelProviderDialog({
       setError(t("apiUrlRequired"))
       return
     }
-    if (!apiKey.trim()) {
+    if (!apiKey.trim() && !isLoopbackHttpUrl(apiUrl)) {
       setError(t("apiKeyRequired"))
       return
     }
@@ -122,7 +155,7 @@ export function AddModelProviderDialog({
     setLoading(true)
     setError(null)
     try {
-      await createModelProvider({
+      const created = await createModelProvider({
         name: name.trim(),
         apiUrl: apiUrl.trim(),
         apiKey: apiKey.trim(),
@@ -131,7 +164,7 @@ export function AddModelProviderDialog({
       })
       toast.success(t("createSuccess"))
       handleOpenChange(false)
-      onProviderAdded()
+      onProviderAdded(created)
     } catch (err: unknown) {
       const raw = err as Record<string, unknown>
       const msg =
@@ -198,8 +231,17 @@ export function AddModelProviderDialog({
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder={t("apiKeyPlaceholder")}
+              placeholder={
+                localKeyOptional
+                  ? t("apiKeyOptionalLocal")
+                  : t("apiKeyPlaceholder")
+              }
             />
+            {localKeyOptional && (
+              <p className="text-2xs text-muted-foreground">
+                {t("apiKeyOptionalLocalHint")}
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -220,6 +262,34 @@ export function AddModelProviderDialog({
               </SelectContent>
             </Select>
           </div>
+
+          {agentType === "codeg_agent" && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">
+                {t("presets.label")}
+              </label>
+              <Select
+                value={presetId}
+                onValueChange={(value) =>
+                  applyPreset(value as CodegProviderPresetId)
+                }
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CODEG_PROVIDER_PRESETS.map((preset) => (
+                    <SelectItem key={preset.id} value={preset.id}>
+                      {t(`presets.${preset.id}` as Parameters<typeof t>[0])}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-2xs text-muted-foreground">
+                {t("presets.hint")}
+              </p>
+            </div>
+          )}
 
           {agentType === "claude_code" ? (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

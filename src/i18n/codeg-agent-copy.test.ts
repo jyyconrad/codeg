@@ -54,6 +54,10 @@ const REQUIRED_KEYS = [
   "envAdvancedHint",
   "boundCredentials",
   "emptyUsesBuiltin",
+  "openDedicatedSettings",
+  "compactSoftPercent",
+  "compactRecentTurns",
+  "maxTurns",
 ] as const
 
 type CodegAgentCopy = Record<(typeof REQUIRED_KEYS)[number], string>
@@ -91,6 +95,7 @@ describe("Codeg Agent experimental copy", () => {
       /bind a model provider and save/
     )
     expect(block.inProcess).not.toMatch(/CODEG_AGENT_CONTEXT_WINDOWS/)
+    expect(block.openDedicatedSettings.toLowerCase()).toMatch(/built-in agent/)
   })
 
   it.each(ALL_LOCALES)(

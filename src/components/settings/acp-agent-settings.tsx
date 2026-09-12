@@ -20,6 +20,7 @@ import {
   ChevronRight,
   Copy,
   Download,
+  ExternalLink,
   Eye,
   EyeOff,
   GripVertical,
@@ -41,7 +42,6 @@ import { getActiveRemoteConnectionId } from "@/lib/transport"
 import { toast } from "sonner"
 import {
   customAgentId,
-  getAgentLabel,
   isCustomAgentType,
   setCustomAgentDisplay,
 } from "@/lib/custom-agents"
@@ -127,15 +127,67 @@ import type {
 } from "@/lib/types"
 import {
   HERMES_PROVIDERS,
-  MODEL_PROVIDER_AGENT_TYPES,
   completionsModelIdFromProvider,
   parseClaudeProviderModel,
   parseCodexModelConfig,
   serializeCodexModelConfig,
-  suggestedCodegContextWindow,
   type CodexModelConfig,
 } from "@/lib/types"
+import {
+  CODEG_BIND_SELECT_ID,
+  CODEG_COMPACT_PROMPT_KEY,
+  CODEG_COMPACT_RECENT_TURNS_KEY,
+  CODEG_COMPACT_SOFT_PERCENT_KEY,
+  CODEG_DEFAULT_COMPACT_RECENT_TURNS,
+  CODEG_DEFAULT_COMPACT_SOFT_PERCENT,
+  CODEG_DEFAULT_MAX_TURNS,
+  CODEG_MAX_TURNS_KEY,
+  CODEG_SYSTEM_PROMPT_KEY,
+  CODEG_WINDOW_INPUT_ID,
+  bindCodegProviderEnv,
+  codegEnvInt,
+  codegMaxOutputTokens,
+  codegWindowForModel,
+  overlayCodegPromptEnv,
+  persistThenRunPreflight,
+  patchCodegContextWindow,
+  patchCodegEnvInt,
+  patchCodegMaxOutputTokens,
+} from "@/lib/codeg-agent-env"
+import {
+  modelProviderOptionLabel,
+  modelProvidersForAgent,
+} from "@/lib/codeg-agent-providers"
+import { envMapToText, parseEnvText, patchEnvText } from "@/lib/env-text"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
+
+export {
+  CODEG_BIND_SELECT_ID,
+  CODEG_COMPACT_PROMPT_KEY,
+  CODEG_COMPACT_RECENT_TURNS_KEY,
+  CODEG_COMPACT_SOFT_PERCENT_KEY,
+  CODEG_DEFAULT_COMPACT_RECENT_TURNS,
+  CODEG_DEFAULT_COMPACT_SOFT_PERCENT,
+  CODEG_DEFAULT_MAX_TURNS,
+  CODEG_MAX_TURNS_KEY,
+  CODEG_SYSTEM_PROMPT_KEY,
+  CODEG_WINDOW_INPUT_ID,
+  bindCodegProviderEnv,
+  codegEnvInt,
+  codegMaxOutputTokens,
+  codegWindowForModel,
+  ensureCodegLaunchEnv,
+  overlayCodegPromptEnv,
+  parseCodegContextWindows,
+  persistThenRunPreflight,
+  patchCodegContextWindow,
+  patchCodegEnvInt,
+  patchCodegMaxOutputTokens,
+} from "@/lib/codeg-agent-env"
+export {
+  modelProviderOptionLabel,
+  modelProvidersForAgent,
+} from "@/lib/codeg-agent-providers"
 import {
   OpenCodeConnectDialog,
   OpenCodeCustomProviderDialog,
@@ -403,27 +455,6 @@ const HOST_TOOLS_ENV = "CODEG_ACP_HOST_TOOLS"
 const HOST_TOOLS_AGENT = "agent"
 const HOST_TOOLS_DEFAULT = "default"
 
-function envMapToText(env: Record<string, string>): string {
-  return Object.entries(env)
-    .map(([key, value]) => `${key}=${value}`)
-    .join("\n")
-}
-
-function parseEnvText(envText: string): Record<string, string> {
-  const map: Record<string, string> = {}
-  for (const rawLine of envText.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith("#")) continue
-    const idx = line.indexOf("=")
-    if (idx <= 0) continue
-    const key = line.slice(0, idx).trim()
-    const value = line.slice(idx + 1).trim()
-    if (!key) continue
-    map[key] = value
-  }
-  return map
-}
-
 /**
  * Fold the DeepSeek panel's own env keys, as they are actually persisted, into
  * an existing draft. Everything else in the draft — other keys, and any
@@ -467,218 +498,10 @@ export function rebaseDeepSeekDraft(
   }
 }
 
-const CODEG_DEFAULT_MAX_OUTPUT = "4096"
-export const CODEG_SYSTEM_PROMPT_KEY = "CODEG_AGENT_SYSTEM_PROMPT"
-export const CODEG_COMPACT_PROMPT_KEY = "CODEG_AGENT_COMPACT_PROMPT"
-export const CODEG_BIND_SELECT_ID = "codeg-agent-bind-provider"
-export const CODEG_WINDOW_INPUT_ID = "codeg-agent-context-window"
-
-/**
- * Model providers Codeg Agent can bind: its own rows plus Claude / Codex /
- * Gemini channels already configured in Settings → Model Providers.
- */
-export function modelProvidersForAgent(
-  agentType: AgentType,
-  providers: ModelProviderInfo[]
-): ModelProviderInfo[] {
-  if (agentType === "codeg_agent") {
-    const allowed = new Set<string>(MODEL_PROVIDER_AGENT_TYPES)
-    return providers.filter((provider) => allowed.has(provider.agent_type))
-  }
-  return providers.filter((provider) => provider.agent_type === agentType)
-}
-
-export function modelProviderOptionLabel(
-  provider: ModelProviderInfo,
-  forAgent: AgentType
-): string {
-  if (forAgent === "codeg_agent" && provider.agent_type !== "codeg_agent") {
-    return `${provider.name} · ${getAgentLabel(provider.agent_type)}`
-  }
-  return provider.name
-}
-
-/**
- * Parse `CODEG_AGENT_CONTEXT_WINDOWS` JSON. Invalid JSON yields `{}` so the
- * card can rewrite a single model id without inventing a 128k default here.
- */
-export function parseCodegContextWindows(
-  envText: string
-): Record<string, number> {
-  const rawWindows = parseEnvText(envText).CODEG_AGENT_CONTEXT_WINDOWS?.trim()
-  if (!rawWindows) return {}
-  try {
-    const value = JSON.parse(rawWindows) as unknown
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {}
-    const windows: Record<string, number> = {}
-    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-      const name = key.trim()
-      const window =
-        typeof raw === "number"
-          ? raw
-          : typeof raw === "string"
-            ? Number.parseInt(raw.trim(), 10)
-            : Number.NaN
-      if (name && Number.isFinite(window) && window > 0) {
-        windows[name] = window
-      }
-    }
-    return windows
-  } catch {
-    return {}
-  }
-}
-
-export function codegWindowForModel(
-  envText: string,
-  modelId: string
-): number | null {
-  const id = modelId.trim()
-  if (!id) return null
-  return parseCodegContextWindows(envText)[id] ?? null
-}
-
-export function patchCodegContextWindow(
-  envText: string,
-  modelId: string,
-  windowTokens: number
-): string {
-  const id = modelId.trim()
-  if (!id || !Number.isFinite(windowTokens) || windowTokens <= 0) return envText
-  const windows = parseCodegContextWindows(envText)
-  windows[id] = windowTokens
-  return patchEnvText(envText, {
-    CODEG_AGENT_CONTEXT_WINDOWS: JSON.stringify(windows),
-  })
-}
-
-export function codegMaxOutputTokens(envText: string): string {
-  return (
-    parseEnvText(envText).CODEG_AGENT_MAX_OUTPUT_TOKENS?.trim() ||
-    CODEG_DEFAULT_MAX_OUTPUT
-  )
-}
-
-export function patchCodegMaxOutputTokens(
-  envText: string,
-  value: string
-): string {
-  const trimmed = value.trim()
-  return patchEnvText(envText, {
-    CODEG_AGENT_MAX_OUTPUT_TOKENS: trimmed || CODEG_DEFAULT_MAX_OUTPUT,
-  })
-}
-
-/**
- * Overlay multiline prompts onto a parsed env map. Empty trim deletes the key
- * so spawn uses the builtin default. The KEY=VALUE textarea never holds these.
- */
-export function overlayCodegPromptEnv(
-  env: Record<string, string>,
-  systemPrompt: string,
-  compactPrompt: string
-): Record<string, string> {
-  const next = { ...env }
-  const system = systemPrompt.trim()
-  const compact = compactPrompt.trim()
-  if (system) next[CODEG_SYSTEM_PROMPT_KEY] = system
-  else delete next[CODEG_SYSTEM_PROMPT_KEY]
-  if (compact) next[CODEG_COMPACT_PROMPT_KEY] = compact
-  else delete next[CODEG_COMPACT_PROMPT_KEY]
-  return next
-}
-
-/** Save then refresh preflight. Used by the Codeg config card and enable switch. */
-export async function persistThenRunPreflight(
-  persist: () => Promise<unknown>,
-  runPreflight: () => Promise<unknown>
-): Promise<void> {
-  await persist()
-  await runPreflight()
-}
-
 function focusCodegField(id: string) {
   const el = document.getElementById(id)
   el?.scrollIntoView({ behavior: "smooth", block: "center" })
   if (el instanceof HTMLElement) el.focus()
-}
-
-/**
- * Ensure the bound model has a window (and a default max-output) in env text.
- * Existing entries are kept; 128000 is only written when the id is missing.
- */
-export function ensureCodegLaunchEnv(
-  envText: string,
-  modelId: string,
-  windowTokens: number
-): string {
-  const id = modelId.trim()
-  const parsed = parseEnvText(envText)
-  const windows = parseCodegContextWindows(envText)
-  if (id && windows[id] == null) {
-    windows[id] = windowTokens > 0 ? windowTokens : 128000
-  }
-  const patch: Record<string, string | undefined> = {}
-  if (Object.keys(windows).length > 0) {
-    patch.CODEG_AGENT_CONTEXT_WINDOWS = JSON.stringify(windows)
-  }
-  if (!parsed.CODEG_AGENT_MAX_OUTPUT_TOKENS?.trim()) {
-    patch.CODEG_AGENT_MAX_OUTPUT_TOKENS = CODEG_DEFAULT_MAX_OUTPUT
-  }
-  return patchEnvText(envText, patch)
-}
-
-/**
- * Set (or, for an empty value, delete) exactly the given keys in a raw env
- * draft, leaving every other LINE byte-identical.
- *
- * Textual on purpose. The obvious implementation — parse to a map, patch,
- * serialize — rewrites the whole textarea, and the parser only understands
- * `KEY=VALUE`: a comment, a blank line, and a half-typed `NEW_PROXY` all
- * vanish. These patches run on refresh and on save completion, so that would
- * silently delete what the user is still typing in the raw editor next to the
- * structured panel that triggered the save.
- *
- * A key appearing on several lines collapses to one (its patched value), which
- * matches how `parseEnvText` reads the draft afterwards.
- */
-function patchEnvText(
-  envText: string,
-  patch: Record<string, string | undefined>
-): string {
-  // `key in patch` would also answer yes for `constructor`, `toString` and the
-  // rest of Object.prototype — all of them legal env var names — and then read
-  // a function where a string was expected. Own properties only.
-  const owns = (key: string) => Object.prototype.hasOwnProperty.call(patch, key)
-  const pending = new Set(
-    Object.keys(patch).filter((key) => (patch[key]?.trim() ?? "") !== "")
-  )
-  const lines = envText === "" ? [] : envText.split(/\r?\n/)
-  const kept: string[] = []
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    const idx = line.startsWith("#") ? -1 : line.indexOf("=")
-    const key = idx > 0 ? line.slice(0, idx).trim() : ""
-    if (!key || !owns(key)) {
-      kept.push(rawLine)
-      continue
-    }
-    const value = patch[key]?.trim() ?? ""
-    // Empty ⇒ the key is being removed; a duplicate line for a key already
-    // emitted goes too, so the result reads back as the value just written.
-    if (!value || !pending.delete(key)) continue
-    kept.push(`${key}=${value}`)
-  }
-  if (pending.size > 0) {
-    // A key with no line yet goes after the last real one, not after the blank
-    // line the user may be about to type into.
-    let end = kept.length
-    while (end > 0 && kept[end - 1].trim() === "") end -= 1
-    const tail = kept.splice(end)
-    for (const key of pending) kept.push(`${key}=${patch[key]?.trim() ?? ""}`)
-    kept.push(...tail)
-  }
-  return kept.join("\n")
 }
 
 /**
@@ -6380,28 +6203,17 @@ export function AcpAgentSettings() {
           }
         })
       } else if (agentType === "codeg_agent") {
-        const codegModel = provider
-          ? completionsModelIdFromProvider(provider)
-          : ""
-        const windowTokens = provider
-          ? suggestedCodegContextWindow(provider)
-          : 128000
-        updateSelectedDraft((current) => ({
-          ...current,
-          modelProviderId: providerId,
-          apiBaseUrl: apiUrl,
-          apiKey,
-          model: codegModel,
-          envText: ensureCodegLaunchEnv(
-            patchEnvText(current.envText, {
-              CODEG_AGENT_API_BASE_URL: apiUrl,
-              CODEG_AGENT_API_KEY: apiKey,
-              CODEG_AGENT_MODEL: codegModel,
-            }),
-            codegModel,
-            windowTokens
-          ),
-        }))
+        updateSelectedDraft((current) => {
+          const bound = bindCodegProviderEnv(current.envText, provider ?? null)
+          return {
+            ...current,
+            modelProviderId: providerId,
+            apiBaseUrl: apiUrl,
+            apiKey,
+            model: bound.model,
+            envText: bound.envText,
+          }
+        })
       } else {
         updateSelectedDraft((current) => ({
           ...current,
@@ -8284,9 +8096,23 @@ export function AcpAgentSettings() {
                     return (
                       <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                         <div>
-                          <label className="text-xs font-medium">
-                            {t("codegAgent.configCardTitle")}
-                          </label>
+                          <div className="flex items-start justify-between gap-2">
+                            <label className="text-xs font-medium">
+                              {t("codegAgent.configCardTitle")}
+                            </label>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-2xs"
+                              onClick={() =>
+                                router.push("/settings/codeg-agent")
+                              }
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              {t("codegAgent.openDedicatedSettings")}
+                            </Button>
+                          </div>
                           <p className="mt-1 text-2xs text-muted-foreground">
                             {t("codegAgent.inProcess")}
                           </p>
@@ -8412,6 +8238,85 @@ export function AcpAgentSettings() {
                                   envText: patchCodegMaxOutputTokens(
                                     current.envText,
                                     event.target.value
+                                  ),
+                                }))
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="space-y-1.5">
+                            <label className="text-2xs text-muted-foreground">
+                              {t("codegAgent.compactSoftPercent")}
+                            </label>
+                            <Input
+                              type="number"
+                              min={1}
+                              max={100}
+                              value={codegEnvInt(
+                                selectedDraft.envText,
+                                CODEG_COMPACT_SOFT_PERCENT_KEY,
+                                CODEG_DEFAULT_COMPACT_SOFT_PERCENT
+                              )}
+                              onChange={(event) => {
+                                updateSelectedDraft((current) => ({
+                                  ...current,
+                                  envText: patchCodegEnvInt(
+                                    current.envText,
+                                    CODEG_COMPACT_SOFT_PERCENT_KEY,
+                                    event.target.value,
+                                    CODEG_DEFAULT_COMPACT_SOFT_PERCENT
+                                  ),
+                                }))
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-2xs text-muted-foreground">
+                              {t("codegAgent.compactRecentTurns")}
+                            </label>
+                            <Input
+                              type="number"
+                              min={1}
+                              value={codegEnvInt(
+                                selectedDraft.envText,
+                                CODEG_COMPACT_RECENT_TURNS_KEY,
+                                CODEG_DEFAULT_COMPACT_RECENT_TURNS
+                              )}
+                              onChange={(event) => {
+                                updateSelectedDraft((current) => ({
+                                  ...current,
+                                  envText: patchCodegEnvInt(
+                                    current.envText,
+                                    CODEG_COMPACT_RECENT_TURNS_KEY,
+                                    event.target.value,
+                                    CODEG_DEFAULT_COMPACT_RECENT_TURNS
+                                  ),
+                                }))
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-2xs text-muted-foreground">
+                              {t("codegAgent.maxTurns")}
+                            </label>
+                            <Input
+                              type="number"
+                              min={1}
+                              value={codegEnvInt(
+                                selectedDraft.envText,
+                                CODEG_MAX_TURNS_KEY,
+                                CODEG_DEFAULT_MAX_TURNS
+                              )}
+                              onChange={(event) => {
+                                updateSelectedDraft((current) => ({
+                                  ...current,
+                                  envText: patchCodegEnvInt(
+                                    current.envText,
+                                    CODEG_MAX_TURNS_KEY,
+                                    event.target.value,
+                                    CODEG_DEFAULT_MAX_TURNS
                                   ),
                                 }))
                               }}
