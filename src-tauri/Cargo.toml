@@ -81,7 +81,7 @@ sacp-tokio = "11.0.0"
 # rig-memory is used for MemoryPolicy / Compactor only; never AgentBuilder::memory().
 rig = { version = "=0.42.0", default-features = false, features = ["agent", "reqwest", "rustls"] }
 rig-memory = "=0.42.0"
-rmcp = { version = "=2.2.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "=2.2.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-streamable-http-server"] }
 tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt", "net", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
@@ -205,3 +205,21 @@ zip = "2"
 
 [patch.crates-io]
 sacp-tokio = { path = "vendor/sacp-tokio" }
+
+# Full DWARF on 900+ deps plus leftover incremental hashes of codeg_lib
+# (rlib+cdylib+staticlib) is what pushed target/debug to ~22G.
+# After rustc / profile / lockfile changes, or when target/debug keeps growing:
+# `cargo clean` then rebuild. Incremental compiles do not need a clean every time.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false
+
+

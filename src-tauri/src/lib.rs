@@ -68,8 +68,7 @@ mod tauri_app {
         acp as acp_commands, app_update as app_update_commands, automation as automation_commands,
         background as background_commands, backup, canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
-        code_intel as code_intel_commands, conversations,
-        custom_skills as custom_skills_commands,
+        code_intel as code_intel_commands, conversations, custom_skills as custom_skills_commands,
         deepseek_settings as deepseek_settings_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
         folder_links, folders, forge as forge_commands, logging as logging_commands,
@@ -80,8 +79,7 @@ mod tauri_app {
         science as science_commands, session_info as session_info_commands, system_settings,
         terminal as terminal_commands, token_usage as token_usage_commands, toolbox,
         version_control, wiki as wiki_commands, wiki_engine as wiki_engine_commands, windows,
-        work_task as work_task_commands,
-        workspace_state as workspace_state_commands,
+        work_task as work_task_commands, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};

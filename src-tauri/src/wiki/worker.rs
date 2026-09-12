@@ -50,7 +50,9 @@ pub async fn run_ingest_summary(
         .ok_or_else(|| WorkerError::Failed("ingest job has no source_id".into()))?;
     let source = wiki_service::get_source_model(conn, source_id).await?;
     let Some(raw_rel) = source.raw_path.as_deref().filter(|s| !s.is_empty()) else {
-        return Err(WorkerError::Failed("ingest source has no frozen raw".into()));
+        return Err(WorkerError::Failed(
+            "ingest source has no frozen raw".into(),
+        ));
     };
     let abs = vault.join(raw_rel);
     if !abs.is_file() {
@@ -303,7 +305,10 @@ mod tests {
             .await
             .unwrap();
         assert!(abs.is_file(), "raw must survive summary failure");
-        assert_eq!(fs::read_to_string(&abs).unwrap().contains("hello raw"), true);
+        assert_eq!(
+            fs::read_to_string(&abs).unwrap().contains("hello raw"),
+            true
+        );
         let warnings = out["warnings"].as_array().unwrap();
         assert!(!warnings.is_empty());
         let src = wiki_service::get_source_model(&db.conn, source_id)

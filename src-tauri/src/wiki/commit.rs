@@ -99,7 +99,10 @@ pub fn manifest_path(state_root: &Path, job_id: &str) -> PathBuf {
     commits_dir(state_root).join(format!("{job_id}.json"))
 }
 
-pub fn load_manifest(state_root: &Path, job_id: &str) -> Result<Option<CommitManifest>, CommitError> {
+pub fn load_manifest(
+    state_root: &Path,
+    job_id: &str,
+) -> Result<Option<CommitManifest>, CommitError> {
     let path = manifest_path(state_root, job_id);
     if !path.exists() {
         return Ok(None);
@@ -337,7 +340,12 @@ fn save_conflict(
     Ok(())
 }
 
-fn atomic_replace(vault: &Path, dest: &Path, contents: &str, job_id: &str) -> Result<(), CommitError> {
+fn atomic_replace(
+    vault: &Path,
+    dest: &Path,
+    contents: &str,
+    job_id: &str,
+) -> Result<(), CommitError> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -397,9 +405,9 @@ pub fn validate_markdown(md: &str, expected_type: &str) -> Result<(), CommitErro
     }
     let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml)
         .map_err(|e| CommitError::Validation(format!("invalid YAML: {e}")))?;
-    let map = parsed.as_mapping().ok_or_else(|| {
-        CommitError::Validation("YAML front matter must be a mapping".into())
-    })?;
+    let map = parsed
+        .as_mapping()
+        .ok_or_else(|| CommitError::Validation("YAML front matter must be a mapping".into()))?;
     let ty = map
         .get(serde_yaml::Value::String("type".into()))
         .and_then(|v| v.as_str())
@@ -434,7 +442,9 @@ pub fn wikilinks_quoted_in_yaml(yaml: &str) -> bool {
 }
 
 pub fn split_frontmatter(md: &str) -> Option<(String, String)> {
-    let rest = md.strip_prefix("---\n").or_else(|| md.strip_prefix("---\r\n"))?;
+    let rest = md
+        .strip_prefix("---\n")
+        .or_else(|| md.strip_prefix("---\r\n"))?;
     let nl = if let Some(i) = rest.find("\n---\n") {
         (i, 5)
     } else if let Some(i) = rest.find("\r\n---\r\n") {
@@ -458,9 +468,8 @@ pub fn splice_user_regions(current: &str, proposed: &str) -> Result<String, Comm
             ));
         }
     };
-    let (prop_yaml, prop_body) = split_frontmatter(proposed).ok_or_else(|| {
-        CommitError::Validation("proposal is missing YAML front matter".into())
-    })?;
+    let (prop_yaml, prop_body) = split_frontmatter(proposed)
+        .ok_or_else(|| CommitError::Validation("proposal is missing YAML front matter".into()))?;
 
     if count_markers(&cur_body, CONTENT_START) > 1 || count_markers(&cur_body, CONTENT_END) > 1 {
         return Err(CommitError::Conflict(
@@ -497,7 +506,10 @@ fn merge_yaml(current: &str, proposed: &str) -> Result<String, CommitError> {
     Ok(out)
 }
 
-fn replace_generated_region(current_body: &str, proposed_body: &str) -> Result<String, CommitError> {
+fn replace_generated_region(
+    current_body: &str,
+    proposed_body: &str,
+) -> Result<String, CommitError> {
     let prop_inner = extract_generated(proposed_body).unwrap_or(proposed_body);
     let start = current_body
         .find(CONTENT_START)
@@ -540,7 +552,10 @@ pub fn ensure_content_markers(md: &str) -> String {
     }
     match split_frontmatter(md) {
         Some((yaml, body)) => {
-            format!("---\n{yaml}---\n\n{CONTENT_START}\n{}\n{CONTENT_END}\n", body.trim())
+            format!(
+                "---\n{yaml}---\n\n{CONTENT_START}\n{}\n{CONTENT_END}\n",
+                body.trim()
+            )
         }
         None => format!("{CONTENT_START}\n{}\n{CONTENT_END}\n", md.trim()),
     }
@@ -639,7 +654,9 @@ Design request/response contracts.\n\n\
         assert!(matches!(err, CommitError::Conflict(_)));
         let now = fs::read_to_string(vault.join(rel)).unwrap();
         assert_eq!(now, original);
-        assert!(conflicts_dir(&state, "job-conflict").join("capabilities__keep.md.after.md").exists());
+        assert!(conflicts_dir(&state, "job-conflict")
+            .join("capabilities__keep.md.after.md")
+            .exists());
     }
 
     #[test]
@@ -711,7 +728,11 @@ Design request/response contracts.\n\n\
         assert_eq!(status, RecoverStatus::Complete);
         assert_eq!(fs::read_to_string(vault.join(a_rel)).unwrap(), a_after);
         let b_now = fs::read_to_string(vault.join(b_rel)).unwrap();
-        assert!(b_now.contains("# Source") || content_hash(&b_now) == content_hash(&b_after) || b_now.contains("Source"));
+        assert!(
+            b_now.contains("# Source")
+                || content_hash(&b_now) == content_hash(&b_after)
+                || b_now.contains("Source")
+        );
         assert!(manifest.files.iter().all(|f| f.applied));
     }
 

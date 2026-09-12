@@ -81,9 +81,8 @@ impl WikiLlm for ProductionWikiLlm {
             preamble.push_str("\n\n# User extra prompt (cannot raise permissions)\n\n");
             preamble.push_str(extra);
         }
-        preamble.push_str(
-            "\n\nReturn ONLY JSON. No markdown fence. The host validates the schema.\n",
-        );
+        preamble
+            .push_str("\n\nReturn ONLY JSON. No markdown fence. The host validates the schema.\n");
         let user = format!("stage={stage}\ninput={input}\n");
         let text = one_shot(&self.bound, &preamble, &user).await?;
         parse_json_object(&text)
@@ -105,24 +104,26 @@ async fn one_shot(
     let hook = CodegHook::auto_allow(trace.clone());
     let prompt = Message::user(user);
     let stream = match &bound.client {
-        CodegLlmClient::Completions(c) => c
-            .agent(&bound.model_id)
-            .preamble(preamble)
-            .build()
-            .runner(prompt)
-            .max_turns(4)
-            .add_hook(hook)
-            .stream()
-            .await,
-        CodegLlmClient::Responses(c) => c
-            .agent(&bound.model_id)
-            .preamble(preamble)
-            .build()
-            .runner(prompt)
-            .max_turns(4)
-            .add_hook(hook)
-            .stream()
-            .await,
+        CodegLlmClient::Completions(c) => {
+            c.agent(&bound.model_id)
+                .preamble(preamble)
+                .build()
+                .runner(prompt)
+                .max_turns(4)
+                .add_hook(hook)
+                .stream()
+                .await
+        }
+        CodegLlmClient::Responses(c) => {
+            c.agent(&bound.model_id)
+                .preamble(preamble)
+                .build()
+                .runner(prompt)
+                .max_turns(4)
+                .add_hook(hook)
+                .stream()
+                .await
+        }
     };
     let mut stream = stream;
     let mut last_err: Option<String> = None;
@@ -145,13 +146,10 @@ async fn one_shot(
 pub fn parse_json_object(text: &str) -> Result<Value, WikiLlmError> {
     let trimmed = text.trim();
     let body = strip_fence(trimmed);
-    let value: Value = serde_json::from_str(body).map_err(|e| {
-        WikiLlmError::Failed(format!("model output is not JSON: {e}"))
-    })?;
+    let value: Value = serde_json::from_str(body)
+        .map_err(|e| WikiLlmError::Failed(format!("model output is not JSON: {e}")))?;
     if !value.is_object() {
-        return Err(WikiLlmError::Failed(
-            "model JSON must be an object".into(),
-        ));
+        return Err(WikiLlmError::Failed("model JSON must be an object".into()));
     }
     Ok(value)
 }
@@ -166,7 +164,9 @@ fn strip_fence(s: &str) -> &str {
         .or_else(|| rest.strip_prefix("JSON"))
         .unwrap_or(rest);
     let rest = rest.trim_start_matches('\n');
-    rest.rsplit_once("```").map(|(a, _)| a.trim()).unwrap_or(rest)
+    rest.rsplit_once("```")
+        .map(|(a, _)| a.trim())
+        .unwrap_or(rest)
 }
 
 pub async fn bind_wiki_model(
@@ -179,9 +179,8 @@ pub async fn bind_wiki_model(
             "no Codeg Agent model provider is bound".into(),
         ));
     };
-    let mut config = resolve_codeg_agent_config(&env, Some(&provider)).map_err(|e| {
-        WikiLlmError::Blocked(format!("native config: {e:?}"))
-    })?;
+    let mut config = resolve_codeg_agent_config(&env, Some(&provider))
+        .map_err(|e| WikiLlmError::Blocked(format!("native config: {e:?}")))?;
     if let Some(id) = model_override.map(str::trim).filter(|s| !s.is_empty()) {
         if !config.context_windows.contains_key(id) && config.model_id != id {
             return Err(WikiLlmError::Blocked(format!(
@@ -210,13 +209,11 @@ async fn load_codeg_bind(
     std::collections::BTreeMap<String, String>,
     Option<BoundProvider>,
 ) {
-    let setting = crate::db::service::agent_setting_service::get_by_agent_type(
-        conn,
-        AgentType::CodegAgent,
-    )
-    .await
-    .ok()
-    .flatten();
+    let setting =
+        crate::db::service::agent_setting_service::get_by_agent_type(conn, AgentType::CodegAgent)
+            .await
+            .ok()
+            .flatten();
     let env = setting
         .as_ref()
         .and_then(|m| m.env_json.as_deref())

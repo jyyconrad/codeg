@@ -12,7 +12,6 @@ import {
   BookMarked,
   BookOpenText,
   Boxes,
-  Braces,
   FileSpreadsheet,
   GitBranch,
   Globe,
@@ -25,6 +24,7 @@ import {
   Server,
   Settings,
   SlidersHorizontal,
+  Wrench,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { usePathname } from "next/navigation"
@@ -48,7 +48,7 @@ interface SettingsNavItem {
     | "codeg_agent"
     | "model_providers"
     | "mcp"
-    | "code_intelligence"
+    | "tools"
     | "skills"
     | "skill_packs"
     | "wiki"
@@ -84,8 +84,8 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   },
   {
     href: "/settings/code-intelligence",
-    labelKey: "code_intelligence",
-    icon: Braces,
+    labelKey: "tools",
+    icon: Wrench,
   },
   {
     href: "/settings/skills",

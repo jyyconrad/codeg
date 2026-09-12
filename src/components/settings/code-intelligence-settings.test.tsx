@@ -41,16 +41,19 @@ function defaultStatus(
     codegraph_binary: null,
     codegraph_indexed: false,
     cwd: null,
-    lsp_servers: [
+    lsp_servers: [],
+    mcp_tools: [
       {
-        id: "rust-analyzer",
-        language: "Rust",
-        binary: "rust-analyzer",
-        binary_on_path: false,
-        checked: true,
-        language_detected: false,
-        default_checked: true,
-        custom: false,
+        name: "goToDefinition",
+        group: "lsp",
+        description: "Jump to the definition of a symbol.",
+        advertised: false,
+      },
+      {
+        name: "codegraph_explore",
+        group: "codegraph",
+        description: "Official CodeGraph explore.",
+        advertised: false,
       },
     ],
     ...overrides,
@@ -76,25 +79,21 @@ describe("CodeIntelligenceSettings", () => {
   it("renders master switch unchecked by default", async () => {
     renderSettings()
     const sw = await screen.findByRole("switch", {
-      name: /enable code intelligence/i,
+      name: /enable project tools/i,
     })
     expect(sw).toHaveAttribute("data-state", "unchecked")
   })
 
-  it("lists rust-analyzer as checked and shows PATH miss", async () => {
+  it("lists LSP MCP tools instead of language servers", async () => {
     renderSettings()
-    expect(
-      (await screen.findAllByText(/rust-analyzer/i)).length
-    ).toBeGreaterThan(0)
-    expect(screen.getByText("not on PATH")).toBeInTheDocument()
-    expect(
-      screen.getByRole("checkbox", { name: /rust-analyzer/i })
-    ).toHaveAttribute("data-state", "checked")
+    expect(await screen.findByText("goToDefinition")).toBeInTheDocument()
+    expect(screen.getByText("codegraph_explore")).toBeInTheDocument()
+    expect(screen.queryByText("rust-analyzer")).not.toBeInTheDocument()
   })
 
   it("does not call install APIs", async () => {
     renderSettings()
-    await screen.findByText(/npm i -g @colbymchenry\/codegraph/i)
+    await screen.findByText("goToDefinition")
     for (const [name, value] of Object.entries(api)) {
       if (!/install/i.test(name)) continue
       expect(value, name).not.toHaveBeenCalled()
@@ -103,7 +102,7 @@ describe("CodeIntelligenceSettings", () => {
 
   it("disables the CodeGraph switch while master is off", async () => {
     renderSettings()
-    const cg = await screen.findByRole("switch", { name: /^codegraph$/i })
+    const cg = await screen.findByRole("switch", { name: /codegraph mcp/i })
     expect(cg).toBeDisabled()
   })
 
@@ -113,7 +112,7 @@ describe("CodeIntelligenceSettings", () => {
     renderSettings()
 
     const sw = await screen.findByRole("switch", {
-      name: /enable code intelligence/i,
+      name: /enable project tools/i,
     })
     fireEvent.click(sw)
 

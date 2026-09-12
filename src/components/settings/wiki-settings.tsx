@@ -464,6 +464,9 @@ export function WikiSettings() {
               />
             </SettingRow>
             <SettingRow title={t("ingestPrompt")} htmlFor="wiki-ingest-prompt">
+              <p className="mb-2 text-xs text-muted-foreground">
+                {t("ingestPromptBuiltinHint")}
+              </p>
               <Textarea
                 id="wiki-ingest-prompt"
                 value={draft.ingest.prompt ?? ""}
@@ -533,6 +536,9 @@ export function WikiSettings() {
               title={t("compilePrompt")}
               htmlFor="wiki-compile-prompt"
             >
+              <p className="mb-2 text-xs text-muted-foreground">
+                {t("compilePromptBuiltinHint")}
+              </p>
               <Textarea
                 id="wiki-compile-prompt"
                 value={draft.compile.prompt ?? ""}

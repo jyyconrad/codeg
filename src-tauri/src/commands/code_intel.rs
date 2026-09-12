@@ -11,8 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::acp::file_system_runtime::{FileSystemRuntime, FsAccessPolicy};
 use crate::agent::code_intel::{
-    codegraph_has_index, detect_languages, load_code_intel_config, preset_lsp_servers,
-    resolve_codegraph_binary, save_code_intel_config, CodeIntelConfig,
+    advertised_mcp_tools, codegraph_has_index, detect_languages, load_code_intel_config,
+    preset_lsp_servers, resolve_codegraph_binary, save_code_intel_config, CodeIntelConfig,
+    CodeIntelMcpToolStatus,
 };
 use crate::app_error::AppCommandError;
 
@@ -23,6 +24,8 @@ pub struct CodeIntelStatus {
     pub codegraph_indexed: bool,
     pub cwd: Option<String>,
     pub lsp_servers: Vec<LspServerStatus>,
+    #[serde(default)]
+    pub mcp_tools: Vec<CodeIntelMcpToolStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,12 +124,14 @@ pub(crate) fn build_code_intel_status(
         });
     }
 
+    let mcp_tools = advertised_mcp_tools(&cfg);
     CodeIntelStatus {
         codegraph_binary: resolve_codegraph_binary(&cfg.codegraph)
             .map(|path| path.to_string_lossy().into_owned()),
         codegraph_indexed,
         cwd: cwd.map(|path| path.to_string_lossy().into_owned()),
         lsp_servers,
+        mcp_tools,
         config: cfg,
     }
 }
@@ -154,6 +159,15 @@ mod tests {
         assert!(!ra.custom);
         assert_eq!(ra.binary, "rust-analyzer");
         assert!(!status.codegraph_indexed);
+        assert!(status
+            .mcp_tools
+            .iter()
+            .any(|tool| tool.name == "goToDefinition"));
+        assert!(status
+            .mcp_tools
+            .iter()
+            .any(|tool| tool.name == "codegraph_explore"));
+        assert!(status.mcp_tools.iter().all(|tool| !tool.advertised));
     }
 
     #[test]

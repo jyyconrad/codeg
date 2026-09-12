@@ -307,7 +307,9 @@ pub fn page_type_matches_rel(page_type: &str, rel: &str) -> bool {
         "project" => rel.starts_with("work/projects/") && rel.ends_with(".md"),
         "area" => rel.starts_with("work/areas/") && rel.ends_with(".md"),
         "capability" => {
-            rel.starts_with("capabilities/") && rel.ends_with(".md") && rel != "capabilities/index.md"
+            rel.starts_with("capabilities/")
+                && rel.ends_with(".md")
+                && rel != "capabilities/index.md"
         }
         "concept" => rel.starts_with("knowledge/concepts/") && rel.ends_with(".md"),
         "method" => rel.starts_with("knowledge/methods/") && rel.ends_with(".md"),
@@ -329,17 +331,16 @@ fn has_denied_segment(rel: &str) -> bool {
         if seg.is_empty() || seg == "." {
             return false;
         }
-        DENIED_SEGMENTS
-            .iter()
-            .any(|d| seg.eq_ignore_ascii_case(d))
+        DENIED_SEGMENTS.iter().any(|d| seg.eq_ignore_ascii_case(d))
             || seg.eq_ignore_ascii_case("session_store")
     })
 }
 
 fn canonical_existing_or_parent(path: &Path) -> Result<PathBuf, FsPolicyError> {
     if path.exists() {
-        return fs::canonicalize(path)
-            .map_err(|e| FsPolicyError::Denied(format!("cannot canonicalize {}: {e}", path.display())));
+        return fs::canonicalize(path).map_err(|e| {
+            FsPolicyError::Denied(format!("cannot canonicalize {}: {e}", path.display()))
+        });
     }
     let mut cur = path.to_path_buf();
     let mut missing = Vec::new();
@@ -401,7 +402,9 @@ mod tests {
         let vault = dir.path().join("vault");
         fs::create_dir_all(&vault).unwrap();
         let p = policy(&vault, &dir.path().join("state"));
-        let err = p.check_commit_rel("work/projects/../../etc/passwd").unwrap_err();
+        let err = p
+            .check_commit_rel("work/projects/../../etc/passwd")
+            .unwrap_err();
         assert!(err.to_string().contains("..") || err.to_string().contains("allowed"));
     }
 

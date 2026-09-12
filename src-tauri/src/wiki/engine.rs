@@ -324,7 +324,14 @@ async fn handle_ingest(
     vault: &Path,
     emitter: &EventEmitter,
 ) {
-    let llm = match bind_optional(conn, settings.ingest.model_id.as_deref(), "ingest").await {
+    let llm = match bind_optional(
+        conn,
+        settings.ingest.model_id.as_deref(),
+        "ingest",
+        settings.ingest.prompt.clone(),
+    )
+    .await
+    {
         Ok(v) => v,
         Err(e) => {
             tracing::info!("[wiki] ingest summary without model: {e}");
@@ -399,7 +406,14 @@ async fn handle_compile(
     let protocol = bound.protocol.as_str().to_string();
     let _ = wiki_service::set_job_model_meta(conn, &job.id, Some(&model_id), Some(&protocol)).await;
     let skill = include_str!("../../agent-skills/wiki-compile/SKILL.md").to_string();
-    let llm = ProductionWikiLlm::new(bound, skill, settings.compile.prompt.clone());
+    let extra = settings
+        .compile
+        .prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let llm = ProductionWikiLlm::new(bound, skill, extra);
     let cancel = cancellation_token(&job.id);
     let attempt = worker::run_compile_attempt(conn, job, &llm, vault, state_root);
     tokio::pin!(attempt);
@@ -461,6 +475,7 @@ async fn bind_optional(
     conn: &DatabaseConnection,
     model_id: Option<&str>,
     skill: &str,
+    extra_prompt: Option<String>,
 ) -> Result<Option<ProductionWikiLlm>, llm::WikiLlmError> {
     match llm::bind_wiki_model(conn, model_id).await {
         Ok(bound) => {
@@ -469,7 +484,12 @@ async fn bind_optional(
             } else {
                 include_str!("../../agent-skills/wiki-compile/SKILL.md").to_string()
             };
-            Ok(Some(ProductionWikiLlm::new(bound, body, None)))
+            let extra = extra_prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            Ok(Some(ProductionWikiLlm::new(bound, body, extra)))
         }
         Err(llm::WikiLlmError::Blocked(_)) => Ok(None),
         Err(e) => Err(e),

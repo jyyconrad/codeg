@@ -1,7 +1,7 @@
 //! Command ring: `cmd_rx` + runner stream + shutdown select.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,8 +25,7 @@ use crate::acp::types::{
 };
 use crate::acp_transcript::{now_epoch_ms, record_header_critical_in, TranscriptHeader};
 use crate::agent::code_intel::{
-    load_code_intel_config, resolve_codegraph_binary, should_run_host_index, spawn_host_index,
-    HostIndexAction, LspPool,
+    load_code_intel_config, resolve_codegraph_binary, LspPool, ProjectCodeIntelSupervisor,
 };
 use crate::agent::context::transcript::tool_call_update_payload;
 use crate::agent::context::{
@@ -40,7 +39,6 @@ use crate::agent::model::{
     NativeTurnOutcome, NativeTurnRequest, NativeTurnTools,
 };
 use crate::agent::tools::codegraph::should_inject_codegraph;
-use crate::agent::tools::lsp::should_inject_lsp;
 use crate::agent::tools::{
     build_companion_tools, companion_plan_from_injection, schema_for, schema_for_companion_def,
     tool_kind, BashTool, CodegraphTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool,
@@ -55,9 +53,6 @@ const WORKER_CANCEL_WAIT: Duration = Duration::from_secs(5);
 const NATIVE_FORCE_REAP: Duration = Duration::from_secs(2);
 const TURN_END_WRITE_FAILED: &str = "failed to confirm transcript turn end";
 const TURN_DID_NOT_CONVERGE: &str = "turn did not converge after cancel";
-
-static HOST_INDEX_WORKSPACES: std::sync::OnceLock<Mutex<HashSet<PathBuf>>> =
-    std::sync::OnceLock::new();
 
 fn companion_ok_in_mode(mode: &str, name: &str) -> bool {
     if mode != MODE_PLAN {
@@ -139,51 +134,6 @@ impl NativeSessionSupervisor {
 
 struct SessionOutcome {
     err: Option<String>,
-}
-
-fn spawn_session_host_index(args: &NativeSessionArgs) {
-    let intel = load_code_intel_config();
-    let binary = resolve_codegraph_binary(&intel.codegraph);
-    let action = should_run_host_index(&intel, binary.as_deref(), &args.launch_cwd);
-    if matches!(action, HostIndexAction::Skip) {
-        return;
-    }
-    let Some(binary) = binary else {
-        return;
-    };
-    let Some(cwd) = claim_host_index_workspace(&args.launch_cwd) else {
-        tracing::debug!(cwd = %args.launch_cwd.display(), "codegraph host index already running for workspace");
-        return;
-    };
-    let owners = args.shutdown.owners();
-    let cancel = args.shutdown.token();
-    let claimed_cwd = cwd.clone();
-    tokio::spawn(async move {
-        spawn_host_index(binary, cwd, action, owners, cancel).await;
-        release_host_index_workspace(&claimed_cwd);
-    });
-}
-
-fn canonical_workspace(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn claim_host_index_workspace(path: &Path) -> Option<PathBuf> {
-    let canonical = canonical_workspace(path);
-    let claims = HOST_INDEX_WORKSPACES.get_or_init(|| Mutex::new(HashSet::new()));
-    let mut guard = claims
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    guard.insert(canonical.clone()).then_some(canonical)
-}
-
-fn release_host_index_workspace(path: &Path) {
-    if let Some(claims) = HOST_INDEX_WORKSPACES.get() {
-        claims
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(path);
-    }
 }
 
 async fn run_session(
@@ -369,8 +319,6 @@ async fn run_session(
     .await;
     crate::agent::mode::emit_modes(&args.session_state, &args.emitter, &initial_mode).await;
     emit_with_state(&args.session_state, &args.emitter, AcpEvent::SelectorsReady).await;
-    spawn_session_host_index(args);
-
     let wire = resolve_session_wire_protocol(&args.effective_config).await;
     let client = match CodegLlmClient::build(
         args.effective_config.api_key.clone(),
@@ -405,11 +353,10 @@ async fn run_session(
         args.effective_config.system_prompt.as_deref(),
     );
     let coordinator = Arc::new(TurnCoordinator::new());
-    let lsp_pool = {
-        let intel = load_code_intel_config();
-        should_inject_lsp(&intel)
-            .then(|| LspPool::for_workspace(args.launch_cwd.clone(), Arc::clone(&fs), intel))
-    };
+    let intel_lease =
+        ProjectCodeIntelSupervisor::acquire(args.launch_cwd.clone(), Arc::clone(&fs)).await;
+    let lsp_pool = intel_lease.as_ref().and_then(|lease| lease.lsp_pool());
+    let _intel_lease = intel_lease;
     let mut cmd_rx = std::mem::replace(&mut args.cmd_rx, mpsc::channel(1).1);
     let (inject_tx, mut inject_rx) = mpsc::channel::<NativeInject>(8);
     let subagents = Arc::new(Mutex::new(SubagentTable::default()));
@@ -1752,15 +1699,5 @@ mod tests {
             }
             other => panic!("expected select, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn host_index_claim_is_exclusive_per_workspace() {
-        let dir = tempfile::tempdir().unwrap();
-        let first = claim_host_index_workspace(dir.path()).expect("first claim");
-        assert!(claim_host_index_workspace(&dir.path().join(".")).is_none());
-        release_host_index_workspace(&first);
-        assert!(claim_host_index_workspace(dir.path()).is_some());
-        release_host_index_workspace(&first);
     }
 }

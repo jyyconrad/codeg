@@ -4,16 +4,16 @@
 | --- | --- |
 | 日期 | 2026-09-13 |
 | 分支 | `develop-20260909` |
-| 状态 | CodeGraph 索引任务已接入；当前 ACP 注入仍为会话级 stdio，项目级 MCP 宿主和 LSP MCP 适配待后续实现 |
+| 状态 | 已落地项目级 `ProjectCodeIntelSupervisor`：托管 LSP pool、CodeGraph `init/sync`/`serve --mcp` 与 Streamable HTTP MCP 适配器。Agent 会话只注入 MCP 连接（HTTP 优先，stdio-only 走传输连接器）。设置页改为 Tools 配置，展示 LSP/CodeGraph MCP 工具而非语言服务器。 |
 | 对照方案 | `docs/superpowers/specs/2026-09-12-lsp-adapter-layer.md` |
 
 ## 已完成
 
 - CodeGraph `init/sync` 按 workspace 去重，并由 Codeg 进程启动。
-- 当前仍把官方 `codegraph serve --mcp` 作为 ACP 会话级 stdio 配置注入；这只是临时兼容路径，不符合目标的项目级进程托管。
+- ACP 会话注入项目级 Streamable HTTP MCP endpoint（`codeg-code-intel`）；stdio-only Agent 注入无业务逻辑的 `--code-intel-mcp-stdio` 连接器。
 - 缺少二进制、索引或 Agent 不支持 MCP 时失败开放。
 - CodeGraph 遥测、更新检查已关闭。
-- Codeg native session 的 LSP pool 已按 canonical workspace 复用，但生命周期尚未提升为独立项目 supervisor。
+- Native session 通过 `ProjectCodeIntelSupervisor::acquire` 持有项目 lease，不再由会话私有 spawn 宿主 `init`/`sync`。
 
 ## 当前边界
 

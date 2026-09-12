@@ -26,6 +26,18 @@ WikiWorker loads this skill on purpose. You do not scan all user skills. You do 
 - Never mint `codeg_note_id` / `source_id`; echo host ids. You may suggest titles and slugs only.
 - Max **5** durable knowledge candidates per segment. “Nothing to persist” is valid.
 
+## Grounding (WeKnora)
+
+Static rules stay at the front of this skill. Host input is appended last. Do not invent from filenames, folder names, or host metadata when the segment text is empty or non-substantive.
+
+- If a segment has no extractable claims, return **no candidates** for it. That is success.
+- **related ≠ same.** Overlapping topic, shared vocabulary, or similar titles are not identity. Merge only when kind, work scope, and claim identity match.
+- Reuse the host `codeg_note_id` when the same identity still exists. Do not mint a parallel page for the same claim.
+- Aliases mean **the exact same thing** (abbreviation, translation, short/full name). Parent categories and related techniques are not aliases.
+- Every fact in a page body needs a locator next to the claim. A page-level `sources` list is not enough.
+- Do not guess a topic from a scanner-style filename or a path. Content is the only source of claims.
+- Keep three voices distinct: **the source said**, **this work used**, **personal practice showed**.
+
 ## Four steps (WeKnora discipline)
 
 | Step | You do | Host does |

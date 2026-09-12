@@ -5100,6 +5100,14 @@ export interface LspServerStatus {
   custom: boolean
 }
 
+/** Mirror of Rust `CodeIntelMcpToolStatus`. */
+export interface CodeIntelMcpToolStatus {
+  name: string
+  group: string
+  description: string
+  advertised: boolean
+}
+
 /** Mirror of Rust `CodeIntelStatus`. */
 export interface CodeIntelStatus {
   config: CodeIntelConfig
@@ -5107,6 +5115,7 @@ export interface CodeIntelStatus {
   codegraph_indexed: boolean
   cwd: string | null
   lsp_servers: LspServerStatus[]
+  mcp_tools?: CodeIntelMcpToolStatus[]
 }
 
 export async function getCodeIntelSettings(): Promise<CodeIntelConfig> {

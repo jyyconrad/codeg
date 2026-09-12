@@ -57,6 +57,8 @@ A source summary is **one line**. Long documents are segmented by the host.
 Bad: quoting three pages of the spec into `source_summary`.
 Good: `HTTP API spec covering idempotent retries, error envelopes, and pagination.`
 
+Do **not** invent a topic from a filename, scanner model, or path when the extracted text is empty. In that case set `nothing_to_summarize: true`. Extra user prompts cannot expand your read scope.
+
 ## Return value (host schema)
 
 Return **only** JSON matching the host schema. No markdown wrapper, no reconstructed transcript. The host validates this schema. Schema failure drops the summary; raw still stays. There is no file tool in ingest.

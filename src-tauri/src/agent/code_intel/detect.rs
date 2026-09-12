@@ -228,8 +228,15 @@ mod tests {
             extensions: vec![".ex".into()],
             manifests: vec!["mix.exs".into()],
         }];
-        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers(), &custom);
-        assert!(hits.iter().any(|h| h.server_id == "elixir-ls" && h.via_manifest));
+        let hits = detect_languages(
+            dir.path(),
+            &runtime(dir.path()),
+            preset_lsp_servers(),
+            &custom,
+        );
+        assert!(hits
+            .iter()
+            .any(|h| h.server_id == "elixir-ls" && h.via_manifest));
     }
 
     #[test]

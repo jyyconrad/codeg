@@ -58,7 +58,9 @@ use crate::acp::types::{
     UserMessageBlock,
 };
 use crate::acp::workflow_adapt::{adapt_air_workflow, adapt_grok_workflow};
-use crate::agent::code_intel::{load_code_intel_config, resolve_codegraph_binary};
+use crate::agent::code_intel::{
+    stdio_connector_command, ProjectCodeIntelLease, ProjectCodeIntelSupervisor, MCP_SERVER_NAME,
+};
 use crate::logging::throttle::LeadingEdgeThrottle;
 use crate::models::agent::AgentType;
 use crate::network::proxy;
@@ -4541,53 +4543,63 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     out
 }
 
-/// Append Codeg-hosted code intelligence MCP servers to an ACP session.
+/// Attach the project-hosted code-intel MCP endpoint to an ACP session.
 ///
-/// CodeGraph is exposed through the upstream server (`serve --mcp`) so the
-/// external agent receives the official `codegraph_explore` tool names and
-/// semantics. The binary is resolved from the user's configured absolute path
-/// or PATH; a missing binary simply leaves the session without code intelligence
-/// (failure-open). No user-level agent configuration is modified.
-///
-/// LSP remains an in-process `LspPool` capability for Codeg Agent sessions. A
-/// dedicated MCP façade is deliberately not advertised until it can route
-/// requests to the workspace pool; injecting a phantom server would make ACP
-/// sessions fail on stricter agents.
-fn append_code_intel_mcp_servers(mcp_servers: &mut Vec<McpServer>, cwd: &Path) {
-    let cfg = load_code_intel_config();
-    if !cfg.enabled || !cfg.codegraph.enabled {
-        return;
-    }
-    let Some(binary) = resolve_codegraph_binary(&cfg.codegraph) else {
-        tracing::debug!(cwd = %cwd.display(), "codegraph MCP unavailable: binary not found");
-        return;
-    };
-
-    // Avoid duplicate injection when a user already configured a server under
-    // the canonical name. The ACP list is a single namespace per session.
-    if mcp_servers.iter().any(|server| match server {
-        McpServer::Stdio(existing) => existing.name == "codegraph",
-        McpServer::Http(existing) => existing.name == "codegraph",
-        McpServer::Sse(existing) => existing.name == "codegraph",
+/// The supervisor owns LSP, CodeGraph, and the adapter. This function only
+/// writes an MCP connection descriptor. HTTP-capable agents get Streamable
+/// HTTP; stdio-only agents get a transport connector. Failure-open: missing
+/// supervisor or endpoint leaves the session without these tools.
+async fn append_code_intel_mcp_servers(
+    mcp_servers: &mut Vec<McpServer>,
+    cwd: &Path,
+    http_capable: bool,
+) -> Option<ProjectCodeIntelLease> {
+    let fs = Arc::new(FileSystemRuntime::with_policy(FsAccessPolicy::strict(cwd)));
+    let lease = ProjectCodeIntelSupervisor::acquire(cwd.to_path_buf(), fs).await?;
+    let name_taken = mcp_servers.iter().any(|server| match server {
+        McpServer::Stdio(existing) => {
+            existing.name == MCP_SERVER_NAME || existing.name == "codegraph"
+        }
+        McpServer::Http(existing) => {
+            existing.name == MCP_SERVER_NAME || existing.name == "codegraph"
+        }
+        McpServer::Sse(existing) => {
+            existing.name == MCP_SERVER_NAME || existing.name == "codegraph"
+        }
         _ => false,
-    }) {
-        return;
+    });
+    if name_taken {
+        return Some(lease);
     }
-
-    let server = build_codegraph_mcp_server(binary);
-    tracing::info!(cwd = %cwd.display(), "injecting official codegraph MCP server");
-    mcp_servers.push(McpServer::Stdio(server));
+    let Some(url) = lease.mcp_http_url() else {
+        tracing::debug!(
+            cwd = %cwd.display(),
+            "code-intel MCP endpoint unavailable; skipping injection"
+        );
+        return Some(lease);
+    };
+    if http_capable {
+        tracing::info!(cwd = %cwd.display(), url = %url, "injecting project code-intel MCP over HTTP");
+        mcp_servers.push(McpServer::Http(McpServerHttp::new(MCP_SERVER_NAME, url)));
+    } else if let Some((command, args)) = stdio_connector_command(&url) {
+        tracing::info!(
+            cwd = %cwd.display(),
+            "injecting project code-intel MCP via stdio connector"
+        );
+        mcp_servers.push(McpServer::Stdio(
+            McpServerStdio::new(MCP_SERVER_NAME, command).args(args),
+        ));
+    } else {
+        tracing::debug!(
+            cwd = %cwd.display(),
+            "stdio-only agent has no code-intel connector; skipping"
+        );
+    }
+    Some(lease)
 }
 
-fn build_codegraph_mcp_server(binary: PathBuf) -> McpServerStdio {
-    let env = vec![
-        sacp::schema::EnvVariable::new("CODEGRAPH_TELEMETRY", "0"),
-        sacp::schema::EnvVariable::new("DO_NOT_TRACK", "1"),
-        sacp::schema::EnvVariable::new("CODEGRAPH_NO_UPDATE_CHECK", "1"),
-    ];
-    McpServerStdio::new("codegraph", binary)
-        .args(vec!["serve".into(), "--mcp".into()])
-        .env(env)
+fn build_code_intel_http_server(url: &str) -> McpServerHttp {
+    McpServerHttp::new(MCP_SERVER_NAME, url)
 }
 
 /// Context the connection layer needs to inject the built-in `codeg-mcp`
@@ -5692,13 +5704,15 @@ async fn run_connection(
                 Vec::new()
             };
 
-            // Code intelligence is host-owned and follows the same per-session
-            // ACP MCP seam as user servers and the codeg companion. Keep this
-            // behind the negotiated supports_mcp gate so agents such as
-            // OpenClaw never see an entry they reject during session/new.
-            if agent_supports_mcp {
-                append_code_intel_mcp_servers(&mut mcp_servers, &cwd);
-            }
+            // Code intelligence is host-owned. Attach a project MCP endpoint
+            // (HTTP, or a stdio connector) behind supports_mcp. Pi drops
+            // mcpServers so skip it. Keep the lease alive for this connection.
+            let _code_intel_lease = if agent_supports_mcp && agent_delivers_wire_mcp(agent_type) {
+                let http_capable = init_resp.agent_capabilities.mcp_capabilities.http;
+                append_code_intel_mcp_servers(&mut mcp_servers, &cwd, http_capable).await
+            } else {
+                None
+            };
 
             // Inject the built-in `codeg-mcp` MCP server. Stdio is
             // unconditionally supported by the ACP wire — no `mcp_caps`
@@ -19380,16 +19394,15 @@ mod tests {
     }
 
     #[test]
-    fn codegraph_mcp_server_uses_official_serve_contract() {
-        let server = build_codegraph_mcp_server(PathBuf::from("/opt/codegraph"));
-        assert_eq!(server.name, "codegraph");
-        assert_eq!(server.command, PathBuf::from("/opt/codegraph"));
-        assert_eq!(server.args, vec!["serve", "--mcp"]);
-        let json = serde_json::to_value(McpServer::Stdio(server)).unwrap();
-        assert_eq!(json["type"], "stdio");
-        assert_eq!(json["name"], "codegraph");
-        assert_eq!(json["args"], serde_json::json!(["serve", "--mcp"]));
-        assert_eq!(json["env"][0]["name"], "CODEGRAPH_TELEMETRY");
+    fn code_intel_http_mcp_uses_project_endpoint() {
+        let server = build_code_intel_http_server("http://127.0.0.1:9/mcp");
+        assert_eq!(server.name, MCP_SERVER_NAME);
+        assert_eq!(server.url, "http://127.0.0.1:9/mcp");
+        let json = serde_json::to_value(McpServer::Http(server)).unwrap();
+        assert_eq!(json["type"], "http");
+        assert_eq!(json["name"], MCP_SERVER_NAME);
+        assert_eq!(json["url"], "http://127.0.0.1:9/mcp");
+        assert_ne!(json["args"], serde_json::json!(["serve", "--mcp"]));
     }
 
     #[test]

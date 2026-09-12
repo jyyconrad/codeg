@@ -671,7 +671,7 @@ pub fn servers_to_start(
     ids
 }
 
-fn canonical_workspace(path: &Path) -> PathBuf {
+pub(crate) fn canonical_workspace(path: &Path) -> PathBuf {
     if let Ok(path) = std::fs::canonicalize(path) {
         return path;
     }

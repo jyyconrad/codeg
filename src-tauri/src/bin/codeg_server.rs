@@ -46,6 +46,15 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if let Some(url) = codeg_lib::agent::code_intel::parse_stdio_bridge_url(args.clone()) {
+        let _log_guard = codeg_lib::logging::init::init_mcp();
+        if let Err(err) = codeg_lib::agent::code_intel::run_stdio_http_bridge(&url) {
+            eprintln!("code-intel MCP stdio connector failed: {err}");
+            return ExitCode::FAILURE;
+        }
+        return ExitCode::SUCCESS;
+    }
+
     // PATH initialisation MUST happen before the tokio runtime is created.
     // std::env::set_var is not thread-safe (unsafe in Rust edition 2024);
     // #[tokio::main] would spawn worker threads before we reach this point.
