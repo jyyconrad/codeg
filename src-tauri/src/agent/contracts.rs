@@ -562,7 +562,7 @@ fn native_state(
     crate::agent::hook::NativeRunState {
         turn_id: 1,
         turn_key: "s:1".into(),
-        budget: crate::agent::context::BudgetConfig { window, max_output },
+        budget: crate::agent::context::BudgetConfig::new(window, max_output),
         preamble: "short preamble".into(),
         tool_schemas: Vec::new(),
         store,
@@ -757,6 +757,7 @@ async fn write_file_reject_is_failed_and_does_not_write() {
             dir.path(),
         ))),
         session_id: "s".into(),
+        spill_dir: dir.path().join("spills"),
     };
     let tool = WriteFileTool::new(ctx);
     let (base, _) = spawn_completions(vec![
@@ -851,6 +852,7 @@ async fn write_a_cancel_b_keeps_file_and_does_not_replay() {
             dir.path(),
         ))),
         session_id: "s".into(),
+        spill_dir: dir.path().join("spills"),
     };
     let tool = WriteFileTool::new(ctx);
     let (base, _) = spawn_completions(vec![sse_tools(vec![

@@ -17,6 +17,35 @@ const MESSAGE_WRAP: u64 = 16;
 pub struct BudgetConfig {
     pub window: u64,
     pub max_output: u64,
+    pub compact_soft_percent: u8,
+    pub compact_recent_turns: usize,
+}
+
+impl BudgetConfig {
+    pub const fn new(window: u64, max_output: u64) -> Self {
+        Self {
+            window,
+            max_output,
+            compact_soft_percent: 80,
+            compact_recent_turns: RECENT_TURN_TARGET,
+        }
+    }
+
+    pub const fn with_compact(mut self, percent: u8, recent_turns: usize) -> Self {
+        self.compact_soft_percent = if percent == 0 {
+            80
+        } else if percent > 100 {
+            100
+        } else {
+            percent
+        };
+        self.compact_recent_turns = if recent_turns == 0 {
+            RECENT_TURN_TARGET
+        } else {
+            recent_turns
+        };
+        self
+    }
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -198,10 +227,7 @@ mod tests {
     use crate::agent::context::{ToolOutcome, ToolPhase};
 
     fn cfg(window: u64, output: u64) -> BudgetConfig {
-        BudgetConfig {
-            window,
-            max_output: output,
-        }
+        BudgetConfig::new(window, output)
     }
 
     #[test]

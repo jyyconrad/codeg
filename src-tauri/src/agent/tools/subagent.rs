@@ -2,6 +2,7 @@
 //! returns immediately; the session shell injects the result later.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -133,10 +134,7 @@ pub fn subagent_spec_document() -> Document {
     }
 }
 
-pub fn attach_subagent_extra_context(
-    patch: RequestPatch,
-    tool_schemas: &[Value],
-) -> RequestPatch {
+pub fn attach_subagent_extra_context(patch: RequestPatch, tool_schemas: &[Value]) -> RequestPatch {
     if tool_schemas
         .iter()
         .any(|schema| schema.get("name").and_then(Value::as_str) == Some(SubagentTool::NAME))
@@ -416,9 +414,7 @@ async fn run_inner_subagent(
     cancel: CancellationToken,
 ) -> (NativeTurnOutcome, String) {
     let identity = Arc::new(CallIdentityBridge::new());
-    let store = Arc::new(Mutex::new(ContextStore::new(format!(
-        "sub:{session_id}"
-    ))));
+    let store = Arc::new(Mutex::new(ContextStore::new(format!("sub:{session_id}"))));
     let recorder = Arc::new(FactRecorder::memory(Arc::clone(&store)));
     let inner_ctx = NativeToolCtx {
         turn_id: 1,
@@ -428,6 +424,7 @@ async fn run_inner_subagent(
         launch_cwd,
         fs,
         session_id,
+        spill_dir: PathBuf::new(),
     };
     let read = ReadFileTool::new(inner_ctx.clone());
     let glob = GlobTool::new(inner_ctx.clone());
@@ -564,10 +561,7 @@ mod tests {
     use std::time::Duration;
 
     fn budget() -> BudgetConfig {
-        BudgetConfig {
-            window: 128_000,
-            max_output: 4096,
-        }
+        BudgetConfig::new(128_000, 4096)
     }
 
     async fn spawn_completions(hang: bool) -> String {

@@ -37,7 +37,8 @@ use crate::agent::tools::{
     build_companion_tools, companion_plan_from_injection, schema_for, schema_for_companion_def,
     tool_kind, BashTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool, FeedbackDelivery,
     GlobTool, GrepTool, McpSession, McpTimeouts, NativeInject, NativeToolCtx, ReadFileTool,
-    SkillCatalog, SkillTool, SubagentTable, SubagentTool, UpdatePlanTool, WriteFileTool,
+    RecallTool, SkillCatalog, SkillTool, SubagentTable, SubagentTool, UpdatePlanTool,
+    WriteFileTool,
 };
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 
@@ -694,7 +695,12 @@ fn cancel_turn_subagents(
     drain_injects(inject_rx);
 }
 
-fn inject_prompt(text: String) -> (Vec<PromptInputBlock>, Option<(String, Vec<UserMessageBlock>)>) {
+fn inject_prompt(
+    text: String,
+) -> (
+    Vec<PromptInputBlock>,
+    Option<(String, Vec<UserMessageBlock>)>,
+) {
     (
         vec![PromptInputBlock::Text { text: text.clone() }],
         Some((
@@ -863,8 +869,10 @@ async fn start_prompt(
         launch_cwd: args.launch_cwd.clone(),
         fs,
         session_id: session_id.to_string(),
+        spill_dir: recorder.spill_dir(),
     };
     let read = ReadFileTool::new(tool_ctx.clone());
+    let recall = RecallTool::new(tool_ctx.clone());
     let write = WriteFileTool::new(tool_ctx.clone());
     let edit = EditFileTool::new(tool_ctx.clone());
     let glob = GlobTool::new(tool_ctx.clone());
@@ -883,10 +891,10 @@ async fn start_prompt(
         model_id.to_string(),
         preamble.to_string(),
         catalog,
-        BudgetConfig {
-            window,
-            max_output,
-        },
+        BudgetConfig::new(window, max_output).with_compact(
+            args.effective_config.compact_soft_percent,
+            args.effective_config.compact_recent_turns as usize,
+        ),
         subagents,
         inject_tx,
     );
@@ -908,6 +916,7 @@ async fn start_prompt(
     dynamic_tools.extend(mcp_tools);
     let mut tool_schemas = vec![
         schema_for(&read),
+        schema_for(&recall),
         schema_for(&write),
         schema_for(&edit),
         schema_for(&glob),
@@ -930,10 +939,10 @@ async fn start_prompt(
     let native = NativeRunState {
         turn_id,
         turn_key: turn_key.clone(),
-        budget: BudgetConfig {
-            window,
-            max_output,
-        },
+        budget: BudgetConfig::new(window, max_output).with_compact(
+            args.effective_config.compact_soft_percent,
+            args.effective_config.compact_recent_turns as usize,
+        ),
         preamble: preamble.to_string(),
         tool_schemas,
         store: Arc::clone(&store),
@@ -967,6 +976,7 @@ async fn start_prompt(
     let model_id = model_id.to_string();
     let worker_cancel = cancel.clone();
     let echo = include_echo.then(EchoTool::new);
+    let max_turns = args.effective_config.max_turns.max(1) as usize;
     let worker = tokio::spawn(async move {
         run_native_turn(NativeTurnRequest {
             client,
@@ -975,6 +985,7 @@ async fn start_prompt(
             prompt,
             tools: NativeTurnTools {
                 read,
+                recall,
                 write,
                 edit,
                 glob,
@@ -988,6 +999,7 @@ async fn start_prompt(
             },
             hook,
             cancel: worker_cancel,
+            max_turns,
         })
         .await
     });
@@ -1354,6 +1366,9 @@ mod tests {
             max_output_tokens: 4096,
             system_prompt: None,
             compact_prompt: None,
+            compact_soft_percent: 80,
+            compact_recent_turns: 6,
+            max_turns: 40,
         };
         let option = native_session_model_option(&config, "gateway-model");
         assert_eq!(option.id, "model");

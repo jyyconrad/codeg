@@ -1,7 +1,9 @@
 pub mod budget;
 pub mod compact;
 pub mod hydrate;
+pub mod spill;
 pub mod store;
+pub mod tool_prune;
 pub mod transcript;
 
 pub use budget::{

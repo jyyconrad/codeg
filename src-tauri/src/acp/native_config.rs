@@ -12,6 +12,9 @@ pub const CONTEXT_WINDOWS_KEY: &str = "CODEG_AGENT_CONTEXT_WINDOWS";
 pub const MAX_OUTPUT_TOKENS_KEY: &str = "CODEG_AGENT_MAX_OUTPUT_TOKENS";
 pub const SYSTEM_PROMPT_KEY: &str = "CODEG_AGENT_SYSTEM_PROMPT";
 pub const COMPACT_PROMPT_KEY: &str = "CODEG_AGENT_COMPACT_PROMPT";
+pub const COMPACT_SOFT_PERCENT_KEY: &str = "CODEG_AGENT_COMPACT_SOFT_PERCENT";
+pub const COMPACT_RECENT_TURNS_KEY: &str = "CODEG_AGENT_COMPACT_RECENT_TURNS";
+pub const MAX_TURNS_KEY: &str = "CODEG_AGENT_MAX_TURNS";
 /// Spawn/preflight internal: set by [`overlay_bound_provider`] when a real
 /// model-provider bind is projected this launch. Not a settings field.
 /// `CODEG_AGENT_API_*` keys without this marker must not authenticate.
@@ -19,6 +22,11 @@ pub const PROVIDER_BOUND_KEY: &str = "CODEG_AGENT_PROVIDER_BOUND";
 const PROVIDER_BOUND_VALUE: &str = "1";
 
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
+pub const DEFAULT_COMPACT_SOFT_PERCENT: u8 = 80;
+pub const DEFAULT_COMPACT_RECENT_TURNS: u32 = 6;
+pub const DEFAULT_MAX_TURNS: u32 = 40;
+/// Dummy Completions API key for loopback servers that ignore Authorization.
+pub const LOCAL_API_KEY: &str = "local";
 /// Reserved tokens that must remain after max-output is taken from the window.
 pub const OUTPUT_SAFETY_MARGIN: u32 = 1024;
 
@@ -45,6 +53,12 @@ pub struct EffectiveNativeConfig {
     pub system_prompt: Option<String>,
     /// Trimmed `CODEG_AGENT_COMPACT_PROMPT`. `None` means [`DEFAULT_COMPACT_PROMPT`].
     pub compact_prompt: Option<String>,
+    /// Soft compact trigger as percent of the input budget. Default 80.
+    pub compact_soft_percent: u8,
+    /// Keep at least this many live turns before compacting. Default 6.
+    pub compact_recent_turns: u32,
+    /// Rig `max_turns` for one Prompt. Default 40.
+    pub max_turns: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +231,7 @@ pub fn resolve_codeg_agent_config(
         .get(API_KEY_KEY)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .or_else(|| is_loopback_http_url(&api_base_url).then(|| LOCAL_API_KEY.to_string()))
         .ok_or(NativeConfigError::EmptyApiKey)?;
 
     let model_id = env
@@ -249,6 +264,18 @@ pub fn resolve_codeg_agent_config(
         max_output_tokens,
         system_prompt: trimmed_optional(env.get(SYSTEM_PROMPT_KEY).map(String::as_str)),
         compact_prompt: trimmed_optional(env.get(COMPACT_PROMPT_KEY).map(String::as_str)),
+        compact_soft_percent: parse_percent(
+            env.get(COMPACT_SOFT_PERCENT_KEY).map(String::as_str),
+            DEFAULT_COMPACT_SOFT_PERCENT,
+        ),
+        compact_recent_turns: parse_positive_u32(
+            env.get(COMPACT_RECENT_TURNS_KEY).map(String::as_str),
+            DEFAULT_COMPACT_RECENT_TURNS,
+        ),
+        max_turns: parse_positive_u32(
+            env.get(MAX_TURNS_KEY).map(String::as_str),
+            DEFAULT_MAX_TURNS,
+        ),
     })
 }
 
@@ -278,6 +305,55 @@ fn is_http_url(raw: &str) -> bool {
         }
         None => false,
     }
+}
+
+fn http_host(raw: &str) -> Option<&str> {
+    let rest = raw
+        .trim()
+        .strip_prefix("https://")
+        .or_else(|| raw.trim().strip_prefix("http://"))?;
+    let hostport = rest.split('/').next().unwrap_or("");
+    let host = hostport
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(hostport);
+    let host = if host.starts_with('[') {
+        host.trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or(host)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+    Some(host)
+}
+
+/// Local OpenAI-compatible servers (Ollama, LM Studio) typically ignore auth.
+pub fn is_loopback_http_url(raw: &str) -> bool {
+    matches!(
+        http_host(raw).map(|h| h.to_ascii_lowercase()),
+        Some(h) if h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "0.0.0.0"
+    )
+}
+
+fn parse_percent(raw: Option<&str>, default: u8) -> u8 {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return default;
+    };
+    raw.parse::<u8>()
+        .ok()
+        .filter(|v| (1..=100).contains(v))
+        .unwrap_or(default)
+}
+
+fn parse_positive_u32(raw: Option<&str>, default: u32) -> u32 {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return default;
+    };
+    raw.parse::<u32>()
+        .ok()
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
 }
 
 fn parse_context_windows(raw: Option<&str>) -> Result<BTreeMap<String, u32>, NativeConfigError> {
@@ -501,5 +577,58 @@ mod tests {
             Some("gateway-model".into())
         );
         assert_eq!(completions_model_id(Some(r#"{"unrelated":true}"#)), None);
+    }
+
+    #[test]
+    fn loopback_url_allows_empty_api_key() {
+        let env = env_with_windows("llama3", 8192);
+        let p = BoundProvider {
+            api_url: "http://127.0.0.1:11434/v1".into(),
+            api_key: String::new(),
+            model: Some("llama3".into()),
+        };
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("local ollama");
+        assert_eq!(cfg.api_key, LOCAL_API_KEY);
+        assert_eq!(cfg.model_id, "llama3");
+    }
+
+    #[test]
+    fn remote_url_still_requires_api_key() {
+        let env = env_with_windows("m", 128000);
+        let p = BoundProvider {
+            api_url: "https://api.openai.com/v1".into(),
+            api_key: String::new(),
+            model: Some("m".into()),
+        };
+        assert_eq!(
+            resolve_codeg_agent_config(&env, Some(&p)),
+            Err(NativeConfigError::EmptyApiKey)
+        );
+    }
+
+    #[test]
+    fn compact_and_runtime_env_keys_parse() {
+        let mut env = env_with_windows("m", 128000);
+        env.insert(COMPACT_SOFT_PERCENT_KEY.into(), "70".into());
+        env.insert(COMPACT_RECENT_TURNS_KEY.into(), "8".into());
+        env.insert(MAX_TURNS_KEY.into(), "24".into());
+        let p = provider("https://gw.example/v1", "sk", "m");
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
+        assert_eq!(cfg.compact_soft_percent, 70);
+        assert_eq!(cfg.compact_recent_turns, 8);
+        assert_eq!(cfg.max_turns, 24);
+    }
+
+    #[test]
+    fn invalid_compact_and_runtime_env_fall_back_to_defaults() {
+        let mut env = env_with_windows("m", 128000);
+        env.insert(COMPACT_SOFT_PERCENT_KEY.into(), "0".into());
+        env.insert(COMPACT_RECENT_TURNS_KEY.into(), "nope".into());
+        env.insert(MAX_TURNS_KEY.into(), "-1".into());
+        let p = provider("https://gw.example/v1", "sk", "m");
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
+        assert_eq!(cfg.compact_soft_percent, DEFAULT_COMPACT_SOFT_PERCENT);
+        assert_eq!(cfg.compact_recent_turns, DEFAULT_COMPACT_RECENT_TURNS);
+        assert_eq!(cfg.max_turns, DEFAULT_MAX_TURNS);
     }
 }

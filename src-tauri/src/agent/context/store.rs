@@ -370,6 +370,14 @@ impl FactRecorder {
         Arc::clone(&self.store)
     }
 
+    pub fn spill_dir(&self) -> PathBuf {
+        super::spill::spill_dir(&self.root, &self.agent_dir, &self.session_id)
+    }
+
+    pub async fn record_fact_update(&self, fact: &ExecutionFact) -> Result<(), FactWriteError> {
+        self.write_tool(fact, fact.phase).await
+    }
+
     pub async fn record_started(&self, fact: &ExecutionFact) -> Result<(), FactWriteError> {
         if self.fail_started.swap(false, Ordering::SeqCst) {
             return Err(FactWriteError::AckFailed);

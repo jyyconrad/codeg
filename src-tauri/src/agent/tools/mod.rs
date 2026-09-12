@@ -3,6 +3,7 @@ pub mod companion;
 pub mod fs;
 pub mod mcp;
 pub mod plan;
+pub mod recall;
 pub mod search;
 pub mod skill;
 pub mod subagent;
@@ -29,6 +30,7 @@ pub(crate) use companion::{
 pub use fs::{EditFileTool, ReadFileTool, WriteFileTool};
 pub use mcp::{mcp_tool_requires_permission, McpSession, McpTimeouts};
 pub use plan::UpdatePlanTool;
+pub use recall::RecallTool;
 pub use search::{GlobTool, GrepTool};
 pub use skill::{SkillCatalog, SkillTool};
 pub use subagent::{
@@ -45,6 +47,8 @@ pub struct NativeToolCtx {
     pub launch_cwd: PathBuf,
     pub fs: Arc<FileSystemRuntime>,
     pub session_id: String,
+    /// Session-local directory for spilled tool output (`recall`).
+    pub spill_dir: PathBuf,
 }
 
 impl NativeToolCtx {
@@ -139,7 +143,7 @@ impl NativeToolCtx {
 /// ACP permission kind for a native tool name.
 pub fn tool_kind(name: &str) -> &'static str {
     match name {
-        "read_file" | "skill" => "read",
+        "read_file" | "skill" | "recall" => "read",
         "write_file" | "edit_file" => "edit",
         "glob" | "grep" => "search",
         "bash" => "execute",
@@ -152,7 +156,7 @@ pub fn tool_kind(name: &str) -> &'static str {
 pub fn tool_requires_permission(name: &str) -> bool {
     !matches!(
         name,
-        "read_file" | "glob" | "grep" | "skill" | "update_plan"
+        "read_file" | "glob" | "grep" | "skill" | "update_plan" | "recall"
     ) && !is_companion_tool(name)
 }
 
@@ -234,6 +238,7 @@ pub(crate) fn test_tool_ctx(
             crate::acp::file_system_runtime::FsAccessPolicy::strict(dir),
         )),
         session_id: "s".into(),
+        spill_dir: dir.join("spills"),
     }
 }
 
@@ -459,7 +464,10 @@ mod tests {
             super::acp_card_status_for_tool("subagent", "success"),
             "in_progress"
         );
-        assert_eq!(super::acp_card_status_for_tool("subagent", "error"), "failed");
+        assert_eq!(
+            super::acp_card_status_for_tool("subagent", "error"),
+            "failed"
+        );
         assert_eq!(
             super::acp_card_status_for_tool("read_file", "success"),
             "completed"

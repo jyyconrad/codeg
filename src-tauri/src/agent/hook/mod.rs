@@ -593,7 +593,22 @@ impl AgentHook for CodegHook {
                 .input_budget()
                 .unwrap_or(native.budget.window)
                 .saturating_sub(*native.last_estimate.lock().expect("estimate"));
-            let (shown, truncated) = truncate_presentation(&presentation, remaining.max(1024));
+            let (mut shown, truncated) = truncate_presentation(&presentation, remaining.max(1024));
+            let mut locator = None;
+            if truncated {
+                let spill_dir = native.recorder.spill_dir();
+                if let Ok(path) =
+                    crate::agent::context::spill::write_spill(&spill_dir, &id, &presentation)
+                {
+                    locator = Some(crate::agent::context::spill::locator_for(&spill_dir, &id));
+                    shown.push('\n');
+                    shown.push_str(&crate::agent::context::spill::spill_notice(
+                        &id,
+                        presentation.chars().count(),
+                    ));
+                    let _ = path;
+                }
+            }
             native
                 .store
                 .lock()
@@ -601,7 +616,16 @@ impl AgentHook for CodegHook {
                 .upsert_fact(&id, |fact| {
                     fact.model_presentation = Some(shown.clone());
                     fact.truncated = truncated;
+                    if let Some(locator) = locator.clone() {
+                        fact.output_locator = Some(locator);
+                    }
                 });
+            if truncated {
+                let spilled = native.store.lock().expect("store").fact(&id).cloned();
+                if let Some(fact) = spilled {
+                    let _ = native.recorder.record_fact_update(&fact).await;
+                }
+            }
             self.emit_tool_update(&id, card_status, Some(shown.clone()))
                 .await;
             if truncated {

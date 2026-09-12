@@ -4,20 +4,29 @@
 //! session trigger. Never call `AgentBuilder::memory()` — transcript is truth.
 
 use rig::client::CompletionClient;
+use rig::completion::message::{ToolResultContent, UserContent};
 use rig::completion::{AssistantContent, CompletionModel, Message};
 use rig::providers::openai::CompletionsClient;
 use rig_memory::{Compactor, MemoryError, MemoryPolicy, SlidingWindowMemory, TemplateCompactor};
 
 use super::budget::{
     estimate_request, messages_from_turns, BudgetConfig, BudgetError, BudgetInputs,
-    RECENT_TURN_TARGET,
 };
-use super::store::{CanonicalTurn, CompactRecord, ContextStore, ContextView, UsageSource};
+use super::store::{
+    CanonicalTurn, CompactRecord, ContextStore, ContextView, ExecutionFact, UsageSource,
+};
+use super::tool_prune::{
+    distill_tool_result, hard_clear_tool_result, tool_skips_hard_clear, DistillKind,
+};
 use crate::acp_transcript::now_epoch_ms;
 
 /// Cap on L2 compact `max_tokens` (min of this and the session setting).
 pub const L2_MAX_TOKENS: u64 = 2048;
 const L1_SUMMARY_MAX_BYTES: usize = 8 * 1024;
+/// OpenCode prune: keep the last two user turns' tool output intact.
+const PROTECT_RECENT_USER_TURNS: usize = 2;
+/// Claude Code microcompact / OpenClaw `keep=3`: never hard-clear the newest results.
+const PROTECT_RECENT_TOOL_RESULTS: usize = 3;
 
 /// Artifact produced by [`LlmCompactor`].
 #[derive(Clone, Debug)]
@@ -111,6 +120,9 @@ impl Compactor for LlmCompactor {
 
 /// Project canonical facts. At most one compact-level upgrade per call.
 ///
+/// Tool results are distilled per tool **before** turn eviction or L1/L2
+/// summarization. Canonical facts in the store are not rewritten.
+///
 /// Returns a new [`CompactRecord`] when this call created L1 or L2. Original
 /// turns stay in the store; the caller persists the record to JSONL.
 pub async fn project_compacted(
@@ -130,7 +142,9 @@ pub async fn project_compacted(
     let level = existing.as_ref().map(|r| r.level).unwrap_or(0);
     let mut live = live_turns(inputs.store, existing.as_ref()).to_vec();
     let mut newly_evicted: Vec<CanonicalTurn> = Vec::new();
-    let omitted_at_80 = (budget * 80) / 100;
+    let omitted_at_80 =
+        (budget * u64::from(inputs.config.compact_soft_percent.clamp(1, 100))) / 100;
+    let recent_target = inputs.config.compact_recent_turns.max(1);
     let summary_text = existing.as_ref().map(|r| r.summary.clone());
 
     loop {
@@ -142,7 +156,7 @@ pub async fn project_compacted(
             inputs.prompt,
         );
         let over_hard = estimated > budget;
-        let over_soft = estimated >= omitted_at_80 && live.len() > RECENT_TURN_TARGET;
+        let over_soft = estimated >= omitted_at_80 && live.len() > recent_target;
         let want_upgrade = matches!(level, 0 | 1) && (over_hard || over_soft);
         if !want_upgrade {
             return hard_drop_view(inputs, budget, live, summary_text.as_deref(), level, None);
@@ -168,7 +182,7 @@ pub async fn project_compacted(
         let trial_est =
             estimate_request(inputs.preamble, inputs.tool_schemas, &trial, inputs.prompt);
         let trial_hard = trial_est > budget;
-        let trial_soft = trial_est >= omitted_at_80 && live.len() > RECENT_TURN_TARGET;
+        let trial_soft = trial_est >= omitted_at_80 && live.len() > recent_target;
         if !trial_hard && !trial_soft {
             break;
         }
@@ -369,6 +383,7 @@ fn history_with_summary(
         out.push(Message::user(summary.to_string()));
     }
     out.extend(messages_from_turns(live, store));
+    prune_tool_results_in_messages(&mut out, store);
     out
 }
 
@@ -382,12 +397,120 @@ fn split_policy_messages(
     all.extend(kept.clone());
     let keep_n = kept.len().max(1);
     match SlidingWindowMemory::last_messages(keep_n).apply_with_demoted(all) {
-        Ok((kept_msgs, evicted_msgs)) => (evicted_msgs, kept_msgs),
-        Err(_) => (
-            messages_from_turns(evicted_turns, store),
-            messages_from_turns(kept_turns, store),
-        ),
+        Ok((kept_msgs, mut evicted_msgs)) => {
+            prune_tool_results_for_summarization(&mut evicted_msgs, store);
+            (evicted_msgs, kept_msgs)
+        }
+        Err(_) => {
+            let mut evicted = messages_from_turns(evicted_turns, store);
+            prune_tool_results_for_summarization(&mut evicted, store);
+            (evicted, messages_from_turns(kept_turns, store))
+        }
     }
+}
+
+/// Hard-clear old tool results, then distill the protected tail per tool.
+///
+/// Protects the last [`PROTECT_RECENT_USER_TURNS`] user-text turns and at least
+/// the last [`PROTECT_RECENT_TOOL_RESULTS`] tool-result messages.
+fn prune_tool_results_in_messages(messages: &mut [Message], store: &ContextStore) {
+    let cutoff = protect_cutoff(messages);
+    for (index, message) in messages.iter_mut().enumerate() {
+        if index < cutoff {
+            rewrite_tool_results(message, store, |name, fact, text| {
+                if tool_skips_hard_clear(name) {
+                    distill_tool_result(name, fact, text, DistillKind::Live)
+                } else {
+                    hard_clear_tool_result(name, fact, text)
+                }
+            });
+        } else {
+            rewrite_tool_results(message, store, |name, fact, text| {
+                distill_tool_result(name, fact, text, DistillKind::Live)
+            });
+        }
+    }
+}
+
+fn prune_tool_results_for_summarization(messages: &mut [Message], store: &ContextStore) {
+    for message in messages.iter_mut() {
+        rewrite_tool_results(message, store, |name, fact, text| {
+            distill_tool_result(name, fact, text, DistillKind::Summarize)
+        });
+    }
+}
+
+fn protect_cutoff(messages: &[Message]) -> usize {
+    let user_turns: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| is_user_text_message(message))
+        .map(|(index, _)| index)
+        .collect();
+    let turn_cutoff = user_turns
+        .len()
+        .checked_sub(PROTECT_RECENT_USER_TURNS)
+        .and_then(|index| user_turns.get(index).copied())
+        .unwrap_or(0);
+    let tool_msgs: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| has_tool_result(message))
+        .map(|(index, _)| index)
+        .collect();
+    let tool_cutoff = tool_msgs
+        .len()
+        .checked_sub(PROTECT_RECENT_TOOL_RESULTS)
+        .and_then(|index| tool_msgs.get(index).copied())
+        .unwrap_or(0);
+    turn_cutoff.min(tool_cutoff)
+}
+
+fn is_user_text_message(message: &Message) -> bool {
+    match message {
+        Message::User { content } => content
+            .iter()
+            .any(|part| matches!(part, UserContent::Text(_))),
+        _ => false,
+    }
+}
+
+fn has_tool_result(message: &Message) -> bool {
+    match message {
+        Message::User { content } => content
+            .iter()
+            .any(|part| matches!(part, UserContent::ToolResult(_))),
+        _ => false,
+    }
+}
+
+fn rewrite_tool_results(
+    message: &mut Message,
+    store: &ContextStore,
+    mut rewrite: impl FnMut(&str, Option<&ExecutionFact>, &str) -> String,
+) {
+    let Message::User { content } = message else {
+        return;
+    };
+    for part in content {
+        let UserContent::ToolResult(result) = part else {
+            continue;
+        };
+        let text = tool_result_text(&result.content);
+        let fact = store.fact(result.call.as_str());
+        let next = rewrite(&result.name, fact, &text);
+        if next != text {
+            result.content = vec![ToolResultContent::text(next)];
+        }
+    }
+}
+
+fn tool_result_text(content: &[ToolResultContent]) -> String {
+    content
+        .iter()
+        .filter_map(ToolResultContent::as_text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 async fn template_summary(session_id: &str, evicted: &[Message]) -> String {
@@ -417,7 +540,10 @@ fn choice_text(response: &rig::completion::CompletionResponse) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::context::store::{AssistantPart, AssistantRecord, ContextStore};
+    use crate::agent::context::store::{
+        AssistantPart, AssistantRecord, ContextStore, ExecutionFact,
+    };
+    use crate::agent::context::{ToolOutcome, ToolPhase};
     use crate::agent::model::completions_client;
     use axum::extract::Json;
     use axum::http::{header, StatusCode, Uri};
@@ -429,10 +555,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn cfg(window: u64, output: u64) -> BudgetConfig {
-        BudgetConfig {
-            window,
-            max_output: output,
-        }
+        BudgetConfig::new(window, output)
     }
 
     fn fill_turns(store: &mut ContextStore, start: usize, n: usize, pad: usize) {
@@ -450,6 +573,37 @@ mod tests {
                 },
             );
         }
+    }
+
+    fn record_read(store: &mut ContextStore, i: usize, body: &str) {
+        let turn_id = format!("s:{i}");
+        let call_id = format!("call_{i}");
+        store.append_user(turn_id.clone(), format!("ask-{i}"));
+        store.record_fact(ExecutionFact {
+            tool_call_id: call_id.clone(),
+            function_name: "read_file".into(),
+            raw_input: json!({"path": format!("f{i}.txt")}),
+            phase: ToolPhase::Terminal,
+            outcome: Some(ToolOutcome::Success),
+            executed: Some(true),
+            model_presentation: Some(body.to_string()),
+            truncated: false,
+            output_locator: None,
+            reason: None,
+            turn_id: turn_id.clone(),
+        });
+        store.commit_assistant(
+            &turn_id,
+            AssistantRecord {
+                model_message_id: Some(format!("m{i}")),
+                committed: true,
+                parts: vec![AssistantPart::ToolCall {
+                    id: call_id,
+                    name: "read_file".into(),
+                    args: json!({"path": format!("f{i}.txt")}),
+                }],
+            },
+        );
     }
 
     async fn spawn_json_completions(script: Vec<Value>) -> (String, Arc<Mutex<Vec<Value>>>) {
@@ -710,6 +864,219 @@ mod tests {
         assert!(
             bodies.lock().expect("bodies").is_empty(),
             "first trigger is L1 only"
+        );
+    }
+
+    #[tokio::test]
+    async fn prunes_old_tool_results_before_rolling_compact() {
+        let mut store = ContextStore::new("s");
+        let old = format!("OLD-TOOL-BODY-{}", "x".repeat(20_000));
+        record_read(&mut store, 0, &old);
+        record_read(
+            &mut store,
+            1,
+            &format!("MID-TOOL-BODY-{}", "z".repeat(20_000)),
+        );
+        record_read(
+            &mut store,
+            2,
+            &format!("RECENT-TOOL-BODY-{}", "y".repeat(20_000)),
+        );
+        record_read(
+            &mut store,
+            3,
+            &format!("LATEST-TOOL-BODY-{}", "w".repeat(200)),
+        );
+        let prompt = Message::user("continue");
+        let (view, record) = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(30_000, 1024),
+                preamble: "p",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            None,
+        )
+        .await
+        .expect("fits after pruning tool results");
+        assert!(
+            record.is_none(),
+            "tool-result prune must run before L1 eviction"
+        );
+        assert_eq!(view.compact_level, 0);
+        let dumped = serde_json::to_string(&view.messages).unwrap();
+        assert!(
+            dumped.contains("f0.txt") && dumped.contains("re-read"),
+            "hard-cleared reads must keep the path and a re-read hint: {dumped}"
+        );
+        assert!(
+            !dumped.contains("OLD-TOOL-BODY-"),
+            "oldest tool body must not remain in the projection: {dumped}"
+        );
+        assert!(
+            dumped.contains("LATEST-TOOL-BODY-"),
+            "the newest tool result stays: {dumped}"
+        );
+        assert_eq!(
+            store
+                .fact("call_0")
+                .and_then(|f| f.model_presentation.as_ref())
+                .map(String::len),
+            Some(old.len()),
+            "canonical facts stay untruncated"
+        );
+    }
+
+    #[tokio::test]
+    async fn soft_trims_protected_tool_results_head_and_tail() {
+        let mut store = ContextStore::new("s");
+        let recent = format!("HEAD-MARKER-{}-TAIL-MARKER", "n".repeat(10_000));
+        record_read(&mut store, 0, &recent);
+        let prompt = Message::user("continue");
+        let (view, record) = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(20_000, 1024),
+                preamble: "p",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            None,
+        )
+        .await
+        .expect("fits after soft-trim");
+        assert!(record.is_none());
+        assert_eq!(view.compact_level, 0);
+        let dumped = serde_json::to_string(&view.messages).unwrap();
+        assert!(dumped.contains("HEAD-MARKER-"), "{dumped}");
+        assert!(dumped.contains("TAIL-MARKER"), "{dumped}");
+        assert!(
+            dumped.contains("f0.txt") && dumped.contains("re-read"),
+            "oversized reads keep path, excerpts, and a re-read hint: {dumped}"
+        );
+        assert!(
+            dumped.len() < recent.len(),
+            "projection must be smaller than the raw tool body"
+        );
+    }
+
+    fn record_write(store: &mut ContextStore, i: usize, path: &str, content: &str, body: &str) {
+        let turn_id = format!("s:{i}");
+        let call_id = format!("call_{i}");
+        store.append_user(turn_id.clone(), format!("write-{i}"));
+        store.record_fact(ExecutionFact {
+            tool_call_id: call_id.clone(),
+            function_name: "write_file".into(),
+            raw_input: json!({"path": path, "content": content}),
+            phase: ToolPhase::Terminal,
+            outcome: Some(ToolOutcome::Success),
+            executed: Some(true),
+            model_presentation: Some(body.to_string()),
+            truncated: false,
+            output_locator: None,
+            reason: None,
+            turn_id: turn_id.clone(),
+        });
+        store.commit_assistant(
+            &turn_id,
+            AssistantRecord {
+                model_message_id: Some(format!("m{i}")),
+                committed: true,
+                parts: vec![AssistantPart::ToolCall {
+                    id: call_id,
+                    name: "write_file".into(),
+                    args: json!({"path": path, "content": content}),
+                }],
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn write_file_soft_trim_is_status_not_file_body() {
+        let mut store = ContextStore::new("s");
+        let content = "hello world";
+        let body = format!("FILE-BODY-{}", "w".repeat(10_000));
+        record_write(&mut store, 0, "src/out.rs", content, &body);
+        let prompt = Message::user("continue");
+        let (view, record) = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(20_000, 1024),
+                preamble: "p",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            None,
+        )
+        .await
+        .expect("fits after write distill");
+        assert!(record.is_none());
+        let dumped = serde_json::to_string(&view.messages).unwrap();
+        assert!(dumped.contains("src/out.rs"), "{dumped}");
+        assert!(
+            dumped.contains("11 chars") || dumped.contains("11 characters"),
+            "write distill reports written size: {dumped}"
+        );
+        assert!(
+            !dumped.contains("FILE-BODY-"),
+            "write distill must not keep the file body: {dumped}"
+        );
+    }
+
+    #[tokio::test]
+    async fn l2_summarize_input_does_not_replay_full_tool_bodies() {
+        let mut store = ContextStore::new("s");
+        fill_turns(&mut store, 0, 8, 200);
+        let (base, bodies) = spawn_json_completions(vec![json!({"text": "L2-SUMMARY-BODY"})]).await;
+        let compact = llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 4096);
+        let prompt = Message::user("current question");
+        let (_, rec1) = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(8_000, 1024),
+                preamble: "short",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            Some(&compact),
+        )
+        .await
+        .expect("l1");
+        store.set_compact(rec1.expect("l1"));
+        let bulky = format!("EVICTED-TOOL-BODY-{}", "x".repeat(8_000));
+        record_read(&mut store, 8, &bulky);
+        record_read(
+            &mut store,
+            9,
+            &format!("NEXT-TOOL-BODY-{}", "y".repeat(8_000)),
+        );
+        fill_turns(&mut store, 10, 8, 200);
+        let (_, rec2) = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(8_000, 1024),
+                preamble: "short",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            Some(&compact),
+        )
+        .await
+        .expect("l2");
+        assert_eq!(rec2.expect("l2").level, 2);
+        let captured = bodies.lock().expect("bodies").clone();
+        assert_eq!(captured.len(), 1);
+        let body = captured[0].to_string();
+        assert!(
+            !body.contains(&"x".repeat(4_000)),
+            "L2 compact request must distill tool results first ({} bytes)",
+            body.len()
+        );
+        assert!(
+            body.contains("f8.txt"),
+            "L2 input must keep the read path instead of a 2000-char prefix cut ({} bytes)",
+            body.len()
         );
     }
 }

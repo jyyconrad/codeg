@@ -10,11 +10,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::hook::CodegHook;
 use crate::agent::tools::{
-    BashTool, EchoTool, EditFileTool, GlobTool, GrepTool, ReadFileTool, SkillTool, SubagentTool,
-    UpdatePlanTool, WriteFileTool,
+    BashTool, EchoTool, EditFileTool, GlobTool, GrepTool, ReadFileTool, RecallTool, SkillTool,
+    SubagentTool, UpdatePlanTool, WriteFileTool,
 };
 
-use super::{DEFAULT_INVALID_TOOL_CALL_RETRIES, DEFAULT_MAX_TURNS, DEFAULT_TOOL_CONCURRENCY};
+use super::{DEFAULT_INVALID_TOOL_CALL_RETRIES, DEFAULT_TOOL_CONCURRENCY};
 
 pub enum NativeTurnOutcome {
     Complete,
@@ -24,6 +24,7 @@ pub enum NativeTurnOutcome {
 
 pub struct NativeTurnTools {
     pub read: ReadFileTool,
+    pub recall: RecallTool,
     pub write: WriteFileTool,
     pub edit: EditFileTool,
     pub glob: GlobTool,
@@ -44,6 +45,7 @@ pub struct NativeTurnRequest {
     pub tools: NativeTurnTools,
     pub hook: CodegHook,
     pub cancel: CancellationToken,
+    pub max_turns: usize,
 }
 
 /// Build the Agent, start a Runner, and drain the stream.
@@ -60,8 +62,10 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
         tools,
         hook,
         cancel,
+        max_turns,
     } = request;
-    let stream_fut = assemble_and_stream(client, model_id, preamble, prompt, tools, hook);
+    let stream_fut =
+        assemble_and_stream(client, model_id, preamble, prompt, tools, hook, max_turns);
     let stream = tokio::select! {
         _ = cancel.cancelled() => return NativeTurnOutcome::Cancelled,
         stream = stream_fut => stream,
@@ -76,9 +80,11 @@ async fn assemble_and_stream(
     prompt: Message,
     tools: NativeTurnTools,
     hook: CodegHook,
+    max_turns: usize,
 ) -> rig::agent::StreamingResult {
     let NativeTurnTools {
         read,
+        recall,
         write,
         edit,
         glob,
@@ -93,8 +99,9 @@ async fn assemble_and_stream(
     let builder = client
         .agent(&model_id)
         .preamble(&preamble)
-        .default_max_turns(DEFAULT_MAX_TURNS)
+        .default_max_turns(max_turns.max(1))
         .tool(read)
+        .tool(recall)
         .tool(write)
         .tool(edit)
         .tool(glob)
@@ -113,7 +120,7 @@ async fn assemble_and_stream(
         .build()
         .runner(prompt)
         .history(Vec::<Message>::new())
-        .max_turns(DEFAULT_MAX_TURNS)
+        .max_turns(max_turns.max(1))
         .tool_concurrency(DEFAULT_TOOL_CONCURRENCY)
         .max_invalid_tool_call_retries(DEFAULT_INVALID_TOOL_CALL_RETRIES)
         .add_hook(hook)
