@@ -1061,6 +1061,8 @@ impl ConnectionManager {
             }
             s.turn_in_flight = true;
             s.terminal_message_published = false;
+            s.wiki_run_id = Some(uuid::Uuid::new_v4().to_string());
+            s.wiki_run_snapshotted = false;
         }
         permit.send(ConnectionCommand::Prompt {
             blocks,
@@ -1883,6 +1885,7 @@ impl ConnectionManager {
                         self,
                         &state_arc,
                         crate::chat_channel::terminal_message::TerminalKind::Stopped,
+                        None,
                         None,
                     )
                     .await;
@@ -9116,6 +9119,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         });
         // A next turn re-sets the flag, exactly as `send_prompt_inner` does.
         state.write().await.turn_in_flight = true;

@@ -235,7 +235,11 @@ pub(crate) async fn handle_event(
             }
             Ok(())
         }
-        AcpEvent::TurnComplete { stop_reason, .. } => {
+        AcpEvent::TurnComplete {
+            stop_reason,
+            run_id,
+            ..
+        } => {
             // Centralized status transition: when the agent reports the turn
             // is done, flip the conversation row and re-broadcast the change
             // as `ConversationStatusChanged`. This lives in the lifecycle
@@ -273,9 +277,10 @@ pub(crate) async fn handle_event(
             else {
                 return Ok(());
             };
-            let (conversation_id, last_text) = {
-                let snap = state_arc.read().await;
-                (snap.conversation_id, snap.last_assistant_text.clone())
+            let (conversation_id, last_text, wiki_snapshot) = {
+                let mut snap = state_arc.write().await;
+                let wiki = snap.take_wiki_snapshot(run_id.as_deref());
+                (snap.conversation_id, snap.last_assistant_text.clone(), wiki)
             };
             // No conversation row bound (defensive — should never happen in
             // practice since `send_prompt_linked` runs before TurnComplete can
@@ -309,7 +314,12 @@ pub(crate) async fn handle_event(
             };
             if let Some(kind) = publish_kind {
                 let error = (kind == TerminalKind::Error).then_some(stop_reason.as_str());
-                maybe_publish_run_terminal(db_conn, manager, &state_arc, kind, error).await;
+                let wiki = if kind == TerminalKind::Completed {
+                    wiki_snapshot
+                } else {
+                    None
+                };
+                maybe_publish_run_terminal(db_conn, manager, &state_arc, kind, error, wiki).await;
             }
 
             // If this conversation was spawned by a delegation, resolve the
@@ -347,6 +357,7 @@ pub(crate) async fn handle_event(
                 &state_arc,
                 TerminalKind::Error,
                 Some(&detail),
+                None,
             )
             .await;
             Ok(())
@@ -401,8 +412,17 @@ pub(crate) async fn maybe_publish_run_terminal(
     state_arc: &Arc<RwLock<SessionState>>,
     kind: TerminalKind,
     error: Option<&str>,
+    wiki_snapshot: Option<crate::wiki::snapshot::WikiTurnSnapshot>,
 ) {
-    crate::acp::run_settled::dispatch_run_settled(db_conn, manager, state_arc, kind, error).await;
+    crate::acp::run_settled::dispatch_run_settled(
+        db_conn,
+        manager,
+        state_arc,
+        kind,
+        error,
+        wiki_snapshot,
+    )
+    .await;
 }
 
 /// On TurnComplete for a delegation child, resolve the pending broker call
@@ -1596,6 +1616,7 @@ async fn connection_worker_loop(
                         &entry.state,
                         TerminalKind::Error,
                         Some(&detail),
+                        None,
                     )
                     .await;
                 }
@@ -2153,6 +2174,7 @@ mod tests {
                 session_id: "ext-1".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
@@ -2204,6 +2226,7 @@ mod tests {
                     session_id: "ext-1".into(),
                     stop_reason: stop_reason.into(),
                     agent_type: "open_code".into(),
+                    run_id: None,
                 },
             };
             handle_event(&db.conn, &mgr, &env, None).await.unwrap();
@@ -2242,6 +2265,7 @@ mod tests {
                 session_id: "ext-1".into(),
                 stop_reason: "cancelled".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
@@ -2348,6 +2372,7 @@ mod tests {
                 session_id: "ext-1".into(),
                 stop_reason: stop_reason.into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         }
     }
@@ -2801,6 +2826,7 @@ mod tests {
                 session_id: "ext-1".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
@@ -3084,6 +3110,7 @@ mod tests {
             session_id: "s".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         }));
         assert!(is_lifecycle_relevant(&AcpEvent::ConversationLinked {
             conversation_id: 1,
@@ -3193,6 +3220,7 @@ mod tests {
             session_id: "s".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         }));
     }
 
@@ -3345,6 +3373,7 @@ mod tests {
                 session_id: "ext-final".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         }));
 
@@ -3425,6 +3454,7 @@ mod tests {
                 session_id: "ext-200".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         }));
 

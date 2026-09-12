@@ -44,6 +44,7 @@ mod terminal;
 pub mod turn_timings;
 pub mod update;
 pub mod web;
+pub mod wiki;
 pub mod work_task;
 pub mod workspace_state;
 pub mod workspace_transfer;
@@ -76,7 +77,7 @@ mod tauri_app {
         remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
         science as science_commands, session_info as session_info_commands, system_settings,
         terminal as terminal_commands, token_usage as token_usage_commands, toolbox,
-        version_control, windows, work_task as work_task_commands,
+        version_control, wiki as wiki_commands, windows, work_task as work_task_commands,
         workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
@@ -1592,6 +1593,14 @@ mod tauri_app {
                 forge_commands::work_task_lookup_by_source,
                 forge_commands::forge_settings_get,
                 forge_commands::forge_settings_set,
+                wiki_commands::get_wiki_settings,
+                wiki_commands::update_wiki_settings,
+                wiki_commands::wiki_list_jobs,
+                wiki_commands::wiki_get_job,
+                wiki_commands::wiki_list_sources,
+                wiki_commands::wiki_get_source,
+                wiki_commands::wiki_vault_tree,
+                wiki_commands::wiki_vault_read,
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,

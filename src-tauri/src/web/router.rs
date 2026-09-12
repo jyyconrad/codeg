@@ -1585,6 +1585,24 @@ pub fn build_router(
             "/work_task_template_delete",
             post(handlers::work_task::work_task_template_delete),
         )
+        // ─── Personal wiki ───
+        .route(
+            "/get_wiki_settings",
+            post(handlers::wiki::get_wiki_settings),
+        )
+        .route(
+            "/update_wiki_settings",
+            post(handlers::wiki::update_wiki_settings),
+        )
+        .route("/wiki_list_jobs", post(handlers::wiki::wiki_list_jobs))
+        .route("/wiki_get_job", post(handlers::wiki::wiki_get_job))
+        .route(
+            "/wiki_list_sources",
+            post(handlers::wiki::wiki_list_sources),
+        )
+        .route("/wiki_get_source", post(handlers::wiki::wiki_get_source))
+        .route("/wiki_vault_tree", post(handlers::wiki::wiki_vault_tree))
+        .route("/wiki_vault_read", post(handlers::wiki::wiki_vault_read))
         // ─── Workspace background ───
         .route(
             "/background_read",

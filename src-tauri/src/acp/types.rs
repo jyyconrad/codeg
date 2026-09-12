@@ -563,6 +563,10 @@ pub enum AcpEvent {
         session_id: String,
         stop_reason: String,
         agent_type: String,
+        /// Stable wiki run identity allocated when the prompt was accepted.
+        /// Additive: default/skip-none keeps frontend JSON unchanged when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
     },
     /// Session established with agent-assigned session ID
     SessionStarted { session_id: String },

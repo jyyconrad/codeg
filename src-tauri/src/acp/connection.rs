@@ -2952,7 +2952,34 @@ async fn drain_permissions_then_emit(
 ) {
     let mut queue = perms.lock().await;
     drain_permissions_locked(&mut queue, state, emitter).await;
+    let follow_up = stamp_turn_complete_run_id(state, follow_up).await;
     emit_with_state(state, emitter, follow_up).await;
+}
+
+async fn stamp_turn_complete_run_id(
+    state: &Arc<RwLock<SessionState>>,
+    event: AcpEvent,
+) -> AcpEvent {
+    match event {
+        AcpEvent::TurnComplete {
+            session_id,
+            stop_reason,
+            agent_type,
+            run_id,
+        } => {
+            let run_id = match run_id {
+                Some(id) => Some(id),
+                None => state.read().await.wiki_run_id.clone(),
+            };
+            AcpEvent::TurnComplete {
+                session_id,
+                stop_reason,
+                agent_type,
+                run_id,
+            }
+        }
+        other => other,
+    }
 }
 
 /// Shared body of the two drains above. Emits the compensating
@@ -9559,6 +9586,7 @@ async fn run_conversation_loop<'a>(
                                             session_id: sid.0.to_string(),
                                             stop_reason: reason_str.into(),
                                             agent_type: agent_type.to_string(),
+                                            run_id: None,
                                         },
                                     )
                                     .await;
@@ -9688,6 +9716,7 @@ async fn run_conversation_loop<'a>(
                                             session_id: sid.0.to_string(),
                                             stop_reason: "auth_required".into(),
                                             agent_type: agent_type.to_string(),
+                                            run_id: None,
                                         },
                                     )
                                     .await;
@@ -9786,6 +9815,7 @@ async fn run_conversation_loop<'a>(
                                     session_id: sid.0.to_string(),
                                     stop_reason: reason_str.into(),
                                     agent_type: agent_type.to_string(),
+                                    run_id: None,
                                 },
                             )
                             .await;
@@ -10006,6 +10036,7 @@ async fn run_conversation_loop<'a>(
                                             session_id: sid.0.to_string(),
                                             stop_reason: "cancelled".into(),
                                             agent_type: agent_type.to_string(),
+                                            run_id: None,
                                         },
                                     )
                                     .await;

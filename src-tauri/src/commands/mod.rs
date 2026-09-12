@@ -44,6 +44,7 @@ pub mod token_usage;
 pub mod toolbox;
 pub mod turn_window;
 pub mod version_control;
+pub mod wiki;
 #[cfg(feature = "tauri-runtime")]
 pub mod windows;
 pub mod work_task;
