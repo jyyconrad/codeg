@@ -1149,6 +1149,17 @@ pub async fn insert_contribution(
     Ok(row.insert(conn).await?)
 }
 
+pub async fn list_contributions_for_source(
+    conn: &DatabaseConnection,
+    source_id: &str,
+) -> Result<Vec<wiki_contribution::Model>, DbError> {
+    Ok(wiki_contribution::Entity::find()
+        .filter(wiki_contribution::Column::SourceId.eq(source_id))
+        .order_by_asc(wiki_contribution::Column::CreatedAt)
+        .all(conn)
+        .await?)
+}
+
 pub async fn upsert_source_segment(
     conn: &DatabaseConnection,
     source_id: &str,

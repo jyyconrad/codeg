@@ -15,9 +15,11 @@ pub const ALLOWED_PAGE_TYPES: &[&str] = &[
     "decision",
     "outcome",
     "project",
+    "area",
     "capability",
     "concept",
     "method",
+    "entity",
     "source",
     "daily",
     "index",
@@ -295,9 +297,13 @@ pub fn page_type_matches_rel(page_type: &str, rel: &str) -> bool {
         "decision" => rel.starts_with("work/decisions/") && rel.ends_with(".md"),
         "outcome" => rel.starts_with("work/outcomes/") && rel.ends_with(".md"),
         "project" => rel.starts_with("work/projects/") && rel.ends_with(".md"),
-        "capability" => rel.starts_with("capabilities/") && rel.ends_with(".md"),
+        "area" => rel.starts_with("work/areas/") && rel.ends_with(".md"),
+        "capability" => {
+            rel.starts_with("capabilities/") && rel.ends_with(".md") && rel != "capabilities/index.md"
+        }
         "concept" => rel.starts_with("knowledge/concepts/") && rel.ends_with(".md"),
         "method" => rel.starts_with("knowledge/methods/") && rel.ends_with(".md"),
+        "entity" => rel.starts_with("knowledge/entities/") && rel.ends_with(".md"),
         "source" => rel.starts_with("sources/") && rel.ends_with(".md"),
         "daily" => rel.starts_with("journal/") && rel.ends_with(".md"),
         "index" => {
