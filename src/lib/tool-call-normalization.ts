@@ -142,6 +142,7 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   // codeg-mcp ask-user-question companion tool (server prefix varies by host;
   // the suffix rule in `normalizeToolName` covers the other separators)
   "mcp__codeg-mcp__ask_user_question": "question",
+  codegraph: "search",
   lsp_diagnostics: "lsp",
   lsp_document_symbols: "lsp",
   lsp_goto_definition: "lsp",

@@ -23,6 +23,7 @@ use crate::acp::types::{
     SessionConfigSelectOptionInfo, UserMessageBlock,
 };
 use crate::acp_transcript::{now_epoch_ms, record_header_critical_in, TranscriptHeader};
+use crate::agent::code_intel::{load_code_intel_config, resolve_codegraph_binary};
 use crate::agent::context::transcript::tool_call_update_payload;
 use crate::agent::context::{
     agent_message_chunk, open_codeg_agent_session, BudgetConfig, CallIdentityBridge, ContextStore,
@@ -34,9 +35,10 @@ use crate::agent::model::{
     resolve_session_wire_protocol, run_native_turn, session_preamble, CodegLlmClient,
     NativeTurnOutcome, NativeTurnRequest, NativeTurnTools,
 };
+use crate::agent::tools::codegraph::should_inject_codegraph;
 use crate::agent::tools::{
     build_companion_tools, companion_plan_from_injection, schema_for, schema_for_companion_def,
-    tool_kind, BashTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool,
+    tool_kind, BashTool, CodegraphTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool,
     EnterPlanModeTool, ExitPlanModeTool, FeedbackDelivery, GlobTool, GrepTool, McpSession,
     McpTimeouts, NativeInject, NativeToolCtx, ReadFileTool, RecallTool, SkillCatalog, SkillTool,
     SubagentTable, SubagentTool, UpdatePlanTool, WriteFileTool, WritePlanTool,
@@ -960,6 +962,18 @@ async fn start_prompt(
     let recall = RecallTool::new(tool_ctx.clone());
     let glob = GlobTool::new(tool_ctx.clone());
     let grep = GrepTool::new(tool_ctx.clone());
+    let intel = load_code_intel_config();
+    let codegraph = if should_inject_codegraph(&intel) {
+        let binary = resolve_codegraph_binary(&intel.codegraph)
+            .unwrap_or_else(|| std::path::PathBuf::from("codegraph"));
+        Some(CodegraphTool::new(
+            tool_ctx.clone(),
+            binary,
+            Some(args.shutdown.owners()),
+        ))
+    } else {
+        None
+    };
     let skill = SkillTool::new(tool_ctx.clone(), catalog.clone());
     let max_output = u64::from(args.effective_config.max_output_tokens);
     let write = (!in_plan).then(|| WriteFileTool::new(tool_ctx.clone()));
@@ -1051,6 +1065,9 @@ async fn start_prompt(
         schema_for(&grep),
         schema_for(&skill),
     ];
+    if let Some(tool) = codegraph.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
     if let Some(tool) = write.as_ref() {
         tool_schemas.push(schema_for(tool));
     }
@@ -1158,6 +1175,7 @@ async fn start_prompt(
                 edit,
                 glob,
                 grep,
+                codegraph,
                 bash,
                 skill,
                 plan,

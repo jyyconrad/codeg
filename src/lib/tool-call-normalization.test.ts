@@ -546,6 +546,12 @@ describe("inferLiveToolName codex collab detection", () => {
   })
 })
 
+describe("normalizeToolName codegraph", () => {
+  it("aliases codegraph to search", () => {
+    expect(normalizeToolName("codegraph")).toBe("search")
+  })
+})
+
 describe("normalizeToolName Grok terminal tool", () => {
   it("aliases Grok's run_terminal_command to bash", () => {
     // Grok Build (xAI) reports its terminal tool as `run_terminal_command`

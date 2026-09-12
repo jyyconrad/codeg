@@ -39,7 +39,7 @@ pub(crate) fn distill_tool_result(
         "write_file" => distill_write(fact, text),
         "edit_file" => distill_edit(fact, text),
         "bash" => distill_bash(fact, text, kind),
-        "grep" | "glob" => distill_search(name, fact, text, kind),
+        "grep" | "glob" | "codegraph" => distill_search(name, fact, text, kind),
         "subagent" => distill_generic(name, text, kind, SUBAGENT_KEEP_CHARS),
         _ => distill_generic(name, text, kind, LIVE_DEFAULT_KEEP_CHARS),
     }
@@ -65,7 +65,7 @@ pub(crate) fn hard_clear_tool_result(
             "bash finished ({chars} chars captured). Output omitted.{}",
             recover_hint(fact)
         ),
-        "grep" | "glob" => format!(
+        "grep" | "glob" | "codegraph" => format!(
             "{name} completed ({chars} chars). Output omitted; re-run the search if needed.{}",
             recover_hint(fact)
         ),
@@ -330,5 +330,27 @@ mod tests {
         assert!(out.contains("f0.txt"), "{out}");
         assert!(out.contains("re-read"), "{out}");
         assert!(!out.contains("OLD-TOOL-BODY-"), "{out}");
+    }
+
+    #[test]
+    fn codegraph_distill_uses_search_path() {
+        let body = format!("HEAD-GRAPH-{}-TAIL-GRAPH", "n".repeat(5_000));
+        let item = fact("codegraph", json!({"query": "auth"}), &body);
+        let out = distill_tool_result("codegraph", Some(&item), &body, DistillKind::Live);
+        assert!(out.contains("codegraph"), "{out}");
+        assert!(out.contains("run the search"), "{out}");
+        assert!(out.contains("HEAD-GRAPH-"), "{out}");
+        assert!(out.contains("TAIL-GRAPH"), "{out}");
+        assert!(!out.contains(&"n".repeat(3_000)), "{out}");
+    }
+
+    #[test]
+    fn hard_clear_codegraph_omits_body_like_grep() {
+        let body = format!("OLD-GRAPH-{}", "x".repeat(4_000));
+        let item = fact("codegraph", json!({"query": "auth"}), &body);
+        let out = hard_clear_tool_result("codegraph", Some(&item), &body);
+        assert!(out.contains("codegraph"), "{out}");
+        assert!(out.contains("re-run the search"), "{out}");
+        assert!(!out.contains("OLD-GRAPH-"), "{out}");
     }
 }

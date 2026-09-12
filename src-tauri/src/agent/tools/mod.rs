@@ -1,5 +1,6 @@
 pub mod artifact;
 pub mod bash;
+pub mod codegraph;
 pub mod companion;
 pub mod fs;
 pub mod mcp;
@@ -25,6 +26,7 @@ use crate::agent::context::{
 
 pub use artifact::{WriteExploreReportTool, WritePlanTool};
 pub use bash::BashTool;
+pub use codegraph::CodegraphTool;
 pub(crate) use companion::{
     build_companion_tools, companion_plan_from_injection, is_companion_tool,
     projected_tool_call_ids, schema_for_companion_def, CompanionPlan, CompanionRuntime,
@@ -149,7 +151,7 @@ pub fn tool_kind(name: &str) -> &'static str {
     match name {
         "read_file" | "skill" | "recall" => "read",
         "write_file" | "edit_file" | "write_plan" | "write_explore_report" => "edit",
-        "glob" | "grep" => "search",
+        "glob" | "grep" | "codegraph" => "search",
         "bash" => "execute",
         "enter_plan_mode" | "exit_plan_mode" => "think",
         _ => "other",
@@ -164,6 +166,7 @@ pub fn tool_requires_permission(name: &str) -> bool {
         "read_file"
             | "glob"
             | "grep"
+            | "codegraph"
             | "skill"
             | "update_plan"
             | "recall"

@@ -809,6 +809,11 @@ mod tests {
             dumped.contains("codeg-using-plan-explore"),
             "builtin plan/explore skill must be in extra_context: {dumped}"
         );
+        assert!(
+            !dumped.contains("\"name\":\"codegraph\"")
+                && !dumped.contains("\"name\": \"codegraph\""),
+            "default code-intel config must not advertise codegraph: {dumped}"
+        );
         h.shutdown.signal_shutdown();
     }
 
