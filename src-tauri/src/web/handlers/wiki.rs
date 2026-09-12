@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::wiki as core;
+use crate::commands::wiki_engine as engine_core;
 use crate::db::service::wiki_service::{WikiImportResult, WikiJobInfo, WikiSourceInfo};
 use crate::wiki::import::{
     ImportFilesParams, ImportTextParams, LinkVersionParams, UpdateAnnotationsParams,
@@ -197,5 +198,37 @@ pub async fn wiki_link_source_version(
 ) -> Result<Json<WikiSourceInfo>, AppCommandError> {
     Ok(Json(
         core::wiki_link_source_version_core(&state.db.conn, params).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct CompileNowParams {
+    pub request_id: String,
+}
+
+pub async fn wiki_compile_now(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<CompileNowParams>,
+) -> Result<Json<WikiJobInfo>, AppCommandError> {
+    Ok(Json(
+        engine_core::wiki_compile_now_core(&state.db.conn, params.request_id).await?,
+    ))
+}
+
+pub async fn wiki_retry_job(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<IdParams>,
+) -> Result<Json<WikiJobInfo>, AppCommandError> {
+    Ok(Json(
+        engine_core::wiki_retry_job_core(&state.db.conn, params.id).await?,
+    ))
+}
+
+pub async fn wiki_cancel_job(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<IdParams>,
+) -> Result<Json<WikiJobInfo>, AppCommandError> {
+    Ok(Json(
+        engine_core::wiki_cancel_job_core(&state.db.conn, params.id).await?,
     ))
 }

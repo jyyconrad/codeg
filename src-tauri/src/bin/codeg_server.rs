@@ -511,6 +511,15 @@ async fn async_main() -> ExitCode {
         tokio::spawn(codeg_lib::work_task::run_task_engine(engine));
     }
 
+    // WikiWorker (mirrors lib.rs setup): ingest summary + compile. Only the
+    // process holding the wiki-state OS lock runs worker/recovery.
+    codeg_lib::wiki::engine::spawn(
+        codeg_lib::db::AppDatabase {
+            conn: state.db.conn.clone(),
+        },
+        state.emitter.clone(),
+    );
+
     // Label worktree folders registered before aliases were seeded at creation
     // with the branch they have checked out (mirrors lib.rs setup). Background;
     // changed folders are broadcast, so a browser that already fetched its

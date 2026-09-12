@@ -1625,6 +1625,12 @@ pub fn build_router(
             "/wiki_link_source_version",
             post(handlers::wiki::wiki_link_source_version),
         )
+        .route(
+            "/wiki_compile_now",
+            post(handlers::wiki::wiki_compile_now),
+        )
+        .route("/wiki_retry_job", post(handlers::wiki::wiki_retry_job))
+        .route("/wiki_cancel_job", post(handlers::wiki::wiki_cancel_job))
         // ─── Workspace background ───
         .route(
             "/background_read",

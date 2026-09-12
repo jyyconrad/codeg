@@ -78,7 +78,8 @@ mod tauri_app {
         remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
         science as science_commands, session_info as session_info_commands, system_settings,
         terminal as terminal_commands, token_usage as token_usage_commands, toolbox,
-        version_control, wiki as wiki_commands, windows, work_task as work_task_commands,
+        version_control, wiki as wiki_commands, wiki_engine as wiki_engine_commands, windows,
+        work_task as work_task_commands,
         workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
@@ -961,6 +962,15 @@ mod tauri_app {
                     tauri::async_runtime::spawn(crate::work_task::run_task_engine(engine));
                 }
 
+                // WikiWorker: ingest summary + compile. Only the process that
+                // holds the wiki-state OS lock runs worker/recovery.
+                crate::wiki::engine::spawn(
+                    crate::db::AppDatabase {
+                        conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                    },
+                    crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                );
+
                 // Single-window workspace: ensure the main window exists.
                 // Workspace state (open folders, opened tabs, active tab) is
                 // restored by the frontend via `list_open_folder_details` /
@@ -1608,6 +1618,9 @@ mod tauri_app {
                 wiki_commands::wiki_update_source_annotations,
                 wiki_commands::wiki_reextract,
                 wiki_commands::wiki_link_source_version,
+                wiki_engine_commands::wiki_compile_now,
+                wiki_engine_commands::wiki_retry_job,
+                wiki_engine_commands::wiki_cancel_job,
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,

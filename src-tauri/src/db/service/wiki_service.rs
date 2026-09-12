@@ -7,7 +7,9 @@ use sea_orm::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::db::entities::{wiki_job, wiki_source, wiki_vault};
+use crate::db::entities::{
+    wiki_compile_input, wiki_contribution, wiki_job, wiki_source, wiki_source_segment, wiki_vault,
+};
 use crate::db::error::DbError;
 
 #[derive(Debug, Clone)]
@@ -528,6 +530,16 @@ pub async fn pending_source_count(conn: &DatabaseConnection) -> Result<u64, DbEr
         .await?)
 }
 
+pub async fn get_job_model(
+    conn: &DatabaseConnection,
+    id: &str,
+) -> Result<wiki_job::Model, DbError> {
+    wiki_job::Entity::find_by_id(id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("wiki job {id}")))
+}
+
 pub async fn get_source_model(
     conn: &DatabaseConnection,
     id: &str,
@@ -822,4 +834,360 @@ pub async fn link_source_version(
     active.previous_source_id = Set(Some(previous.id));
     active.updated_at = Set(Utc::now());
     Ok(active.update(conn).await?)
+}
+
+pub async fn claim_next_queued_job(
+    conn: &DatabaseConnection,
+    kind: &str,
+) -> Result<Option<wiki_job::Model>, DbError> {
+    use sea_orm::sea_query::Expr;
+    let Some(job) = wiki_job::Entity::find()
+        .filter(wiki_job::Column::Kind.eq(kind))
+        .filter(wiki_job::Column::Status.eq("queued"))
+        .order_by_asc(wiki_job::Column::CreatedAt)
+        .one(conn)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let now = Utc::now();
+    let res = wiki_job::Entity::update_many()
+        .col_expr(wiki_job::Column::Status, Expr::value("running"))
+        .col_expr(wiki_job::Column::StartedAt, Expr::value(now))
+        .col_expr(wiki_job::Column::UpdatedAt, Expr::value(now))
+        .filter(wiki_job::Column::Id.eq(&job.id))
+        .filter(wiki_job::Column::Status.eq("queued"))
+        .exec(conn)
+        .await?;
+    if res.rows_affected == 0 {
+        return Ok(None);
+    }
+    Ok(Some(get_job_model(conn, &job.id).await?))
+}
+
+pub async fn list_jobs_by_status(
+    conn: &DatabaseConnection,
+    status: &str,
+) -> Result<Vec<wiki_job::Model>, DbError> {
+    Ok(wiki_job::Entity::find()
+        .filter(wiki_job::Column::Status.eq(status))
+        .all(conn)
+        .await?)
+}
+
+pub async fn find_job_by_dedupe_key(
+    conn: &DatabaseConnection,
+    dedupe_key: &str,
+) -> Result<Option<wiki_job::Model>, DbError> {
+    Ok(wiki_job::Entity::find()
+        .filter(wiki_job::Column::DedupeKey.eq(dedupe_key))
+        .order_by_asc(wiki_job::Column::CreatedAt)
+        .one(conn)
+        .await?)
+}
+
+pub async fn insert_compile_job(
+    conn: &DatabaseConnection,
+    vault_id: &str,
+    dedupe_key: &str,
+    input_manifest: Option<&str>,
+) -> Result<wiki_job::Model, DbError> {
+    if let Some(existing) = find_job_by_dedupe_key(conn, dedupe_key).await? {
+        return Ok(existing);
+    }
+    let now = Utc::now();
+    let job = wiki_job::ActiveModel {
+        id: Set(uuid::Uuid::new_v4().to_string()),
+        vault_id: Set(vault_id.to_string()),
+        source_id: Set(None),
+        kind: Set("compile".into()),
+        status: Set("queued".into()),
+        dedupe_key: Set(Some(dedupe_key.to_string())),
+        input_manifest: Set(input_manifest.map(str::to_string)),
+        config_version: Set(Some(
+            crate::wiki::llm::COMPILE_CONTRACT_VERSION.to_string(),
+        )),
+        model_id: Set(None),
+        protocol: Set(None),
+        attempt: Set(1),
+        error_code: Set(None),
+        error_message: Set(None),
+        output_manifest: Set(None),
+        started_at: Set(None),
+        finished_at: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    match job.insert(conn).await {
+        Ok(m) => Ok(m),
+        Err(e) if e.to_string().contains("UNIQUE constraint failed") => {
+            find_job_by_dedupe_key(conn, dedupe_key)
+                .await?
+                .ok_or_else(|| DbError::Conflict("wiki compile job unique race".into()))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub async fn set_job_input_manifest(
+    conn: &DatabaseConnection,
+    job_id: &str,
+    manifest: &str,
+) -> Result<(), DbError> {
+    let row = get_job_model(conn, job_id).await?;
+    let mut active: wiki_job::ActiveModel = row.into();
+    active.input_manifest = Set(Some(manifest.to_string()));
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
+}
+
+pub async fn set_job_output_manifest(
+    conn: &DatabaseConnection,
+    job_id: &str,
+    manifest: &str,
+) -> Result<(), DbError> {
+    let row = get_job_model(conn, job_id).await?;
+    let mut active: wiki_job::ActiveModel = row.into();
+    active.output_manifest = Set(Some(manifest.to_string()));
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
+}
+
+pub async fn set_job_model_meta(
+    conn: &DatabaseConnection,
+    job_id: &str,
+    model_id: Option<&str>,
+    protocol: Option<&str>,
+) -> Result<(), DbError> {
+    let row = get_job_model(conn, job_id).await?;
+    let mut active: wiki_job::ActiveModel = row.into();
+    active.model_id = Set(model_id.map(str::to_string));
+    active.protocol = Set(protocol.map(str::to_string));
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
+}
+
+pub async fn requeue_after_failure(
+    conn: &DatabaseConnection,
+    job_id: &str,
+    attempt: i32,
+) -> Result<(), DbError> {
+    let row = get_job_model(conn, job_id).await?;
+    let mut active: wiki_job::ActiveModel = row.into();
+    active.status = Set("queued".into());
+    active.attempt = Set(attempt + 1);
+    active.finished_at = Set(None);
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
+}
+
+pub async fn retry_job(
+    conn: &DatabaseConnection,
+    id: &str,
+) -> Result<wiki_job::Model, DbError> {
+    let row = get_job_model(conn, id).await?;
+    if row.status != "failed" {
+        return Err(DbError::Validation(format!(
+            "job {id} is {} and cannot be retried",
+            row.status
+        )));
+    }
+    let attempt = row.attempt;
+    let mut active: wiki_job::ActiveModel = row.into();
+    active.status = Set("queued".into());
+    active.attempt = Set(attempt + 1);
+    active.error_code = Set(None);
+    active.error_message = Set(None);
+    active.finished_at = Set(None);
+    active.started_at = Set(None);
+    active.updated_at = Set(Utc::now());
+    Ok(active.update(conn).await?)
+}
+
+pub async fn cancel_job(
+    conn: &DatabaseConnection,
+    id: &str,
+) -> Result<wiki_job::Model, DbError> {
+    let row = get_job_model(conn, id).await?;
+    if matches!(row.status.as_str(), "succeeded" | "cancelled") {
+        return Ok(row);
+    }
+    let mut active: wiki_job::ActiveModel = row.into();
+    active.status = Set("cancelled".into());
+    active.finished_at = Set(Some(Utc::now()));
+    active.updated_at = Set(Utc::now());
+    Ok(active.update(conn).await?)
+}
+
+pub async fn set_vault_next_compile_at(
+    conn: &DatabaseConnection,
+    vault_id: &str,
+    next: Option<chrono::DateTime<Utc>>,
+) -> Result<(), DbError> {
+    let Some(row) = wiki_vault::Entity::find_by_id(vault_id).one(conn).await? else {
+        return Err(DbError::NotFound(format!("wiki vault {vault_id}")));
+    };
+    let mut active: wiki_vault::ActiveModel = row.into();
+    active.next_compile_at = Set(next);
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
+}
+
+pub async fn max_source_seq(
+    conn: &DatabaseConnection,
+    vault_id: &str,
+) -> Result<Option<i64>, DbError> {
+    let row = wiki_source::Entity::find()
+        .filter(wiki_source::Column::VaultId.eq(vault_id))
+        .order_by_desc(wiki_source::Column::SourceSeq)
+        .one(conn)
+        .await?;
+    Ok(row.map(|s| s.source_seq))
+}
+
+pub async fn ready_sources_up_to_seq(
+    conn: &DatabaseConnection,
+    vault_id: &str,
+    cutoff: i64,
+) -> Result<Vec<wiki_source::Model>, DbError> {
+    Ok(wiki_source::Entity::find()
+        .filter(wiki_source::Column::VaultId.eq(vault_id))
+        .filter(wiki_source::Column::Eligibility.eq("ready"))
+        .filter(wiki_source::Column::SourceSeq.lte(cutoff))
+        .order_by_asc(wiki_source::Column::SourceSeq)
+        .all(conn)
+        .await?)
+}
+
+pub async fn compile_input_consumed(
+    conn: &DatabaseConnection,
+    source_id: &str,
+    raw_hash: &str,
+    annotation_revision: i32,
+    compile_contract_version: &str,
+) -> Result<bool, DbError> {
+    Ok(wiki_compile_input::Entity::find()
+        .filter(wiki_compile_input::Column::SourceId.eq(source_id))
+        .filter(wiki_compile_input::Column::RawHash.eq(raw_hash))
+        .filter(wiki_compile_input::Column::AnnotationRevision.eq(annotation_revision))
+        .filter(wiki_compile_input::Column::CompileContractVersion.eq(compile_contract_version))
+        .one(conn)
+        .await?
+        .is_some())
+}
+
+pub async fn insert_compile_input(
+    conn: &DatabaseConnection,
+    source_id: &str,
+    raw_hash: &str,
+    annotation_revision: i32,
+    compile_contract_version: &str,
+    job_id: &str,
+) -> Result<wiki_compile_input::Model, DbError> {
+    if let Some(existing) = wiki_compile_input::Entity::find()
+        .filter(wiki_compile_input::Column::SourceId.eq(source_id))
+        .filter(wiki_compile_input::Column::RawHash.eq(raw_hash))
+        .filter(wiki_compile_input::Column::AnnotationRevision.eq(annotation_revision))
+        .filter(wiki_compile_input::Column::CompileContractVersion.eq(compile_contract_version))
+        .one(conn)
+        .await?
+    {
+        return Ok(existing);
+    }
+    let row = wiki_compile_input::ActiveModel {
+        id: Set(uuid::Uuid::new_v4().to_string()),
+        source_id: Set(source_id.to_string()),
+        raw_hash: Set(raw_hash.to_string()),
+        annotation_revision: Set(annotation_revision),
+        compile_contract_version: Set(compile_contract_version.to_string()),
+        committed_job_id: Set(Some(job_id.to_string())),
+        created_at: Set(Utc::now()),
+    };
+    match row.insert(conn).await {
+        Ok(m) => Ok(m),
+        Err(e) if e.to_string().contains("UNIQUE constraint failed") => {
+            wiki_compile_input::Entity::find()
+                .filter(wiki_compile_input::Column::SourceId.eq(source_id))
+                .filter(wiki_compile_input::Column::RawHash.eq(raw_hash))
+                .filter(wiki_compile_input::Column::AnnotationRevision.eq(annotation_revision))
+                .filter(
+                    wiki_compile_input::Column::CompileContractVersion.eq(compile_contract_version),
+                )
+                .one(conn)
+                .await?
+                .ok_or_else(|| DbError::Conflict("wiki compile input unique race".into()))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub async fn insert_contribution(
+    conn: &DatabaseConnection,
+    source_id: &str,
+    raw_hash: &str,
+    annotation_revision: i32,
+    note_id: &str,
+    commit_id: Option<&str>,
+) -> Result<wiki_contribution::Model, DbError> {
+    let row = wiki_contribution::ActiveModel {
+        id: Set(uuid::Uuid::new_v4().to_string()),
+        source_id: Set(source_id.to_string()),
+        raw_hash: Set(raw_hash.to_string()),
+        annotation_revision: Set(annotation_revision),
+        note_id: Set(note_id.to_string()),
+        claim_id: Set(None),
+        evidence_id: Set(None),
+        case_id: Set(None),
+        commit_id: Set(commit_id.map(str::to_string)),
+        created_at: Set(Utc::now()),
+    };
+    Ok(row.insert(conn).await?)
+}
+
+pub async fn upsert_source_segment(
+    conn: &DatabaseConnection,
+    source_id: &str,
+    segment_id: &str,
+    content_hash: &str,
+    annotation_revision: i32,
+    compile_contract_version: &str,
+    stage: &str,
+) -> Result<wiki_source_segment::Model, DbError> {
+    if let Some(existing) = wiki_source_segment::Entity::find()
+        .filter(wiki_source_segment::Column::SourceId.eq(source_id))
+        .filter(wiki_source_segment::Column::SegmentId.eq(segment_id))
+        .one(conn)
+        .await?
+    {
+        let mut active: wiki_source_segment::ActiveModel = existing.into();
+        active.content_hash = Set(content_hash.to_string());
+        active.annotation_revision = Set(annotation_revision);
+        active.compile_contract_version = Set(Some(compile_contract_version.to_string()));
+        active.stage = Set(Some(stage.to_string()));
+        active.status = Set("cached".into());
+        active.updated_at = Set(Utc::now());
+        return Ok(active.update(conn).await?);
+    }
+    let now = Utc::now();
+    let row = wiki_source_segment::ActiveModel {
+        id: Set(uuid::Uuid::new_v4().to_string()),
+        source_id: Set(source_id.to_string()),
+        segment_id: Set(segment_id.to_string()),
+        content_hash: Set(content_hash.to_string()),
+        locator: Set(None),
+        annotation_revision: Set(annotation_revision),
+        compile_contract_version: Set(Some(compile_contract_version.to_string())),
+        analysis_config_version: Set(None),
+        stage: Set(Some(stage.to_string())),
+        artifact: Set(None),
+        status: Set("cached".into()),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    Ok(row.insert(conn).await?)
 }

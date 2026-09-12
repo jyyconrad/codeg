@@ -139,7 +139,6 @@ async fn freeze_raw_and_log(
     inserted: &InsertedSource,
     meta: RawSessionMeta<'_>,
 ) -> Result<(), DbError> {
-    wiki_service::mark_job(conn, &inserted.job.id, "running", None, None).await?;
     let (doc, hash) = raw::render_session_raw(snap, &meta);
     let path = raw::raw_session_path(vault_path, &inserted.source.id);
     match raw::write_raw_exclusive(&path, &doc, &hash).map_err(DbError::from)? {
@@ -156,16 +155,9 @@ async fn freeze_raw_and_log(
     }
     let rel = format!("raw/sessions/{}.md", inserted.source.id);
     wiki_service::mark_source_raw(conn, &inserted.source.id, &rel, &hash, "ready").await?;
-    wiki_service::mark_job(conn, &inserted.job.id, "succeeded", None, None).await?;
-    let log_line = format!(
-        "{} ingest succeeded job={} source={} run={}",
-        chrono::Utc::now().to_rfc3339(),
-        inserted.job.id,
-        inserted.source.id,
-        snap.run_id
-    );
-    raw::append_log_idempotent(&vault_path.join("log.md"), &inserted.job.id, &log_line)
-        .map_err(DbError::from)?;
+    // Leave the ingest job queued so WikiWorker can add an optional model
+    // summary. Raw is frozen and must not be rewritten.
+    crate::wiki::engine::notify_jobs();
     Ok(())
 }
 
