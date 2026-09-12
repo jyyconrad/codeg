@@ -1,7 +1,7 @@
 {
   "name": "codeg",
   "private": true,
-  "version": "0.30.6",
+  "version": "0.30.7",
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "dev": "next dev --turbopack",
@@ -106,6 +106,7 @@
     "@testing-library/user-event": "^14.5.2",
     "@types/crypto-js": "^4.2.2",
     "@types/js-yaml": "^4.0.9",
+    "@types/mdast": "^4.0.4",
     "@types/node": "25.2.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",

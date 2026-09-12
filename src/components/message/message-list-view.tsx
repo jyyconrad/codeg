@@ -86,9 +86,13 @@ import type { MessageScrollContextValue } from "@/components/message/message-scr
 import { extractSessionFilesGrouped } from "@/lib/session-files"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
+import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 
 interface MessageListViewProps {
   conversationId: number
+  /** This transcript's working directory, including new-chat drafts. */
+  imageRoot?: string | null
   agentType: AgentType
   connStatus?: ConnectionStatus | null
   isActive?: boolean
@@ -1057,6 +1061,7 @@ const AutoScrollOnSend = memo(function AutoScrollOnSend({
 
 export function MessageListView({
   conversationId,
+  imageRoot,
   agentType,
   connStatus,
   isActive = true,
@@ -1093,6 +1098,11 @@ export function MessageListView({
   // (windowed detail with a non-zero offset). Legacy full responses never
   // report an offset, so the loader row and near-top trigger stay off.
   const detail = session?.detail ?? null
+  const imageFolderId = detail?.summary.folder_id
+  const storedImageRoot = useAppWorkspaceStore(
+    (s) =>
+      s.allFolders.find((folder) => folder.id === imageFolderId)?.path ?? null
+  )
   const hasOlderTurns = isWindowedDetail(detail) && detail.turns_offset > 0
   const loadingOlderTurns = session?.loadingOlderTurns ?? false
   const { loadOlderTurns } = useConversationRuntimeActions()
@@ -1612,7 +1622,7 @@ export function MessageListView({
     )
   }
 
-  return (
+  const thread = (
     // The "查看会话" drawers are hosted HERE, not in the cards that offer them:
     // those live in virtua's rows and take their drawer down with them when
     // they scroll out of the buffer. This is the nearest ancestor that owns
@@ -1694,5 +1704,13 @@ export function MessageListView({
         />
       </div>
     </SessionViewerHost>
+  )
+
+  return (
+    <MarkdownImageProvider
+      rootPath={imageRoot === undefined ? storedImageRoot : imageRoot}
+    >
+      {thread}
+    </MarkdownImageProvider>
   )
 }
