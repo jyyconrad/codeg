@@ -118,7 +118,7 @@ cargo test --no-default-features --features test-utils --lib wiki
 2. **R5–R8**：切换到受限工具沙箱，补长文归并、取消提交 CAS、设置排空和任务实时刷新。
 3. **R4**：补齐能力案例聚合、边界和下一次实践；工作页追踪项目 note 而不只显示来源。
 4. **R9**：实现桌面“在系统中显示/用 Obsidian 打开”，远程/Web 继续只提供受控浏览。
-5. **LSP MCP**：设计 LspMcpRequest、workspace pool lease、broker 取消链路后，再向外部 ACP 注入统一 LSP 门面。
+5. **LSP MCP**：先建立项目级代码智能 supervisor，由适配器直接复用 LSP pool；不新增 BrokerMessage、UDS 或 companion 协议，再向外部 ACP 注入统一 LSP 门面。
 
 ## 7. 主要代码落点
 
