@@ -1,8 +1,10 @@
+mod client;
 mod preamble;
 mod turn;
 
 use rig::providers::openai::CompletionsClient;
 
+pub use client::{resolve_session_wire_protocol, CodegLlmClient};
 pub use preamble::session_preamble;
 pub use turn::{run_native_turn, NativeTurnOutcome, NativeTurnRequest, NativeTurnTools};
 

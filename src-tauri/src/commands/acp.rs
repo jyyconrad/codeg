@@ -8389,6 +8389,9 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             kind: SkillStorageKind::SkillDirectoryOnly,
             global_dirs: vec![
                 crate::paths::codeg_agent_dir().join("skills"),
+                crate::paths::codeg_agent_dir()
+                    .join("skills")
+                    .join(".system"),
                 home_dir_or_default().join(".agents").join("skills"),
             ],
             project_rel_dirs: vec![".codeg/skills", ".agents/skills"],
@@ -8645,6 +8648,9 @@ fn build_skill_item(
 /// write to those files would clobber the CLI's own assets.
 fn is_read_only_skill_path(agent_type: AgentType, skill_path: &Path) -> bool {
     let ro_root = match agent_type {
+        AgentType::CodegAgent => crate::paths::codeg_agent_dir()
+            .join("skills")
+            .join(".system"),
         AgentType::Codex => codex_home_dir().join("skills").join(".system"),
         // Cursor's bundled builtin skills; the CLI restores them on update,
         // so editing/deleting through codeg would silently be undone.
@@ -9618,14 +9624,13 @@ pub(crate) async fn apply_model_provider_env(
         _ => return,
     };
     if agent_type == AgentType::CodegAgent {
-        crate::acp::native_config::overlay_bound_provider(
-            runtime_env,
-            &crate::acp::native_config::BoundProvider {
-                api_url: provider.api_url,
-                api_key: provider.api_key,
-                model: provider.model,
-            },
-        );
+        let bound = crate::acp::native_config::BoundProvider {
+            api_url: provider.api_url,
+            api_key: provider.api_key,
+            model: provider.model,
+        };
+        crate::acp::native_config::project_bound_provider_catalog(runtime_env, &bound);
+        crate::acp::native_config::overlay_bound_provider(runtime_env, &bound);
         return;
     }
     let (url_key, key_key, _) = agent_env_keys(agent_type);
@@ -10527,18 +10532,25 @@ pub async fn acp_fork(
     // "Fork from here": the rendered turn to fork at. `None` = fork at the
     // tail, the composer's fork-send behaviour.
     fork_from_turn_id: Option<String>,
+    rewind_to_origin: Option<bool>,
     db: State<'_, AppDatabase>,
     manager: State<'_, ConnectionManager>,
 ) -> Result<ForkResultInfo, AcpError> {
-    manager
-        .fork_session(
-            &db,
-            &connection_id,
-            conversation_id,
-            folder_id,
-            fork_from_turn_id,
-        )
-        .await
+    if rewind_to_origin.unwrap_or(false) {
+        manager
+            .rewind_session_to_origin(&db, &connection_id, conversation_id, folder_id)
+            .await
+    } else {
+        manager
+            .fork_session(
+                &db,
+                &connection_id,
+                conversation_id,
+                folder_id,
+                fork_from_turn_id,
+            )
+            .await
+    }
 }
 
 /// Stop one AIR async task. `Ok(false)` = the adapter declined (unknown,
@@ -11284,7 +11296,7 @@ pub(crate) async fn acp_update_agent_env_core(
                         provider.agent_type
                     ))
                 })?;
-        if provider_agent_type != agent_type {
+        if provider_agent_type != agent_type && agent_type != AgentType::CodegAgent {
             return Err(AcpError::protocol(format!(
                 "model provider {pid} is for {provider_agent_type}, cannot be bound to {agent_type}"
             )));
@@ -15455,6 +15467,9 @@ wire_api = "chat"
                 );
                 let expected = vec![
                     crate::paths::codeg_agent_dir().join("skills"),
+                    crate::paths::codeg_agent_dir()
+                        .join("skills")
+                        .join(".system"),
                     home_dir_or_default().join(".agents").join("skills"),
                 ];
                 assert_eq!(spec.global_dirs, expected);
@@ -15462,6 +15477,14 @@ wire_api = "chat"
                     spec.global_dirs[0],
                     codeg_home.join("codeg-agent").join("skills")
                 );
+                assert!(is_read_only_skill_path(
+                    AgentType::CodegAgent,
+                    &expected[1].join("using-plan-explore")
+                ));
+                assert!(!is_read_only_skill_path(
+                    AgentType::CodegAgent,
+                    &expected[0].join("my-skill")
+                ));
             },
         );
     }

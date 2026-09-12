@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  CODEG_BUILTIN_COMPACT_PROMPT,
+  CODEG_BUILTIN_SYSTEM_PROMPT,
+} from "./codeg-agent-prompts"
+import {
   bindCodegProviderEnv,
   CODEG_COMPACT_RECENT_TURNS_KEY,
   CODEG_COMPACT_SOFT_PERCENT_KEY,
@@ -44,6 +48,19 @@ describe("codeg agent env helpers", () => {
     expect(overlaid.KEEP).toBe("1")
   })
 
+  it("treats built-in prompt text as delete so spawn keeps the Rust default", () => {
+    const overlaid = overlayCodegPromptEnv(
+      {
+        [CODEG_SYSTEM_PROMPT_KEY]: "custom",
+        CODEG_AGENT_COMPACT_PROMPT: "custom compact",
+      },
+      CODEG_BUILTIN_SYSTEM_PROMPT,
+      CODEG_BUILTIN_COMPACT_PROMPT
+    )
+    expect(overlaid[CODEG_SYSTEM_PROMPT_KEY]).toBeUndefined()
+    expect(overlaid.CODEG_AGENT_COMPACT_PROMPT).toBeUndefined()
+  })
+
   it("strips multiline prompts from the KEY=VALUE draft", () => {
     const draft = codegDraftFromEnv({
       CODEG_AGENT_MODEL: "llama3",
@@ -54,6 +71,12 @@ describe("codeg agent env helpers", () => {
     expect(draft.compactPrompt).toBe("Keep paths")
     expect(draft.envText).toContain("CODEG_AGENT_MODEL=llama3")
     expect(draft.envText).not.toContain("Be terse.")
+  })
+
+  it("prefills the built-in prompt bodies when env keys are absent", () => {
+    const draft = codegDraftFromEnv({ CODEG_AGENT_MODEL: "llama3" })
+    expect(draft.systemPrompt).toBe(CODEG_BUILTIN_SYSTEM_PROMPT)
+    expect(draft.compactPrompt).toBe(CODEG_BUILTIN_COMPACT_PROMPT)
   })
 
   it("binds a Completions provider and projects URL / key / model", () => {
@@ -70,6 +93,32 @@ describe("codeg agent env helpers", () => {
     expect(bound.envText).not.toContain("CODEG_AGENT_API_KEY=")
     expect(bound.envText).toContain("CODEG_AGENT_MODEL=llama3.2")
     expect(parseCodegContextWindows(bound.envText)["llama3.2"]).toBe(128000)
+  })
+
+  it("replaces context windows with every catalog model on bind", () => {
+    const bound = bindCodegProviderEnv(
+      'CODEG_AGENT_CONTEXT_WINDOWS={"old":8000}',
+      {
+        api_url: "https://api.example.com/v1",
+        api_key: "sk",
+        agent_type: "codeg_agent",
+        model: JSON.stringify({
+          kind: "codeg_agent_catalog",
+          version: 1,
+          default: "b",
+          models: [
+            { id: "a", name: "a", context_window: 32000 },
+            { id: "b", name: "b", context_window: 64000 },
+          ],
+        }),
+      }
+    )
+    expect(bound.model).toBe("b")
+    expect(parseCodegContextWindows(bound.envText)).toEqual({
+      a: 32000,
+      b: 64000,
+    })
+    expect(bound.envText).not.toContain('"old"')
   })
 
   it("reads and patches compact / runtime integers with defaults", () => {

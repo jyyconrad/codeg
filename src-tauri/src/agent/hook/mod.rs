@@ -377,10 +377,14 @@ impl AgentHook for CodegHook {
                     let store = native.store.lock().expect("store");
                     let present = projected_tool_call_ids(&store, view.omitted_turns);
                     (
-                        CompletionCallAction::patch(attach_subagent_extra_context(
-                            per_call_patch(view.messages, Some(native.budget.max_output)),
-                            &native.tool_schemas,
-                        )),
+                        CompletionCallAction::patch(
+                            crate::agent::builtin_skills::attach_using_plan_explore(
+                                attach_subagent_extra_context(
+                                    per_call_patch(view.messages, Some(native.budget.max_output)),
+                                    &native.tool_schemas,
+                                ),
+                            ),
+                        ),
                         Some(present),
                     )
                 }

@@ -359,7 +359,9 @@ export async function acpFork(
   // "Fork from here": the rendered turn to fork at. The UI always passes one;
   // omitting it forks at the tail, which the backend also falls back to for a
   // turn the agent cannot name — its call, see `resolve_fork_point`.
-  forkFromTurnId?: string | null
+  forkFromTurnId?: string | null,
+  // First-round edit: empty `session/new` instead of `session/fork`.
+  rewindToOrigin?: boolean
 ): Promise<ForkResult> {
   try {
     return await getTransport().call("acp_fork", {
@@ -367,6 +369,7 @@ export async function acpFork(
       conversationId: conversationId ?? null,
       folderId: folderId ?? null,
       forkFromTurnId: forkFromTurnId ?? null,
+      rewindToOrigin: rewindToOrigin ?? false,
     })
   } catch (e) {
     // A fork is serialized with prompts on the backend: it returns

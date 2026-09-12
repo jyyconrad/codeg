@@ -96,21 +96,35 @@ describe("lastRoundEditTarget", () => {
     expect(target?.forkFromTurnId).toBe("turn-1")
   })
 
-  it("hides when this is the first user message (nothing to rewind to)", () => {
-    expect(
-      lastRoundEditTarget(
-        [
-          { turn: userTurn("turn-0", "only") },
-          { turn: assistantTurn("turn-1", "ok") },
-        ],
-        "claude_code"
-      )
-    ).toBeNull()
+  it("rewinds the first user message to an empty session, even after the assistant has replied", () => {
+    const target = lastRoundEditTarget(
+      [
+        { turn: userTurn("turn-0", "only") },
+        { turn: assistantTurn("turn-1", "ok") },
+      ],
+      "claude_code"
+    )
+    expect(target?.userTurn.id).toBe("turn-0")
+    expect(target?.forkFromTurnId).toBeNull()
+    expect(target?.draft.displayText).toBe("only")
   })
 
-  it("hides for agents that only tail-fork", () => {
+  it("rewinds the first user message on agents that cannot named-fork", () => {
+    const firstRound = [
+      { turn: userTurn("turn-0", "only") },
+      { turn: assistantTurn("turn-1", "ok") },
+    ]
+    for (const agent of ["codeg_agent", "grok", "qoder"] as AgentType[]) {
+      const target = lastRoundEditTarget(firstRound, agent)
+      expect(target?.userTurn.id).toBe("turn-0")
+      expect(target?.forkFromTurnId).toBeNull()
+    }
+  })
+
+  it("hides later rounds for agents that only tail-fork", () => {
     expect(lastRoundEditTarget(history, "qoder")).toBeNull()
     expect(lastRoundEditTarget(history, "grok")).toBeNull()
+    expect(lastRoundEditTarget(history, "codeg_agent")).toBeNull()
   })
 
   it("hides while the last user turn is still optimistic", () => {

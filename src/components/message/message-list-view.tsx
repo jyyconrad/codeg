@@ -151,9 +151,9 @@ interface MessageListViewProps {
    */
   onForkFromTurn?: (turnId: string) => void
   /**
-   * Edit the last user bubble and replace that round (fork at the previous
-   * assistant turn, then prompt). Undefined hides the button — pass it only
-   * when the agent can name a fork point (Claude / Codex / DeepSeek).
+   * Edit the last user bubble and replace that round. First-round edits
+   * rewind to an empty session; later rounds named-fork at the previous
+   * assistant (Claude / Codex / DeepSeek). Undefined hides the button.
    */
   onEditLastRound?: (target: LastRoundEditTarget) => void
 }

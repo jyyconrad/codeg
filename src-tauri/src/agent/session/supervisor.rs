@@ -29,16 +29,17 @@ use crate::agent::context::{
     FactRecorder, HydrateError, LlmCompactor, NativeMeta, ToolOutcome, L2_MAX_TOKENS,
 };
 use crate::agent::hook::{CodegHook, HookTrace, HostBridge, NativeRunState, PendingPermission};
+use crate::agent::mode::{self, MODE_PLAN};
 use crate::agent::model::{
-    completions_client, run_native_turn, session_preamble, NativeTurnOutcome, NativeTurnRequest,
-    NativeTurnTools,
+    resolve_session_wire_protocol, run_native_turn, session_preamble, CodegLlmClient,
+    NativeTurnOutcome, NativeTurnRequest, NativeTurnTools,
 };
 use crate::agent::tools::{
     build_companion_tools, companion_plan_from_injection, schema_for, schema_for_companion_def,
-    tool_kind, BashTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool, FeedbackDelivery,
-    GlobTool, GrepTool, McpSession, McpTimeouts, NativeInject, NativeToolCtx, ReadFileTool,
-    RecallTool, SkillCatalog, SkillTool, SubagentTable, SubagentTool, UpdatePlanTool,
-    WriteFileTool,
+    tool_kind, BashTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool,
+    EnterPlanModeTool, ExitPlanModeTool, FeedbackDelivery, GlobTool, GrepTool, McpSession,
+    McpTimeouts, NativeInject, NativeToolCtx, ReadFileTool, RecallTool, SkillCatalog, SkillTool,
+    SubagentTable, SubagentTool, UpdatePlanTool, WriteFileTool, WritePlanTool,
 };
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
 
@@ -47,6 +48,16 @@ const WORKER_CANCEL_WAIT: Duration = Duration::from_secs(5);
 const NATIVE_FORCE_REAP: Duration = Duration::from_secs(2);
 const TURN_END_WRITE_FAILED: &str = "failed to confirm transcript turn end";
 const TURN_DID_NOT_CONVERGE: &str = "turn did not converge after cancel";
+
+fn companion_ok_in_mode(mode: &str, name: &str) -> bool {
+    if mode != MODE_PLAN {
+        return true;
+    }
+    matches!(
+        name,
+        "ask_user_question" | "get_session_info" | "check_user_feedback"
+    )
+}
 
 pub struct NativeSessionSupervisor;
 
@@ -67,9 +78,7 @@ impl NativeSessionSupervisor {
                 .with_default_shell_config(args.terminal_shell_config.clone())
                 .with_process_owners(shutdown.owners()),
         );
-        let fs = Arc::new(FileSystemRuntime::with_policy(args.fs_policy.clone()));
-
-        let outcome = run_session(&mut args, Arc::clone(&terminals), Arc::clone(&fs)).await;
+        let outcome = run_session(&mut args, Arc::clone(&terminals)).await;
 
         let leftover = terminals
             .force_kill_all_and_wait_reaped(NATIVE_FORCE_REAP)
@@ -125,7 +134,6 @@ struct SessionOutcome {
 async fn run_session(
     args: &mut NativeSessionArgs,
     terminals: Arc<TerminalRuntime>,
-    fs: Arc<FileSystemRuntime>,
 ) -> SessionOutcome {
     let shutdown = Arc::clone(&args.shutdown);
     if let Some(hold) = args.init_hold.clone() {
@@ -190,12 +198,12 @@ async fn run_session(
             return SessionOutcome { err: Some(message) };
         }
     };
-    let session_id = opened.session_id.clone();
+    let mut session_id = opened.session_id.clone();
     let write_root = opened.write_root.clone();
     let write_group = opened.write_group.clone();
-    let _lease = opened.lease;
+    let mut _lease = opened.lease;
     let store = Arc::new(Mutex::new(opened.store));
-    let recorder = Arc::new(FactRecorder::transcript(
+    let mut recorder = Arc::new(FactRecorder::transcript(
         write_root.clone(),
         write_group.clone(),
         session_id.clone(),
@@ -224,6 +232,16 @@ async fn run_session(
             }
         }
     }
+
+    let mut artifacts_dir =
+        crate::agent::mode::artifacts_dir(&args.launch_cwd.to_string_lossy(), &session_id);
+    let _ = std::fs::create_dir_all(&artifacts_dir);
+    let initial_mode = crate::agent::mode::load_persisted_mode(&artifacts_dir);
+    let session_mode = Arc::new(tokio::sync::RwLock::new(initial_mode.clone()));
+    let pending_continue = Arc::new(Mutex::new(None::<String>));
+    let fs = Arc::new(FileSystemRuntime::with_policy(
+        args.fs_policy.clone().with_extra_read_root(&artifacts_dir),
+    ));
 
     let mcp = match args.mcp_server_specs.clone() {
         Some(specs) => {
@@ -294,11 +312,14 @@ async fn run_session(
         AcpEvent::ForkSupported { supported: false },
     )
     .await;
+    crate::agent::mode::emit_modes(&args.session_state, &args.emitter, &initial_mode).await;
     emit_with_state(&args.session_state, &args.emitter, AcpEvent::SelectorsReady).await;
 
-    let client = match completions_client(
+    let wire = resolve_session_wire_protocol(&args.effective_config).await;
+    let client = match CodegLlmClient::build(
         args.effective_config.api_key.clone(),
         &args.effective_config.api_base_url,
+        wire,
     ) {
         Ok(client) => client,
         Err(err) => {
@@ -320,6 +341,7 @@ async fn run_session(
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
         });
+    let _ = crate::agent::builtin_skills::ensure_installed();
     let catalog = SkillCatalog::load(args.agent_type, workspace.as_deref());
     let preamble = session_preamble(
         &args.launch_cwd,
@@ -450,12 +472,19 @@ async fn run_session(
                                 .await;
                             }
                         }
+                        Some(ConnectionCommand::Fork { reply, .. }) => {
+                            let _ = reply.send(Err(crate::acp::error::AcpError::protocol(
+                                "Cannot rewind a session during a turn".to_string(),
+                            )));
+                        }
                         Some(other) => handle_control_command(
                             other,
                             true,
                             &mut model_id,
                             args,
                             &session_id,
+                            &session_mode,
+                            &artifacts_dir,
                         )
                         .await,
                     }
@@ -518,6 +547,9 @@ async fn run_session(
                         stop,
                     )
                     .await;
+                    if let Some(text) = pending_continue.lock().expect("pending continue").take() {
+                        pending_injects.push_back(text);
+                    }
                 }
             }
         } else if let Some(text) = pending_injects.pop_front() {
@@ -541,6 +573,9 @@ async fn run_session(
                 Arc::clone(&mcp),
                 Arc::clone(&subagents),
                 inject_tx.clone(),
+                Arc::clone(&session_mode),
+                artifacts_dir.clone(),
+                Arc::clone(&pending_continue),
             )
             .await
             {
@@ -612,6 +647,9 @@ async fn run_session(
                                 Arc::clone(&mcp),
                                 Arc::clone(&subagents),
                                 inject_tx.clone(),
+                                Arc::clone(&session_mode),
+                                artifacts_dir.clone(),
+                                Arc::clone(&pending_continue),
                             )
                             .await
                             {
@@ -638,12 +676,53 @@ async fn run_session(
                                 .await;
                             }
                         }
+                        Some(ConnectionCommand::Fork {
+                            rewind_to_origin,
+                            reply,
+                            ..
+                        }) => {
+                            if !rewind_to_origin {
+                                let _ = reply.send(Err(crate::acp::error::AcpError::protocol(
+                                    "This agent does not support session/fork".to_string(),
+                                )));
+                                continue;
+                            }
+                            match rewind_native_to_origin(args, &session_id, &store).await
+                            {
+                                Ok(rewound) => {
+                                    let original = session_id.clone();
+                                    session_id = rewound.session_id;
+                                    _lease = rewound.lease;
+                                    recorder = Arc::new(rewound.recorder);
+                                    artifacts_dir = rewound.artifacts_dir;
+                                    emit_with_state(
+                                        &args.session_state,
+                                        &args.emitter,
+                                        AcpEvent::SessionStarted {
+                                            session_id: session_id.clone(),
+                                        },
+                                    )
+                                    .await;
+                                    let _ = reply.send(Ok(
+                                        crate::acp::types::ForkProtocolResult {
+                                            forked_session_id: session_id.clone(),
+                                            original_session_id: original,
+                                        },
+                                    ));
+                                }
+                                Err(err) => {
+                                    let _ = reply.send(Err(err));
+                                }
+                            }
+                        }
                         Some(other) => handle_control_command(
                             other,
                             false,
                             &mut model_id,
                             args,
                             &session_id,
+                            &session_mode,
+                            &artifacts_dir,
                         )
                         .await,
                     }
@@ -756,7 +835,7 @@ async fn apply_subagent_finished(
     } = inject;
     table.lock().expect("subagent table").clear_if(&id);
     let status = if ok { "completed" } else { "failed" };
-    let note = format!("Subagent {id} finished:\n{output}");
+    let note = output.clone();
     let mut meta = NativeMeta::v1();
     meta.function_name = Some("subagent".into());
     meta.tool_call_id = Some(tool_call_id.clone());
@@ -793,7 +872,7 @@ async fn apply_subagent_finished(
 
 #[allow(clippy::too_many_arguments)]
 async fn start_prompt(
-    client: &rig::providers::openai::CompletionsClient,
+    client: &CodegLlmClient,
     preamble: &str,
     model_id: &str,
     args: &NativeSessionArgs,
@@ -811,6 +890,9 @@ async fn start_prompt(
     mcp: Arc<McpSession>,
     subagents: Arc<Mutex<SubagentTable>>,
     inject_tx: mpsc::Sender<NativeInject>,
+    session_mode: Arc<tokio::sync::RwLock<String>>,
+    artifacts_dir: std::path::PathBuf,
+    pending_continue: Arc<Mutex<Option<String>>>,
 ) -> Result<RunningTurn, String> {
     let inspected = inspect_native_prompt(&blocks);
     if let Some(reason) = inspected.reject_reason() {
@@ -871,25 +953,54 @@ async fn start_prompt(
         session_id: session_id.to_string(),
         spill_dir: recorder.spill_dir(),
     };
+    let mode = session_mode.read().await.clone();
+    let in_plan = mode == MODE_PLAN;
+    let turn_preamble = mode::with_mode_attachment(preamble, &mode);
     let read = ReadFileTool::new(tool_ctx.clone());
     let recall = RecallTool::new(tool_ctx.clone());
-    let write = WriteFileTool::new(tool_ctx.clone());
-    let edit = EditFileTool::new(tool_ctx.clone());
     let glob = GlobTool::new(tool_ctx.clone());
     let grep = GrepTool::new(tool_ctx.clone());
     let skill = SkillTool::new(tool_ctx.clone(), catalog.clone());
-    let bash = BashTool::new(tool_ctx.clone(), terminals);
-    let plan = UpdatePlanTool::new(
-        tool_ctx.clone(),
-        args.emitter.clone(),
-        Arc::clone(&args.session_state),
-    );
     let max_output = u64::from(args.effective_config.max_output_tokens);
-    let subagent = SubagentTool::new(
+    let write = (!in_plan).then(|| WriteFileTool::new(tool_ctx.clone()));
+    let edit = (!in_plan).then(|| EditFileTool::new(tool_ctx.clone()));
+    let bash = (!in_plan).then(|| BashTool::new(tool_ctx.clone(), terminals));
+    let plan = (!in_plan).then(|| {
+        UpdatePlanTool::new(
+            tool_ctx.clone(),
+            args.emitter.clone(),
+            Arc::clone(&args.session_state),
+        )
+    });
+    let write_plan = in_plan.then(|| WritePlanTool::new(tool_ctx.clone(), artifacts_dir.clone()));
+    let enter_plan = (!in_plan).then(|| {
+        EnterPlanModeTool::new(
+            tool_ctx.clone(),
+            Arc::clone(&session_mode),
+            Arc::clone(&args.session_state),
+            args.emitter.clone(),
+            artifacts_dir.clone(),
+        )
+    });
+    let exit_plan = in_plan.then(|| {
+        ExitPlanModeTool::new(
+            tool_ctx.clone(),
+            Arc::clone(&session_mode),
+            Arc::clone(&args.session_state),
+            args.emitter.clone(),
+            artifacts_dir.clone(),
+            args.connection_id.clone(),
+            args.delegation_injection
+                .as_ref()
+                .map(|inj| Arc::clone(&inj.plan_approvals)),
+            Arc::clone(&pending_continue),
+        )
+    });
+    let subagent = Some(SubagentTool::new(
         tool_ctx.clone(),
         client.clone(),
         model_id.to_string(),
-        preamble.to_string(),
+        turn_preamble.clone(),
         catalog,
         BudgetConfig::new(window, max_output).with_compact(
             args.effective_config.compact_soft_percent,
@@ -897,8 +1008,20 @@ async fn start_prompt(
         ),
         subagents,
         inject_tx,
-    );
-    let mcp_tools = mcp.dynamic_tools(tool_ctx.clone());
+        artifacts_dir.clone(),
+    ));
+    let mcp_tools = {
+        let tools = mcp.dynamic_tools(tool_ctx.clone());
+        if in_plan {
+            let readonly = mcp.readonly_local_names();
+            tools
+                .into_iter()
+                .filter(|tool| readonly.contains(tool.name()))
+                .collect()
+        } else {
+            tools
+        }
+    };
     let companion_tools = if let Some(inj) = args.delegation_injection.clone() {
         let runtime = CompanionRuntime {
             tool_ctx,
@@ -908,7 +1031,14 @@ async fn start_prompt(
             session_state: Arc::clone(&args.session_state),
             feedback: feedback.clone(),
         };
-        build_companion_tools(runtime, &companion.defs)
+        let defs: Vec<_> = companion
+            .defs
+            .iter()
+            .filter(|def| companion_ok_in_mode(&mode, &def.name))
+            .cloned()
+            .collect();
+        let defs = Arc::new(defs);
+        build_companion_tools(runtime, &defs)
     } else {
         Vec::new()
     };
@@ -917,25 +1047,57 @@ async fn start_prompt(
     let mut tool_schemas = vec![
         schema_for(&read),
         schema_for(&recall),
-        schema_for(&write),
-        schema_for(&edit),
         schema_for(&glob),
         schema_for(&grep),
-        schema_for(&bash),
         schema_for(&skill),
-        schema_for(&plan),
-        schema_for(&subagent),
     ];
+    if let Some(tool) = write.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = edit.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = bash.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = plan.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = write_plan.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = enter_plan.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = exit_plan.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = subagent.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
     let include_echo = args.include_echo_tool;
     if include_echo {
         tool_schemas.push(schema_for(&EchoTool::new()));
     }
-    for def in companion.defs.iter() {
+    for def in companion
+        .defs
+        .iter()
+        .filter(|def| companion_ok_in_mode(&mode, &def.name))
+    {
         tool_schemas.push(schema_for_companion_def(def));
     }
+    let mcp_readonly = mcp.readonly_local_names();
     for binding in mcp.bindings() {
-        tool_schemas.push(binding.schema());
+        if !in_plan || mcp_readonly.contains(&binding.local_name) {
+            tool_schemas.push(binding.schema());
+        }
     }
+    let compact_prompt = effective_compact_prompt(args.effective_config.compact_prompt.as_deref());
+    let compact_prompt = if in_plan {
+        mode::plan_compact_prompt(compact_prompt)
+    } else {
+        compact_prompt.to_string()
+    };
     let native = NativeRunState {
         turn_id,
         turn_key: turn_key.clone(),
@@ -943,7 +1105,7 @@ async fn start_prompt(
             args.effective_config.compact_soft_percent,
             args.effective_config.compact_recent_turns as usize,
         ),
-        preamble: preamble.to_string(),
+        preamble: turn_preamble.clone(),
         tool_schemas,
         store: Arc::clone(&store),
         identity,
@@ -951,11 +1113,17 @@ async fn start_prompt(
         last_estimate: Arc::new(Mutex::new(0)),
         last_usage_input: Arc::new(Mutex::new(None)),
         feedback,
-        mcp_readonly: Arc::new(mcp.readonly_local_names()),
+        mcp_readonly: Arc::new(mcp_readonly),
         compact: Some(LlmCompactor::new(
             client.clone(),
-            model_id.to_string(),
-            effective_compact_prompt(args.effective_config.compact_prompt.as_deref()).to_string(),
+            args.effective_config
+                .compact_model_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .unwrap_or(model_id)
+                .to_string(),
+            compact_prompt,
             max_output.min(L2_MAX_TOKENS),
         )),
     };
@@ -972,7 +1140,7 @@ async fn start_prompt(
     // Build the runner on the worker so the command loop keeps polling
     // `cmd_rx` during the first HTTP round-trip (K25).
     let client = client.clone();
-    let preamble = preamble.to_string();
+    let preamble = turn_preamble;
     let model_id = model_id.to_string();
     let worker_cancel = cancel.clone();
     let echo = include_echo.then(EchoTool::new);
@@ -993,6 +1161,10 @@ async fn start_prompt(
                 bash,
                 skill,
                 plan,
+                write_plan,
+                enter_plan,
+                exit_plan,
+                write_explore: None,
                 subagent,
                 echo,
                 dynamic: dynamic_tools,
@@ -1149,12 +1321,75 @@ async fn publish_permission(
     .await;
 }
 
+struct NativeOriginRewind {
+    session_id: String,
+    lease: crate::acp_transcript::TranscriptLease,
+    recorder: FactRecorder,
+    artifacts_dir: std::path::PathBuf,
+}
+
+async fn rewind_native_to_origin(
+    args: &NativeSessionArgs,
+    old_session_id: &str,
+    store: &Arc<Mutex<ContextStore>>,
+) -> Result<NativeOriginRewind, crate::acp::error::AcpError> {
+    let sessions_root = crate::paths::codeg_agent_sessions_root();
+    let fallback_root = crate::paths::codeg_acp_transcripts_root();
+    let opened = open_codeg_agent_session(
+        &sessions_root,
+        Some(&fallback_root),
+        &args.launch_cwd.to_string_lossy(),
+        args.agent_type.as_wire().as_ref(),
+        None,
+    )
+    .map_err(|err| crate::acp::error::AcpError::protocol(err.to_string()))?;
+
+    let session_id = opened.session_id.clone();
+    {
+        let mut inner = store.lock().expect("store");
+        *inner = opened.store;
+    }
+    let recorder = FactRecorder::transcript(
+        opened.write_root.clone(),
+        opened.write_group.clone(),
+        session_id.clone(),
+        Arc::clone(store),
+    );
+    let header = TranscriptHeader::new(
+        args.agent_type.as_wire().as_ref(),
+        &session_id,
+        &args.launch_cwd.to_string_lossy(),
+        now_epoch_ms(),
+    )
+    .continuing(old_session_id);
+    let ack = record_header_critical_in(&opened.write_root, &opened.write_group, &header);
+    match tokio::time::timeout(HEADER_ACK_TIMEOUT, ack).await {
+        Ok(Ok(())) => {}
+        _ => {
+            return Err(crate::acp::error::AcpError::protocol(
+                "failed to confirm transcript header",
+            ));
+        }
+    }
+    let artifacts_dir =
+        crate::agent::mode::artifacts_dir(&args.launch_cwd.to_string_lossy(), &session_id);
+    let _ = std::fs::create_dir_all(&artifacts_dir);
+    Ok(NativeOriginRewind {
+        session_id,
+        lease: opened.lease,
+        recorder,
+        artifacts_dir,
+    })
+}
+
 async fn handle_control_command(
     cmd: ConnectionCommand,
     in_turn: bool,
     model_id: &mut String,
     args: &mut NativeSessionArgs,
     _session_id: &str,
+    session_mode: &Arc<tokio::sync::RwLock<String>>,
+    artifacts_dir: &std::path::Path,
 ) {
     match cmd {
         ConnectionCommand::SetConfigOption {
@@ -1219,17 +1454,43 @@ async fn handle_control_command(
                 }
             }
         }
-        ConnectionCommand::SetMode { .. } => {
-            emit_with_state(
+        ConnectionCommand::SetMode { mode_id } => {
+            if in_turn {
+                emit_with_state(
+                    &args.session_state,
+                    &args.emitter,
+                    AcpEvent::Error {
+                        message: "Cannot change session mode during a turn".into(),
+                        agent_type: args.agent_type.to_string(),
+                        code: None,
+                        details: None,
+                        terminal: false,
+                    },
+                )
+                .await;
+                return;
+            }
+            let Some(mode) = mode::parse_mode(&mode_id) else {
+                emit_with_state(
+                    &args.session_state,
+                    &args.emitter,
+                    AcpEvent::Error {
+                        message: format!("Unknown session mode `{mode_id}`"),
+                        agent_type: args.agent_type.to_string(),
+                        code: None,
+                        details: None,
+                        terminal: false,
+                    },
+                )
+                .await;
+                return;
+            };
+            mode::apply_mode(
                 &args.session_state,
                 &args.emitter,
-                AcpEvent::Error {
-                    message: "Codeg Agent does not publish session modes".into(),
-                    agent_type: args.agent_type.to_string(),
-                    code: None,
-                    details: None,
-                    terminal: false,
-                },
+                session_mode,
+                artifacts_dir,
+                mode,
             )
             .await;
         }
@@ -1368,7 +1629,10 @@ mod tests {
             compact_prompt: None,
             compact_soft_percent: 80,
             compact_recent_turns: 6,
+            compact_model_id: None,
             max_turns: 40,
+            protocol: crate::acp::native_config::CodegProtocol::ChatCompletions,
+            resolved_protocol: None,
         };
         let option = native_session_model_option(&config, "gateway-model");
         assert_eq!(option.id, "model");

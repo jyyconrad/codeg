@@ -54,6 +54,12 @@ impl SkillCatalog {
             .find(|item| item.id == needle || item.name == needle)
     }
 
+    /// Full SKILL.md body for a named skill, if the file can be read.
+    pub fn skill_body(&self, name: &str) -> Option<String> {
+        let item = self.get(name)?;
+        fs::read_to_string(skill_md_path(item)).ok()
+    }
+
     pub fn items(&self) -> &[AgentSkillItem] {
         &self.items
     }

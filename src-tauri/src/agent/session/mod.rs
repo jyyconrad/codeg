@@ -147,7 +147,10 @@ mod tests {
                 compact_prompt: None,
                 compact_soft_percent: 80,
                 compact_recent_turns: 6,
+                compact_model_id: None,
                 max_turns: 40,
+                protocol: crate::acp::native_config::CodegProtocol::ChatCompletions,
+                resolved_protocol: None,
             },
             preferred_config_values: BTreeMap::new(),
             owner_window_label: "main".into(),
@@ -342,6 +345,77 @@ mod tests {
             )
         })
         .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spawn_publishes_code_and_plan_modes() {
+        let (base, _) = spawn_completions(vec![json!({"kind":"text","text":"hi"})]).await;
+        let mut h = spawn_session(&base, false, None).await;
+        wait_started(&mut h).await;
+        {
+            let s = h.state.read().await;
+            assert_eq!(s.current_mode.as_deref(), Some("code"));
+            let modes = s.modes.as_ref().expect("modes");
+            let ids: Vec<_> = modes
+                .available_modes
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            assert_eq!(ids, vec!["code", "plan"]);
+            assert!(!ids.contains(&"explore"));
+        }
+        h.shutdown.signal_shutdown();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn set_mode_plan_omits_write_file_from_next_prompt() {
+        let (base, bodies) = spawn_completions(vec![json!({"kind":"text","text":"ok"})]).await;
+        let mut h = spawn_session(&base, false, None).await;
+        wait_started(&mut h).await;
+        h.cmd_tx
+            .send(ConnectionCommand::SetMode {
+                mode_id: "plan".into(),
+            })
+            .await
+            .expect("set mode");
+        wait_event(
+            &mut h.events,
+            |e| matches!(e, AcpEvent::ModeChanged { mode_id } if mode_id == "plan"),
+        )
+        .await;
+        h.cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text {
+                    text: "plan please".into(),
+                }],
+                user_message: None,
+            })
+            .await
+            .expect("prompt");
+        wait_event(&mut h.events, |e| {
+            matches!(e, AcpEvent::TurnComplete { stop_reason, .. } if stop_reason == "end_turn")
+        })
+        .await;
+        let dumped = bodies
+            .lock()
+            .expect("bodies")
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            dumped.contains("write_plan"),
+            "plan mode must advertise write_plan: {dumped}"
+        );
+        assert!(
+            dumped.contains("exit_plan_mode"),
+            "plan mode must advertise exit_plan_mode: {dumped}"
+        );
+        assert!(
+            !dumped.contains("\"name\":\"write_file\""),
+            "plan mode must not register write_file: {dumped}"
+        );
+        h.shutdown.signal_shutdown();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -731,6 +805,10 @@ mod tests {
             dumped.contains("codeg-subagent-spec"),
             "subagent usage spec must be in extra_context: {dumped}"
         );
+        assert!(
+            dumped.contains("codeg-using-plan-explore"),
+            "builtin plan/explore skill must be in extra_context: {dumped}"
+        );
         h.shutdown.signal_shutdown();
     }
 
@@ -766,5 +844,81 @@ mod tests {
             0,
             "failed TurnEnd must not emit a successful TurnComplete"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn origin_rewind_starts_an_empty_session_after_the_first_round() {
+        let (base, _) = spawn_completions(vec![
+            json!({"kind":"text","text":"first-reply"}),
+            json!({"kind":"text","text":"second-reply"}),
+        ])
+        .await;
+        let mut h = spawn_session(&base, false, None).await;
+        wait_started(&mut h).await;
+        let original = h
+            .state
+            .read()
+            .await
+            .external_id
+            .clone()
+            .expect("session id");
+        h.cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text {
+                    text: "first".into(),
+                }],
+                user_message: None,
+            })
+            .await
+            .expect("prompt");
+        wait_event(&mut h.events, |e| {
+            matches!(e, AcpEvent::TurnComplete { stop_reason, .. } if stop_reason == "end_turn")
+        })
+        .await;
+
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        h.cmd_tx
+            .send(ConnectionCommand::Fork {
+                fork_point: None,
+                rewind_to_origin: true,
+                reply: reply_tx,
+            })
+            .await
+            .expect("origin rewind");
+        let protocol = reply_rx
+            .await
+            .expect("reply closed")
+            .expect("origin rewind");
+        assert_eq!(protocol.original_session_id, original);
+        assert_ne!(protocol.forked_session_id, original);
+
+        wait_event(&mut h.events, |e| {
+            matches!(
+                e,
+                AcpEvent::SessionStarted { session_id }
+                    if session_id == &protocol.forked_session_id
+            )
+        })
+        .await;
+        assert_eq!(
+            h.state.read().await.external_id.as_deref(),
+            Some(protocol.forked_session_id.as_str())
+        );
+
+        h.cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text {
+                    text: "edited first".into(),
+                }],
+                user_message: None,
+            })
+            .await
+            .expect("prompt after rewind");
+        wait_event(
+            &mut h.events,
+            |e| matches!(e, AcpEvent::ContentDelta { text, .. } if text.contains("second-reply")),
+        )
+        .await;
+        h.shutdown.signal_shutdown();
     }
 }

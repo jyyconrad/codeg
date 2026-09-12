@@ -1,6 +1,8 @@
+pub mod builtin_skills;
 pub mod context;
 pub mod delivery;
 pub mod hook;
+pub mod mode;
 pub mod model;
 pub mod session;
 pub mod tools;

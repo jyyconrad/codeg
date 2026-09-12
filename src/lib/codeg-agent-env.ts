@@ -1,3 +1,11 @@
+import {
+  catalogFromProviderModel,
+  codegWindowsFromCatalog,
+} from "@/lib/codeg-agent-catalog"
+import {
+  CODEG_BUILTIN_COMPACT_PROMPT,
+  CODEG_BUILTIN_SYSTEM_PROMPT,
+} from "@/lib/codeg-agent-prompts"
 import { parseEnvText, patchEnvText } from "@/lib/env-text"
 import {
   completionsModelIdFromProvider,
@@ -12,6 +20,8 @@ export const CODEG_BIND_SELECT_ID = "codeg-agent-bind-provider"
 export const CODEG_WINDOW_INPUT_ID = "codeg-agent-context-window"
 export const CODEG_COMPACT_SOFT_PERCENT_KEY = "CODEG_AGENT_COMPACT_SOFT_PERCENT"
 export const CODEG_COMPACT_RECENT_TURNS_KEY = "CODEG_AGENT_COMPACT_RECENT_TURNS"
+export const CODEG_COMPACT_MODEL_KEY = "CODEG_AGENT_COMPACT_MODEL"
+export const CODEG_PROTOCOL_KEY = "CODEG_AGENT_PROTOCOL"
 export const CODEG_MAX_TURNS_KEY = "CODEG_AGENT_MAX_TURNS"
 export const CODEG_DEFAULT_COMPACT_SOFT_PERCENT = "80"
 export const CODEG_DEFAULT_COMPACT_RECENT_TURNS = "6"
@@ -108,9 +118,16 @@ export function patchCodegEnvInt(
   })
 }
 
+function promptOverrideOrDelete(value: string, builtin: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed || trimmed === builtin.trim()) return null
+  return trimmed
+}
+
 /**
- * Overlay multiline prompts onto a parsed env map. Empty trim deletes the key
- * so spawn uses the builtin default. The KEY=VALUE textarea never holds these.
+ * Overlay multiline prompts onto a parsed env map. Empty trim, or text equal
+ * to the built-in default, deletes the key so spawn uses the Rust constant.
+ * The KEY=VALUE textarea never holds these.
  */
 export function overlayCodegPromptEnv(
   env: Record<string, string>,
@@ -118,13 +135,62 @@ export function overlayCodegPromptEnv(
   compactPrompt: string
 ): Record<string, string> {
   const next = { ...env }
-  const system = systemPrompt.trim()
-  const compact = compactPrompt.trim()
+  const system = promptOverrideOrDelete(
+    systemPrompt,
+    CODEG_BUILTIN_SYSTEM_PROMPT
+  )
+  const compact = promptOverrideOrDelete(
+    compactPrompt,
+    CODEG_BUILTIN_COMPACT_PROMPT
+  )
   if (system) next[CODEG_SYSTEM_PROMPT_KEY] = system
   else delete next[CODEG_SYSTEM_PROMPT_KEY]
   if (compact) next[CODEG_COMPACT_PROMPT_KEY] = compact
   else delete next[CODEG_COMPACT_PROMPT_KEY]
   return next
+}
+
+export function codegCompactModel(envText: string): string {
+  return parseEnvText(envText)[CODEG_COMPACT_MODEL_KEY]?.trim() ?? ""
+}
+
+export function patchCodegCompactModel(
+  envText: string,
+  modelId: string
+): string {
+  return patchEnvText(envText, {
+    [CODEG_COMPACT_MODEL_KEY]: modelId.trim(),
+  })
+}
+
+export function replaceCodegContextWindows(
+  envText: string,
+  windows: Record<string, number>
+): string {
+  const entries = Object.entries(windows).filter(
+    ([id, window]) => id.trim() && Number.isFinite(window) && window > 0
+  )
+  if (entries.length === 0) {
+    return patchEnvText(envText, { CODEG_AGENT_CONTEXT_WINDOWS: "" })
+  }
+  const next: Record<string, number> = {}
+  for (const [id, window] of entries) {
+    next[id] = window
+  }
+  return patchEnvText(envText, {
+    CODEG_AGENT_CONTEXT_WINDOWS: JSON.stringify(next),
+  })
+}
+
+export function codegWindowsFromProvider(provider: {
+  agent_type: string
+  model?: string | null
+}): Record<string, number> {
+  const catalog = catalogFromProviderModel(provider.model)
+  if (catalog) return codegWindowsFromCatalog(catalog)
+  const id = completionsModelIdFromProvider(provider)
+  if (!id) return {}
+  return { [id]: suggestedCodegContextWindow(provider) }
 }
 
 /** Save then refresh preflight. Used by the Codeg config card and enable switch. */
@@ -173,21 +239,26 @@ export function bindCodegProviderEnv(
   const apiUrl = provider?.api_url?.trim() ?? ""
   const apiKey = provider?.api_key?.trim() ?? ""
   const model = provider ? completionsModelIdFromProvider(provider) : ""
-  const windowTokens = provider
-    ? suggestedCodegContextWindow(provider)
-    : DEFAULT_CODEG_CONTEXT_WINDOW
-  return {
-    model,
-    envText: ensureCodegLaunchEnv(
-      patchEnvText(envText, {
-        CODEG_AGENT_API_BASE_URL: apiUrl,
-        CODEG_AGENT_API_KEY: apiKey,
-        CODEG_AGENT_MODEL: model,
-      }),
-      model,
-      windowTokens
-    ),
+  const windows = provider ? codegWindowsFromProvider(provider) : {}
+  const windowTokens =
+    (model ? windows[model] : undefined) ??
+    (provider
+      ? suggestedCodegContextWindow(provider)
+      : DEFAULT_CODEG_CONTEXT_WINDOW)
+  const catalog = provider ? catalogFromProviderModel(provider.model) : null
+  let next = patchEnvText(envText, {
+    CODEG_AGENT_API_BASE_URL: apiUrl,
+    CODEG_AGENT_API_KEY: apiKey,
+    CODEG_AGENT_MODEL: model,
+    [CODEG_PROTOCOL_KEY]: catalog?.protocol ?? "",
+  })
+  next = replaceCodegContextWindows(next, windows)
+  next = ensureCodegLaunchEnv(next, model, windowTokens)
+  const compact = codegCompactModel(next)
+  if (compact && !windows[compact]) {
+    next = patchCodegCompactModel(next, "")
   }
+  return { model, envText: next }
 }
 
 export function codegDraftFromEnv(env: Record<string, string>): {
@@ -195,8 +266,10 @@ export function codegDraftFromEnv(env: Record<string, string>): {
   systemPrompt: string
   compactPrompt: string
 } {
-  const systemPrompt = env[CODEG_SYSTEM_PROMPT_KEY] ?? ""
-  const compactPrompt = env[CODEG_COMPACT_PROMPT_KEY] ?? ""
+  const systemPrompt =
+    env[CODEG_SYSTEM_PROMPT_KEY]?.trim() || CODEG_BUILTIN_SYSTEM_PROMPT
+  const compactPrompt =
+    env[CODEG_COMPACT_PROMPT_KEY]?.trim() || CODEG_BUILTIN_COMPACT_PROMPT
   const envText = patchEnvText(
     Object.entries(env)
       .map(([key, value]) => `${key}=${value}`)

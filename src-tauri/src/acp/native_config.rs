@@ -14,6 +14,9 @@ pub const SYSTEM_PROMPT_KEY: &str = "CODEG_AGENT_SYSTEM_PROMPT";
 pub const COMPACT_PROMPT_KEY: &str = "CODEG_AGENT_COMPACT_PROMPT";
 pub const COMPACT_SOFT_PERCENT_KEY: &str = "CODEG_AGENT_COMPACT_SOFT_PERCENT";
 pub const COMPACT_RECENT_TURNS_KEY: &str = "CODEG_AGENT_COMPACT_RECENT_TURNS";
+pub const COMPACT_MODEL_KEY: &str = "CODEG_AGENT_COMPACT_MODEL";
+pub const PROTOCOL_KEY: &str = "CODEG_AGENT_PROTOCOL";
+pub const RESOLVED_PROTOCOL_KEY: &str = "CODEG_AGENT_RESOLVED_PROTOCOL";
 pub const MAX_TURNS_KEY: &str = "CODEG_AGENT_MAX_TURNS";
 /// Spawn/preflight internal: set by [`overlay_bound_provider`] when a real
 /// model-provider bind is projected this launch. Not a settings field.
@@ -57,8 +60,77 @@ pub struct EffectiveNativeConfig {
     pub compact_soft_percent: u8,
     /// Keep at least this many live turns before compacting. Default 6.
     pub compact_recent_turns: u32,
+    /// Optional Completions id for L2 compact. `None` uses [`Self::model_id`].
+    pub compact_model_id: Option<String>,
     /// Rig `max_turns` for one Prompt. Default 40.
     pub max_turns: u32,
+    /// Provider request protocol. One session uses one resolved wire protocol.
+    pub protocol: CodegProtocol,
+    /// Last successful auto-detect result. Ignored unless `protocol` is Auto.
+    pub resolved_protocol: Option<WireProtocol>,
+}
+
+/// How the bound provider wants the request layer to talk to the gateway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodegProtocol {
+    Auto,
+    ChatCompletions,
+    Responses,
+}
+
+impl CodegProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::ChatCompletions => "chat_completions",
+            Self::Responses => "responses",
+        }
+    }
+
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw.map(str::trim).unwrap_or("") {
+            "auto" => Self::Auto,
+            "responses" => Self::Responses,
+            _ => Self::ChatCompletions,
+        }
+    }
+}
+
+/// Wire protocol actually used for every model call in one session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireProtocol {
+    ChatCompletions,
+    Responses,
+}
+
+impl WireProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat_completions",
+            Self::Responses => "responses",
+        }
+    }
+
+    pub fn parse(raw: Option<&str>) -> Option<Self> {
+        match raw.map(str::trim).unwrap_or("") {
+            "chat_completions" => Some(Self::ChatCompletions),
+            "responses" => Some(Self::Responses),
+            _ => None,
+        }
+    }
+}
+
+impl EffectiveNativeConfig {
+    /// Protocol this session will use. Auto without a probe result is Completions.
+    pub fn wire_protocol(&self) -> WireProtocol {
+        match self.protocol {
+            CodegProtocol::ChatCompletions => WireProtocol::ChatCompletions,
+            CodegProtocol::Responses => WireProtocol::Responses,
+            CodegProtocol::Auto => self
+                .resolved_protocol
+                .unwrap_or(WireProtocol::ChatCompletions),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +206,75 @@ pub fn overlay_bound_provider(env: &mut BTreeMap<String, String>, provider: &Bou
         PROVIDER_BOUND_KEY.to_string(),
         PROVIDER_BOUND_VALUE.to_string(),
     );
+}
+
+/// Project catalog protocol / windows while `provider.model` is still DB JSON.
+/// Credential overlay must run after this and must not parse catalog again.
+pub fn project_bound_provider_catalog(
+    env: &mut BTreeMap<String, String>,
+    provider: &BoundProvider,
+) {
+    match parse_codeg_catalog(provider.model.as_deref()) {
+        Some(catalog) => {
+            overlay_env_value(env, PROTOCOL_KEY, catalog.protocol.as_str());
+            if catalog.windows.is_empty() {
+                env.remove(CONTEXT_WINDOWS_KEY);
+            } else if let Ok(raw) = serde_json::to_string(&catalog.windows) {
+                env.insert(CONTEXT_WINDOWS_KEY.to_string(), raw);
+            }
+        }
+        None => {
+            env.remove(PROTOCOL_KEY);
+            env.remove(RESOLVED_PROTOCOL_KEY);
+        }
+    }
+}
+
+struct ParsedCodegCatalog {
+    protocol: CodegProtocol,
+    windows: BTreeMap<String, u32>,
+}
+
+fn parse_codeg_catalog(raw: Option<&str>) -> Option<ParsedCodegCatalog> {
+    let raw = raw.map(str::trim).filter(|s| !s.is_empty())?;
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let obj = value.as_object()?;
+    if obj.get("kind").and_then(serde_json::Value::as_str) != Some("codeg_agent_catalog") {
+        return None;
+    }
+    let models = obj.get("models")?.as_array()?;
+    let mut windows = BTreeMap::new();
+    for item in models {
+        let id = if let Some(id) = item.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            id.to_string()
+        } else {
+            let row = item.as_object()?;
+            row.get("id")
+                .or_else(|| row.get("slug"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())?
+                .to_string()
+        };
+        let window = item
+            .as_object()
+            .and_then(|row| {
+                row.get("context_window")
+                    .or_else(|| row.get("contextWindow"))
+            })
+            .and_then(serde_json::Value::as_u64)
+            .filter(|n| *n > 0)
+            .map(|n| n as u32)
+            .unwrap_or(128_000);
+        windows.insert(id, window);
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    Some(ParsedCodegCatalog {
+        protocol: CodegProtocol::parse(obj.get("protocol").and_then(serde_json::Value::as_str)),
+        windows,
+    })
 }
 
 /// True only when [`overlay_bound_provider`] projected a bind this launch.
@@ -272,10 +413,13 @@ pub fn resolve_codeg_agent_config(
             env.get(COMPACT_RECENT_TURNS_KEY).map(String::as_str),
             DEFAULT_COMPACT_RECENT_TURNS,
         ),
+        compact_model_id: trimmed_optional(env.get(COMPACT_MODEL_KEY).map(String::as_str)),
         max_turns: parse_positive_u32(
             env.get(MAX_TURNS_KEY).map(String::as_str),
             DEFAULT_MAX_TURNS,
         ),
+        protocol: CodegProtocol::parse(env.get(PROTOCOL_KEY).map(String::as_str)),
+        resolved_protocol: WireProtocol::parse(env.get(RESOLVED_PROTOCOL_KEY).map(String::as_str)),
     })
 }
 
@@ -577,6 +721,43 @@ mod tests {
             Some("gateway-model".into())
         );
         assert_eq!(completions_model_id(Some(r#"{"unrelated":true}"#)), None);
+        assert_eq!(
+            completions_model_id(Some(
+                r#"{"kind":"codeg_agent_catalog","default":"b","models":[{"id":"a"},{"id":"b"}]}"#
+            )),
+            Some("b".into())
+        );
+    }
+
+    #[test]
+    fn catalog_bind_projects_protocol_and_windows() {
+        let mut env = BTreeMap::new();
+        let p = BoundProvider {
+            api_url: "https://gw.example/v1".into(),
+            api_key: "sk".into(),
+            model: Some(
+                r#"{"kind":"codeg_agent_catalog","protocol":"responses","default":"b","models":[{"id":"a","context_window":32000},{"id":"b","context_window":64000}]}"#
+                    .into(),
+            ),
+        };
+        project_bound_provider_catalog(&mut env, &p);
+        overlay_bound_provider(&mut env, &p);
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
+        assert_eq!(cfg.protocol, CodegProtocol::Responses);
+        assert_eq!(cfg.wire_protocol(), WireProtocol::Responses);
+        assert_eq!(cfg.model_id, "b");
+        assert_eq!(cfg.context_windows.get("a"), Some(&32000));
+        assert_eq!(cfg.context_windows.get("b"), Some(&64000));
+    }
+
+    #[test]
+    fn compact_model_id_is_optional_override() {
+        let mut env = env_with_windows("m", 128000);
+        env.insert(COMPACT_MODEL_KEY.into(), " summarizer ".into());
+        let p = provider("https://gw.example/v1", "sk", "m");
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
+        assert_eq!(cfg.compact_model_id.as_deref(), Some("summarizer"));
+        assert_eq!(cfg.model_id, "m");
     }
 
     #[test]

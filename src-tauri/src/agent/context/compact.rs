@@ -6,7 +6,6 @@
 use rig::client::CompletionClient;
 use rig::completion::message::{ToolResultContent, UserContent};
 use rig::completion::{AssistantContent, CompletionModel, Message};
-use rig::providers::openai::CompletionsClient;
 use rig_memory::{Compactor, MemoryError, MemoryPolicy, SlidingWindowMemory, TemplateCompactor};
 
 use super::budget::{
@@ -19,6 +18,7 @@ use super::tool_prune::{
     distill_tool_result, hard_clear_tool_result, tool_skips_hard_clear, DistillKind,
 };
 use crate::acp_transcript::now_epoch_ms;
+use crate::agent::model::CodegLlmClient;
 
 /// Cap on L2 compact `max_tokens` (min of this and the session setting).
 pub const L2_MAX_TOKENS: u64 = 2048;
@@ -38,10 +38,10 @@ impl From<CompactArtifact> for Message {
     }
 }
 
-/// L2 LLM summarizer. Completions only: no tools, no fake compaction card.
+/// L2 LLM summarizer. Same session client/protocol as the main turn.
 #[derive(Clone)]
 pub struct LlmCompactor {
-    client: CompletionsClient,
+    client: CodegLlmClient,
     model_id: String,
     compact_prompt: String,
     max_tokens: u64,
@@ -49,7 +49,7 @@ pub struct LlmCompactor {
 
 impl LlmCompactor {
     pub fn new(
-        client: CompletionsClient,
+        client: CodegLlmClient,
         model_id: impl Into<String>,
         compact_prompt: impl Into<String>,
         max_tokens: u64,
@@ -83,15 +83,25 @@ impl LlmCompactor {
         }
         body.push_str("Evicted turns:\n");
         body.push_str(&messages_as_text(evicted));
-        let response = self
-            .client
-            .completion_model(&self.model_id)
-            .completion_request(Message::user(body))
-            .preamble(self.compact_prompt.clone())
-            .max_tokens(self.max_tokens)
-            .send()
-            .await
-            .map_err(|err| err.to_string())?;
+        let prompt = Message::user(body);
+        let response = match &self.client {
+            CodegLlmClient::Completions(client) => client
+                .completion_model(&self.model_id)
+                .completion_request(prompt)
+                .preamble(self.compact_prompt.clone())
+                .max_tokens(self.max_tokens)
+                .send()
+                .await
+                .map_err(|err| err.to_string())?,
+            CodegLlmClient::Responses(client) => client
+                .completion_model(&self.model_id)
+                .completion_request(prompt)
+                .preamble(self.compact_prompt.clone())
+                .max_tokens(self.max_tokens)
+                .send()
+                .await
+                .map_err(|err| err.to_string())?,
+        };
         let text = choice_text(&response);
         if text.trim().is_empty() {
             return Err("empty compact summary".into());
@@ -544,7 +554,7 @@ mod tests {
         AssistantPart, AssistantRecord, ContextStore, ExecutionFact,
     };
     use crate::agent::context::{ToolOutcome, ToolPhase};
-    use crate::agent::model::completions_client;
+    use crate::agent::model::{completions_client, CodegLlmClient};
     use axum::extract::Json;
     use axum::http::{header, StatusCode, Uri};
     use axum::response::IntoResponse;
@@ -669,7 +679,7 @@ mod tests {
 
     fn llm(base: &str, prompt: &str, max_tokens: u64) -> LlmCompactor {
         let client = completions_client("sk-test", base).expect("client");
-        LlmCompactor::new(client, "m", prompt, max_tokens)
+        LlmCompactor::new(CodegLlmClient::Completions(client), "m", prompt, max_tokens)
     }
 
     #[tokio::test]

@@ -127,7 +127,6 @@ import type {
 } from "@/lib/types"
 import {
   HERMES_PROVIDERS,
-  completionsModelIdFromProvider,
   parseClaudeProviderModel,
   parseCodexModelConfig,
   serializeCodexModelConfig,
@@ -135,22 +134,19 @@ import {
 } from "@/lib/types"
 import {
   CODEG_BIND_SELECT_ID,
-  CODEG_COMPACT_PROMPT_KEY,
   CODEG_COMPACT_RECENT_TURNS_KEY,
   CODEG_COMPACT_SOFT_PERCENT_KEY,
   CODEG_DEFAULT_COMPACT_RECENT_TURNS,
   CODEG_DEFAULT_COMPACT_SOFT_PERCENT,
   CODEG_DEFAULT_MAX_TURNS,
   CODEG_MAX_TURNS_KEY,
-  CODEG_SYSTEM_PROMPT_KEY,
   CODEG_WINDOW_INPUT_ID,
   bindCodegProviderEnv,
+  codegDraftFromEnv,
   codegEnvInt,
   codegMaxOutputTokens,
-  codegWindowForModel,
   overlayCodegPromptEnv,
   persistThenRunPreflight,
-  patchCodegContextWindow,
   patchCodegEnvInt,
   patchCodegMaxOutputTokens,
 } from "@/lib/codeg-agent-env"
@@ -160,6 +156,11 @@ import {
 } from "@/lib/codeg-agent-providers"
 import { envMapToText, parseEnvText, patchEnvText } from "@/lib/env-text"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
+import {
+  CodegAgentCompactModelField,
+  CodegAgentPromptEditors,
+} from "@/components/settings/codeg-agent-fields"
+import { CodegAgentProviderManager } from "@/components/settings/codeg-agent-provider-manager"
 
 export {
   CODEG_BIND_SELECT_ID,
@@ -3638,6 +3639,8 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
         )
       : "api_key"
   const rawEnvText = envMapToText(agent.env)
+  const codegDraft =
+    agent.agent_type === "codeg_agent" ? codegDraftFromEnv(agent.env) : null
   // When codex is in official subscription mode, clean up API keys/URLs from env.
   // Grok mirrors this: record the auth-method knob, and in subscription mode
   // strip XAI_API_KEY so the editable env can't override the `grok login`
@@ -3655,12 +3658,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
             GROK_AUTH_MODE: grokAuthMode,
             ...(grokAuthMode === "subscription" ? { XAI_API_KEY: "" } : {}),
           })
-        : agent.agent_type === "codeg_agent"
-          ? patchEnvText(rawEnvText, {
-              [CODEG_SYSTEM_PROMPT_KEY]: "",
-              [CODEG_COMPACT_PROMPT_KEY]: "",
-            })
-          : rawEnvText
+        : (codegDraft?.envText ?? rawEnvText)
   return {
     enabled: agent.enabled,
     envText,
@@ -3754,8 +3752,8 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
       agent.grok_settings?.auto_compact_threshold_percent != null
         ? String(agent.grok_settings.auto_compact_threshold_percent)
         : "",
-    codegSystemPrompt: agent.env[CODEG_SYSTEM_PROMPT_KEY] ?? "",
-    codegCompactPrompt: agent.env[CODEG_COMPACT_PROMPT_KEY] ?? "",
+    codegSystemPrompt: codegDraft?.systemPrompt ?? "",
+    codegCompactPrompt: codegDraft?.compactPrompt ?? "",
     openCodeAuthJsonText,
     openClawGatewayUrl: openClawImportant.gatewayUrl,
     openClawGatewayToken: openClawImportant.gatewayToken,
@@ -4200,7 +4198,7 @@ export function injectCodegPreflightFixes(
         : {
             label: acpText("codegAgent.addProviderFix", "Add a model provider"),
             kind: "open_model_providers",
-            payload: "/settings/model-providers",
+            payload: "/settings/codeg-agent",
           }
       return { ...check, fixes: [...check.fixes, fix] }
     }
@@ -4366,6 +4364,9 @@ export function AcpAgentSettings() {
     Partial<Record<AgentType, boolean>>
   >({})
   const [modelProviders, setModelProviders] = useState<ModelProviderInfo[]>([])
+  const [codegPanelProviderId, setCodegPanelProviderId] = useState<
+    number | null
+  >(null)
   const [uninstallConfirmAgent, setUninstallConfirmAgent] =
     useState<AcpAgentInfo | null>(null)
   const [removeConfirmAgent, setRemoveConfirmAgent] =
@@ -6223,6 +6224,24 @@ export function AcpAgentSettings() {
     },
     [selectedAgent, selectedDraft, modelProviders, updateSelectedDraft]
   )
+
+  useEffect(() => {
+    if (selectedAgent?.agent_type !== "codeg_agent") return
+    const bound = selectedDraft?.modelProviderId ?? null
+    setCodegPanelProviderId((current) => {
+      if (
+        current != null &&
+        selectedModelProviders.some((provider) => provider.id === current)
+      ) {
+        return current
+      }
+      return bound ?? selectedModelProviders[0]?.id ?? null
+    })
+  }, [
+    selectedAgent?.agent_type,
+    selectedDraft?.modelProviderId,
+    selectedModelProviders,
+  ])
 
   // Auto-select the first available provider when the user switches an agent to
   // "model_provider" auth mode and hasn't picked one yet. If the list is empty,
@@ -8086,13 +8105,6 @@ export function AcpAgentSettings() {
                       (provider) =>
                         provider.id === selectedDraft.modelProviderId
                     )
-                    const codegModel = boundProvider
-                      ? completionsModelIdFromProvider(boundProvider)
-                      : selectedDraft.model
-                    const windowValue = codegWindowForModel(
-                      selectedDraft.envText,
-                      codegModel
-                    )
                     return (
                       <div className="space-y-3 rounded-md border bg-muted/10 p-3">
                         <div>
@@ -8118,110 +8130,50 @@ export function AcpAgentSettings() {
                           </p>
                           <div className="mt-2 space-y-1 text-2xs text-muted-foreground">
                             <p>{t("codegAgent.experimental")}</p>
-                            <p>{t("codegAgent.protocol")}</p>
                             <p>{t("codegAgent.noSandbox")}</p>
                             <p>{t("codegAgent.recovery")}</p>
-                            <p>{t("codegAgent.contextWindowsHint")}</p>
-                            <p>{t("codegAgent.usageLastRequest")}</p>
                           </div>
                         </div>
 
-                        <div className="space-y-1.5">
-                          <label className="text-2xs text-muted-foreground">
-                            {t("codegAgent.bindProvider")}
-                          </label>
-                          {selectedModelProviders.length > 0 ? (
-                            <Select
-                              value={
-                                selectedDraft.modelProviderId != null
-                                  ? String(selectedDraft.modelProviderId)
-                                  : ""
+                        <CodegAgentProviderManager
+                          providers={selectedModelProviders}
+                          boundProviderId={selectedDraft.modelProviderId}
+                          selectedProviderId={codegPanelProviderId}
+                          onSelectProvider={setCodegPanelProviderId}
+                          onBindProvider={(provider) => {
+                            handleModelProviderSelect(
+                              provider ? String(provider.id) : ""
+                            )
+                          }}
+                          bindSwitchId={CODEG_BIND_SELECT_ID}
+                          windowInputId={CODEG_WINDOW_INPUT_ID}
+                          className="min-h-[22rem] lg:grid-cols-[14rem_1fr]"
+                          onProvidersChanged={(rows, touched) => {
+                            setModelProviders(rows)
+                            if (touched) {
+                              setCodegPanelProviderId(touched.id)
+                              if (
+                                selectedDraft.modelProviderId === touched.id
+                              ) {
+                                handleModelProviderSelect(String(touched.id))
                               }
-                              onValueChange={handleModelProviderSelect}
-                            >
-                              <SelectTrigger
-                                id={CODEG_BIND_SELECT_ID}
-                                className="w-full"
-                              >
-                                <SelectValue
-                                  placeholder={t("selectModelProvider")}
-                                />
-                              </SelectTrigger>
-                              <SelectContent align="start">
-                                {selectedModelProviders.map((provider) => (
-                                  <SelectItem
-                                    key={provider.id}
-                                    value={String(provider.id)}
-                                  >
-                                    {modelProviderOptionLabel(
-                                      provider,
-                                      selectedAgent.agent_type
-                                    )}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            <div className="space-y-2">
-                              <p className="text-2xs text-muted-foreground">
-                                {t("noModelProviderAvailable")}
-                              </p>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                onClick={() =>
-                                  router.push("/settings/model-providers")
-                                }
-                              >
-                                {t("codegAgent.addModelProvider")}
-                              </Button>
-                            </div>
-                          )}
-                        </div>
+                            }
+                          }}
+                        />
 
-                        <div className="space-y-1.5">
-                          <label className="text-2xs text-muted-foreground">
-                            {t("codegAgent.modelReadOnly")}
-                          </label>
-                          <Input
-                            value={codegModel}
-                            readOnly
-                            placeholder={t("codegAgent.modelSelectorHint")}
-                          />
-                        </div>
+                        <CodegAgentCompactModelField
+                          envText={selectedDraft.envText}
+                          onEnvTextChange={(envText) =>
+                            updateSelectedDraft((current) => ({
+                              ...current,
+                              envText,
+                            }))
+                          }
+                          boundProvider={boundProvider ?? null}
+                          density="compact"
+                        />
 
                         <div className="grid gap-3 md:grid-cols-2">
-                          <div className="space-y-1.5">
-                            <label
-                              className="text-2xs text-muted-foreground"
-                              htmlFor={CODEG_WINDOW_INPUT_ID}
-                            >
-                              {t("codegAgent.contextWindow")}
-                            </label>
-                            <Input
-                              id={CODEG_WINDOW_INPUT_ID}
-                              type="number"
-                              min={1}
-                              value={windowValue ?? ""}
-                              disabled={!codegModel}
-                              onChange={(event) => {
-                                const next = Number.parseInt(
-                                  event.target.value,
-                                  10
-                                )
-                                if (!Number.isFinite(next) || next <= 0) return
-                                updateSelectedDraft((current) => ({
-                                  ...current,
-                                  envText: patchCodegContextWindow(
-                                    current.envText,
-                                    codegModel,
-                                    next
-                                  ),
-                                }))
-                              }}
-                            />
-                          </div>
                           <div className="space-y-1.5">
                             <label className="text-2xs text-muted-foreground">
                               {t("codegAgent.maxOutput")}
@@ -8243,9 +8195,6 @@ export function AcpAgentSettings() {
                               }}
                             />
                           </div>
-                        </div>
-
-                        <div className="grid gap-3 md:grid-cols-2">
                           <div className="space-y-1.5">
                             <label className="text-2xs text-muted-foreground">
                               {t("codegAgent.compactSoftPercent")}
@@ -8324,56 +8273,23 @@ export function AcpAgentSettings() {
                           </div>
                         </div>
 
-                        {boundProvider && (
-                          <div className="space-y-1 text-2xs text-muted-foreground">
-                            <p>{t("codegAgent.boundCredentials")}</p>
-                            <p className="break-all">{boundProvider.api_url}</p>
-                            <p>
-                              {boundProvider.api_key_masked ||
-                                boundProvider.api_key}
-                            </p>
-                          </div>
-                        )}
-
-                        <div className="space-y-1.5">
-                          <label className="text-2xs text-muted-foreground">
-                            {t("codegAgent.systemPrompt")}
-                          </label>
-                          <Textarea
-                            value={selectedDraft.codegSystemPrompt}
-                            onChange={(event) => {
-                              updateSelectedDraft((current) => ({
-                                ...current,
-                                codegSystemPrompt: event.target.value,
-                              }))
-                            }}
-                            placeholder={t("codegAgent.emptyUsesBuiltin")}
-                            className="min-h-24"
-                          />
-                          <p className="text-2xs text-muted-foreground">
-                            {t("codegAgent.systemPromptHint")}
-                          </p>
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="text-2xs text-muted-foreground">
-                            {t("codegAgent.compactPrompt")}
-                          </label>
-                          <Textarea
-                            value={selectedDraft.codegCompactPrompt}
-                            onChange={(event) => {
-                              updateSelectedDraft((current) => ({
-                                ...current,
-                                codegCompactPrompt: event.target.value,
-                              }))
-                            }}
-                            placeholder={t("codegAgent.emptyUsesBuiltin")}
-                            className="min-h-24"
-                          />
-                          <p className="text-2xs text-muted-foreground">
-                            {t("codegAgent.compactPromptHint")}
-                          </p>
-                        </div>
+                        <CodegAgentPromptEditors
+                          systemPrompt={selectedDraft.codegSystemPrompt}
+                          compactPrompt={selectedDraft.codegCompactPrompt}
+                          onSystemPromptChange={(value) =>
+                            updateSelectedDraft((current) => ({
+                              ...current,
+                              codegSystemPrompt: value,
+                            }))
+                          }
+                          onCompactPromptChange={(value) =>
+                            updateSelectedDraft((current) => ({
+                              ...current,
+                              codegCompactPrompt: value,
+                            }))
+                          }
+                          density="compact"
+                        />
 
                         <div className="flex justify-end">
                           <Button

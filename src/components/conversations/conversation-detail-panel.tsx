@@ -121,10 +121,7 @@ import {
   lastUserPromptText,
   type SessionFailureAction,
 } from "@/lib/session-failures"
-import {
-  agentSupportsNamedFork,
-  type LastRoundEditTarget,
-} from "@/lib/edit-last-round"
+import { type LastRoundEditTarget } from "@/lib/edit-last-round"
 import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
@@ -1256,9 +1253,10 @@ const ConversationTabView = memo(function ConversationTabView({
     handleSendRef.current = handleSend
   }, [handleSend])
 
-  // "Fork from here": fork at a rendered assistant turn, sending nothing. The
-  // ONLY fork entry point — the composer's fork-and-send was removed once this
-  // existed, since the tail is just one of the turns this can be aimed at.
+  // Rewind the live session: either fork at a rendered assistant turn
+  // ("fork from here") or `session/new` to replace the first user round.
+  // The composer's fork-and-send was removed once per-message fork existed,
+  // since the tail is just one of the turns this can be aimed at.
   //
   // No draft is at stake, so a failure is simply reported: the session is
   // untouched and the same click can be retried, or aimed elsewhere.
@@ -1272,8 +1270,11 @@ const ConversationTabView = memo(function ConversationTabView({
   // would swap its identity at both ends of every turn and re-render the whole
   // mounted transcript window for nothing. The ref is also the fresher answer
   // at click time.
-  const handleForkFromTurn = useCallback(
-    async (turnId: string): Promise<boolean> => {
+  const applySessionRewind = useCallback(
+    async (opts: {
+      forkFromTurnId?: string | null
+      rewindToOrigin?: boolean
+    }): Promise<boolean> => {
       const connectionId = conn.connectionId
       if (!connectionId || connStatusRef.current !== "connected") return false
       // Snapshot which live turns belong to the PRE-fork session, before the
@@ -1301,7 +1302,8 @@ const ConversationTabView = memo(function ConversationTabView({
           connectionId,
           dbConvIdRef.current,
           folderId,
-          turnId
+          opts.forkFromTurnId ?? null,
+          opts.rewindToOrigin ?? false
         )
         sessionIdRef.current = forkedSessionId
         setExternalId(effectiveConversationId, forkedSessionId)
@@ -1355,6 +1357,12 @@ const ConversationTabView = memo(function ConversationTabView({
     ]
   )
 
+  const handleForkFromTurn = useCallback(
+    (turnId: string): Promise<boolean> =>
+      applySessionRewind({ forkFromTurnId: turnId }),
+    [applySessionRewind]
+  )
+
   const handleStartEditLastRound = useCallback(
     (target: LastRoundEditTarget) => {
       setEditingLastRound(target)
@@ -1380,7 +1388,9 @@ const ConversationTabView = memo(function ConversationTabView({
       }
       setEditingLastRound(null)
       void (async () => {
-        const forked = await handleForkFromTurn(target.forkFromTurnId)
+        const forked = target.forkFromTurnId
+          ? await handleForkFromTurn(target.forkFromTurnId)
+          : await applySessionRewind({ rewindToOrigin: true })
         if (!forked) {
           setEditingLastRound(target)
           // The composer already cleared itself on send; put the edited
@@ -1395,7 +1405,7 @@ const ConversationTabView = memo(function ConversationTabView({
         handleSend(draft, modeId)
       })()
     },
-    [editingLastRound, handleForkFromTurn, handleSend]
+    [applySessionRewind, editingLastRound, handleForkFromTurn, handleSend]
   )
 
   /** Stop one AIR async task. Returns the adapter's verdict so the strip can
@@ -2040,9 +2050,7 @@ const ConversationTabView = memo(function ConversationTabView({
         onEditLastRound={
           connStatus === "connected" &&
           hasPersistedConversation &&
-          !conn.isViewer &&
-          conn.supportsFork &&
-          agentSupportsNamedFork(selectedAgent)
+          !conn.isViewer
             ? handleStartEditLastRound
             : undefined
         }

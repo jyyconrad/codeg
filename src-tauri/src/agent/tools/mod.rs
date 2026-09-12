@@ -1,8 +1,10 @@
+pub mod artifact;
 pub mod bash;
 pub mod companion;
 pub mod fs;
 pub mod mcp;
 pub mod plan;
+pub mod plan_mode;
 pub mod recall;
 pub mod search;
 pub mod skill;
@@ -21,6 +23,7 @@ use crate::agent::context::{
     CallIdentityBridge, ExecutionFact, FactRecorder, ToolOutcome, ToolPhase,
 };
 
+pub use artifact::{WriteExploreReportTool, WritePlanTool};
 pub use bash::BashTool;
 pub(crate) use companion::{
     build_companion_tools, companion_plan_from_injection, is_companion_tool,
@@ -30,6 +33,7 @@ pub(crate) use companion::{
 pub use fs::{EditFileTool, ReadFileTool, WriteFileTool};
 pub use mcp::{mcp_tool_requires_permission, McpSession, McpTimeouts};
 pub use plan::UpdatePlanTool;
+pub use plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
 pub use recall::RecallTool;
 pub use search::{GlobTool, GrepTool};
 pub use skill::{SkillCatalog, SkillTool};
@@ -144,9 +148,10 @@ impl NativeToolCtx {
 pub fn tool_kind(name: &str) -> &'static str {
     match name {
         "read_file" | "skill" | "recall" => "read",
-        "write_file" | "edit_file" => "edit",
+        "write_file" | "edit_file" | "write_plan" | "write_explore_report" => "edit",
         "glob" | "grep" => "search",
         "bash" => "execute",
+        "enter_plan_mode" | "exit_plan_mode" => "think",
         _ => "other",
     }
 }
@@ -156,7 +161,15 @@ pub fn tool_kind(name: &str) -> &'static str {
 pub fn tool_requires_permission(name: &str) -> bool {
     !matches!(
         name,
-        "read_file" | "glob" | "grep" | "skill" | "update_plan" | "recall"
+        "read_file"
+            | "glob"
+            | "grep"
+            | "skill"
+            | "update_plan"
+            | "recall"
+            | "write_plan"
+            | "write_explore_report"
+            | "exit_plan_mode"
     ) && !is_companion_tool(name)
 }
 

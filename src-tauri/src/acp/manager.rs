@@ -1951,6 +1951,48 @@ impl ConnectionManager {
         // always done.
         fork_from_turn_id: Option<String>,
     ) -> Result<ForkResultInfo, AcpError> {
+        self.fork_session_inner(
+            db,
+            conn_id,
+            link_conversation_id,
+            link_folder_id,
+            fork_from_turn_id,
+            false,
+        )
+        .await
+    }
+
+    /// Replace the live session with a brand-new empty one and persist the
+    /// same two-row sibling layout as [`Self::fork_session`]. Used to edit
+    /// the first user round (ChatGPT-style): there is no earlier assistant
+    /// to named-fork at, so `session/new` is the honest rewind.
+    pub async fn rewind_session_to_origin(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        link_conversation_id: Option<i32>,
+        link_folder_id: Option<i32>,
+    ) -> Result<ForkResultInfo, AcpError> {
+        self.fork_session_inner(
+            db,
+            conn_id,
+            link_conversation_id,
+            link_folder_id,
+            None,
+            true,
+        )
+        .await
+    }
+
+    async fn fork_session_inner(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        link_conversation_id: Option<i32>,
+        link_folder_id: Option<i32>,
+        fork_from_turn_id: Option<String>,
+        rewind_to_origin: bool,
+    ) -> Result<ForkResultInfo, AcpError> {
         let (state_arc, cmd_tx, emitter) = {
             let connections = self.connections.lock().await;
             let conn = connections
@@ -2011,41 +2053,46 @@ impl ConnectionManager {
         // Resolve the fork point BEFORE the cancellation shield below: this is
         // a read-only parse, so a caller that disappears here has changed
         // nothing. Failing to resolve is not an error — it degrades to the tail
-        // fork rather than refusing the user's click.
-        let fork_point = match fork_from_turn_id {
-            None => None,
-            Some(turn_id) => {
-                let agent_type = state_arc.read().await.agent_type;
-                match crate::commands::conversations::get_folder_conversation_core(
-                    &db.conn,
-                    conversation_id,
-                )
-                .await
-                {
-                    Ok((detail, _)) => {
-                        let point = crate::acp::fork::resolve_fork_point(
-                            &detail.turns,
-                            &turn_id,
-                            agent_type,
-                        );
-                        if point.is_none() {
-                            tracing::info!(
+        // fork rather than refusing the user's click. Origin rewind skips this:
+        // there is no turn to name, and the loop takes `session/new`.
+        let fork_point = if rewind_to_origin {
+            None
+        } else {
+            match fork_from_turn_id {
+                None => None,
+                Some(turn_id) => {
+                    let agent_type = state_arc.read().await.agent_type;
+                    match crate::commands::conversations::get_folder_conversation_core(
+                        &db.conn,
+                        conversation_id,
+                    )
+                    .await
+                    {
+                        Ok((detail, _)) => {
+                            let point = crate::acp::fork::resolve_fork_point(
+                                &detail.turns,
+                                &turn_id,
+                                agent_type,
+                            );
+                            if point.is_none() {
+                                tracing::info!(
+                                    connection_id = %conn_id,
+                                    turn_id = %turn_id,
+                                    agent = %agent_type,
+                                    "[ACP] no fork point for this turn; forking at the tail"
+                                );
+                            }
+                            point
+                        }
+                        Err(e) => {
+                            tracing::warn!(
                                 connection_id = %conn_id,
                                 turn_id = %turn_id,
-                                agent = %agent_type,
-                                "[ACP] no fork point for this turn; forking at the tail"
+                                "[ACP] could not read the conversation to resolve a fork point \
+                                 ({e}); forking at the tail"
                             );
+                            None
                         }
-                        point
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            connection_id = %conn_id,
-                            turn_id = %turn_id,
-                            "[ACP] could not read the conversation to resolve a fork point \
-                             ({e}); forking at the tail"
-                        );
-                        None
                     }
                 }
             }
@@ -2094,6 +2141,7 @@ impl ConnectionManager {
                 cmd_tx
                     .send(ConnectionCommand::Fork {
                         fork_point,
+                        rewind_to_origin,
                         reply: reply_tx,
                     })
                     .await

@@ -1293,7 +1293,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   deepseek: "bg-[#4D6BFE]",
   qoder: "bg-[#6C4CF1]",
   antigravity: "bg-[#1A73E8]",
-  codeg_agent: "bg-[#0F766E]",
+  codeg_agent: "bg-[#1a1a2e]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -4657,9 +4657,63 @@ export function parseClaudeProviderModel(
 export const DEFAULT_CODEG_CONTEXT_WINDOW = 128000
 
 /**
- * Chat Completions model id from a model-provider row. Claude JSON uses `main`,
- * Codex catalogs use `default` then the first custom slug, plain strings pass
- * through. Unrecognized JSON yields an empty string rather than the raw blob.
+ * Peek a Codeg Agent catalog JSON without importing the settings parser.
+ * Claude / Codex blobs (no `kind`) return null.
+ */
+function codegAgentCatalogHint(raw: string): {
+  defaultId: string
+  windowFor: (id: string) => number | null
+} | null {
+  if (!raw.startsWith("{")) return null
+  try {
+    const value = JSON.parse(raw) as {
+      kind?: unknown
+      default?: unknown
+      models?: unknown
+    }
+    if (value?.kind !== "codeg_agent_catalog") return null
+    const models = Array.isArray(value.models) ? value.models : []
+    const ids: { id: string; window: number }[] = []
+    for (const item of models) {
+      if (typeof item === "string" && item.trim()) {
+        ids.push({ id: item.trim(), window: DEFAULT_CODEG_CONTEXT_WINDOW })
+        continue
+      }
+      if (!item || typeof item !== "object") continue
+      const row = item as {
+        id?: unknown
+        slug?: unknown
+        context_window?: unknown
+      }
+      const id = String(row.id ?? row.slug ?? "").trim()
+      if (!id) continue
+      const windowRaw = row.context_window
+      const window =
+        typeof windowRaw === "number" && windowRaw > 0
+          ? windowRaw
+          : DEFAULT_CODEG_CONTEXT_WINDOW
+      ids.push({ id, window })
+    }
+    if (ids.length === 0) return null
+    const requested =
+      typeof value.default === "string" ? value.default.trim() : ""
+    const defaultId = ids.some((row) => row.id === requested)
+      ? requested
+      : ids[0].id
+    return {
+      defaultId,
+      windowFor: (id) => ids.find((row) => row.id === id)?.window ?? null,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Chat Completions model id from a model-provider row. Codeg catalog JSON uses
+ * `default`. Claude JSON uses `main`, Codex catalogs use `default` then the
+ * first custom slug, plain strings pass through. Unrecognized JSON yields an
+ * empty string rather than the raw blob.
  */
 export function completionsModelIdFromProvider(provider: {
   agent_type: string
@@ -4667,6 +4721,8 @@ export function completionsModelIdFromProvider(provider: {
 }): string {
   const raw = provider.model?.trim() ?? ""
   if (!raw) return ""
+  const codeg = codegAgentCatalogHint(raw)
+  if (codeg) return codeg.defaultId
   if (provider.agent_type === "claude_code" || raw.startsWith("{")) {
     const claude = parseClaudeProviderModel(raw)
     if (claude.main?.trim()) return claude.main.trim()
@@ -4682,12 +4738,17 @@ export function completionsModelIdFromProvider(provider: {
   return raw
 }
 
-/** Window to write for a newly bound Codeg Agent model, preferring Codex catalog. */
+/** Window to write for a newly bound Codeg Agent model, preferring catalogs. */
 export function suggestedCodegContextWindow(provider: {
   agent_type: string
   model?: string | null
 }): number {
-  if (provider.agent_type === "codex" || provider.model?.trim().startsWith("{")) {
+  const raw = provider.model?.trim() ?? ""
+  const codeg = codegAgentCatalogHint(raw)
+  if (codeg) {
+    return codeg.windowFor(codeg.defaultId) ?? DEFAULT_CODEG_CONTEXT_WINDOW
+  }
+  if (provider.agent_type === "codex" || raw.startsWith("{")) {
     const parsed = parseCodexModelConfig(provider.model ?? null)
     const slug = completionsModelIdFromProvider(provider)
     const hit = parsed.customs.find((entry) => entry.slug === slug)

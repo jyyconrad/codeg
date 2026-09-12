@@ -6,36 +6,25 @@ import {
   Loader2,
   MessageSquareText,
   Save,
-  Server,
   SlidersHorizontal,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
-import {
-  SettingCard,
-  SettingNote,
-  SettingRow,
-} from "@/components/shared/setting-card"
+import { SettingCard, SettingRow } from "@/components/shared/setting-card"
 import {
   SettingsError,
   SettingsSaveBar,
   SettingsSection,
 } from "@/components/shared/settings-section"
-import { AddModelProviderDialog } from "@/components/settings/add-model-provider-dialog"
-import { Button } from "@/components/ui/button"
+import {
+  CodegAgentCompactModelField,
+  CodegAgentPromptEditors,
+} from "@/components/settings/codeg-agent-fields"
+import { CodegAgentProviderManager } from "@/components/settings/codeg-agent-provider-manager"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Textarea } from "@/components/ui/textarea"
 import { toErrorMessage } from "@/lib/app-error"
 import {
   acpListAgents,
@@ -56,44 +45,45 @@ import {
   codegDraftFromEnv,
   codegEnvInt,
   codegMaxOutputTokens,
-  codegWindowForModel,
   overlayCodegPromptEnv,
-  persistThenRunPreflight,
-  patchCodegContextWindow,
   patchCodegEnvInt,
   patchCodegMaxOutputTokens,
+  persistThenRunPreflight,
 } from "@/lib/codeg-agent-env"
+import { modelProvidersForAgent } from "@/lib/codeg-agent-providers"
 import {
-  modelProviderOptionLabel,
-  modelProvidersForAgent,
-} from "@/lib/codeg-agent-providers"
+  CODEG_BUILTIN_COMPACT_PROMPT,
+  CODEG_BUILTIN_SYSTEM_PROMPT,
+} from "@/lib/codeg-agent-prompts"
 import { parseEnvText } from "@/lib/env-text"
 import type {
   AcpAgentInfo,
   ModelProviderInfo,
   PreflightResult,
 } from "@/lib/types"
-import { completionsModelIdFromProvider } from "@/lib/types"
 
 export function CodegAgentSettings() {
   const t = useTranslations("CodegAgentSettings")
   const tAgent = useTranslations("AcpAgentSettings.codegAgent")
   const tAcp = useTranslations("AcpAgentSettings")
-  const router = useRouter()
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [agent, setAgent] = useState<AcpAgentInfo | null>(null)
   const [providers, setProviders] = useState<ModelProviderInfo[]>([])
-  const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [preflight, setPreflight] = useState<PreflightResult | null>(null)
+  const [selectedProviderId, setSelectedProviderId] = useState<number | null>(
+    null
+  )
 
   const [enabled, setEnabled] = useState(false)
   const [envText, setEnvText] = useState("")
   const [modelProviderId, setModelProviderId] = useState<number | null>(null)
-  const [systemPrompt, setSystemPrompt] = useState("")
-  const [compactPrompt, setCompactPrompt] = useState("")
+  const [systemPrompt, setSystemPrompt] = useState(CODEG_BUILTIN_SYSTEM_PROMPT)
+  const [compactPrompt, setCompactPrompt] = useState(
+    CODEG_BUILTIN_COMPACT_PROMPT
+  )
 
   const bindableProviders = useMemo(
     () => modelProvidersForAgent("codeg_agent", providers),
@@ -107,20 +97,27 @@ export function CodegAgentSettings() {
     [bindableProviders, modelProviderId]
   )
 
-  const modelId = boundProvider
-    ? completionsModelIdFromProvider(boundProvider)
-    : ""
-  const windowValue = codegWindowForModel(envText, modelId)
-
-  const applyAgent = useCallback((next: AcpAgentInfo) => {
-    const draft = codegDraftFromEnv(next.env)
-    setAgent(next)
-    setEnabled(next.enabled)
-    setEnvText(draft.envText)
-    setModelProviderId(next.model_provider_id ?? null)
-    setSystemPrompt(draft.systemPrompt)
-    setCompactPrompt(draft.compactPrompt)
-  }, [])
+  const applyAgent = useCallback(
+    (next: AcpAgentInfo, rows: ModelProviderInfo[]) => {
+      const draft = codegDraftFromEnv(next.env)
+      const bound =
+        rows.find((row) => row.id === next.model_provider_id) ?? null
+      setAgent(next)
+      setEnabled(next.enabled)
+      setEnvText(
+        bound
+          ? bindCodegProviderEnv(draft.envText, bound).envText
+          : draft.envText
+      )
+      setModelProviderId(next.model_provider_id ?? null)
+      setSystemPrompt(draft.systemPrompt)
+      setCompactPrompt(draft.compactPrompt)
+      if (next.model_provider_id != null) {
+        setSelectedProviderId(next.model_provider_id)
+      }
+    },
+    []
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -137,9 +134,13 @@ export function CodegAgentSettings() {
         setLoadError(t("missingAgent"))
         return
       }
-      applyAgent(next)
+      applyAgent(next, rows)
       setProviders(rows)
       setPreflight(preflightResult)
+      if (next.model_provider_id == null) {
+        const first = modelProvidersForAgent("codeg_agent", rows)[0]
+        if (first) setSelectedProviderId(first.id)
+      }
     } catch (err) {
       setLoadError(t("loadFailed", { message: toErrorMessage(err) }))
     } finally {
@@ -221,157 +222,52 @@ export function CodegAgentSettings() {
   return (
     <ScrollArea className="h-full">
       <div className="space-y-6 px-3 py-3 md:px-4 md:py-4">
-        <SettingsSection
-          title={t("sectionTitle")}
-          description={t("sectionDescription")}
-        >
-          <SettingNote>{tAgent("inProcess")}</SettingNote>
-          <SettingNote>{tAgent("protocol")}</SettingNote>
-          {loadError ? <SettingsError>{loadError}</SettingsError> : null}
-          {failedChecks.length > 0 ? (
-            <SettingsError>
-              {`${t("preflightFailed")}: ${failedChecks
-                .map((check) => `${check.label}: ${check.message}`)
-                .join(" · ")}`}
-            </SettingsError>
-          ) : null}
-        </SettingsSection>
+        <header className="space-y-1">
+          <h1 className="text-sm font-semibold">{t("sectionTitle")}</h1>
+          <p className="line-clamp-2 max-w-3xl text-sm leading-5 text-muted-foreground">
+            {t("sectionDescription")}
+          </p>
+        </header>
 
-        <SettingsSection
-          icon={Server}
-          title={t("providerTitle")}
-          description={t("providerDescription")}
-        >
-          <SettingCard>
-            <SettingRow
-              title={tAgent("bindProvider")}
-              description={t("presetHint")}
-              htmlFor={CODEG_BIND_SELECT_ID}
-            >
-              {bindableProviders.length > 0 ? (
-                <Select
-                  value={modelProviderId != null ? String(modelProviderId) : ""}
-                  onValueChange={(value) => {
-                    const next =
-                      bindableProviders.find(
-                        (provider) => String(provider.id) === value
-                      ) ?? null
-                    bindProvider(next)
-                  }}
-                >
-                  <SelectTrigger id={CODEG_BIND_SELECT_ID} className="w-full">
-                    <SelectValue placeholder={tAcp("selectModelProvider")} />
-                  </SelectTrigger>
-                  <SelectContent align="start">
-                    {bindableProviders.map((provider) => (
-                      <SelectItem key={provider.id} value={String(provider.id)}>
-                        {modelProviderOptionLabel(provider, "codeg_agent")}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  {tAcp("noModelProviderAvailable")}
-                </p>
-              )}
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setAddDialogOpen(true)}
-                >
-                  {tAgent("addModelProvider")}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => router.push("/settings/model-providers")}
-                >
-                  {t("manageProviders")}
-                </Button>
-              </div>
-            </SettingRow>
-            <SettingRow title={tAgent("modelReadOnly")}>
-              <Input
-                value={modelId}
-                readOnly
-                placeholder={tAgent("modelSelectorHint")}
-              />
-            </SettingRow>
-            <SettingRow
-              title={tAgent("contextWindow")}
-              htmlFor={CODEG_WINDOW_INPUT_ID}
-            >
-              <Input
-                id={CODEG_WINDOW_INPUT_ID}
-                type="number"
-                min={1}
-                value={windowValue ?? ""}
-                disabled={!modelId}
-                onChange={(event) => {
-                  const next = Number.parseInt(event.target.value, 10)
-                  if (!Number.isFinite(next) || next <= 0) return
-                  setEnvText(patchCodegContextWindow(envText, modelId, next))
-                }}
-              />
-            </SettingRow>
-            <SettingRow title={tAgent("maxOutput")}>
-              <Input
-                type="number"
-                min={1}
-                value={codegMaxOutputTokens(envText)}
-                onChange={(event) =>
-                  setEnvText(
-                    patchCodegMaxOutputTokens(envText, event.target.value)
-                  )
-                }
-              />
-            </SettingRow>
-            {boundProvider ? (
-              <SettingRow title={tAgent("boundCredentials")}>
-                <p className="break-all text-xs text-muted-foreground">
-                  {boundProvider.api_url}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {boundProvider.api_key_masked || boundProvider.api_key}
-                </p>
-              </SettingRow>
-            ) : null}
-          </SettingCard>
-        </SettingsSection>
+        {loadError ? <SettingsError>{loadError}</SettingsError> : null}
+        {failedChecks.length > 0 ? (
+          <SettingsError>
+            {`${t("preflightFailed")}: ${failedChecks
+              .map((check) => `${check.label}: ${check.message}`)
+              .join(" · ")}`}
+          </SettingsError>
+        ) : null}
+
+        <CodegAgentProviderManager
+          providers={bindableProviders}
+          boundProviderId={modelProviderId}
+          selectedProviderId={selectedProviderId}
+          onSelectProvider={setSelectedProviderId}
+          onBindProvider={bindProvider}
+          bindSwitchId={CODEG_BIND_SELECT_ID}
+          windowInputId={CODEG_WINDOW_INPUT_ID}
+          onProvidersChanged={(rows, touched) => {
+            setProviders(rows)
+            if (touched) {
+              setSelectedProviderId(touched.id)
+              if (modelProviderId === touched.id) {
+                bindProvider(touched)
+              }
+            }
+          }}
+        />
 
         <SettingsSection
           icon={MessageSquareText}
           title={t("promptsTitle")}
           description={t("promptsDescription")}
         >
-          <SettingCard>
-            <SettingRow
-              title={tAgent("systemPrompt")}
-              description={tAgent("systemPromptHint")}
-            >
-              <Textarea
-                value={systemPrompt}
-                onChange={(event) => setSystemPrompt(event.target.value)}
-                placeholder={tAgent("emptyUsesBuiltin")}
-                className="min-h-24"
-              />
-            </SettingRow>
-            <SettingRow
-              title={tAgent("compactPrompt")}
-              description={tAgent("compactPromptHint")}
-            >
-              <Textarea
-                value={compactPrompt}
-                onChange={(event) => setCompactPrompt(event.target.value)}
-                placeholder={tAgent("emptyUsesBuiltin")}
-                className="min-h-24"
-              />
-            </SettingRow>
-          </SettingCard>
+          <CodegAgentPromptEditors
+            systemPrompt={systemPrompt}
+            compactPrompt={compactPrompt}
+            onSystemPromptChange={setSystemPrompt}
+            onCompactPromptChange={setCompactPrompt}
+          />
         </SettingsSection>
 
         <SettingsSection
@@ -380,6 +276,11 @@ export function CodegAgentSettings() {
           description={t("compressionDescription")}
         >
           <SettingCard>
+            <CodegAgentCompactModelField
+              envText={envText}
+              onEnvTextChange={setEnvText}
+              boundProvider={boundProvider}
+            />
             <SettingRow
               title={t("compactSoftPercent")}
               description={t("compactSoftPercentHint")}
@@ -470,6 +371,18 @@ export function CodegAgentSettings() {
                 }
               />
             </SettingRow>
+            <SettingRow title={tAgent("maxOutput")}>
+              <Input
+                type="number"
+                min={1}
+                value={codegMaxOutputTokens(envText)}
+                onChange={(event) =>
+                  setEnvText(
+                    patchCodegMaxOutputTokens(envText, event.target.value)
+                  )
+                }
+              />
+            </SettingRow>
           </SettingCard>
         </SettingsSection>
 
@@ -486,18 +399,6 @@ export function CodegAgentSettings() {
           savingLabel={tAcp("actions.saving")}
         />
       </div>
-
-      <AddModelProviderDialog
-        open={addDialogOpen}
-        onOpenChange={setAddDialogOpen}
-        defaultAgentType="codeg_agent"
-        onProviderAdded={(created) => {
-          void listModelProviders().then((rows) => {
-            setProviders(rows)
-            bindProvider(created)
-          })
-        }}
-      />
     </ScrollArea>
   )
 }

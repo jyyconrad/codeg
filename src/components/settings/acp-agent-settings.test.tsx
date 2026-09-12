@@ -2122,6 +2122,16 @@ describe("codeg agent settings", () => {
       })
     ).toBe("gpt-4.1")
     expect(
+      completionsModelIdFromProvider({
+        agent_type: "codeg_agent",
+        model: JSON.stringify({
+          kind: "codeg_agent_catalog",
+          default: "b",
+          models: [{ id: "a" }, { id: "b", context_window: 64000 }],
+        }),
+      })
+    ).toBe("b")
+    expect(
       suggestedCodegContextWindow({
         agent_type: "codex",
         model: JSON.stringify({
@@ -2259,9 +2269,12 @@ describe("codeg agent settings", () => {
       /persistThenRunPreflight\(persist, \(\) =>\s*runPreflight\(selectedAgent\.agent_type\)/
     )
     expect(switchClick).toMatch(/: persist\(\)/)
-    expect(src).toMatch(
-      /disabled=\{selectedIsSaving \|\| selectedGrokSaving\}/
-    )
+    expect(src).toMatch(/disabled=\{selectedIsSaving \|\| selectedGrokSaving\}/)
+    expect(src).toContain("CodegAgentPromptEditors")
+    expect(src).toContain("codegDraftFromEnv")
+    expect(src).toContain("CodegAgentProviderManager")
+    expect(src).toContain("CodegAgentCompactModelField")
+    expect(src).not.toContain('placeholder={t("codegAgent.emptyUsesBuiltin")}')
   })
 
   it("treats in-process distribution as already installed", () => {

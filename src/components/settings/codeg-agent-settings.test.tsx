@@ -14,6 +14,10 @@ vi.mock("@/lib/api", () => ({
   listModelProviders: vi.fn(),
   acpPreflight: vi.fn(),
   acpUpdateAgentEnv: vi.fn(),
+  createModelProvider: vi.fn(),
+  updateModelProvider: vi.fn(),
+  deleteModelProvider: vi.fn(),
+  acpFetchKimiModels: vi.fn(),
 }))
 
 vi.mock("sonner", () => ({
@@ -31,6 +35,7 @@ import {
   acpUpdateAgentEnv,
   listModelProviders,
 } from "@/lib/api"
+import { CODEG_BUILTIN_SYSTEM_PROMPT } from "@/lib/codeg-agent-prompts"
 import type { AcpAgentInfo, ModelProviderInfo } from "@/lib/types"
 import { CodegAgentSettings } from "./codeg-agent-settings"
 
@@ -113,36 +118,33 @@ describe("Codeg Agent dedicated settings", () => {
     resolve(process.cwd(), "src/components/settings/settings-shell.tsx"),
     "utf8"
   )
-  const dialog = readFileSync(
+  const manager = readFileSync(
     resolve(
       process.cwd(),
-      "src/components/settings/add-model-provider-dialog.tsx"
+      "src/components/settings/codeg-agent-provider-manager.tsx"
     ),
     "utf8"
   )
 
-  it("exposes four setting groups and reuses model-provider bind", () => {
-    expect(page).toContain('title={t("providerTitle")}')
+  it("redesigns the page around in-agent provider management", () => {
+    expect(page).toContain("CodegAgentProviderManager")
     expect(page).toContain('title={t("promptsTitle")}')
     expect(page).toContain('title={t("compressionTitle")}')
     expect(page).toContain('title={t("runtimeTitle")}')
-    expect(page).toContain("bindCodegProviderEnv")
-    expect(page).toContain('defaultAgentType="codeg_agent"')
+    expect(page).toContain("CodegAgentCompactModelField")
+    expect(page).toContain("CodegAgentPromptEditors")
+    expect(page).toContain("CODEG_BUILTIN_SYSTEM_PROMPT")
     expect(page).toContain("overlayCodegPromptEnv")
     expect(page).toContain("persistThenRunPreflight")
-    expect(page).toContain("CODEG_COMPACT_SOFT_PERCENT_KEY")
-    expect(page).toContain("CODEG_MAX_TURNS_KEY")
+    expect(page).not.toContain("AddModelProviderDialog")
+    expect(manager).toContain('agentType: "codeg_agent"')
+    expect(manager).toContain("acpFetchKimiModels")
+    expect(manager).toContain("serializeCodegAgentCatalog")
   })
 
   it("adds a settings nav item for the built-in agent", () => {
     expect(shell).toContain('href: "/settings/codeg-agent"')
     expect(shell).toContain('labelKey: "codeg_agent"')
-  })
-
-  it("lets Codeg Completions presets omit an API key on loopback", () => {
-    expect(dialog).toContain("CODEG_PROVIDER_PRESETS")
-    expect(dialog).toContain("isLoopbackHttpUrl")
-    expect(dialog).toContain("defaultAgentType")
   })
 
   beforeEach(() => {
@@ -162,7 +164,7 @@ describe("Codeg Agent dedicated settings", () => {
     mockUpdateEnv.mockResolvedValue(0)
   })
 
-  it("renders provider, prompt, compression, and runtime cards", async () => {
+  it("renders the two-column provider manager, prompts, compression, and runtime", async () => {
     renderPage()
     await waitFor(() => {
       expect(
@@ -170,8 +172,9 @@ describe("Codeg Agent dedicated settings", () => {
       ).toBeInTheDocument()
     })
     expect(
-      screen.getByRole("heading", { name: "Model provider" })
+      screen.getByRole("heading", { name: "Ollama local" })
     ).toBeInTheDocument()
+    expect(screen.getAllByText("Ollama local").length).toBeGreaterThan(1)
     expect(screen.getByRole("heading", { name: "Prompts" })).toBeInTheDocument()
     expect(
       screen.getByRole("heading", { name: "Context compression" })
@@ -182,6 +185,10 @@ describe("Codeg Agent dedicated settings", () => {
     expect(
       screen.getByRole("switch", { name: "Enable Codeg Agent" })
     ).not.toBeChecked()
+    expect(
+      screen.getByDisplayValue(CODEG_BUILTIN_SYSTEM_PROMPT)
+    ).toBeInTheDocument()
+    expect(screen.getByText("Compact model")).toBeInTheDocument()
   })
 
   it("saves bind, prompts, compression, and runtime through agent env", async () => {
@@ -201,6 +208,7 @@ describe("Codeg Agent dedicated settings", () => {
     expect(payload?.modelProviderId).toBe(1)
     expect(payload?.env.CODEG_AGENT_COMPACT_SOFT_PERCENT).toBe("70")
     expect(payload?.env.CODEG_AGENT_MAX_TURNS).toBe("24")
+    expect(payload?.env.CODEG_AGENT_SYSTEM_PROMPT).toBeUndefined()
     expect(mockPreflight).toHaveBeenCalled()
   })
 })

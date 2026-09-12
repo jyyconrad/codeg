@@ -158,6 +158,19 @@ impl FsAccessPolicy {
         !self.read_roots.is_empty()
     }
 
+    /// Add a read-only extra root. No-op when reads are already unrestricted
+    /// (empty `read_roots`). Used so native plan/explore artifacts under
+    /// `~/.codeg/codeg-agent/artifacts` stay readable in `strict` policy.
+    pub fn with_extra_read_root(mut self, root: &Path) -> Self {
+        if self.read_roots.is_empty() {
+            return self;
+        }
+        self.read_roots.push(canonical_root(root));
+        self.read_roots.sort();
+        self.read_roots.dedup();
+        self
+    }
+
     /// Canonical read gate used by ACP `fs/read_text_file` and by native
     /// glob/grep. Empty read roots are unrestricted (no canonicalize).
     /// Otherwise the path — including symlink targets — must resolve inside a

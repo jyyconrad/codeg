@@ -11,7 +11,6 @@ import {
   Bot,
   BookOpenText,
   Boxes,
-  Cpu,
   FileSpreadsheet,
   GitBranch,
   Globe,
@@ -28,14 +27,15 @@ import {
 import { useTranslations } from "next-intl"
 import { usePathname } from "next/navigation"
 import { useRouter } from "next/navigation"
+import { AgentIcon } from "@/components/agent-icon"
+import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { Button } from "@/components/ui/button"
+import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { cn } from "@/lib/utils"
 import { detectEnvironment } from "@/lib/transport/detect"
-import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 
 interface SettingsNavItem {
   href: string
@@ -56,6 +56,10 @@ interface SettingsNavItem {
     | "web_service"
     | "logs"
   icon: ComponentType<{ className?: string }>
+}
+
+function CodegAgentNavIcon({ className }: { className?: string }) {
+  return <AgentIcon agentType="codeg_agent" className={className} />
 }
 
 const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
@@ -92,7 +96,7 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
   {
     href: "/settings/codeg-agent",
     labelKey: "codeg_agent",
-    icon: Cpu,
+    icon: CodegAgentNavIcon,
   },
   {
     href: "/settings/model-providers",

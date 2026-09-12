@@ -4,17 +4,17 @@ use futures::StreamExt;
 use rig::agent::MultiTurnStreamItem;
 use rig::client::AgentClientExt;
 use rig::completion::Message;
-use rig::providers::openai::CompletionsClient;
 use rig::tool::DynamicTool;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::hook::CodegHook;
 use crate::agent::tools::{
-    BashTool, EchoTool, EditFileTool, GlobTool, GrepTool, ReadFileTool, RecallTool, SkillTool,
-    SubagentTool, UpdatePlanTool, WriteFileTool,
+    BashTool, EchoTool, EditFileTool, EnterPlanModeTool, ExitPlanModeTool, GlobTool, GrepTool,
+    ReadFileTool, RecallTool, SkillTool, SubagentTool, UpdatePlanTool, WriteExploreReportTool,
+    WriteFileTool, WritePlanTool,
 };
 
-use super::{DEFAULT_INVALID_TOOL_CALL_RETRIES, DEFAULT_TOOL_CONCURRENCY};
+use super::{CodegLlmClient, DEFAULT_INVALID_TOOL_CALL_RETRIES, DEFAULT_TOOL_CONCURRENCY};
 
 pub enum NativeTurnOutcome {
     Complete,
@@ -25,20 +25,24 @@ pub enum NativeTurnOutcome {
 pub struct NativeTurnTools {
     pub read: ReadFileTool,
     pub recall: RecallTool,
-    pub write: WriteFileTool,
-    pub edit: EditFileTool,
+    pub write: Option<WriteFileTool>,
+    pub edit: Option<EditFileTool>,
     pub glob: GlobTool,
     pub grep: GrepTool,
-    pub bash: BashTool,
+    pub bash: Option<BashTool>,
     pub skill: SkillTool,
-    pub plan: UpdatePlanTool,
-    pub subagent: SubagentTool,
+    pub plan: Option<UpdatePlanTool>,
+    pub write_plan: Option<WritePlanTool>,
+    pub enter_plan: Option<EnterPlanModeTool>,
+    pub exit_plan: Option<ExitPlanModeTool>,
+    pub write_explore: Option<WriteExploreReportTool>,
+    pub subagent: Option<SubagentTool>,
     pub echo: Option<EchoTool>,
     pub dynamic: Vec<DynamicTool>,
 }
 
 pub struct NativeTurnRequest {
-    pub client: CompletionsClient,
+    pub client: CodegLlmClient,
     pub model_id: String,
     pub preamble: String,
     pub prompt: Message,
@@ -64,24 +68,37 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
         cancel,
         max_turns,
     } = request;
-    let stream_fut =
-        assemble_and_stream(client, model_id, preamble, prompt, tools, hook, max_turns);
     let stream = tokio::select! {
         _ = cancel.cancelled() => return NativeTurnOutcome::Cancelled,
-        stream = stream_fut => stream,
+        stream = async {
+            match client {
+                CodegLlmClient::Completions(client) => {
+                    assemble_and_stream(client, model_id, preamble, prompt, tools, hook, max_turns)
+                        .await
+                }
+                CodegLlmClient::Responses(client) => {
+                    assemble_and_stream(client, model_id, preamble, prompt, tools, hook, max_turns)
+                        .await
+                }
+            }
+        } => stream,
     };
     drain_native_stream(stream, cancel).await
 }
 
-async fn assemble_and_stream(
-    client: CompletionsClient,
+async fn assemble_and_stream<C>(
+    client: C,
     model_id: String,
     preamble: String,
     prompt: Message,
     tools: NativeTurnTools,
     hook: CodegHook,
     max_turns: usize,
-) -> rig::agent::StreamingResult {
+) -> rig::agent::StreamingResult
+where
+    C: AgentClientExt + Send,
+    C::CompletionModel: 'static,
+{
     let NativeTurnTools {
         read,
         recall,
@@ -92,24 +109,50 @@ async fn assemble_and_stream(
         bash,
         skill,
         plan,
+        write_plan,
+        enter_plan,
+        exit_plan,
+        write_explore,
         subagent,
         echo,
         dynamic,
     } = tools;
-    let builder = client
+    let mut builder = client
         .agent(&model_id)
         .preamble(&preamble)
         .default_max_turns(max_turns.max(1))
         .tool(read)
         .tool(recall)
-        .tool(write)
-        .tool(edit)
         .tool(glob)
         .tool(grep)
-        .tool(bash)
-        .tool(skill)
-        .tool(plan)
-        .tool(subagent);
+        .tool(skill);
+    if let Some(write) = write {
+        builder = builder.tool(write);
+    }
+    if let Some(edit) = edit {
+        builder = builder.tool(edit);
+    }
+    if let Some(bash) = bash {
+        builder = builder.tool(bash);
+    }
+    if let Some(plan) = plan {
+        builder = builder.tool(plan);
+    }
+    if let Some(write_plan) = write_plan {
+        builder = builder.tool(write_plan);
+    }
+    if let Some(enter_plan) = enter_plan {
+        builder = builder.tool(enter_plan);
+    }
+    if let Some(exit_plan) = exit_plan {
+        builder = builder.tool(exit_plan);
+    }
+    if let Some(write_explore) = write_explore {
+        builder = builder.tool(write_explore);
+    }
+    if let Some(subagent) = subagent {
+        builder = builder.tool(subagent);
+    }
     let builder = if let Some(echo) = echo {
         builder.tool(echo)
     } else {

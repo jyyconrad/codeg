@@ -5,11 +5,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::agent::model::CodegLlmClient;
 use futures::StreamExt;
 use rig::agent::{MultiTurnStreamItem, RequestPatch};
 use rig::client::AgentClientExt;
 use rig::completion::{Document, Message};
-use rig::providers::openai::CompletionsClient;
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,12 +17,14 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::{schema_for, GlobTool, GrepTool, NativeToolCtx, ReadFileTool, SkillCatalog, SkillTool};
-use crate::agent::context::budget::{
-    truncate_presentation, BudgetConfig, MAX_TOOL_PRESENTATION_BYTES,
+use super::{
+    schema_for, GlobTool, GrepTool, NativeToolCtx, ReadFileTool, RecallTool, SkillCatalog,
+    SkillTool, WriteExploreReportTool,
 };
+use crate::agent::context::budget::BudgetConfig;
 use crate::agent::context::{CallIdentityBridge, ContextStore, FactRecorder};
 use crate::agent::hook::{CodegHook, HookTrace, NativeRunState};
+use crate::agent::mode::{explore_path, format_explore_handoff, EXPLORE_PREAMBLE_INTRO};
 use crate::agent::model::{NativeTurnOutcome, DEFAULT_INVALID_TOOL_CALL_RETRIES};
 
 /// Inner subagent turn budget (initial call plus tool retries).
@@ -34,16 +36,13 @@ pub const SUBAGENT_SPEC_ID: &str = "codeg-subagent-spec";
 
 pub const SUBAGENT_SPEC_TEXT: &str = "\
 When to use the subagent tool:
-- Use `subagent` for time-consuming research, broad codebase search, or multi-file investigation.
+- Use `subagent` (type explore) for time-consuming research, broad codebase search, or multi-file investigation.
 - For a short read of a known path, call `read_file` yourself instead of spawning a subagent.
-- The subagent is read-only: it may use read_file, glob, grep, and skill. It cannot edit files, write files, or run bash.
-- The call returns immediately after the subagent starts. Do not assume the tool result contains the final report.
-- The finished report arrives later as a new user message beginning with `Subagent {id} finished:`. Continue the current task, or wait for that message.
-- Only one subagent may run at a time. Do not start a second parallel subagent.\
+- The call returns immediately after the subagent starts (`started`). Do not assume that tool result contains the report.
+- Later a user message beginning with `Explore report ready.` arrives. It contains `path:` and `summary:` only.
+- Read the file at `path` with `read_file` before planning or implementing. The summary is not a substitute for the report.
+- Do not poll or start a second parallel subagent. Only one subagent may run at a time.\
 ";
-
-const SUBAGENT_PREAMBLE_INTRO: &str = "You are a read-only research assistant. \
-Search and read files to answer the task; you cannot edit files or run bash.";
 
 /// Internal inject sent on the supervisor's dedicated channel. Not a
 /// `ConnectionCommand` (that enum is shared with Claude/Codex).
@@ -145,9 +144,14 @@ pub fn attach_subagent_extra_context(patch: RequestPatch, tool_schemas: &[Value]
     }
 }
 
-pub fn subagent_preamble(parent: &str) -> String {
+pub fn subagent_preamble(parent: &str, thoroughness: &str, skill_body: Option<&str>) -> String {
     let parent = truncate_to_bytes(parent, SUBAGENT_PARENT_PREAMBLE_MAX);
-    format!("{SUBAGENT_PREAMBLE_INTRO}\n\n{parent}")
+    let mut text = format!("{EXPLORE_PREAMBLE_INTRO}\nThoroughness: {thoroughness}.\n\n{parent}");
+    if let Some(body) = skill_body.map(str::trim).filter(|s| !s.is_empty()) {
+        text.push_str("\n\n# Preloaded explore skill\n\n");
+        text.push_str(body);
+    }
+    text
 }
 
 fn truncate_to_bytes(s: &str, max: usize) -> &str {
@@ -161,34 +165,32 @@ fn truncate_to_bytes(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
-fn cap_output(raw: &str) -> String {
-    truncate_presentation(raw, MAX_TOOL_PRESENTATION_BYTES as u64).0
-}
-
 /// Host-facing async subagent. Inner runner is read-only and does not share
 /// the parent identity bridge (parent tools keep running after start).
 #[derive(Clone)]
 pub struct SubagentTool {
     ctx: NativeToolCtx,
-    client: CompletionsClient,
+    client: CodegLlmClient,
     model_id: String,
     parent_preamble: String,
     catalog: SkillCatalog,
     budget: BudgetConfig,
     table: Arc<Mutex<SubagentTable>>,
     inject_tx: mpsc::Sender<NativeInject>,
+    artifacts_dir: PathBuf,
 }
 
 impl SubagentTool {
     pub fn new(
         ctx: NativeToolCtx,
-        client: CompletionsClient,
+        client: CodegLlmClient,
         model_id: impl Into<String>,
         parent_preamble: impl Into<String>,
         catalog: SkillCatalog,
         budget: BudgetConfig,
         table: Arc<Mutex<SubagentTable>>,
         inject_tx: mpsc::Sender<NativeInject>,
+        artifacts_dir: PathBuf,
     ) -> Self {
         Self {
             ctx,
@@ -199,6 +201,7 @@ impl SubagentTool {
             budget,
             table,
             inject_tx,
+            artifacts_dir,
         }
     }
 }
@@ -208,6 +211,29 @@ pub struct SubagentArgs {
     pub prompt: String,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub subagent_type: Option<String>,
+    #[serde(default)]
+    pub thoroughness: Option<String>,
+}
+
+fn normalize_explore_type(raw: Option<&str>) -> Result<(), String> {
+    let value = raw.unwrap_or("explore").trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("explore") {
+        Ok(())
+    } else {
+        Err(format!(
+            "unsupported subagent_type `{value}`; only `explore` is available"
+        ))
+    }
+}
+
+fn normalize_thoroughness(raw: Option<&str>) -> String {
+    match raw.unwrap_or("medium").trim().to_ascii_lowercase().as_str() {
+        "quick" => "quick".into(),
+        "very_thorough" | "very-thorough" | "very thorough" => "very_thorough".into(),
+        _ => "medium".into(),
+    }
 }
 
 impl Tool for SubagentTool {
@@ -217,10 +243,9 @@ impl Tool for SubagentTool {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Start a background read-only research subagent. Returns immediately \
-         after start; the final report arrives later as a new user message. \
-         Only one subagent may run at a time. Use for broad search or long \
-         research; use read_file for a short known path."
+        "Start a background explore subagent. Returns immediately after start. \
+         When it finishes, a user message with path and summary arrives; read \
+         the report file with read_file. Only one subagent may run at a time."
             .to_string()
     }
 
@@ -235,6 +260,14 @@ impl Tool for SubagentTool {
                 "label": {
                     "type": "string",
                     "description": "Optional card title; defaults to a truncated prompt"
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": "Must be `explore` (the only type in this release)"
+                },
+                "thoroughness": {
+                    "type": "string",
+                    "description": "quick | medium | very_thorough"
                 }
             },
             "required": ["prompt"]
@@ -249,6 +282,8 @@ impl Tool for SubagentTool {
         let raw = json!({
             "prompt": args.prompt,
             "label": args.label,
+            "subagent_type": args.subagent_type,
+            "thoroughness": args.thoroughness,
         });
         let fact = self.ctx.begin(Self::NAME, raw).await?;
         let prompt = args.prompt.trim();
@@ -262,6 +297,16 @@ impl Tool for SubagentTool {
                 )
                 .await);
         }
+        if let Err(message) = normalize_explore_type(args.subagent_type.as_deref()) {
+            return Err(self
+                .ctx
+                .finish_err(
+                    fact,
+                    ToolExecutionError::invalid_args(message.clone()).with_model_feedback(message),
+                )
+                .await);
+        }
+        let thoroughness = normalize_thoroughness(args.thoroughness.as_deref());
         let id = format!("sa-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let child = self.ctx.cancel.child_token();
         let registered = {
@@ -296,6 +341,8 @@ impl Tool for SubagentTool {
             table: Arc::clone(&self.table),
             inject_tx: self.inject_tx.clone(),
             tool_call_id: fact.tool_call_id.clone(),
+            artifacts_dir: self.artifacts_dir.clone(),
+            thoroughness,
         };
         let handle = tokio::spawn(run_inner_and_inject(spawn));
         self.table
@@ -313,7 +360,7 @@ struct InnerSpawn {
     prompt: String,
     child: CancellationToken,
     parent_cancel: CancellationToken,
-    client: CompletionsClient,
+    client: CodegLlmClient,
     model_id: String,
     parent_preamble: String,
     catalog: SkillCatalog,
@@ -324,6 +371,8 @@ struct InnerSpawn {
     table: Arc<Mutex<SubagentTable>>,
     inject_tx: mpsc::Sender<NativeInject>,
     tool_call_id: String,
+    artifacts_dir: PathBuf,
+    thoroughness: String,
 }
 
 async fn run_inner_and_inject(spawn: InnerSpawn) {
@@ -343,6 +392,8 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
         table,
         inject_tx,
         tool_call_id,
+        artifacts_dir,
+        thoroughness,
     } = spawn;
 
     let (outcome, text) = tokio::select! {
@@ -359,6 +410,8 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
             fs,
             session_id,
             child.clone(),
+            artifacts_dir.clone(),
+            thoroughness,
         ) => result,
     };
 
@@ -372,14 +425,22 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
 
     let (ok, output) = match outcome {
         NativeTurnOutcome::Complete => {
-            let output = if text.trim().is_empty() {
-                "(no output)".to_string()
+            let path = explore_path(&artifacts_dir);
+            let status = if path.is_file()
+                && std::fs::metadata(&path)
+                    .map(|m| m.len() > 0)
+                    .unwrap_or(false)
+            {
+                "ok"
             } else {
-                text
+                "missing_report"
             };
-            (true, cap_output(&output))
+            (true, format_explore_handoff(&path, status, &text))
         }
-        NativeTurnOutcome::Failed(message) => (false, cap_output(&message)),
+        NativeTurnOutcome::Failed(message) => {
+            let path = explore_path(&artifacts_dir);
+            (false, format_explore_handoff(&path, "failed", &message))
+        }
         NativeTurnOutcome::Cancelled => {
             table.lock().expect("subagent table").clear_if(&id);
             return;
@@ -402,7 +463,7 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_inner_subagent(
-    client: CompletionsClient,
+    client: CodegLlmClient,
     model_id: String,
     parent_preamble: String,
     prompt: String,
@@ -412,6 +473,8 @@ async fn run_inner_subagent(
     fs: Arc<crate::acp::file_system_runtime::FileSystemRuntime>,
     session_id: String,
     cancel: CancellationToken,
+    artifacts_dir: PathBuf,
+    thoroughness: String,
 ) -> (NativeTurnOutcome, String) {
     let identity = Arc::new(CallIdentityBridge::new());
     let store = Arc::new(Mutex::new(ContextStore::new(format!("sub:{session_id}"))));
@@ -427,15 +490,20 @@ async fn run_inner_subagent(
         spill_dir: PathBuf::new(),
     };
     let read = ReadFileTool::new(inner_ctx.clone());
+    let recall = RecallTool::new(inner_ctx.clone());
     let glob = GlobTool::new(inner_ctx.clone());
     let grep = GrepTool::new(inner_ctx.clone());
-    let skill = SkillTool::new(inner_ctx, catalog);
-    let preamble = subagent_preamble(&parent_preamble);
+    let skill = SkillTool::new(inner_ctx.clone(), catalog.clone());
+    let write_explore = WriteExploreReportTool::new(inner_ctx, artifacts_dir);
+    let skill_body = catalog.skill_body("explore");
+    let preamble = subagent_preamble(&parent_preamble, &thoroughness, skill_body.as_deref());
     let tool_schemas = vec![
         schema_for(&read),
+        schema_for(&recall),
         schema_for(&glob),
         schema_for(&grep),
         schema_for(&skill),
+        schema_for(&write_explore),
     ];
     let native = NativeRunState {
         turn_id: 1,
@@ -456,20 +524,45 @@ async fn run_inner_subagent(
     let trace = HookTrace::new();
     let hook = CodegHook::waiting(trace.clone(), perm_tx, cancel.clone()).with_native(native);
 
-    let stream_fut = assemble_inner(
-        client,
-        model_id,
-        preamble,
-        Message::user(prompt),
-        read,
-        glob,
-        grep,
-        skill,
-        hook,
-    );
+    let user_prompt = Message::user(prompt);
     let stream = tokio::select! {
         _ = cancel.cancelled() => return (NativeTurnOutcome::Cancelled, String::new()),
-        stream = stream_fut => stream,
+        stream = async {
+            match client {
+                CodegLlmClient::Completions(client) => {
+                    assemble_inner(
+                        client,
+                        model_id,
+                        preamble,
+                        user_prompt,
+                        read,
+                        recall,
+                        glob,
+                        grep,
+                        skill,
+                        write_explore,
+                        hook,
+                    )
+                    .await
+                }
+                CodegLlmClient::Responses(client) => {
+                    assemble_inner(
+                        client,
+                        model_id,
+                        preamble,
+                        user_prompt,
+                        read,
+                        recall,
+                        glob,
+                        grep,
+                        skill,
+                        write_explore,
+                        hook,
+                    )
+                    .await
+                }
+            }
+        } => stream,
     };
     let outcome = drain_inner(stream, cancel).await;
     let mut text = trace.aggregated_text();
@@ -482,25 +575,33 @@ async fn run_inner_subagent(
 }
 
 /// Assemble a read-only inner agent. No write/edit/bash/mcp/companion/plan/subagent.
-async fn assemble_inner(
-    client: CompletionsClient,
+async fn assemble_inner<C>(
+    client: C,
     model_id: String,
     preamble: String,
     prompt: Message,
     read: ReadFileTool,
+    recall: RecallTool,
     glob: GlobTool,
     grep: GrepTool,
     skill: SkillTool,
+    write_explore: WriteExploreReportTool,
     hook: CodegHook,
-) -> rig::agent::StreamingResult {
+) -> rig::agent::StreamingResult
+where
+    C: AgentClientExt + Send,
+    C::CompletionModel: 'static,
+{
     client
         .agent(&model_id)
         .preamble(&preamble)
         .default_max_turns(SUBAGENT_MAX_TURNS)
         .tool(read)
+        .tool(recall)
         .tool(glob)
         .tool(grep)
         .tool(skill)
+        .tool(write_explore)
         .build()
         .runner(prompt)
         .history(Vec::<Message>::new())
@@ -547,7 +648,7 @@ async fn drain_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::model::completions_client;
+    use crate::agent::model::{completions_client, CodegLlmClient};
     use crate::agent::tools::{test_tool_ctx, tool_kind, tool_requires_permission};
     use axum::extract::Json;
     use axum::http::{header, StatusCode, Uri};
@@ -604,7 +705,7 @@ mod tests {
     ) {
         let mut ctx = test_tool_ctx(Path::new("/tmp"), SubagentTool::NAME, "call_sa");
         ctx.cancel = cancel;
-        let client = completions_client("sk", base).expect("client");
+        let client = CodegLlmClient::Completions(completions_client("sk", base).expect("client"));
         let table = Arc::new(Mutex::new(SubagentTable::default()));
         let (tx, rx) = mpsc::channel(4);
         let tool = SubagentTool::new(
@@ -616,6 +717,7 @@ mod tests {
             budget(),
             Arc::clone(&table),
             tx,
+            PathBuf::from("/tmp"),
         );
         (tool, rx, table)
     }
@@ -636,18 +738,19 @@ mod tests {
         let with = attach_subagent_extra_context(patch, &[json!({"name": "subagent"})]);
         assert_eq!(with.extra_context.len(), 1);
         assert_eq!(with.extra_context[0].id, SUBAGENT_SPEC_ID);
-        assert!(with.extra_context[0].text.contains("read-only"));
+        assert!(with.extra_context[0].text.contains("Explore report ready"));
         assert!(with.extra_context[0]
             .text
-            .contains("Do not start a second parallel subagent"));
+            .contains("Only one subagent may run at a time"));
     }
 
     #[test]
     fn parent_preamble_is_truncated_to_2kib() {
         let parent = "x".repeat(4096);
-        let text = subagent_preamble(&parent);
-        assert!(text.starts_with(SUBAGENT_PREAMBLE_INTRO));
-        assert!(text.len() <= SUBAGENT_PREAMBLE_INTRO.len() + 2 + SUBAGENT_PARENT_PREAMBLE_MAX);
+        let text = subagent_preamble(&parent, "medium", None);
+        assert!(text.starts_with(EXPLORE_PREAMBLE_INTRO));
+        assert!(text.contains("Thoroughness: medium"));
+        assert!(text.len() <= EXPLORE_PREAMBLE_INTRO.len() + 64 + SUBAGENT_PARENT_PREAMBLE_MAX);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -663,6 +766,8 @@ mod tests {
                 SubagentArgs {
                     prompt: "research the tree".into(),
                     label: Some("research".into()),
+                    subagent_type: None,
+                    thoroughness: None,
                 },
             ),
         )
@@ -696,6 +801,8 @@ mod tests {
             SubagentArgs {
                 prompt: "first".into(),
                 label: None,
+                subagent_type: None,
+                thoroughness: None,
             },
         )
         .await
@@ -706,6 +813,8 @@ mod tests {
                 SubagentArgs {
                     prompt: "second".into(),
                     label: None,
+                    subagent_type: None,
+                    thoroughness: None,
                 },
             )
             .await
@@ -714,6 +823,31 @@ mod tests {
             err.model_feedback()
                 .unwrap_or_default()
                 .contains("already running"),
+            "{err:?}"
+        );
+        table.lock().expect("table").shutdown();
+    }
+
+    #[tokio::test]
+    async fn rejects_non_explore_type() {
+        let base = spawn_completions(false).await;
+        let cancel = CancellationToken::new();
+        let (tool, _rx, table) = harness(&base, cancel);
+        let mut tctx = ToolContext::new();
+        let err = tool
+            .call(
+                &mut tctx,
+                SubagentArgs {
+                    prompt: "x".into(),
+                    label: None,
+                    subagent_type: Some("general-purpose".into()),
+                    thoroughness: None,
+                },
+            )
+            .await
+            .expect_err("type");
+        assert!(
+            err.model_feedback().unwrap_or_default().contains("explore"),
             "{err:?}"
         );
         table.lock().expect("table").shutdown();
@@ -731,6 +865,8 @@ mod tests {
                 SubagentArgs {
                     prompt: "summarize".into(),
                     label: None,
+                    subagent_type: Some("explore".into()),
+                    thoroughness: None,
                 },
             )
             .await
@@ -743,10 +879,14 @@ mod tests {
         match inject {
             NativeInject::SubagentFinished { ok, output, id, .. } => {
                 assert!(ok, "output={output}");
+                assert!(output.contains("Explore report ready"), "{output}");
+                assert!(output.contains("path:"), "{output}");
+                assert!(output.contains("summary:"), "{output}");
                 assert!(
-                    output.contains("inner-ok") || output.contains("(no output)"),
+                    output.contains("inner-ok") || output.contains("(no summary)"),
                     "{output}"
                 );
+                assert!(!output.contains("# huge"), "{output}");
                 assert!(id.starts_with("sa-"), "{id}");
             }
         }
@@ -764,6 +904,8 @@ mod tests {
             SubagentArgs {
                 prompt: "hang please".into(),
                 label: None,
+                subagent_type: None,
+                thoroughness: None,
             },
         )
         .await

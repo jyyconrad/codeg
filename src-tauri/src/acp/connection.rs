@@ -1139,6 +1139,9 @@ pub enum ConnectionCommand {
         /// tail-fork the fork-send composer has always done; see
         /// [`crate::acp::fork::ForkPoint`] for how each agent resolves it.
         fork_point: Option<crate::acp::fork::ForkPoint>,
+        /// Start an empty session (`session/new`) instead of `session/fork`.
+        /// Used to replace the first user round; `fork_point` is ignored.
+        rewind_to_origin: bool,
         reply:
             tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
     },
@@ -5770,6 +5773,7 @@ async fn run_connection(
                                 terminal_runtime.clone(),
                                 &cwd_string,
                                 supports_fork,
+                                &mcp_servers,
                                 &prompt_ledger,
                                 delegation_injection.as_ref(),
                                 &stderr_tail,
@@ -6014,6 +6018,7 @@ async fn run_connection(
                             terminal_runtime.clone(),
                             &cwd_string,
                             supports_fork,
+                            &mcp_servers,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
                             &stderr_tail,
@@ -6199,6 +6204,7 @@ async fn run_connection(
                             terminal_runtime.clone(),
                             &cwd_string,
                             supports_fork,
+                            &mcp_servers,
                             &prompt_ledger,
                             delegation_injection.as_ref(),
                             &stderr_tail,
@@ -6283,6 +6289,7 @@ async fn run_connection(
                     terminal_runtime.clone(),
                     &cwd_string,
                     supports_fork,
+                    &mcp_servers,
                     &prompt_ledger,
                     delegation_injection.as_ref(),
                     &stderr_tail,
@@ -8243,6 +8250,19 @@ struct ForkExitInfo {
     original_session_id: String,
     reply: tokio::sync::oneshot::Sender<Result<crate::acp::types::ForkProtocolResult, AcpError>>,
     connection: ConnectionTo<Agent>,
+    /// Origin rewind already created a usable session via `session/new`.
+    /// Skip the post-fork `session/resume` that exists to make a forked
+    /// id promptable — a new session is already attached.
+    skip_resume: bool,
+}
+
+fn fork_response_from_new_session(
+    new_resp: sacp::schema::NewSessionResponse,
+) -> sacp::schema::ForkSessionResponse {
+    sacp::schema::ForkSessionResponse::new(new_resp.session_id)
+        .modes(new_resp.modes)
+        .config_options(new_resp.config_options)
+        .meta(new_resp.meta)
 }
 
 /// After `run_conversation_loop` returns, handle normal exit or fork transition.
@@ -8368,7 +8388,9 @@ async fn handle_fork_or_exit(
     // advertising resume, or whose resume fails, falls back to attaching the
     // fork response exactly as before. Neither is worse off than it was before
     // this call existed.
-    let resumed = if supports_resume {
+    let resumed = if fork_info.skip_resume {
+        None
+    } else if supports_resume {
         let resume_req = build_resume_session_request(
             agent_type,
             SessionId::new(new_sid.clone()),
@@ -8469,6 +8491,7 @@ async fn handle_fork_or_exit(
         terminal_runtime.clone(),
         cwd_string,
         true, // fork already succeeded on this process
+        mcp_servers,
         prompt_ledger,
         delegation_injection,
         stderr_tail,
@@ -9047,6 +9070,7 @@ async fn run_conversation_loop<'a>(
     terminal_runtime: Arc<TerminalRuntime>,
     cwd: &str,
     supports_fork: bool,
+    mcp_servers: &[McpServer],
     // Connection-scoped (created once in `run_connection`, shared across fork
     // restarts of this loop): outgoing prompts are fingerprinted here so the
     // transcript watcher can classify their turns as wire-rendered foreground.
@@ -10224,7 +10248,55 @@ async fn run_conversation_loop<'a>(
                     inj.broker.cancel_by_parent_turn(conn_id).await;
                 }
             }
-            Some(ConnectionCommand::Fork { fork_point, reply }) => {
+            Some(ConnectionCommand::Fork {
+                fork_point,
+                rewind_to_origin,
+                reply,
+            }) => {
+                if rewind_to_origin {
+                    let cx = session.connection();
+                    let sid = session.session_id().clone();
+                    let inherited_mode_id =
+                        live_mode_for_fork(&*state.read().await, session.modes().as_ref());
+                    tracing::info!(
+                        "[ACP] Rewinding to origin via session/new for session_id={} cwd={}",
+                        sid.0,
+                        cwd
+                    );
+                    let result = send_new_session_capturing_models(
+                        &cx,
+                        agent_type,
+                        build_new_session_request(
+                            agent_type,
+                            std::path::Path::new(cwd),
+                            mcp_servers.to_vec(),
+                        ),
+                    )
+                    .await;
+                    match result {
+                        Ok((new_resp, grok_models_raw)) => {
+                            tracing::info!(
+                                "[ACP] Origin rewind succeeded: new_session_id={}",
+                                new_resp.session_id.0
+                            );
+                            return Ok(Some(ForkExitInfo {
+                                fork_response: fork_response_from_new_session(new_resp),
+                                fork_models_raw: grok_models_raw,
+                                inherited_mode_id,
+                                original_session_id: sid.0.to_string(),
+                                reply,
+                                connection: cx,
+                                skip_resume: true,
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::error!("[ACP] Origin rewind failed: {e}");
+                            let _ = reply
+                                .send(Err(AcpError::protocol(format!("session/new failed: {e}"))));
+                        }
+                    }
+                    continue;
+                }
                 if !supports_fork {
                     let _ = reply.send(Err(AcpError::protocol(
                         "This agent does not support session/fork".to_string(),
@@ -10256,6 +10328,7 @@ async fn run_conversation_loop<'a>(
                             original_session_id: sid.0.to_string(),
                             reply,
                             connection: cx,
+                            skip_resume: false,
                         }));
                     }
                     Err(e) => {

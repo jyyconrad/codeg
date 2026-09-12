@@ -284,6 +284,11 @@ mod tests {
     fn update_plan_is_other_kind_and_skips_permission() {
         assert_eq!(tool_kind("update_plan"), "other");
         assert!(!tool_requires_permission("update_plan"));
+        assert_eq!(tool_kind("enter_plan_mode"), "think");
+        assert!(tool_requires_permission("enter_plan_mode"));
+        assert!(!tool_requires_permission("exit_plan_mode"));
+        assert!(!tool_requires_permission("write_plan"));
+        assert!(!tool_requires_permission("write_explore_report"));
     }
 
     #[test]

@@ -382,6 +382,10 @@ async fn async_main() -> ExitCode {
         });
     }
 
+    if let Err(err) = codeg_lib::agent::builtin_skills::ensure_installed() {
+        tracing::warn!("[Codeg Agent] builtin skills install failed: {err}");
+    }
+
     // Install bundled expert skills into the central store
     // (`~/.codeg/skills/`). Runs in the background; failures are logged
     // but non-fatal.

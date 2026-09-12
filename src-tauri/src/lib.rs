@@ -584,6 +584,14 @@ mod tauri_app {
                     }
                 });
 
+                std::thread::spawn(|| {
+                    let _ = std::panic::catch_unwind(|| {
+                        if let Err(err) = crate::agent::builtin_skills::ensure_installed() {
+                            tracing::warn!("[Codeg Agent] builtin skills install failed: {err}");
+                        }
+                    });
+                });
+
                 // Reclaim orphaned chat scratch dirs (pre-send drafts that never
                 // bound to a conversation, plus dirs left behind by deleted chat
                 // conversations). Background, non-blocking; failures are logged
