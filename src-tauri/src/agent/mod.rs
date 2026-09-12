@@ -1,4 +1,5 @@
 pub mod builtin_skills;
+pub mod code_intel;
 pub mod context;
 pub mod delivery;
 pub mod hook;
