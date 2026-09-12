@@ -770,51 +770,55 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn start_prompt_registers_update_plan_and_subagent_spec() {
-        let (base, bodies) = spawn_completions(vec![json!({"kind":"text","text":"ok"})]).await;
-        let mut h = spawn_session(&base, false, None).await;
-        wait_started(&mut h).await;
-        h.cmd_tx
-            .send(ConnectionCommand::Prompt {
-                blocks: vec![PromptInputBlock::Text {
-                    text: "say ok".into(),
-                }],
-                user_message: None,
+        let tmp = tempfile::tempdir().expect("temp");
+        temp_env::async_with_vars([("CODEG_HOME", Some(tmp.path()))], async {
+            let (base, bodies) = spawn_completions(vec![json!({"kind":"text","text":"ok"})]).await;
+            let mut h = spawn_session(&base, false, None).await;
+            wait_started(&mut h).await;
+            h.cmd_tx
+                .send(ConnectionCommand::Prompt {
+                    blocks: vec![PromptInputBlock::Text {
+                        text: "say ok".into(),
+                    }],
+                    user_message: None,
+                })
+                .await
+                .expect("prompt");
+            wait_event(&mut h.events, |e| {
+                matches!(e, AcpEvent::TurnComplete { stop_reason, .. } if stop_reason == "end_turn")
             })
-            .await
-            .expect("prompt");
-        wait_event(&mut h.events, |e| {
-            matches!(e, AcpEvent::TurnComplete { stop_reason, .. } if stop_reason == "end_turn")
+            .await;
+            let dumped = bodies
+                .lock()
+                .expect("bodies")
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                dumped.contains("update_plan"),
+                "native turn must advertise update_plan: {dumped}"
+            );
+            assert!(
+                dumped.contains("subagent"),
+                "native turn must advertise subagent: {dumped}"
+            );
+            assert!(
+                dumped.contains("codeg-subagent-spec"),
+                "subagent usage spec must be in extra_context: {dumped}"
+            );
+            assert!(
+                dumped.contains("codeg-using-plan-explore"),
+                "builtin plan/explore skill must be in extra_context: {dumped}"
+            );
+            assert!(
+                !dumped.contains("\"name\":\"codegraph\"")
+                    && !dumped.contains("\"name\": \"codegraph\""),
+                "default code-intel config must not advertise codegraph: {dumped}"
+            );
+            h.shutdown.signal_shutdown();
         })
         .await;
-        let dumped = bodies
-            .lock()
-            .expect("bodies")
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            dumped.contains("update_plan"),
-            "native turn must advertise update_plan: {dumped}"
-        );
-        assert!(
-            dumped.contains("subagent"),
-            "native turn must advertise subagent: {dumped}"
-        );
-        assert!(
-            dumped.contains("codeg-subagent-spec"),
-            "subagent usage spec must be in extra_context: {dumped}"
-        );
-        assert!(
-            dumped.contains("codeg-using-plan-explore"),
-            "builtin plan/explore skill must be in extra_context: {dumped}"
-        );
-        assert!(
-            !dumped.contains("\"name\":\"codegraph\"")
-                && !dumped.contains("\"name\": \"codegraph\""),
-            "default code-intel config must not advertise codegraph: {dumped}"
-        );
-        h.shutdown.signal_shutdown();
     }
 
     #[tokio::test(flavor = "multi_thread")]

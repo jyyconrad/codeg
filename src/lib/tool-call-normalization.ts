@@ -578,6 +578,12 @@ export function inferLiveToolName(params: {
   // config") as an Agent card before raw_input is even consulted.
   if ((params.title ?? "").trim().toLowerCase() === "agent") return "agent"
 
+  // Native `codegraph` live title is the tool name. Its args include `query`,
+  // which `inferFromInput` classifies as websearch. Match by literal
+  // trimmed/lowercased title — NOT via `normalizeToolName` — same sentinel
+  // pattern as `"agent"` above.
+  if ((params.title ?? "").trim().toLowerCase() === "codegraph") return "search"
+
   // Grok plan-mode tools carry their authoritative identity in
   // `_meta["x.ai/tool"].kind` (`enter_plan`/`exit_plan`), while their human
   // `title` MUTATES across the lifecycle (`enter_plan_mode` → "Plan: Enter" →

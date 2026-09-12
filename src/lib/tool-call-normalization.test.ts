@@ -552,6 +552,19 @@ describe("normalizeToolName codegraph", () => {
   })
 })
 
+describe("inferLiveToolName codegraph", () => {
+  it("classifies a native codegraph call as search, not websearch", () => {
+    // Live ACP title is the tool name; rawInput carries `query`, which
+    // `inferFromInput` would otherwise map to websearch.
+    expect(
+      inferLiveToolName({
+        title: "codegraph",
+        rawInput: JSON.stringify({ operation: "explore", query: "auth" }),
+      })
+    ).toBe("search")
+  })
+})
+
 describe("normalizeToolName Grok terminal tool", () => {
   it("aliases Grok's run_terminal_command to bash", () => {
     // Grok Build (xAI) reports its terminal tool as `run_terminal_command`
