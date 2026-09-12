@@ -219,14 +219,25 @@ pub async fn wiki_vault_read_core(
         .map_err(AppCommandError::from)?;
     let vault = vault_root_from_settings(&settings)?;
     let file = join_vault_relative(&vault, &path).map_err(AppCommandError::invalid_input)?;
-    if !file.is_file() {
+    let vault_canon = vault
+        .canonicalize()
+        .map_err(|e| AppCommandError::io_error(e.to_string()))?;
+    let file_canon = file
+        .canonicalize()
+        .map_err(|_| AppCommandError::new(crate::app_error::AppErrorCode::NotFound, "file not found"))?;
+    if !file_canon.starts_with(&vault_canon) {
+        return Err(AppCommandError::invalid_input(
+            "path must stay inside the wiki vault",
+        ));
+    }
+    if !file_canon.is_file() {
         return Err(AppCommandError::new(
             crate::app_error::AppErrorCode::NotFound,
             "file not found",
         ));
     }
     let content =
-        fs::read_to_string(&file).map_err(|e| AppCommandError::io_error(e.to_string()))?;
+        fs::read_to_string(&file_canon).map_err(|e| AppCommandError::io_error(e.to_string()))?;
     Ok(WikiVaultFile {
         path: path.replace('\\', "/"),
         content,

@@ -210,6 +210,13 @@ async fn recover_on_start(
             Ok(RecoverStatus::Complete) => {
                 if let Ok(job) = wiki_service::get_job_model(conn, &job_id).await {
                     if job.status == "running" {
+                        if let Some(raw) = job.input_manifest.as_deref() {
+                            if let Ok(manifest) =
+                                serde_json::from_str::<compile::CompileJobManifest>(raw)
+                            {
+                                let _ = compile::register_consumed(conn, &job_id, &manifest).await;
+                            }
+                        }
                         let _ = wiki_service::mark_job(conn, &job_id, "succeeded", None, None).await;
                         emit_job(emitter, &job_id, "succeeded");
                     }

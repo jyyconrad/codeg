@@ -3,7 +3,7 @@
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait,
-    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
+    QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,8 @@ pub struct WikiJobInfo {
     pub attempt: i32,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -109,6 +111,7 @@ fn job_info(m: wiki_job::Model) -> WikiJobInfo {
         status: m.status,
         attempt: m.attempt,
         error_code: m.error_code,
+        error: m.error_message.clone(),
         error_message: m.error_message,
         created_at: m.created_at,
         updated_at: m.updated_at,
@@ -524,10 +527,25 @@ pub async fn get_source(conn: &DatabaseConnection, id: &str) -> Result<WikiSourc
 }
 
 pub async fn pending_source_count(conn: &DatabaseConnection) -> Result<u64, DbError> {
-    Ok(wiki_source::Entity::find()
-        .filter(wiki_source::Column::Eligibility.is_in(["processing", "ready"]))
-        .count(conn)
-        .await?)
+    let consumed: std::collections::HashSet<String> = wiki_compile_input::Entity::find()
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|row| row.source_id)
+        .collect();
+    let rows = wiki_source::Entity::find()
+        .filter(
+            wiki_source::Column::Eligibility
+                .is_in(["processing", "awaiting-acceptance", "ready"]),
+        )
+        .all(conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            row.eligibility != "ready" || !consumed.contains(&row.id)
+        })
+        .count() as u64)
 }
 
 pub async fn get_job_model(

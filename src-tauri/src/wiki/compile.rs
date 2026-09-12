@@ -265,6 +265,7 @@ pub async fn run_compile_job(
         &index,
         &today,
     )?;
+    sanitize_capability_evidence(&mut proposals, &sources_by_id);
     for p in &proposals {
         policy.check_page_type_path(&p.page_type, &p.rel)?;
         let staged = staging.join(p.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -1581,6 +1582,38 @@ fn evidence_rank(level: &str) -> u8 {
     }
 }
 
+fn sanitize_capability_evidence(
+    proposals: &mut [commit::StagedProposal],
+    sources: &HashMap<String, wiki_source::Model>,
+) {
+    let host_allows_practice = sources.values().any(|s| {
+        let role = s.personal_role.as_deref().map(str::trim).unwrap_or("");
+        let material = s.material_role.as_deref().unwrap_or("");
+        !role.is_empty()
+            && role != "unspecified"
+            && role != "未说明"
+            && !material.eq_ignore_ascii_case("reference")
+    });
+    if host_allows_practice {
+        return;
+    }
+    for p in proposals.iter_mut() {
+        if p.page_type != "capability" {
+            continue;
+        }
+        p.after = p
+            .after
+            .replace(
+                "evidence_level: practice_supported",
+                "evidence_level: knowledge_only",
+            )
+            .replace(
+                "evidence_level: practice_reported",
+                "evidence_level: knowledge_only",
+            );
+    }
+}
+
 fn yaml_quote(s: &str) -> String {
     format!(
         "\"{}\"",
@@ -1829,7 +1862,7 @@ fn redacted_excerpt(text: &str) -> String {
     }
 }
 
-async fn register_consumed(
+pub(crate) async fn register_consumed(
     conn: &DatabaseConnection,
     job_id: &str,
     manifest: &CompileJobManifest,

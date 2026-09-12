@@ -6388,7 +6388,7 @@
     "jobs": {
       "emptyTitle": "No jobs yet",
       "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here.",
-      "readOnlyHint": "Compile now queues a compile job. Retry reapplies a failed job; cancel stops one that has not committed.",
+      "readOnlyHint": "Compile now queues a compile job. Retry a failed job; cancel one that has not committed yet.",
       "compileNow": "Compile now",
       "compiling": "Starting compile…",
       "retryJob": "Retry job",

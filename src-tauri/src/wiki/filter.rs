@@ -13,6 +13,7 @@ pub enum FilterSkipReason {
     Delegate,
     Loop,
     NoConversation,
+    ConversationUnreadable,
     EmptyContent,
 }
 
@@ -26,6 +27,7 @@ impl FilterSkipReason {
             Self::Delegate => "conversation_kind_delegate",
             Self::Loop => "conversation_kind_loop",
             Self::NoConversation => "no_conversation_id",
+            Self::ConversationUnreadable => "conversation_unreadable",
             Self::EmptyContent => "empty_assistant_and_tools",
         }
     }
@@ -73,6 +75,7 @@ pub fn evaluate(snap: &WikiTurnSnapshot, ctx: &FilterContext) -> Option<FilterSk
     match ctx.conversation_kind {
         Some(ConversationKind::Delegate) => return Some(FilterSkipReason::Delegate),
         Some(ConversationKind::Loop) => return Some(FilterSkipReason::Loop),
+        None => return Some(FilterSkipReason::ConversationUnreadable),
         _ => {}
     }
     if !snap.has_visible_content() {
@@ -209,6 +212,14 @@ mod tests {
         assert_eq!(
             evaluate(&snap(), &ctx(enabled(), Some(ConversationKind::Regular))),
             None
+        );
+    }
+
+    #[test]
+    fn filter_missing_kind_fails_closed() {
+        assert_eq!(
+            evaluate(&snap(), &ctx(enabled(), None)),
+            Some(FilterSkipReason::ConversationUnreadable)
         );
     }
 }

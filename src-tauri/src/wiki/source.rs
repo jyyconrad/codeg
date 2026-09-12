@@ -90,7 +90,15 @@ pub async fn persist_acp_turn(
     )
     .await?;
 
-    if !inserted.created {
+    let needs_raw = inserted.created
+        || inserted
+            .source
+            .raw_path
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty();
+    if !needs_raw {
         return Ok(PersistOutcome {
             source_id: inserted.source.id,
             job_id: inserted.job.id,
@@ -178,10 +186,7 @@ async fn enrich_from_db(
     let Some(cid) = snap.conversation_id else {
         return Ok((None, snap.folder_id, None, None, None, None));
     };
-    let conv = match conversation_service::get_by_id(conn, cid).await {
-        Ok(c) => c,
-        Err(_) => return Ok((None, snap.folder_id, None, None, None, None)),
-    };
+    let conv = conversation_service::get_by_id(conn, cid).await?;
     let folder_id = snap.folder_id.or(Some(conv.folder_id));
     let mut root_folder_id = folder_id;
     let mut folder_path = None;

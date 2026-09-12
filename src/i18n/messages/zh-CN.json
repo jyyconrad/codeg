@@ -6387,8 +6387,8 @@
     },
     "jobs": {
       "emptyTitle": "还没有任务",
-      "emptyDescription": "分析和整理任务的进度、失败和冲突会显示在这里。重试和取消将在对应命令就绪后提供。",
-      "readOnlyHint": "本切片只读显示任务状态。重试和取消需要后续后端命令。",
+      "emptyDescription": "分析和整理任务的进度、失败和冲突会显示在这里。",
+      "readOnlyHint": "立即整理会排队一次 compile。失败可重试；尚未提交的任务可取消。",
       "compileNow": "立即整理",
       "compiling": "正在开始整理…",
       "retryJob": "重试任务",

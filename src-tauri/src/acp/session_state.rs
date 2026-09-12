@@ -937,10 +937,13 @@ impl SessionState {
         let Some(run_id) = self.wiki_run_id.clone() else {
             return;
         };
-        if let Some(eid) = event_run_id {
-            if eid != run_id {
-                return;
-            }
+        // Late completes must carry the run they ended. Guessing from live
+        // state after the next prompt starts would snapshot the new turn.
+        let Some(eid) = event_run_id else {
+            return;
+        };
+        if eid != run_id {
+            return;
         }
         if self.wiki_run_snapshotted {
             return;
@@ -4659,6 +4662,32 @@ mod tests {
             s.last_assistant_text.as_deref(),
             Some("assistant b"),
             "late complete still updates last_assistant_text from current live"
+        );
+    }
+
+    #[test]
+    fn wiki_missing_event_run_id_does_not_freeze() {
+        let mut s = fresh_state();
+        s.wiki_run_id = Some("run-a".into());
+        s.turn_in_flight = true;
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![LiveContentBlock::Text {
+                text: "answer".into(),
+                parent_tool_use_id: None,
+            }],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+            run_id: None,
+        });
+        assert!(
+            s.wiki_pending_snapshots.is_empty(),
+            "must not guess the current run when TurnComplete omits run_id"
         );
     }
 

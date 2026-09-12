@@ -51,6 +51,7 @@ export interface WikiJob {
   attempt?: number | null
   error?: string | null
   error_code?: string | null
+  error_message?: string | null
   message?: string | null
   created_at?: string | null
   updated_at?: string | null

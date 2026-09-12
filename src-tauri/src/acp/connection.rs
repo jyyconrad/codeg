@@ -2957,7 +2957,7 @@ async fn drain_permissions_then_emit(
 }
 
 async fn stamp_turn_complete_run_id(
-    state: &Arc<RwLock<SessionState>>,
+    _state: &Arc<RwLock<SessionState>>,
     event: AcpEvent,
 ) -> AcpEvent {
     match event {
@@ -2969,7 +2969,7 @@ async fn stamp_turn_complete_run_id(
         } => {
             let run_id = match run_id {
                 Some(id) => Some(id),
-                None => state.read().await.wiki_run_id.clone(),
+                None => None,
             };
             AcpEvent::TurnComplete {
                 session_id,
@@ -9238,6 +9238,7 @@ async fn run_conversation_loop<'a>(
                 // consumed: the transcript record this prompt becomes must
                 // classify as wire-rendered foreground, not overlay.
                 prompt_ledger.record_prompt_blocks(&blocks);
+                let wiki_run_id_this_turn = state.read().await.wiki_run_id.clone();
                 // Establishment is over the moment the user speaks: from here a
                 // config push is attributable to the prompt (`/model` typed in
                 // chat is one), so codeg stops arbitrating and the agent owns
@@ -9586,7 +9587,7 @@ async fn run_conversation_loop<'a>(
                                             session_id: sid.0.to_string(),
                                             stop_reason: reason_str.into(),
                                             agent_type: agent_type.to_string(),
-                                            run_id: None,
+                                            run_id: wiki_run_id_this_turn.clone(),
                                         },
                                     )
                                     .await;
@@ -9716,7 +9717,7 @@ async fn run_conversation_loop<'a>(
                                             session_id: sid.0.to_string(),
                                             stop_reason: "auth_required".into(),
                                             agent_type: agent_type.to_string(),
-                                            run_id: None,
+                                            run_id: wiki_run_id_this_turn.clone(),
                                         },
                                     )
                                     .await;
@@ -9815,7 +9816,7 @@ async fn run_conversation_loop<'a>(
                                     session_id: sid.0.to_string(),
                                     stop_reason: reason_str.into(),
                                     agent_type: agent_type.to_string(),
-                                    run_id: None,
+                                    run_id: wiki_run_id_this_turn.clone(),
                                 },
                             )
                             .await;
@@ -10036,7 +10037,7 @@ async fn run_conversation_loop<'a>(
                                             session_id: sid.0.to_string(),
                                             stop_reason: "cancelled".into(),
                                             agent_type: agent_type.to_string(),
-                                            run_id: None,
+                                            run_id: wiki_run_id_this_turn.clone(),
                                         },
                                     )
                                     .await;

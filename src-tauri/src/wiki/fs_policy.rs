@@ -150,7 +150,15 @@ impl WikiFsPolicy {
                 "path is not an allowed page location: {rel}"
             )));
         }
-        join_vault_relative(&self.vault, rel).map_err(FsPolicyError::Denied)
+        let dest = join_vault_relative(&self.vault, rel).map_err(FsPolicyError::Denied)?;
+        let vault_canon = canonical_existing_or_parent(&self.vault)?;
+        let dest_canon = canonical_existing_or_parent(&dest)?;
+        if !dest_canon.starts_with(&vault_canon) {
+            return Err(FsPolicyError::Denied(format!(
+                "commit path escapes the vault: {rel}"
+            )));
+        }
+        Ok(dest)
     }
 
     pub fn check_page_type_path(&self, page_type: &str, rel: &str) -> Result<(), FsPolicyError> {
@@ -333,24 +341,36 @@ fn canonical_existing_or_parent(path: &Path) -> Result<PathBuf, FsPolicyError> {
         return fs::canonicalize(path)
             .map_err(|e| FsPolicyError::Denied(format!("cannot canonicalize {}: {e}", path.display())));
     }
-    let parent = path.parent().ok_or_else(|| {
-        FsPolicyError::Denied(format!(
-            "cannot determine parent directory for {}",
-            path.display()
-        ))
-    })?;
-    if !parent.exists() {
-        return Err(FsPolicyError::Denied(format!(
-            "parent directory does not exist: {}",
-            parent.display()
-        )));
+    let mut cur = path.to_path_buf();
+    let mut missing = Vec::new();
+    loop {
+        let Some(name) = cur.file_name() else {
+            return Err(FsPolicyError::Denied(format!(
+                "cannot determine parent directory for {}",
+                path.display()
+            )));
+        };
+        missing.push(name.to_os_string());
+        match cur.parent() {
+            Some(parent) if parent != cur.as_path() => cur = parent.to_path_buf(),
+            _ => {
+                return Err(FsPolicyError::Denied(format!(
+                    "parent directory does not exist: {}",
+                    path.display()
+                )));
+            }
+        }
+        if cur.exists() {
+            break;
+        }
     }
-    let parent = fs::canonicalize(parent)
-        .map_err(|e| FsPolicyError::Denied(format!("cannot canonicalize {}: {e}", parent.display())))?;
-    let name = path.file_name().ok_or_else(|| {
-        FsPolicyError::Denied(format!("path has no file name: {}", path.display()))
+    let mut canon = fs::canonicalize(&cur).map_err(|e| {
+        FsPolicyError::Denied(format!("cannot canonicalize {}: {e}", cur.display()))
     })?;
-    Ok(parent.join(name))
+    for name in missing.iter().rev() {
+        canon.push(name);
+    }
+    Ok(canon)
 }
 
 #[cfg(test)]
