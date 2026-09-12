@@ -6381,8 +6381,13 @@
     },
     "jobs": {
       "emptyTitle": "No jobs yet",
-      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
-      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
+      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here.",
+      "readOnlyHint": "Compile now queues a compile job. Retry reapplies a failed job; cancel stops one that has not committed.",
+      "compileNow": "Compile now",
+      "compiling": "Starting compile…",
+      "retryJob": "Retry job",
+      "cancelJob": "Cancel job",
+      "compileDisabled": "Compile is turned off in Settings.",
       "allStatuses": "All statuses",
       "detailPlaceholder": "Select a job to see details.",
       "kind": {

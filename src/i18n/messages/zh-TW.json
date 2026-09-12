@@ -6383,6 +6383,11 @@
       "emptyTitle": "還沒有任務",
       "emptyDescription": "分析和整理任務的進度、失敗和衝突會顯示在這裡。重試和取消將在對應命令就緒後提供。",
       "readOnlyHint": "本切片只讀顯示任務狀態。重試和取消需要後續後端命令。",
+      "compileNow": "立即整理",
+      "compiling": "正在開始整理…",
+      "retryJob": "重試任務",
+      "cancelJob": "取消任務",
+      "compileDisabled": "設定裡已關閉整理。",
       "allStatuses": "全部狀態",
       "detailPlaceholder": "選擇一項任務查看詳情。",
       "kind": {

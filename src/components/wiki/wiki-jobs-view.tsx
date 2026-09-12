@@ -15,7 +15,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { toErrorMessage } from "@/lib/app-error"
-import { wikiGetJob, wikiListJobs } from "@/lib/api"
+import {
+  getWikiSettings,
+  wikiCancelJob,
+  wikiCompileNow,
+  wikiGetJob,
+  wikiListJobs,
+  wikiRetryJob,
+} from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
   normalizeWikiList,
@@ -77,6 +84,8 @@ export function WikiJobsView() {
   const [detail, setDetail] = useState<WikiJob | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [actionBusy, setActionBusy] = useState(false)
+  const [compileEnabled, setCompileEnabled] = useState(true)
 
   const load = useCallback(
     async (offset: number, nextStatus = status) => {
@@ -116,6 +125,64 @@ export function WikiJobsView() {
   useEffect(() => {
     load(0).catch(console.error)
   }, [load])
+
+  useEffect(() => {
+    getWikiSettings()
+      .then((view) => {
+        setCompileEnabled(view.compile?.enabled !== false)
+      })
+      .catch(console.error)
+  }, [])
+
+  const afterJobMutation = useCallback(
+    async (job: WikiJob) => {
+      await load(0)
+      setSelectedId(job.id)
+      setDetail(job)
+    },
+    [load]
+  )
+
+  const handleCompileNow = useCallback(async () => {
+    setActionBusy(true)
+    setDetailError(null)
+    try {
+      const job = await wikiCompileNow(crypto.randomUUID())
+      await afterJobMutation(job)
+    } catch (err) {
+      setDetailError(t("loadFailed", { message: toErrorMessage(err) }))
+    } finally {
+      setActionBusy(false)
+    }
+  }, [afterJobMutation, t])
+
+  const handleRetry = useCallback(async () => {
+    if (!detail?.id) return
+    setActionBusy(true)
+    setDetailError(null)
+    try {
+      const job = await wikiRetryJob(detail.id)
+      await afterJobMutation(job)
+    } catch (err) {
+      setDetailError(t("loadFailed", { message: toErrorMessage(err) }))
+    } finally {
+      setActionBusy(false)
+    }
+  }, [afterJobMutation, detail, t])
+
+  const handleCancel = useCallback(async () => {
+    if (!detail?.id) return
+    setActionBusy(true)
+    setDetailError(null)
+    try {
+      const job = await wikiCancelJob(detail.id)
+      await afterJobMutation(job)
+    } catch (err) {
+      setDetailError(t("loadFailed", { message: toErrorMessage(err) }))
+    } finally {
+      setActionBusy(false)
+    }
+  }, [afterJobMutation, detail, t])
 
   const selectJob = useCallback(
     async (job: WikiJob) => {
@@ -174,6 +241,17 @@ export function WikiJobsView() {
               onClick={() => load(0).catch(console.error)}
             >
               {t("refresh")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={actionBusy || !compileEnabled}
+              title={compileEnabled ? undefined : t("jobs.compileDisabled")}
+              onClick={() => {
+                handleCompileNow().catch(console.error)
+              }}
+            >
+              {actionBusy ? t("jobs.compiling") : t("jobs.compileNow")}
             </Button>
           </div>
           <ScrollArea className="min-h-0 flex-1">
@@ -279,6 +357,35 @@ export function WikiJobsView() {
                 {detailError ? (
                   <p className="text-sm text-destructive">{detailError}</p>
                 ) : null}
+                <div className="flex flex-wrap gap-2">
+                  {statusKey(detail.status) === "failed" ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={actionBusy}
+                      onClick={() => {
+                        handleRetry().catch(console.error)
+                      }}
+                    >
+                      {t("jobs.retryJob")}
+                    </Button>
+                  ) : null}
+                  {statusKey(detail.status) === "queued" ||
+                  statusKey(detail.status) === "running" ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={actionBusy}
+                      onClick={() => {
+                        handleCancel().catch(console.error)
+                      }}
+                    >
+                      {t("jobs.cancelJob")}
+                    </Button>
+                  ) : null}
+                </div>
                 {detail.error || detail.error_code || detail.message ? (
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-muted-foreground">

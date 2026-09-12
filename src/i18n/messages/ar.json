@@ -6383,6 +6383,11 @@
       "emptyTitle": "لا توجد مهام بعد",
       "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
       "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
+      "compileNow": "Compile now",
+      "compiling": "Starting compile…",
+      "retryJob": "Retry job",
+      "cancelJob": "Cancel job",
+      "compileDisabled": "Compile is turned off in Settings.",
       "allStatuses": "كل الحالات",
       "detailPlaceholder": "Select a job to see details.",
       "kind": {

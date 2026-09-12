@@ -953,6 +953,17 @@ mod tests {
             occurred_at: Set(None),
             truncated: Set(false),
             redacted: Set(false),
+            request_id: Set(None),
+            original_filename: Set(None),
+            format: Set(None),
+            source_title: Set(None),
+            source_url: Set(None),
+            author: Set(None),
+            project_ids: Set(None),
+            area_ids: Set(None),
+            warnings: Set(None),
+            page_count: Set(None),
+            previous_source_id: Set(None),
             created_at: Set(now),
             updated_at: Set(now),
         }
@@ -991,7 +1002,10 @@ mod tests {
         let cap = fs::read_dir(vault.join("capabilities"))
             .unwrap()
             .filter_map(|e| e.ok())
-            .find(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+            .find(|e| {
+                e.path().extension().and_then(|x| x.to_str()) == Some("md")
+                    && e.file_name() != "index.md"
+            })
             .expect("capability page");
         let text = fs::read_to_string(cap.path()).unwrap();
         assert!(text.contains("type: capability"));

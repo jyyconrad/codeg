@@ -6383,6 +6383,11 @@
       "emptyTitle": "还没有任务",
       "emptyDescription": "分析和整理任务的进度、失败和冲突会显示在这里。重试和取消将在对应命令就绪后提供。",
       "readOnlyHint": "本切片只读显示任务状态。重试和取消需要后续后端命令。",
+      "compileNow": "立即整理",
+      "compiling": "正在开始整理…",
+      "retryJob": "重试任务",
+      "cancelJob": "取消任务",
+      "compileDisabled": "设置里已关闭整理。",
       "allStatuses": "全部状态",
       "detailPlaceholder": "选择一项任务查看详情。",
       "kind": {

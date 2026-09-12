@@ -6383,6 +6383,11 @@
       "emptyTitle": "ジョブはまだありません",
       "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
       "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
+      "compileNow": "Compile now",
+      "compiling": "Starting compile…",
+      "retryJob": "Retry job",
+      "cancelJob": "Cancel job",
+      "compileDisabled": "Compile is turned off in Settings.",
       "allStatuses": "すべての状態",
       "detailPlaceholder": "ジョブを選んで詳細を表示します。",
       "kind": {

@@ -6039,3 +6039,15 @@ export async function wikiLinkSourceVersion(
     previous_source_id: previousSourceId,
   })
 }
+
+export async function wikiCompileNow(requestId: string): Promise<WikiJob> {
+  return getTransport().call("wiki_compile_now", { request_id: requestId })
+}
+
+export async function wikiRetryJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_retry_job", { id })
+}
+
+export async function wikiCancelJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_cancel_job", { id })
+}
