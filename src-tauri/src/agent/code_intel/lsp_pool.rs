@@ -52,6 +52,8 @@ struct RunningServer {
 
 struct PoolInner {
     running: HashMap<String, RunningServer>,
+    /// Bumped by `shutdown_all` so a handshake that started earlier cannot insert.
+    epoch: u64,
 }
 
 pub struct LspPool {
@@ -80,6 +82,7 @@ impl LspPool {
             cancel,
             inner: tokio::sync::Mutex::new(PoolInner {
                 running: HashMap::new(),
+                epoch: 0,
             }),
             diagnostics: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -90,11 +93,15 @@ impl LspPool {
             return Err("lsp cancelled".into());
         }
 
-        let mut inner = self.inner.lock().await;
-        if inner.running.contains_key(server_id) {
-            return Ok(());
-        }
+        let epoch = {
+            let inner = self.inner.lock().await;
+            if inner.running.contains_key(server_id) {
+                return Ok(());
+            }
+            inner.epoch
+        };
 
+        // Detect (up to 5000 files) and initialize (30s) must not hold `inner`.
         let detected = detect_languages(
             &self.cwd,
             self.fs.as_ref(),
@@ -106,14 +113,60 @@ impl LspPool {
             return Err("server not eligible".into());
         }
 
-        let cap = self.cfg.lsp.max_concurrent.max(1) as usize;
-        if inner.running.len() >= cap {
-            return Err(format!("LSP concurrency limit ({cap}) reached"));
+        if self.cancel.is_cancelled() {
+            return Err("lsp cancelled".into());
+        }
+
+        {
+            let inner = self.inner.lock().await;
+            if inner.running.contains_key(server_id) {
+                return Ok(());
+            }
+            if inner.epoch != epoch {
+                return Err("lsp cancelled".into());
+            }
+            let cap = self.cfg.lsp.max_concurrent.max(1) as usize;
+            if inner.running.len() >= cap {
+                return Err(format!("LSP concurrency limit ({cap}) reached"));
+            }
         }
 
         let running = self.spawn_and_handshake(server_id).await?;
-        inner.running.insert(server_id.to_string(), running);
-        Ok(())
+
+        enum Insert {
+            Keep,
+            Duplicate(RunningServer),
+            Reject(RunningServer, String),
+        }
+
+        let insert = {
+            let mut inner = self.inner.lock().await;
+            if inner.running.contains_key(server_id) {
+                Insert::Duplicate(running)
+            } else if inner.epoch != epoch || self.cancel.is_cancelled() {
+                Insert::Reject(running, "lsp cancelled".into())
+            } else {
+                let cap = self.cfg.lsp.max_concurrent.max(1) as usize;
+                if inner.running.len() >= cap {
+                    Insert::Reject(running, format!("LSP concurrency limit ({cap}) reached"))
+                } else {
+                    inner.running.insert(server_id.to_string(), running);
+                    Insert::Keep
+                }
+            }
+        };
+
+        match insert {
+            Insert::Keep => Ok(()),
+            Insert::Duplicate(extra) => {
+                shutdown_running(&self.owners, extra).await;
+                Ok(())
+            }
+            Insert::Reject(extra, err) => {
+                shutdown_running(&self.owners, extra).await;
+                Err(err)
+            }
+        }
     }
 
     pub async fn hover(
@@ -288,19 +341,14 @@ impl LspPool {
     }
 
     pub async fn shutdown_all(&self) {
-        let mut inner = self.inner.lock().await;
-        let running = std::mem::take(&mut inner.running);
-        drop(inner);
+        let running = {
+            let mut inner = self.inner.lock().await;
+            inner.epoch = inner.epoch.wrapping_add(1);
+            std::mem::take(&mut inner.running)
+        };
 
-        for mut running in running.into_values() {
-            let mut server = running.server;
-            // `()` serializes shutdown params as JSON null, not {}.
-            let _ = tokio::time::timeout(Duration::from_secs(5), server.shutdown(())).await;
-            let _ = server.exit(());
-            let _ = server.emit(Stop);
-            reap_child(&mut running.child, running.pid).await;
-            lock_owners(&self.owners).unregister(running.pid);
-            let _ = tokio::time::timeout(Duration::from_secs(2), running.loop_task).await;
+        for running in running.into_values() {
+            shutdown_running(&self.owners, running).await;
         }
     }
 
@@ -543,6 +591,17 @@ async fn timed<T, E: std::fmt::Display>(
         _ = tokio::time::sleep(REQUEST_TIMEOUT) => Err("lsp request timed out".into()),
         result = fut => result.map_err(|err| err.to_string()),
     }
+}
+
+async fn shutdown_running(owners: &Mutex<ProcessOwnerRegistry>, mut running: RunningServer) {
+    let mut server = running.server;
+    // `()` serializes shutdown params as JSON null, not {}.
+    let _ = tokio::time::timeout(Duration::from_secs(5), server.shutdown(())).await;
+    let _ = server.exit(());
+    let _ = server.emit(Stop);
+    reap_child(&mut running.child, running.pid).await;
+    lock_owners(owners).unregister(running.pid);
+    let _ = tokio::time::timeout(Duration::from_secs(2), running.loop_task).await;
 }
 
 async fn fail_start(
@@ -811,6 +870,9 @@ mod tests {
     const FAKE_LS: &str = r#"#!/usr/bin/env python3
 import json
 import sys
+import time
+
+INIT_DELAY = 0
 
 def read_headers():
     headers = {}
@@ -851,6 +913,8 @@ def main():
         msg_id = msg.get("id")
         params = msg.get("params") or {}
         if method == "initialize":
+            if INIT_DELAY:
+                time.sleep(INIT_DELAY)
             send({"jsonrpc": "2.0", "id": msg_id, "result": {
                 "capabilities": {
                     "textDocumentSync": 1,
@@ -888,8 +952,13 @@ if __name__ == "__main__":
 
     #[cfg(unix)]
     fn write_fake_ls(dir: &Path, name: &str) -> PathBuf {
+        write_fake_ls_delayed(dir, name, 0.0)
+    }
+
+    fn write_fake_ls_delayed(dir: &Path, name: &str, init_delay_secs: f64) -> PathBuf {
+        let src = FAKE_LS.replace("INIT_DELAY = 0", &format!("INIT_DELAY = {init_delay_secs}"));
         let path = dir.join(name);
-        std::fs::write(&path, FAKE_LS).unwrap();
+        std::fs::write(&path, src).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
@@ -1030,5 +1099,46 @@ if __name__ == "__main__":
         );
         assert_eq!(pool.running_ids().await, vec!["fake-a".to_string()]);
         pool.shutdown_all().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_all_does_not_block_on_handshake() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = write_fake_ls_delayed(dir.path(), "fake-ls", 2.0);
+        std::fs::write(dir.path().join("fake.manifest"), "").unwrap();
+        let cfg = fake_cfg(script, "fake-ls", "fake.manifest", 2);
+        let (pool, owners) = pool_for(dir.path(), cfg);
+
+        let pending = {
+            let pool = pool.clone();
+            tokio::spawn(async move { pool.ensure_server("fake-ls").await })
+        };
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !lock_owners(&owners).pids().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake server should spawn before initialize returns");
+
+        tokio::time::timeout(Duration::from_secs(1), pool.shutdown_all())
+            .await
+            .expect("shutdown_all must not wait for initialize");
+
+        let ensure = tokio::time::timeout(Duration::from_secs(5), pending)
+            .await
+            .expect("ensure_server should finish after handshake")
+            .expect("ensure_server task should not panic");
+        assert!(
+            ensure.is_err(),
+            "handshake after shutdown_all must not stay in the pool, got {ensure:?}"
+        );
+        assert!(pool.running_ids().await.is_empty());
+        assert!(lock_owners(&owners).pids().is_empty());
     }
 }
