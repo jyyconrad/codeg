@@ -16,7 +16,10 @@ use crate::wiki::import::{
 };
 use crate::wiki::paths::{self, join_vault_relative, resolve_vault_path};
 use crate::wiki::settings::{self, WikiSettings, WikiSettingsView};
+use crate::wiki::tree::{self, VaultTreeError};
 use crate::wiki::vault;
+
+pub use crate::wiki::tree::WikiVaultTreeEntry;
 
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
@@ -96,11 +99,14 @@ pub async fn wiki_get_source_core(
     wiki_service::get_source(conn, &id).await
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WikiVaultTreeEntry {
-    pub path: String,
-    pub name: String,
-    pub is_dir: bool,
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WikiVaultTreeParams {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub recursive: Option<bool>,
+    #[serde(default)]
+    pub include_raw: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,46 +132,30 @@ fn reject_unsafe_path(rel: &str) -> Result<(), AppCommandError> {
 
 pub async fn wiki_vault_tree_core(
     conn: &DatabaseConnection,
-    path: Option<String>,
+    params: WikiVaultTreeParams,
 ) -> Result<Vec<WikiVaultTreeEntry>, AppCommandError> {
     let settings = settings::load_settings(conn)
         .await
         .map_err(AppCommandError::from)?;
     let vault = vault_root_from_settings(&settings)?;
-    let rel = path.unwrap_or_default();
+    let rel = params.path.unwrap_or_default();
     reject_unsafe_path(&rel)?;
-    let dir = join_vault_relative(&vault, &rel).map_err(AppCommandError::invalid_input)?;
-    if !dir.exists() {
-        if rel.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-        return Err(AppCommandError::new(
+    let recursive = params.recursive.unwrap_or(false);
+    let include_raw = params.include_raw.unwrap_or(false);
+    match tree::list_vault_tree(&vault, &rel, recursive, include_raw) {
+        Ok(entries) => Ok(entries),
+        Err(VaultTreeError::UnsafePath) => Err(AppCommandError::invalid_input(
+            "path must be vault-relative without '..' or absolute segments",
+        )),
+        Err(VaultTreeError::NotFound) => Err(AppCommandError::new(
             crate::app_error::AppErrorCode::NotFound,
             "path not found",
-        ));
+        )),
+        Err(VaultTreeError::NotDirectory) => {
+            Err(AppCommandError::invalid_input("path is not a directory"))
+        }
+        Err(VaultTreeError::Io(err)) => Err(AppCommandError::io_error(err.to_string())),
     }
-    if !dir.is_dir() {
-        return Err(AppCommandError::invalid_input("path is not a directory"));
-    }
-    let mut entries = Vec::new();
-    let rd = fs::read_dir(&dir).map_err(|e| AppCommandError::io_error(e.to_string()))?;
-    for ent in rd {
-        let ent = ent.map_err(|e| AppCommandError::io_error(e.to_string()))?;
-        let name = ent.file_name().to_string_lossy().into_owned();
-        let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        let child = if rel.trim().is_empty() {
-            name.clone()
-        } else {
-            format!("{}/{}", rel.trim().trim_end_matches('/'), name)
-        };
-        entries.push(WikiVaultTreeEntry {
-            path: child.replace('\\', "/"),
-            name,
-            is_dir,
-        });
-    }
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(entries)
 }
 
 pub async fn wiki_import_text_core(
@@ -319,8 +309,18 @@ pub async fn wiki_get_source(
 pub async fn wiki_vault_tree(
     db: tauri::State<'_, AppDatabase>,
     path: Option<String>,
+    recursive: Option<bool>,
+    include_raw: Option<bool>,
 ) -> Result<Vec<WikiVaultTreeEntry>, AppCommandError> {
-    wiki_vault_tree_core(&db.conn, path).await
+    wiki_vault_tree_core(
+        &db.conn,
+        WikiVaultTreeParams {
+            path,
+            recursive,
+            include_raw,
+        },
+    )
+    .await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -452,4 +452,75 @@ pub async fn wiki_link_source_version(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_error::AppErrorCode;
+    use crate::db::test_helpers::fresh_in_memory_db;
+    use crate::wiki::settings::WikiSettings;
+
+    #[tokio::test]
+    async fn vault_tree_rejects_parent_dir() {
+        let db = fresh_in_memory_db().await;
+        let err = wiki_vault_tree_core(
+            &db.conn,
+            WikiVaultTreeParams {
+                path: Some("work/../secrets".into()),
+                recursive: Some(true),
+                include_raw: None,
+            },
+        )
+        .await
+        .expect_err("parent segments");
+        assert!(matches!(err.code, AppErrorCode::InvalidInput));
+    }
+
+    #[tokio::test]
+    async fn vault_tree_recursive_skips_obsidian_and_raw() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        crate::wiki::vault::initialize_vault(&vault).unwrap();
+        std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        std::fs::write(vault.join(".obsidian/app.json"), "{}").unwrap();
+        std::fs::create_dir_all(vault.join("work/projects")).unwrap();
+        std::fs::write(vault.join("work/projects/alpha.md"), "note").unwrap();
+        std::fs::create_dir_all(vault.join("raw/sessions")).unwrap();
+        std::fs::write(vault.join("raw/sessions/turn.md"), "raw").unwrap();
+
+        let mut settings = WikiSettings::default();
+        settings.vault_path = Some(vault.to_string_lossy().into_owned());
+        settings::save_settings(&db.conn, &settings)
+            .await
+            .expect("save settings");
+
+        let entries = wiki_vault_tree_core(
+            &db.conn,
+            WikiVaultTreeParams {
+                path: None,
+                recursive: Some(true),
+                include_raw: Some(false),
+            },
+        )
+        .await
+        .expect("tree");
+
+        fn contains(entries: &[WikiVaultTreeEntry], path: &str) -> bool {
+            entries.iter().any(|e| {
+                e.path == path
+                    || e.children
+                        .as_deref()
+                        .is_some_and(|kids| contains(kids, path))
+            })
+        }
+
+        assert!(contains(&entries, "work/projects/alpha.md"));
+        assert!(contains(&entries, "index.md"));
+        assert!(!contains(&entries, ".obsidian"));
+        assert!(!contains(&entries, ".obsidian/app.json"));
+        assert!(!contains(&entries, "raw"));
+        assert!(!contains(&entries, "raw/sessions/turn.md"));
+    }
 }

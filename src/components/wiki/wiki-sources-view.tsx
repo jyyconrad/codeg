@@ -255,7 +255,9 @@ export function WikiSourcesView() {
       setPasteText("")
       await afterImport(result, result.duplicate)
     } catch (err) {
-      setImportError(t("sources.importFailed", { message: toErrorMessage(err) }))
+      setImportError(
+        t("sources.importFailed", { message: toErrorMessage(err) })
+      )
     } finally {
       setImporting(false)
     }
@@ -263,7 +265,8 @@ export function WikiSourcesView() {
 
   const handleFiles = useCallback(
     async (fileList: FileList | null) => {
-      if (!fileList || fileList.length === 0 || importing || !wikiEnabled) return
+      if (!fileList || fileList.length === 0 || importing || !wikiEnabled)
+        return
       const files = Array.from(fileList).slice(0, MAX_IMPORT_FILES)
       setImporting(true)
       setImportError(null)
@@ -273,9 +276,7 @@ export function WikiSourcesView() {
       let lastDuplicate = false
       for (const file of files) {
         if (file.size > MAX_FILE_BYTES) {
-          errors.push(
-            t("sources.fileTooLarge", { name: file.name })
-          )
+          errors.push(t("sources.fileTooLarge", { name: file.name }))
           continue
         }
         try {
@@ -316,10 +317,14 @@ export function WikiSourcesView() {
     try {
       const updated = await wikiAcceptExtraction(selectedId)
       setSources((current) =>
-        current.map((row) => (row.id === updated.id ? { ...row, ...updated } : row))
+        current.map((row) =>
+          row.id === updated.id ? { ...row, ...updated } : row
+        )
       )
     } catch (err) {
-      setImportError(t("sources.importFailed", { message: toErrorMessage(err) }))
+      setImportError(
+        t("sources.importFailed", { message: toErrorMessage(err) })
+      )
     } finally {
       setAccepting(false)
     }
@@ -336,10 +341,14 @@ export function WikiSourcesView() {
         personal_role: personalRole.trim() || null,
       })
       setSources((current) =>
-        current.map((row) => (row.id === updated.id ? { ...row, ...updated } : row))
+        current.map((row) =>
+          row.id === updated.id ? { ...row, ...updated } : row
+        )
       )
     } catch (err) {
-      setImportError(t("sources.importFailed", { message: toErrorMessage(err) }))
+      setImportError(
+        t("sources.importFailed", { message: toErrorMessage(err) })
+      )
     } finally {
       setSavingAnnotations(false)
     }
@@ -564,7 +573,9 @@ export function WikiSourcesView() {
                     handleAccept().catch(console.error)
                   }}
                 >
-                  {accepting ? t("sources.accepting") : t("sources.acceptExtraction")}
+                  {accepting
+                    ? t("sources.accepting")
+                    : t("sources.acceptExtraction")}
                 </Button>
               </div>
             ) : null}

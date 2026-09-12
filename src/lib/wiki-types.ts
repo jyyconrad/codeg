@@ -295,11 +295,32 @@ export function wikiNodeIsDir(node: WikiVaultTreeNode): boolean {
   return Array.isArray(node.children)
 }
 
+const HIDDEN_VAULT_NAMES = new Set([".obsidian", ".git"])
+
+export function filterWikiVaultNoise(
+  nodes: WikiVaultTreeNode[],
+  options?: { includeRaw?: boolean }
+): WikiVaultTreeNode[] {
+  const includeRaw = options?.includeRaw === true
+  const out: WikiVaultTreeNode[] = []
+  for (const node of nodes) {
+    const name = wikiNodeName(node)
+    if (HIDDEN_VAULT_NAMES.has(name.toLowerCase())) continue
+    if (!includeRaw && name.toLowerCase() === "raw") continue
+    const children = node.children
+      ? filterWikiVaultNoise(node.children, options)
+      : node.children
+    out.push(children === node.children ? node : { ...node, children })
+  }
+  return out
+}
+
 export function vaultNodesUnderPrefix(
   nodes: WikiVaultTreeNode[],
   prefix: string
 ): WikiVaultTreeNode[] {
   const p = prefix.replace(/\\/g, "/").replace(/\/+$/, "")
+  if (!p) return nodes
 
   const matches = (path: string): boolean => {
     const n = path.replace(/\\/g, "/").replace(/^\.\//, "")
@@ -354,6 +375,86 @@ export function wikiSourceTitle(source: WikiSource): string | null {
     emptyToNull(source.title) ??
     emptyToNull(source.original_filename)
   )
+}
+
+export type WikiMarkdownPart =
+  | { kind: "text"; text: string }
+  | {
+      kind: "wikilink"
+      raw: string
+      label: string
+      target: string | null
+    }
+
+/** Vault-relative note path without `.md`. Null when the link leaves the vault. */
+export function sanitizeWikilinkPath(raw: string): string | null {
+  let p = raw.trim().replace(/\\/g, "/")
+  const hash = p.indexOf("#")
+  if (hash >= 0) p = p.slice(0, hash).trim()
+  if (!p) return null
+  const lower = p.toLowerCase()
+  if (lower.startsWith("http://") || lower.startsWith("https://")) {
+    return null
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(p)) return null
+  if (p.startsWith("/")) return null
+  const parts: string[] = []
+  for (const seg of p.split("/")) {
+    if (!seg || seg === ".") continue
+    if (seg === "..") return null
+    parts.push(seg)
+  }
+  if (parts.length === 0) return null
+  let joined = parts.join("/")
+  if (joined.toLowerCase().endsWith(".md")) {
+    joined = joined.slice(0, -3)
+  }
+  return joined
+}
+
+export function parseWikilink(inner: string): {
+  target: string | null
+  label: string
+} {
+  const pipe = inner.indexOf("|")
+  const pathPart = (pipe >= 0 ? inner.slice(0, pipe) : inner).trim()
+  const label =
+    (pipe >= 0 ? inner.slice(pipe + 1) : pathPart).trim() || pathPart
+  return { target: sanitizeWikilinkPath(pathPart), label }
+}
+
+export function resolveWikiNotePath(target: string): string | null {
+  const sanitized = sanitizeWikilinkPath(target)
+  if (!sanitized) return null
+  return `${sanitized}.md`
+}
+
+export function splitWikiMarkdown(content: string): WikiMarkdownPart[] {
+  if (!content) return []
+  const parts: WikiMarkdownPart[] = []
+  const re = /\[\[([^\]\n]+?)\]\]/g
+  let last = 0
+  let match: RegExpExecArray | null
+  while ((match = re.exec(content)) !== null) {
+    if (match.index > last) {
+      parts.push({
+        kind: "text",
+        text: content.slice(last, match.index),
+      })
+    }
+    const parsed = parseWikilink(match[1] ?? "")
+    parts.push({
+      kind: "wikilink",
+      raw: match[0],
+      label: parsed.label,
+      target: parsed.target,
+    })
+    last = match.index + match[0].length
+  }
+  if (last < content.length) {
+    parts.push({ kind: "text", text: content.slice(last) })
+  }
+  return parts
 }
 
 export function wikiSourcePreviewPaths(source: WikiSource): string[] {

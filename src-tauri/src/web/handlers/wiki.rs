@@ -44,12 +44,6 @@ pub struct ListSourcesParams {
 }
 
 #[derive(Deserialize)]
-pub struct VaultPathParams {
-    #[serde(default)]
-    pub path: Option<String>,
-}
-
-#[derive(Deserialize)]
 pub struct VaultReadParams {
     pub path: String,
 }
@@ -126,10 +120,10 @@ pub async fn wiki_get_source(
 
 pub async fn wiki_vault_tree(
     Extension(state): Extension<Arc<AppState>>,
-    Json(params): Json<VaultPathParams>,
+    Json(params): Json<core::WikiVaultTreeParams>,
 ) -> Result<Json<Vec<core::WikiVaultTreeEntry>>, AppCommandError> {
     Ok(Json(
-        core::wiki_vault_tree_core(&state.db.conn, params.path).await?,
+        core::wiki_vault_tree_core(&state.db.conn, params).await?,
     ))
 }
 

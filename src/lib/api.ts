@@ -5934,10 +5934,16 @@ export async function wikiGetSource(id: string): Promise<WikiSource> {
   return getTransport().call("wiki_get_source", { id })
 }
 
-export async function wikiVaultTree(): Promise<
-  WikiVaultTreeNode[] | Record<string, unknown>
-> {
-  return getTransport().call("wiki_vault_tree")
+export async function wikiVaultTree(params?: {
+  path?: string | null
+  recursive?: boolean
+  includeRaw?: boolean
+}): Promise<WikiVaultTreeNode[] | Record<string, unknown>> {
+  return getTransport().call("wiki_vault_tree", {
+    path: params?.path ?? null,
+    recursive: params?.recursive ?? null,
+    include_raw: params?.includeRaw ?? null,
+  })
 }
 
 export async function wikiVaultRead(path: string): Promise<unknown> {
@@ -6026,7 +6032,9 @@ export async function wikiUpdateSourceAnnotations(params: {
   })
 }
 
-export async function wikiReextract(sourceId: string): Promise<WikiImportResult> {
+export async function wikiReextract(
+  sourceId: string
+): Promise<WikiImportResult> {
   return getTransport().call("wiki_reextract", { source_id: sourceId })
 }
 

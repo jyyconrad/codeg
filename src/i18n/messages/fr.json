@@ -55,7 +55,7 @@
       "skill_packs": "Packs de compétences",
       "quick_messages": "Messages rapides",
       "logs": "Journaux d'exécution",
-      "wiki": "Wiki"
+      "wiki": "Wiki personnel"
     }
   },
   "AppearanceSettings": {
@@ -1982,7 +1982,7 @@
       "forge": "Panneau du dépôt",
       "canvas": "Conversations infinies",
       "toolbox": "Boîte à outils",
-      "wiki": "Wiki",
+      "wiki": "Wiki personnel",
       "folderGroup": {
         "newGroup": "Nouveau groupe",
         "newGroupTitle": "Nouveau groupe de dossiers",
@@ -6303,8 +6303,9 @@
     "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
   },
   "Wiki": {
-    "title": "Wiki",
+    "title": "Wiki personnel",
     "views": {
+      "all": "Tout",
       "work": "Travail",
       "capabilities": "Capacités",
       "sources": "Sources",
@@ -6319,6 +6320,11 @@
     "loadMore": "Charger plus",
     "empty": "Rien pour l’instant",
     "treeTitle": "Vault · {path}",
+    "showRaw": "Afficher les preuves brutes (raw/)",
+    "all": {
+      "emptyTitle": "Toutes les notes",
+      "emptyDescription": "Tous les textes de connaissance de ce coffre : index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md et AGENTS.md. Ouvrez un fichier Markdown pour le lire. Les wikilinks restent dans le coffre."
+    },
     "work": {
       "emptyTitle": "Pas encore de notes de travail",
       "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."

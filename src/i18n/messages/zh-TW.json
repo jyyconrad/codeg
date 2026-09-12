@@ -55,7 +55,7 @@
       "skill_packs": "技能包",
       "quick_messages": "快捷訊息",
       "logs": "執行日誌",
-      "wiki": "知識庫"
+      "wiki": "個人 Wiki"
     }
   },
   "AppearanceSettings": {
@@ -1982,7 +1982,7 @@
       "forge": "儲存庫面板",
       "canvas": "無限會話",
       "toolbox": "萬能小工具",
-      "wiki": "知識庫",
+      "wiki": "個人 Wiki",
       "folderGroup": {
         "newGroup": "新增分組",
         "newGroupTitle": "新增資料夾分組",
@@ -6303,8 +6303,9 @@
     "compilePromptPlaceholder": "可選，補充工作與能力整理說明"
   },
   "Wiki": {
-    "title": "知識庫",
+    "title": "個人 Wiki",
     "views": {
+      "all": "全部",
       "work": "工作",
       "capabilities": "能力",
       "sources": "資料",
@@ -6319,6 +6320,11 @@
     "loadMore": "載入更多",
     "empty": "還沒有內容",
     "treeTitle": "Vault · {path}",
+    "showRaw": "顯示原始證據 raw/",
+    "all": {
+      "emptyTitle": "全部筆記",
+      "emptyDescription": "這裡可以瀏覽知識庫中的全部文字：index.md、work/、capabilities/、knowledge/、sources/、journal/、log.md 和 AGENTS.md。點擊 Markdown 檔即可閱讀全文。[[wikilink]] 會在庫內開啟對應筆記。"
+    },
     "work": {
       "emptyTitle": "還沒有工作筆記",
       "emptyDescription": "來源整理完成後，這裡會出現專案、長期職責、工作紀錄、決策和成果。專案頁回答背景、本人角色、進展、決策、成果和關聯能力。職責是持續承擔的工作。工作紀錄寫清問題、行動和結果。決策保留約束、選項和理由。成果保留交付物和證據，不編造數字。"

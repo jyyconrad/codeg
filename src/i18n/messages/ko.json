@@ -55,7 +55,7 @@
       "skill_packs": "스킬 팩",
       "quick_messages": "빠른 메시지",
       "logs": "실행 로그",
-      "wiki": "위키"
+      "wiki": "개인 위키"
     }
   },
   "AppearanceSettings": {
@@ -1982,7 +1982,7 @@
       "forge": "리포지토리 패널",
       "canvas": "무한 대화",
       "toolbox": "도구 상자",
-      "wiki": "위키",
+      "wiki": "개인 위키",
       "folderGroup": {
         "newGroup": "새 그룹",
         "newGroupTitle": "새 폴더 그룹",
@@ -6303,8 +6303,9 @@
     "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
   },
   "Wiki": {
-    "title": "위키",
+    "title": "개인 위키",
     "views": {
+      "all": "전체",
       "work": "작업",
       "capabilities": "역량",
       "sources": "자료",
@@ -6319,6 +6320,11 @@
     "loadMore": "더 보기",
     "empty": "아직 없습니다",
     "treeTitle": "Vault · {path}",
+    "showRaw": "원본 증거 raw/ 표시",
+    "all": {
+      "emptyTitle": "모든 노트",
+      "emptyDescription": "볼트의 모든 지식 텍스트를 볼 수 있습니다. index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md, AGENTS.md. Markdown 파일을 클릭하면 전문이 열립니다. [[wikilink]]는 볼트 안의 노트로 이동합니다."
+    },
     "work": {
       "emptyTitle": "작업 노트가 아직 없습니다",
       "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."

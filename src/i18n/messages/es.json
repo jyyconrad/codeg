@@ -55,7 +55,7 @@
       "skill_packs": "Paquetes de habilidades",
       "quick_messages": "Mensajes rápidos",
       "logs": "Registros de ejecución",
-      "wiki": "Wiki"
+      "wiki": "Wiki personal"
     }
   },
   "AppearanceSettings": {
@@ -1982,7 +1982,7 @@
       "forge": "Panel del repositorio",
       "canvas": "Conversaciones infinitas",
       "toolbox": "Caja de herramientas",
-      "wiki": "Wiki",
+      "wiki": "Wiki personal",
       "folderGroup": {
         "newGroup": "Nuevo grupo",
         "newGroupTitle": "Nuevo grupo de carpetas",
@@ -6303,8 +6303,9 @@
     "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
   },
   "Wiki": {
-    "title": "Wiki",
+    "title": "Wiki personal",
     "views": {
+      "all": "Todo",
       "work": "Trabajo",
       "capabilities": "Capacidades",
       "sources": "Fuentes",
@@ -6319,6 +6320,11 @@
     "loadMore": "Cargar más",
     "empty": "Todavía no hay nada",
     "treeTitle": "Vault · {path}",
+    "showRaw": "Mostrar evidencias originales (raw/)",
+    "all": {
+      "emptyTitle": "Todas las notas",
+      "emptyDescription": "Todos los textos de conocimiento de este vault: index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md y AGENTS.md. Abra un archivo Markdown para leerlo. Los wikilinks permanecen dentro del vault."
+    },
     "work": {
       "emptyTitle": "Aún no hay notas de trabajo",
       "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."

@@ -55,7 +55,7 @@
       "skill_packs": "スキルパック",
       "quick_messages": "クイックメッセージ",
       "logs": "実行ログ",
-      "wiki": "Wiki"
+      "wiki": "個人 Wiki"
     }
   },
   "AppearanceSettings": {
@@ -1982,7 +1982,7 @@
       "forge": "リポジトリパネル",
       "canvas": "無限会話",
       "toolbox": "ツールボックス",
-      "wiki": "Wiki",
+      "wiki": "個人 Wiki",
       "folderGroup": {
         "newGroup": "新しいグループ",
         "newGroupTitle": "新しいフォルダグループ",
@@ -6303,8 +6303,9 @@
     "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
   },
   "Wiki": {
-    "title": "Wiki",
+    "title": "個人 Wiki",
     "views": {
+      "all": "すべて",
       "work": "作業",
       "capabilities": "能力",
       "sources": "資料",
@@ -6319,6 +6320,11 @@
     "loadMore": "さらに読み込む",
     "empty": "まだありません",
     "treeTitle": "Vault · {path}",
+    "showRaw": "生の証拠 raw/ を表示",
+    "all": {
+      "emptyTitle": "すべてのノート",
+      "emptyDescription": "この Vault の知識テキストをすべて閲覧できます。index.md、work/、capabilities/、knowledge/、sources/、journal/、log.md、AGENTS.md。Markdown ファイルをクリックして全文を読みます。[[wikilink]] は Vault 内のノートを開きます。"
+    },
     "work": {
       "emptyTitle": "作業ノートはまだありません",
       "emptyDescription": "ソースがコンパイルされると、プロジェクト、継続職責、作業記録、意思決定、成果がここに現れます。成果の数字は捏造しません。"

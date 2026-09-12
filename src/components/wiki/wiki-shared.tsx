@@ -16,7 +16,10 @@ import { toErrorMessage } from "@/lib/app-error"
 import { wikiVaultRead, wikiVaultTree } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
+  filterWikiVaultNoise,
   normalizeWikiVaultTree,
+  resolveWikiNotePath,
+  splitWikiMarkdown,
   vaultNodesUnderPrefix,
   wikiNodeIsDir,
   wikiNodeName,
@@ -46,10 +49,13 @@ export function WikiEmptyState({
 export function WikiMarkdownPreview({
   content,
   className,
+  onOpenWikilink,
 }: {
   content: string
   className?: string
+  onOpenWikilink?: (path: string) => void
 }) {
+  const parts = splitWikiMarkdown(content)
   return (
     <pre
       className={cn(
@@ -57,7 +63,28 @@ export function WikiMarkdownPreview({
         className
       )}
     >
-      {content}
+      {parts.map((part, index) => {
+        if (part.kind === "text") {
+          return <span key={index}>{part.text}</span>
+        }
+        const notePath =
+          part.target && onOpenWikilink
+            ? resolveWikiNotePath(part.target)
+            : null
+        if (!notePath || !onOpenWikilink) {
+          return <span key={index}>{part.raw}</span>
+        }
+        return (
+          <button
+            key={index}
+            type="button"
+            className="inline rounded-sm px-0.5 text-primary underline decoration-primary/60 hover:bg-muted"
+            onClick={() => onOpenWikilink(notePath)}
+          >
+            {part.label}
+          </button>
+        )
+      })}
     </pre>
   )
 }
@@ -79,21 +106,54 @@ function writeWikiPathParam(path: string | null) {
   )
 }
 
+function pathMatchesPrefix(path: string, prefix: string): boolean {
+  if (!prefix) return true
+  return path === prefix || path.startsWith(`${prefix}/`)
+}
+
 function VaultTreeItem({
   node,
   selected,
   onSelect,
   depth,
+  loadChildren,
 }: {
   node: WikiVaultTreeNode
   selected: string | null
   onSelect: (path: string) => void
   depth: number
+  loadChildren: (path: string) => Promise<WikiVaultTreeNode[]>
 }) {
+  const t = useTranslations("Wiki")
   const isDir = wikiNodeIsDir(node)
   const path = wikiNodePath(node)
-  const [open, setOpen] = useState(depth < 1)
-  const children = node.children ?? []
+  const providedChildren = node.children
+  const [open, setOpen] = useState(
+    () => depth < 1 && providedChildren !== undefined
+  )
+  const [fetchedChildren, setFetchedChildren] = useState<
+    WikiVaultTreeNode[] | null
+  >(null)
+  const [kidsLoading, setKidsLoading] = useState(false)
+
+  const children = providedChildren ?? fetchedChildren ?? []
+  const loaded = providedChildren !== undefined || fetchedChildren !== null
+
+  const handleClick = () => {
+    if (!isDir) {
+      onSelect(path)
+      return
+    }
+    const next = !open
+    setOpen(next)
+    if (next && !loaded && !kidsLoading) {
+      setKidsLoading(true)
+      loadChildren(path)
+        .then((kids) => setFetchedChildren(kids))
+        .catch(() => setFetchedChildren([]))
+        .finally(() => setKidsLoading(false))
+    }
+  }
 
   return (
     <li>
@@ -104,10 +164,7 @@ function VaultTreeItem({
           selected === path && "bg-muted"
         )}
         style={{ paddingInlineStart: 8 + depth * 12 }}
-        onClick={() => {
-          if (isDir) setOpen((value) => !value)
-          else onSelect(path)
-        }}
+        onClick={handleClick}
       >
         {isDir ? (
           <ChevronRight
@@ -124,18 +181,29 @@ function VaultTreeItem({
         ) : null}
         <span className="truncate">{wikiNodeName(node)}</span>
       </button>
-      {isDir && open && children.length > 0 ? (
-        <ul>
-          {children.map((child) => (
-            <VaultTreeItem
-              key={wikiNodePath(child)}
-              node={child}
-              selected={selected}
-              onSelect={onSelect}
-              depth={depth + 1}
-            />
-          ))}
-        </ul>
+      {isDir && open ? (
+        kidsLoading && !loaded ? (
+          <div
+            className="flex items-center gap-2 py-1 text-xs text-muted-foreground"
+            style={{ paddingInlineStart: 24 + depth * 12 }}
+          >
+            <Loader2 className="size-3 animate-spin" />
+            {t("loading")}
+          </div>
+        ) : children.length > 0 ? (
+          <ul>
+            {children.map((child) => (
+              <VaultTreeItem
+                key={wikiNodePath(child)}
+                node={child}
+                selected={selected}
+                onSelect={onSelect}
+                depth={depth + 1}
+                loadChildren={loadChildren}
+              />
+            ))}
+          </ul>
+        ) : null
       ) : null}
     </li>
   )
@@ -146,11 +214,13 @@ export function WikiNoteBrowser({
   emptyTitle,
   emptyDescription,
   extras,
+  includeRaw = false,
 }: {
   prefix: string
   emptyTitle: string
   emptyDescription: string
   extras?: ReactNode
+  includeRaw?: boolean
 }) {
   const t = useTranslations("Wiki")
   const [loading, setLoading] = useState(true)
@@ -165,15 +235,35 @@ export function WikiNoteBrowser({
     setLoading(true)
     setError(null)
     try {
-      const payload = await wikiVaultTree()
-      setNodes(vaultNodesUnderPrefix(normalizeWikiVaultTree(payload), prefix))
+      const payload = await wikiVaultTree({
+        recursive: true,
+        includeRaw,
+      })
+      const tree = filterWikiVaultNoise(normalizeWikiVaultTree(payload), {
+        includeRaw,
+      })
+      setNodes(vaultNodesUnderPrefix(tree, prefix))
     } catch (err) {
       setNodes([])
       setError(t("loadFailed", { message: toErrorMessage(err) }))
     } finally {
       setLoading(false)
     }
-  }, [prefix, t])
+  }, [includeRaw, prefix, t])
+
+  const loadChildren = useCallback(
+    async (dirPath: string) => {
+      const payload = await wikiVaultTree({
+        path: dirPath,
+        recursive: true,
+        includeRaw,
+      })
+      return filterWikiVaultNoise(normalizeWikiVaultTree(payload), {
+        includeRaw,
+      })
+    },
+    [includeRaw]
+  )
 
   useEffect(() => {
     loadTree().catch(console.error)
@@ -181,7 +271,7 @@ export function WikiNoteBrowser({
 
   useEffect(() => {
     const initial = readWikiPathParam()
-    if (initial && (initial === prefix || initial.startsWith(`${prefix}/`))) {
+    if (initial && pathMatchesPrefix(initial, prefix)) {
       setSelected(initial)
     }
   }, [prefix])
@@ -219,7 +309,7 @@ export function WikiNoteBrowser({
   }, [selected, t])
 
   const hasNotes = nodes.length > 0
-  const treeTitle = useMemo(() => `${prefix}/`, [prefix])
+  const treeTitle = useMemo(() => (prefix ? `${prefix}/` : "/"), [prefix])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -272,6 +362,7 @@ export function WikiNoteBrowser({
                     selected={selected}
                     onSelect={selectPath}
                     depth={0}
+                    loadChildren={loadChildren}
                   />
                 ))}
               </ul>
@@ -296,6 +387,11 @@ export function WikiNoteBrowser({
               </div>
             ) : previewError ? (
               <p className="text-sm text-destructive">{previewError}</p>
+            ) : selected ? (
+              <WikiMarkdownPreview
+                content={preview}
+                onOpenWikilink={selectPath}
+              />
             ) : (
               <WikiMarkdownPreview content={preview} />
             )}

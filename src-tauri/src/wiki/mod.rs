@@ -13,5 +13,6 @@ pub mod redact;
 pub mod settings;
 pub mod snapshot;
 pub mod source;
+pub mod tree;
 pub mod vault;
 pub mod worker;

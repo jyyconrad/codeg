@@ -14,12 +14,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { isLocalDesktop } from "@/lib/platform"
+import { WikiAllView } from "./wiki-all-view"
 import { WikiCapabilitiesView } from "./wiki-capabilities-view"
 import { WikiJobsView } from "./wiki-jobs-view"
 import { WikiSourcesView } from "./wiki-sources-view"
 import { WikiWorkView } from "./wiki-work-view"
 
-export type WikiViewId = "work" | "capabilities" | "sources" | "jobs"
+export type WikiViewId = "all" | "work" | "capabilities" | "sources" | "jobs"
 
 export function WikiPageTitle() {
   const t = useTranslations("Wiki")
@@ -49,7 +50,7 @@ function OpenInObsidianButton() {
 
 export function WikiPage() {
   const t = useTranslations("Wiki")
-  const [view, setView] = useState<WikiViewId>("work")
+  const [view, setView] = useState<WikiViewId>("all")
 
   return (
     <Tabs
@@ -59,6 +60,7 @@ export function WikiPage() {
     >
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
         <TabsList>
+          <TabsTrigger value="all">{t("views.all")}</TabsTrigger>
           <TabsTrigger value="work">{t("views.work")}</TabsTrigger>
           <TabsTrigger value="capabilities">
             {t("views.capabilities")}
@@ -70,6 +72,9 @@ export function WikiPage() {
           <OpenInObsidianButton />
         </div>
       </div>
+      <TabsContent value="all" className="min-h-0 overflow-hidden">
+        <WikiAllView />
+      </TabsContent>
       <TabsContent value="work" className="min-h-0 overflow-hidden">
         <WikiWorkView />
       </TabsContent>

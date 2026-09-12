@@ -55,7 +55,7 @@
       "skill_packs": "Skill Packs",
       "quick_messages": "Quick Messages",
       "logs": "Runtime Logs",
-      "wiki": "Wiki"
+      "wiki": "Personal wiki"
     }
   },
   "AppearanceSettings": {
@@ -1982,7 +1982,7 @@
       "forge": "Repository panel",
       "canvas": "Infinite Conversations",
       "toolbox": "Toolbox",
-      "wiki": "Wiki",
+      "wiki": "Personal wiki",
       "folderGroup": {
         "newGroup": "New group",
         "newGroupTitle": "New folder group",
@@ -6303,8 +6303,9 @@
     "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
   },
   "Wiki": {
-    "title": "Wiki",
+    "title": "Personal wiki",
     "views": {
+      "all": "All",
       "work": "Work",
       "capabilities": "Capabilities",
       "sources": "Sources",
@@ -6319,6 +6320,11 @@
     "loadMore": "Load more",
     "empty": "Nothing here yet",
     "treeTitle": "Vault · {path}",
+    "showRaw": "Show raw evidence (raw/)",
+    "all": {
+      "emptyTitle": "All notes",
+      "emptyDescription": "Every compiled note in this vault: index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md, and AGENTS.md. Open a Markdown file to read it. Wikilinks stay inside the vault."
+    },
     "work": {
       "emptyTitle": "No work notes yet",
       "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."

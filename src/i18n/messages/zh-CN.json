@@ -55,7 +55,7 @@
       "skill_packs": "技能包",
       "quick_messages": "快捷消息",
       "logs": "运行日志",
-      "wiki": "知识库"
+      "wiki": "个人 Wiki"
     }
   },
   "AppearanceSettings": {
@@ -1982,7 +1982,7 @@
       "forge": "仓库面板",
       "canvas": "无限会话",
       "toolbox": "万能小工具",
-      "wiki": "知识库",
+      "wiki": "个人 Wiki",
       "folderGroup": {
         "newGroup": "新建分组",
         "newGroupTitle": "新建文件夹分组",
@@ -6303,8 +6303,9 @@
     "compilePromptPlaceholder": "可选，补充工作与能力整理说明"
   },
   "Wiki": {
-    "title": "知识库",
+    "title": "个人 Wiki",
     "views": {
+      "all": "全部",
       "work": "工作",
       "capabilities": "能力",
       "sources": "资料",
@@ -6319,6 +6320,11 @@
     "loadMore": "加载更多",
     "empty": "还没有内容",
     "treeTitle": "Vault · {path}",
+    "showRaw": "显示原始证据 raw/",
+    "all": {
+      "emptyTitle": "全部笔记",
+      "emptyDescription": "这里可以浏览知识库中的全部文本：index.md、work/、capabilities/、knowledge/、sources/、journal/、log.md 和 AGENTS.md。点击 Markdown 文件阅读全文。[[wikilink]] 会在库内打开对应笔记。"
+    },
     "work": {
       "emptyTitle": "还没有工作笔记",
       "emptyDescription": "来源整理完成后，这里会出现项目、长期职责、工作记录、决策和成果。项目页回答背景、本人角色、进展、决策、成果和关联能力。职责是持续承担的工作。工作记录写清问题、行动和结果。决策保留约束、选项和理由。成果保留交付物和证据，不编造数字。"

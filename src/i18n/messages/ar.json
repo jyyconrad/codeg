@@ -55,7 +55,7 @@
       "skill_packs": "حزم المهارات",
       "quick_messages": "رسائل سريعة",
       "logs": "سجلات التشغيل",
-      "wiki": "ويكي"
+      "wiki": "ويكي شخصي"
     }
   },
   "AppearanceSettings": {
@@ -1982,7 +1982,7 @@
       "forge": "لوحة المستودع",
       "canvas": "محادثات لا نهائية",
       "toolbox": "صندوق الأدوات",
-      "wiki": "ويكي",
+      "wiki": "ويكي شخصي",
       "folderGroup": {
         "newGroup": "مجموعة جديدة",
         "newGroupTitle": "مجموعة مجلدات جديدة",
@@ -6303,8 +6303,9 @@
     "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
   },
   "Wiki": {
-    "title": "ويكي",
+    "title": "ويكي شخصي",
     "views": {
+      "all": "الكل",
       "work": "العمل",
       "capabilities": "القدرات",
       "sources": "المصادر",
@@ -6319,6 +6320,11 @@
     "loadMore": "تحميل المزيد",
     "empty": "لا يوجد شيء بعد",
     "treeTitle": "Vault · {path}",
+    "showRaw": "إظهار الأدلة الأصلية (raw/)",
+    "all": {
+      "emptyTitle": "كل الملاحظات",
+      "emptyDescription": "كل نصوص المعرفة في هذا المخزن: index.md وwork/ وcapabilities/ وknowledge/ وsources/ وjournal/ وlog.md وAGENTS.md. افتح ملف Markdown لقراءة النص كاملاً. تبقى روابط [[wikilink]] داخل المخزن."
+    },
     "work": {
       "emptyTitle": "لا توجد ملاحظات عمل بعد",
       "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."
