@@ -816,6 +816,10 @@ mod tests {
                     && !dumped.contains("\"name\": \"codegraph\""),
                 "default code-intel config must not advertise codegraph: {dumped}"
             );
+            assert!(
+                !dumped.contains("\"name\":\"lsp\"") && !dumped.contains("\"name\": \"lsp\""),
+                "default code-intel config must not advertise lsp: {dumped}"
+            );
             h.shutdown.signal_shutdown();
         })
         .await;

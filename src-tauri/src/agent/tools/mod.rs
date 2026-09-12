@@ -3,6 +3,7 @@ pub mod bash;
 pub mod codegraph;
 pub mod companion;
 pub mod fs;
+pub mod lsp;
 pub mod mcp;
 pub mod plan;
 pub mod plan_mode;
@@ -33,6 +34,7 @@ pub(crate) use companion::{
     FeedbackDelivery,
 };
 pub use fs::{EditFileTool, ReadFileTool, WriteFileTool};
+pub use lsp::LspTool;
 pub use mcp::{mcp_tool_requires_permission, McpSession, McpTimeouts};
 pub use plan::UpdatePlanTool;
 pub use plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
@@ -151,7 +153,7 @@ pub fn tool_kind(name: &str) -> &'static str {
     match name {
         "read_file" | "skill" | "recall" => "read",
         "write_file" | "edit_file" | "write_plan" | "write_explore_report" => "edit",
-        "glob" | "grep" | "codegraph" => "search",
+        "glob" | "grep" | "codegraph" | "lsp" => "search",
         "bash" => "execute",
         "enter_plan_mode" | "exit_plan_mode" => "think",
         _ => "other",
@@ -167,6 +169,7 @@ pub fn tool_requires_permission(name: &str) -> bool {
             | "glob"
             | "grep"
             | "codegraph"
+            | "lsp"
             | "skill"
             | "update_plan"
             | "recall"

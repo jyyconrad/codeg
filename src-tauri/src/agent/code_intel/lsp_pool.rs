@@ -340,6 +340,83 @@ impl LspPool {
         ids
     }
 
+    pub fn eligible_ids(&self) -> Vec<String> {
+        let detected = detect_languages(
+            &self.cwd,
+            self.fs.as_ref(),
+            preset_lsp_servers(),
+            &self.cfg.lsp.custom,
+        );
+        servers_to_start(&self.cfg, &detected, &|id| self.command_on_path(id))
+    }
+
+    pub fn pick_server(
+        &self,
+        path: Option<&Path>,
+        requested: Option<&str>,
+    ) -> Result<String, String> {
+        if let Some(id) = requested.map(str::trim).filter(|s| !s.is_empty()) {
+            return Ok(id.to_string());
+        }
+        let eligible = self.eligible_ids();
+        if let Some(path) = path {
+            if let Some(id) = eligible
+                .iter()
+                .find(|id| self.server_matches_file(id, path))
+            {
+                return Ok(id.clone());
+            }
+            return Err("no language server eligible for this file; fall back to grep".into());
+        }
+        eligible
+            .into_iter()
+            .next()
+            .ok_or_else(|| "no language server eligible for this file; fall back to grep".into())
+    }
+
+    pub fn language_id_for(&self, server_id: &str) -> String {
+        let language = if let Some(preset) = preset_lsp_servers().iter().find(|p| p.id == server_id)
+        {
+            preset.language
+        } else if let Some(custom) = self.cfg.lsp.custom.iter().find(|s| s.id == server_id) {
+            custom.language.as_str()
+        } else {
+            return "plaintext".into();
+        };
+        language
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .find(|part| !part.is_empty())
+            .map(|part| part.to_ascii_lowercase())
+            .unwrap_or_else(|| "plaintext".into())
+    }
+
+    fn server_matches_file(&self, server_id: &str, path: &Path) -> bool {
+        let Some(ext) = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| format!(".{}", ext.to_ascii_lowercase()))
+        else {
+            return false;
+        };
+        let extensions: Vec<String> =
+            if let Some(preset) = preset_lsp_servers().iter().find(|p| p.id == server_id) {
+                preset
+                    .extensions
+                    .iter()
+                    .map(|item| normalize_ext(item))
+                    .collect()
+            } else if let Some(custom) = self.cfg.lsp.custom.iter().find(|s| s.id == server_id) {
+                custom
+                    .extensions
+                    .iter()
+                    .map(|item| normalize_ext(item))
+                    .collect()
+            } else {
+                return false;
+            };
+        extensions.iter().any(|item| item == &ext)
+    }
+
     pub async fn shutdown_all(&self) {
         let running = {
             let mut inner = self.inner.lock().await;
@@ -548,6 +625,15 @@ fn command_and_args(cfg: &CodeIntelConfig, id: &str) -> Option<(String, Vec<Stri
         .iter()
         .find(|server| server.id == id)
         .map(|server| (server.command.clone(), server.args.clone()))
+}
+
+fn normalize_ext(ext: &str) -> String {
+    let lower = ext.to_ascii_lowercase();
+    if lower.starts_with('.') {
+        lower
+    } else {
+        format!(".{lower}")
+    }
 }
 
 fn command_exists(cmd: &str) -> bool {

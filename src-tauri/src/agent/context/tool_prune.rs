@@ -39,7 +39,7 @@ pub(crate) fn distill_tool_result(
         "write_file" => distill_write(fact, text),
         "edit_file" => distill_edit(fact, text),
         "bash" => distill_bash(fact, text, kind),
-        "grep" | "glob" | "codegraph" => distill_search(name, fact, text, kind),
+        "grep" | "glob" | "codegraph" | "lsp" => distill_search(name, fact, text, kind),
         "subagent" => distill_generic(name, text, kind, SUBAGENT_KEEP_CHARS),
         _ => distill_generic(name, text, kind, LIVE_DEFAULT_KEEP_CHARS),
     }
@@ -65,7 +65,7 @@ pub(crate) fn hard_clear_tool_result(
             "bash finished ({chars} chars captured). Output omitted.{}",
             recover_hint(fact)
         ),
-        "grep" | "glob" | "codegraph" => format!(
+        "grep" | "glob" | "codegraph" | "lsp" => format!(
             "{name} completed ({chars} chars). Output omitted; re-run the search if needed.{}",
             recover_hint(fact)
         ),
@@ -352,5 +352,27 @@ mod tests {
         assert!(out.contains("codegraph"), "{out}");
         assert!(out.contains("re-run the search"), "{out}");
         assert!(!out.contains("OLD-GRAPH-"), "{out}");
+    }
+
+    #[test]
+    fn lsp_distill_uses_search_path() {
+        let body = format!("HEAD-LSP-{}-TAIL-LSP", "n".repeat(5_000));
+        let item = fact("lsp", json!({"query": "Foo"}), &body);
+        let out = distill_tool_result("lsp", Some(&item), &body, DistillKind::Live);
+        assert!(out.contains("lsp"), "{out}");
+        assert!(out.contains("run the search"), "{out}");
+        assert!(out.contains("HEAD-LSP-"), "{out}");
+        assert!(out.contains("TAIL-LSP"), "{out}");
+        assert!(!out.contains(&"n".repeat(3_000)), "{out}");
+    }
+
+    #[test]
+    fn hard_clear_lsp_omits_body_like_grep() {
+        let body = format!("OLD-LSP-{}", "x".repeat(4_000));
+        let item = fact("lsp", json!({"query": "Foo"}), &body);
+        let out = hard_clear_tool_result("lsp", Some(&item), &body);
+        assert!(out.contains("lsp"), "{out}");
+        assert!(out.contains("re-run the search"), "{out}");
+        assert!(!out.contains("OLD-LSP-"), "{out}");
     }
 }

@@ -19,11 +19,13 @@ use tokio_util::sync::CancellationToken;
 
 use super::codegraph::should_inject_codegraph;
 use super::{
-    schema_for, CodegraphTool, GlobTool, GrepTool, NativeToolCtx, ReadFileTool, RecallTool,
-    SkillCatalog, SkillTool, WriteExploreReportTool,
+    schema_for, CodegraphTool, GlobTool, GrepTool, LspTool, NativeToolCtx, ReadFileTool,
+    RecallTool, SkillCatalog, SkillTool, WriteExploreReportTool,
 };
 use crate::acp::process_owner::ProcessOwnerRegistry;
-use crate::agent::code_intel::{load_code_intel_config, resolve_codegraph_binary, CodeIntelConfig};
+use crate::agent::code_intel::{
+    load_code_intel_config, resolve_codegraph_binary, CodeIntelConfig, LspPool,
+};
 use crate::agent::context::budget::BudgetConfig;
 use crate::agent::context::{CallIdentityBridge, ContextStore, FactRecorder};
 use crate::agent::hook::{CodegHook, HookTrace, NativeRunState};
@@ -182,6 +184,7 @@ pub struct SubagentTool {
     inject_tx: mpsc::Sender<NativeInject>,
     artifacts_dir: PathBuf,
     owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
+    lsp_pool: Option<Arc<LspPool>>,
 }
 
 impl SubagentTool {
@@ -207,11 +210,17 @@ impl SubagentTool {
             inject_tx,
             artifacts_dir,
             owners: None,
+            lsp_pool: None,
         }
     }
 
     pub fn with_owners(mut self, owners: Arc<Mutex<ProcessOwnerRegistry>>) -> Self {
         self.owners = Some(owners);
+        self
+    }
+
+    pub fn with_lsp_pool(mut self, pool: Arc<LspPool>) -> Self {
+        self.lsp_pool = Some(pool);
         self
     }
 }
@@ -354,6 +363,7 @@ impl Tool for SubagentTool {
             artifacts_dir: self.artifacts_dir.clone(),
             thoroughness,
             owners: self.owners.clone(),
+            lsp_pool: self.lsp_pool.clone(),
         };
         let handle = tokio::spawn(run_inner_and_inject(spawn));
         self.table
@@ -385,6 +395,7 @@ struct InnerSpawn {
     artifacts_dir: PathBuf,
     thoroughness: String,
     owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
+    lsp_pool: Option<Arc<LspPool>>,
 }
 
 async fn run_inner_and_inject(spawn: InnerSpawn) {
@@ -407,6 +418,7 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
         artifacts_dir,
         thoroughness,
         owners,
+        lsp_pool,
     } = spawn;
 
     let (outcome, text) = tokio::select! {
@@ -426,6 +438,7 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
             artifacts_dir.clone(),
             thoroughness,
             owners,
+            lsp_pool,
         ) => result,
     };
 
@@ -497,6 +510,10 @@ fn build_inner_codegraph(
         .then(|| CodegraphTool::new(ctx, inner_codegraph_path(binary), owners))
 }
 
+fn build_inner_lsp(ctx: NativeToolCtx, pool: Option<Arc<LspPool>>) -> Option<LspTool> {
+    pool.map(|pool| LspTool::new(ctx, pool))
+}
+
 fn inner_tool_schemas(
     read: &ReadFileTool,
     recall: &RecallTool,
@@ -505,6 +522,7 @@ fn inner_tool_schemas(
     skill: &SkillTool,
     write_explore: &WriteExploreReportTool,
     codegraph: Option<&CodegraphTool>,
+    lsp: Option<&LspTool>,
 ) -> Vec<Value> {
     let mut schemas = vec![
         schema_for(read),
@@ -515,6 +533,9 @@ fn inner_tool_schemas(
         schema_for(write_explore),
     ];
     if let Some(tool) = codegraph {
+        schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = lsp {
         schemas.push(schema_for(tool));
     }
     schemas
@@ -535,6 +556,7 @@ async fn run_inner_subagent(
     artifacts_dir: PathBuf,
     thoroughness: String,
     owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
+    lsp_pool: Option<Arc<LspPool>>,
 ) -> (NativeTurnOutcome, String) {
     let identity = Arc::new(CallIdentityBridge::new());
     let store = Arc::new(Mutex::new(ContextStore::new(format!("sub:{session_id}"))));
@@ -552,6 +574,7 @@ async fn run_inner_subagent(
     let intel = load_code_intel_config();
     let resolved = resolve_codegraph_binary(&intel.codegraph);
     let codegraph = build_inner_codegraph(inner_ctx.clone(), &intel, resolved.as_deref(), owners);
+    let lsp = build_inner_lsp(inner_ctx.clone(), lsp_pool);
     let read = ReadFileTool::new(inner_ctx.clone());
     let recall = RecallTool::new(inner_ctx.clone());
     let glob = GlobTool::new(inner_ctx.clone());
@@ -568,6 +591,7 @@ async fn run_inner_subagent(
         &skill,
         &write_explore,
         codegraph.as_ref(),
+        lsp.as_ref(),
     );
     let native = NativeRunState {
         turn_id: 1,
@@ -606,6 +630,7 @@ async fn run_inner_subagent(
                         skill,
                         write_explore,
                         codegraph,
+                        lsp,
                         hook,
                     )
                     .await
@@ -623,6 +648,7 @@ async fn run_inner_subagent(
                         skill,
                         write_explore,
                         codegraph,
+                        lsp,
                         hook,
                     )
                     .await
@@ -654,6 +680,7 @@ async fn assemble_inner<C>(
     skill: SkillTool,
     write_explore: WriteExploreReportTool,
     codegraph: Option<CodegraphTool>,
+    lsp: Option<LspTool>,
     hook: CodegHook,
 ) -> rig::agent::StreamingResult
 where
@@ -672,6 +699,9 @@ where
         .tool(write_explore);
     if let Some(codegraph) = codegraph {
         builder = builder.tool(codegraph);
+    }
+    if let Some(lsp) = lsp {
+        builder = builder.tool(lsp);
     }
     builder
         .build()
@@ -968,6 +998,7 @@ mod tests {
     fn inner_tool_names(
         cfg: &crate::agent::code_intel::CodeIntelConfig,
         binary: Option<&Path>,
+        lsp_pool: Option<Arc<LspPool>>,
     ) -> Vec<String> {
         let dir = tempfile::tempdir().unwrap();
         let ctx = test_tool_ctx(dir.path(), "inner", "c1");
@@ -977,7 +1008,8 @@ mod tests {
         let grep = GrepTool::new(ctx.clone());
         let skill = SkillTool::new(ctx.clone(), SkillCatalog::default());
         let write_explore = WriteExploreReportTool::new(ctx.clone(), dir.path().to_path_buf());
-        let codegraph = build_inner_codegraph(ctx, cfg, binary, None);
+        let codegraph = build_inner_codegraph(ctx.clone(), cfg, binary, None);
+        let lsp = build_inner_lsp(ctx, lsp_pool);
         inner_tool_schemas(
             &read,
             &recall,
@@ -986,6 +1018,7 @@ mod tests {
             &skill,
             &write_explore,
             codegraph.as_ref(),
+            lsp.as_ref(),
         )
         .iter()
         .filter_map(|schema| {
@@ -1018,7 +1051,7 @@ mod tests {
         std::fs::write(&binary, "ok").unwrap();
         let mut cfg = crate::agent::code_intel::default_config();
         cfg.enabled = true;
-        let names = inner_tool_names(&cfg, Some(binary.as_path()));
+        let names = inner_tool_names(&cfg, Some(binary.as_path()), None);
         assert!(names.iter().any(|n| n == "codegraph"), "{names:?}");
         assert!(names.iter().any(|n| n == "read_file"), "{names:?}");
         assert!(names.iter().any(|n| n == "grep"), "{names:?}");
@@ -1045,7 +1078,7 @@ mod tests {
         let mut cfg = crate::agent::code_intel::default_config();
         cfg.enabled = true;
         assert!(inner_codegraph_tool(&cfg, None));
-        let names = inner_tool_names(&cfg, None);
+        let names = inner_tool_names(&cfg, None, None);
         assert!(names.iter().any(|n| n == "codegraph"), "{names:?}");
     }
 
@@ -1053,8 +1086,57 @@ mod tests {
     fn inner_schema_omits_codegraph_when_disabled() {
         let cfg = crate::agent::code_intel::default_config();
         assert!(!inner_codegraph_tool(&cfg, None));
-        let names = inner_tool_names(&cfg, None);
+        let names = inner_tool_names(&cfg, None, None);
         assert!(!names.iter().any(|n| n == "codegraph"), "{names:?}");
+    }
+
+    #[test]
+    fn inner_schema_includes_lsp_when_parent_has_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = crate::agent::code_intel::default_config();
+        cfg.enabled = true;
+        let owners = Arc::new(Mutex::new(
+            crate::acp::process_owner::ProcessOwnerRegistry::new(),
+        ));
+        let fs = Arc::new(
+            crate::acp::file_system_runtime::FileSystemRuntime::with_policy(
+                crate::acp::file_system_runtime::FsAccessPolicy::strict(dir.path()),
+            ),
+        );
+        let pool = LspPool::new(
+            dir.path().to_path_buf(),
+            fs,
+            cfg.clone(),
+            owners,
+            CancellationToken::new(),
+        );
+        let names = inner_tool_names(&cfg, None, Some(pool));
+        assert!(names.iter().any(|n| n == "lsp"), "{names:?}");
+        assert!(names.iter().any(|n| n == "read_file"), "{names:?}");
+        assert!(names.iter().any(|n| n == "grep"), "{names:?}");
+        for forbidden in [
+            "write_file",
+            "edit_file",
+            "bash",
+            "subagent",
+            "update_plan",
+            "write_plan",
+            "enter_plan_mode",
+            "exit_plan_mode",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{names:?} contains {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn inner_schema_omits_lsp_when_parent_has_no_pool() {
+        let mut cfg = crate::agent::code_intel::default_config();
+        cfg.enabled = true;
+        let names = inner_tool_names(&cfg, None, None);
+        assert!(!names.iter().any(|n| n == "lsp"), "{names:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -25,7 +25,7 @@ use crate::acp::types::{
 use crate::acp_transcript::{now_epoch_ms, record_header_critical_in, TranscriptHeader};
 use crate::agent::code_intel::{
     load_code_intel_config, resolve_codegraph_binary, should_run_host_index, spawn_host_index,
-    HostIndexAction,
+    HostIndexAction, LspPool,
 };
 use crate::agent::context::transcript::tool_call_update_payload;
 use crate::agent::context::{
@@ -39,10 +39,11 @@ use crate::agent::model::{
     NativeTurnOutcome, NativeTurnRequest, NativeTurnTools,
 };
 use crate::agent::tools::codegraph::should_inject_codegraph;
+use crate::agent::tools::lsp::should_inject_lsp;
 use crate::agent::tools::{
     build_companion_tools, companion_plan_from_injection, schema_for, schema_for_companion_def,
     tool_kind, BashTool, CodegraphTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool,
-    EnterPlanModeTool, ExitPlanModeTool, FeedbackDelivery, GlobTool, GrepTool, McpSession,
+    EnterPlanModeTool, ExitPlanModeTool, FeedbackDelivery, GlobTool, GrepTool, LspTool, McpSession,
     McpTimeouts, NativeInject, NativeToolCtx, ReadFileTool, RecallTool, SkillCatalog, SkillTool,
     SubagentTable, SubagentTool, UpdatePlanTool, WriteFileTool, WritePlanTool,
 };
@@ -373,6 +374,18 @@ async fn run_session(
         args.effective_config.system_prompt.as_deref(),
     );
     let coordinator = Arc::new(TurnCoordinator::new());
+    let lsp_pool = {
+        let intel = load_code_intel_config();
+        should_inject_lsp(&intel).then(|| {
+            LspPool::new(
+                args.launch_cwd.clone(),
+                Arc::clone(&fs),
+                intel,
+                args.shutdown.owners(),
+                shutdown.token(),
+            )
+        })
+    };
     let mut cmd_rx = std::mem::replace(&mut args.cmd_rx, mpsc::channel(1).1);
     let (inject_tx, mut inject_rx) = mpsc::channel::<NativeInject>(8);
     let subagents = Arc::new(Mutex::new(SubagentTable::default()));
@@ -595,6 +608,7 @@ async fn run_session(
                 companion.clone(),
                 feedback_delivery.clone(),
                 Arc::clone(&mcp),
+                lsp_pool.clone(),
                 Arc::clone(&subagents),
                 inject_tx.clone(),
                 Arc::clone(&session_mode),
@@ -669,6 +683,7 @@ async fn run_session(
                                 companion.clone(),
                                 feedback_delivery.clone(),
                                 Arc::clone(&mcp),
+                                lsp_pool.clone(),
                                 Arc::clone(&subagents),
                                 inject_tx.clone(),
                                 Arc::clone(&session_mode),
@@ -756,6 +771,9 @@ async fn run_session(
     }
 
     subagents.lock().expect("subagent table").shutdown();
+    if let Some(pool) = &lsp_pool {
+        pool.shutdown_all().await;
+    }
     mcp.close().await;
     SessionOutcome { err: closing_err }
 }
@@ -912,6 +930,7 @@ async fn start_prompt(
     companion: CompanionPlan,
     feedback: Option<Arc<FeedbackDelivery>>,
     mcp: Arc<McpSession>,
+    lsp_pool: Option<Arc<LspPool>>,
     subagents: Arc<Mutex<SubagentTable>>,
     inject_tx: mpsc::Sender<NativeInject>,
     session_mode: Arc<tokio::sync::RwLock<String>>,
@@ -996,6 +1015,9 @@ async fn start_prompt(
     } else {
         None
     };
+    let lsp = lsp_pool
+        .as_ref()
+        .map(|pool| LspTool::new(tool_ctx.clone(), Arc::clone(pool)));
     let skill = SkillTool::new(tool_ctx.clone(), catalog.clone());
     let max_output = u64::from(args.effective_config.max_output_tokens);
     let write = (!in_plan).then(|| WriteFileTool::new(tool_ctx.clone()));
@@ -1032,23 +1054,25 @@ async fn start_prompt(
             Arc::clone(&pending_continue),
         )
     });
-    let subagent = Some(
-        SubagentTool::new(
-            tool_ctx.clone(),
-            client.clone(),
-            model_id.to_string(),
-            turn_preamble.clone(),
-            catalog,
-            BudgetConfig::new(window, max_output).with_compact(
-                args.effective_config.compact_soft_percent,
-                args.effective_config.compact_recent_turns as usize,
-            ),
-            subagents,
-            inject_tx,
-            artifacts_dir.clone(),
-        )
-        .with_owners(args.shutdown.owners()),
-    );
+    let mut subagent_tool = SubagentTool::new(
+        tool_ctx.clone(),
+        client.clone(),
+        model_id.to_string(),
+        turn_preamble.clone(),
+        catalog,
+        BudgetConfig::new(window, max_output).with_compact(
+            args.effective_config.compact_soft_percent,
+            args.effective_config.compact_recent_turns as usize,
+        ),
+        subagents,
+        inject_tx,
+        artifacts_dir.clone(),
+    )
+    .with_owners(args.shutdown.owners());
+    if let Some(pool) = lsp_pool.as_ref() {
+        subagent_tool = subagent_tool.with_lsp_pool(Arc::clone(pool));
+    }
+    let subagent = Some(subagent_tool);
     let mcp_tools = {
         let tools = mcp.dynamic_tools(tool_ctx.clone());
         if in_plan {
@@ -1091,6 +1115,9 @@ async fn start_prompt(
         schema_for(&skill),
     ];
     if let Some(tool) = codegraph.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    if let Some(tool) = lsp.as_ref() {
         tool_schemas.push(schema_for(tool));
     }
     if let Some(tool) = write.as_ref() {
@@ -1201,6 +1228,7 @@ async fn start_prompt(
                 glob,
                 grep,
                 codegraph,
+                lsp,
                 bash,
                 skill,
                 plan,
