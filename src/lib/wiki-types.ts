@@ -73,19 +73,54 @@ export type WikiSourceEligibility =
   | "withdrawn"
   | (string & {})
 
+export type WikiMaterialRole =
+  | "reference"
+  | "own-work"
+  | "team-work"
+  | "unspecified"
+  | (string & {})
+
+export type WikiExtractionStatus = "complete" | "partial" | (string & {})
+
 export interface WikiSource {
   id: string
+  source_group_id?: string | null
   source_kind?: WikiSourceKind | null
   title?: string | null
   source_title?: string | null
   eligibility?: WikiSourceEligibility | null
   captured_at?: string | null
   occurred_at?: string | null
-  material_role?: string | null
+  material_role?: WikiMaterialRole | null
   personal_role?: string | null
   original_filename?: string | null
   source_path?: string | null
   raw_path?: string | null
+  raw_hash?: string | null
+  extraction_status?: WikiExtractionStatus | null
+  format?: string | null
+  source_url?: string | null
+  author?: string | null
+  annotation_revision?: number | null
+  page_count?: number | null
+  warnings?: string[]
+  project_ids?: string[] | null
+  area_ids?: string[] | null
+}
+
+export interface WikiImportFile {
+  filename: string
+  mime?: string | null
+  bytes_base64: string
+}
+
+export interface WikiImportResult extends WikiSource {
+  duplicate: boolean
+  warnings?: string[]
+  extraction_status?: WikiExtractionStatus | null
+  page_count?: number | null
+  original_filename?: string | null
+  format?: string | null
 }
 
 export interface WikiListPage<T> {

@@ -53,6 +53,49 @@ pub struct WikiSourceInfo {
     pub captured_at: Option<chrono::DateTime<chrono::Utc>>,
     pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extraction_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation_revision: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_count: Option<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extractor_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiImportResult {
+    #[serde(flatten)]
+    pub source: WikiSourceInfo,
+    pub duplicate: bool,
 }
 
 fn job_info(m: wiki_job::Model) -> WikiJobInfo {
@@ -72,7 +115,19 @@ fn job_info(m: wiki_job::Model) -> WikiJobInfo {
     }
 }
 
-fn source_info(m: wiki_source::Model) -> WikiSourceInfo {
+fn parse_string_list(raw: &Option<String>) -> Option<Vec<String>> {
+    let Some(s) = raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return None;
+    };
+    serde_json::from_str(s).ok()
+}
+
+fn parse_warnings(raw: &Option<String>) -> Vec<String> {
+    parse_string_list(raw).unwrap_or_default()
+}
+
+pub fn source_info(m: wiki_source::Model) -> WikiSourceInfo {
+    let source_title = m.source_title.clone();
     WikiSourceInfo {
         id: m.id,
         source_group_id: m.source_group_id,
@@ -92,6 +147,24 @@ fn source_info(m: wiki_source::Model) -> WikiSourceInfo {
         captured_at: m.captured_at,
         occurred_at: m.occurred_at,
         created_at: m.created_at,
+        extraction_status: m.coverage_status,
+        original_filename: m.original_filename,
+        format: m.format,
+        title: source_title.clone(),
+        source_title,
+        source_url: m.source_url,
+        author: m.author,
+        material_role: m.material_role,
+        personal_role: m.personal_role,
+        annotation_revision: Some(m.annotation_revision),
+        page_count: m.page_count,
+        warnings: parse_warnings(&m.warnings),
+        project_ids: parse_string_list(&m.project_ids),
+        area_ids: parse_string_list(&m.area_ids),
+        request_id: m.request_id,
+        previous_source_id: m.previous_source_id,
+        extractor_version: m.extractor_version,
+        original_hash: m.original_hash,
     }
 }
 
@@ -234,6 +307,17 @@ pub async fn insert_acp_source_and_ingest_job(
         occurred_at: Set(new.occurred_at),
         truncated: Set(new.truncated),
         redacted: Set(new.redacted),
+        request_id: Set(None),
+        original_filename: Set(None),
+        format: Set(None),
+        source_title: Set(None),
+        source_url: Set(None),
+        author: Set(None),
+        project_ids: Set(None),
+        area_ids: Set(None),
+        warnings: Set(None),
+        page_count: Set(None),
+        previous_source_id: Set(None),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -442,4 +526,300 @@ pub async fn pending_source_count(conn: &DatabaseConnection) -> Result<u64, DbEr
         .filter(wiki_source::Column::Eligibility.is_in(["processing", "ready"]))
         .count(conn)
         .await?)
+}
+
+pub async fn get_source_model(
+    conn: &DatabaseConnection,
+    id: &str,
+) -> Result<wiki_source::Model, DbError> {
+    wiki_source::Entity::find_by_id(id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("wiki source {id}")))
+}
+
+pub async fn find_source_by_request_id<C: ConnectionTrait>(
+    conn: &C,
+    vault_id: &str,
+    request_id: &str,
+) -> Result<Option<wiki_source::Model>, DbError> {
+    Ok(wiki_source::Entity::find()
+        .filter(wiki_source::Column::VaultId.eq(vault_id))
+        .filter(wiki_source::Column::RequestId.eq(request_id))
+        .one(conn)
+        .await?)
+}
+
+pub async fn find_source_by_original_hash<C: ConnectionTrait>(
+    conn: &C,
+    vault_id: &str,
+    original_hash: &str,
+) -> Result<Option<wiki_source::Model>, DbError> {
+    Ok(wiki_source::Entity::find()
+        .filter(wiki_source::Column::VaultId.eq(vault_id))
+        .filter(wiki_source::Column::OriginalHash.eq(original_hash))
+        .order_by_asc(wiki_source::Column::SourceSeq)
+        .one(conn)
+        .await?)
+}
+
+pub struct NewImportSource {
+    pub id: Option<String>,
+    pub vault_id: String,
+    pub source_kind: String,
+    pub request_id: String,
+    pub original_hash: String,
+    pub original_filename: Option<String>,
+    pub format: Option<String>,
+    pub source_title: Option<String>,
+    pub source_url: Option<String>,
+    pub author: Option<String>,
+    pub material_role: String,
+    pub personal_role: Option<String>,
+    pub project_ids: Option<String>,
+    pub area_ids: Option<String>,
+    pub extractor_version: Option<String>,
+    pub coverage_status: Option<String>,
+    pub eligibility: String,
+    pub warnings: Option<String>,
+    pub page_count: Option<i32>,
+    pub truncated: bool,
+    pub redacted: bool,
+    pub captured_at: chrono::DateTime<chrono::Utc>,
+    pub source_group_id: Option<String>,
+    pub previous_source_id: Option<String>,
+    pub skip_hash_dedup: bool,
+    pub raw_path: Option<String>,
+    pub raw_hash: Option<String>,
+    pub job_status: String,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub input_manifest: Option<String>,
+}
+
+/// Insert document/pasted source + ingest job. Idempotent on (vault_id, request_id).
+/// Same original_hash returns the earliest existing source unless `skip_hash_dedup`.
+pub async fn insert_import_source_and_ingest_job(
+    conn: &DatabaseConnection,
+    new: NewImportSource,
+) -> Result<InsertedSource, DbError> {
+    if let Some(existing) = find_source_by_request_id(conn, &new.vault_id, &new.request_id).await? {
+        return existing_import(conn, existing).await;
+    }
+    if !new.skip_hash_dedup {
+        if let Some(existing) =
+            find_source_by_original_hash(conn, &new.vault_id, &new.original_hash).await?
+        {
+            return existing_import(conn, existing).await;
+        }
+    }
+
+    let now = Utc::now();
+    let source_id = new
+        .id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let vault_id = new.vault_id.clone();
+    let request_id = new.request_id.clone();
+    let original_hash = new.original_hash.clone();
+    let skip_hash_dedup = new.skip_hash_dedup;
+    let group_id = new
+        .source_group_id
+        .clone()
+        .unwrap_or_else(|| source_id.clone());
+    let dedupe_key = format!("{}:import:{}", vault_id, request_id);
+
+    let txn = conn.begin().await?;
+    if let Some(existing) = find_source_by_request_id(&txn, &vault_id, &request_id).await? {
+        txn.commit().await?;
+        return existing_import(conn, existing).await;
+    }
+    if !skip_hash_dedup {
+        if let Some(existing) =
+            find_source_by_original_hash(&txn, &vault_id, &original_hash).await?
+        {
+            txn.commit().await?;
+            return existing_import(conn, existing).await;
+        }
+    }
+
+    let last = wiki_source::Entity::find()
+        .filter(wiki_source::Column::VaultId.eq(&vault_id))
+        .order_by_desc(wiki_source::Column::SourceSeq)
+        .one(&txn)
+        .await?;
+    let source_seq = last.map(|s| s.source_seq + 1).unwrap_or(1);
+
+    let source = wiki_source::ActiveModel {
+        id: Set(source_id.clone()),
+        source_group_id: Set(group_id),
+        vault_id: Set(vault_id.clone()),
+        source_kind: Set(new.source_kind),
+        source_seq: Set(source_seq),
+        run_id: Set(None),
+        original_hash: Set(Some(original_hash.clone())),
+        raw_path: Set(new.raw_path),
+        raw_hash: Set(new.raw_hash),
+        extractor_version: Set(new.extractor_version),
+        coverage_status: Set(new.coverage_status),
+        eligibility: Set(new.eligibility),
+        material_role: Set(Some(new.material_role)),
+        personal_role: Set(new.personal_role),
+        annotation_revision: Set(0),
+        conversation_id: Set(None),
+        folder_id: Set(None),
+        root_folder_id: Set(None),
+        agent_type: Set(None),
+        model: Set(None),
+        mode: Set(None),
+        captured_at: Set(Some(new.captured_at)),
+        occurred_at: Set(None),
+        truncated: Set(new.truncated),
+        redacted: Set(new.redacted),
+        request_id: Set(Some(request_id.clone())),
+        original_filename: Set(new.original_filename),
+        format: Set(new.format),
+        source_title: Set(new.source_title),
+        source_url: Set(new.source_url),
+        author: Set(new.author),
+        project_ids: Set(new.project_ids),
+        area_ids: Set(new.area_ids),
+        warnings: Set(new.warnings),
+        page_count: Set(new.page_count),
+        previous_source_id: Set(new.previous_source_id),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+
+    let source_model = match source.insert(&txn).await {
+        Ok(m) => m,
+        Err(e) if e.to_string().contains("UNIQUE constraint failed") => {
+            txn.rollback().await.ok();
+            if let Some(existing) = find_source_by_request_id(conn, &vault_id, &request_id).await? {
+                return existing_import(conn, existing).await;
+            }
+            if !skip_hash_dedup {
+                if let Some(existing) =
+                    find_source_by_original_hash(conn, &vault_id, &original_hash).await?
+                {
+                    return existing_import(conn, existing).await;
+                }
+            }
+            return Err(DbError::Conflict("wiki import unique race".into()));
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let finished = matches!(
+        new.job_status.as_str(),
+        "succeeded" | "failed" | "cancelled"
+    );
+    let job = wiki_job::ActiveModel {
+        id: Set(job_id),
+        vault_id: Set(new.vault_id),
+        source_id: Set(Some(source_id)),
+        kind: Set("ingest".into()),
+        status: Set(new.job_status),
+        dedupe_key: Set(Some(dedupe_key)),
+        input_manifest: Set(new.input_manifest),
+        config_version: Set(None),
+        model_id: Set(None),
+        protocol: Set(None),
+        attempt: Set(1),
+        error_code: Set(new.error_code),
+        error_message: Set(new.error_message),
+        output_manifest: Set(None),
+        started_at: Set(Some(now)),
+        finished_at: Set(if finished { Some(now) } else { None }),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    let job_model = job.insert(&txn).await?;
+    txn.commit().await?;
+    Ok(InsertedSource {
+        source: source_model,
+        job: job_model,
+        created: true,
+    })
+}
+
+async fn existing_import(
+    conn: &DatabaseConnection,
+    existing: wiki_source::Model,
+) -> Result<InsertedSource, DbError> {
+    let job = find_ingest_job(conn, &existing.id)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("ingest job for source {}", existing.id)))?;
+    Ok(InsertedSource {
+        source: existing,
+        job,
+        created: false,
+    })
+}
+
+pub struct AnnotationPatch {
+    pub material_role: Option<String>,
+    pub personal_role: Option<String>,
+    pub project_ids: Option<Vec<String>>,
+    pub area_ids: Option<Vec<String>>,
+}
+
+pub async fn update_source_annotations(
+    conn: &DatabaseConnection,
+    source_id: &str,
+    patch: AnnotationPatch,
+) -> Result<wiki_source::Model, DbError> {
+    let row = get_source_model(conn, source_id).await?;
+    let mut active: wiki_source::ActiveModel = row.clone().into();
+    if let Some(role) = patch.material_role {
+        active.material_role = Set(Some(role));
+    }
+    if let Some(role) = patch.personal_role {
+        active.personal_role = Set(if role.is_empty() { None } else { Some(role) });
+    }
+    if let Some(ids) = patch.project_ids {
+        active.project_ids = Set(Some(
+            serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into()),
+        ));
+    }
+    if let Some(ids) = patch.area_ids {
+        active.area_ids = Set(Some(
+            serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into()),
+        ));
+    }
+    active.annotation_revision = Set(row.annotation_revision.saturating_add(1));
+    active.updated_at = Set(Utc::now());
+    Ok(active.update(conn).await?)
+}
+
+pub async fn set_source_eligibility(
+    conn: &DatabaseConnection,
+    source_id: &str,
+    eligibility: &str,
+) -> Result<wiki_source::Model, DbError> {
+    let row = get_source_model(conn, source_id).await?;
+    let mut active: wiki_source::ActiveModel = row.into();
+    active.eligibility = Set(eligibility.to_string());
+    active.updated_at = Set(Utc::now());
+    Ok(active.update(conn).await?)
+}
+
+pub async fn link_source_version(
+    conn: &DatabaseConnection,
+    source_id: &str,
+    previous_source_id: &str,
+) -> Result<wiki_source::Model, DbError> {
+    let previous = get_source_model(conn, previous_source_id).await?;
+    let row = get_source_model(conn, source_id).await?;
+    if row.vault_id != previous.vault_id {
+        return Err(DbError::Validation(
+            "cannot link sources from different vaults".into(),
+        ));
+    }
+    let mut active: wiki_source::ActiveModel = row.into();
+    active.source_group_id = Set(previous.source_group_id);
+    active.previous_source_id = Set(Some(previous.id));
+    active.updated_at = Set(Utc::now());
+    Ok(active.update(conn).await?)
 }

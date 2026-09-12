@@ -6,7 +6,10 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::wiki as core;
-use crate::db::service::wiki_service::{WikiJobInfo, WikiSourceInfo};
+use crate::db::service::wiki_service::{WikiImportResult, WikiJobInfo, WikiSourceInfo};
+use crate::wiki::import::{
+    ImportFilesParams, ImportTextParams, LinkVersionParams, UpdateAnnotationsParams,
+};
 use crate::wiki::settings::{WikiSettings, WikiSettingsView};
 
 #[derive(Deserialize)]
@@ -135,5 +138,64 @@ pub async fn wiki_vault_read(
 ) -> Result<Json<core::WikiVaultFile>, AppCommandError> {
     Ok(Json(
         core::wiki_vault_read_core(&state.db.conn, params.path).await?,
+    ))
+}
+
+pub async fn wiki_import_text(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ImportTextParams>,
+) -> Result<Json<WikiImportResult>, AppCommandError> {
+    Ok(Json(
+        core::wiki_import_text_core(&state.db.conn, params).await?,
+    ))
+}
+
+pub async fn wiki_import_files(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ImportFilesParams>,
+) -> Result<Json<WikiImportResult>, AppCommandError> {
+    Ok(Json(
+        core::wiki_import_files_core(&state.db.conn, params).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct SourceIdParams {
+    pub source_id: String,
+}
+
+pub async fn wiki_accept_extraction(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SourceIdParams>,
+) -> Result<Json<WikiSourceInfo>, AppCommandError> {
+    Ok(Json(
+        core::wiki_accept_extraction_core(&state.db.conn, params.source_id).await?,
+    ))
+}
+
+pub async fn wiki_update_source_annotations(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<UpdateAnnotationsParams>,
+) -> Result<Json<WikiSourceInfo>, AppCommandError> {
+    Ok(Json(
+        core::wiki_update_source_annotations_core(&state.db.conn, params).await?,
+    ))
+}
+
+pub async fn wiki_reextract(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SourceIdParams>,
+) -> Result<Json<WikiImportResult>, AppCommandError> {
+    Ok(Json(
+        core::wiki_reextract_core(&state.db.conn, params.source_id).await?,
+    ))
+}
+
+pub async fn wiki_link_source_version(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<LinkVersionParams>,
+) -> Result<Json<WikiSourceInfo>, AppCommandError> {
+    Ok(Json(
+        core::wiki_link_source_version_core(&state.db.conn, params).await?,
     ))
 }

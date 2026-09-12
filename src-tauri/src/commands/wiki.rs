@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppCommandError;
 use crate::db::error::DbError;
-use crate::db::service::wiki_service::{self, WikiJobInfo, WikiSourceInfo};
+use crate::db::service::wiki_service::{self, WikiImportResult, WikiJobInfo, WikiSourceInfo};
+#[cfg(feature = "tauri-runtime")]
+use crate::wiki::import::ImportFilePart;
+use crate::wiki::import::{
+    self, ImportFilesParams, ImportTextParams, LinkVersionParams, UpdateAnnotationsParams,
+};
 use crate::wiki::paths::{self, join_vault_relative, resolve_vault_path};
 use crate::wiki::settings::{self, WikiSettings, WikiSettingsView};
 use crate::wiki::vault;
@@ -163,6 +168,48 @@ pub async fn wiki_vault_tree_core(
     Ok(entries)
 }
 
+pub async fn wiki_import_text_core(
+    conn: &DatabaseConnection,
+    params: ImportTextParams,
+) -> Result<WikiImportResult, AppCommandError> {
+    import::import_text(conn, params).await
+}
+
+pub async fn wiki_import_files_core(
+    conn: &DatabaseConnection,
+    params: ImportFilesParams,
+) -> Result<WikiImportResult, AppCommandError> {
+    import::import_files(conn, params).await
+}
+
+pub async fn wiki_accept_extraction_core(
+    conn: &DatabaseConnection,
+    source_id: String,
+) -> Result<WikiSourceInfo, AppCommandError> {
+    import::accept_extraction(conn, source_id).await
+}
+
+pub async fn wiki_update_source_annotations_core(
+    conn: &DatabaseConnection,
+    params: UpdateAnnotationsParams,
+) -> Result<WikiSourceInfo, AppCommandError> {
+    import::update_source_annotations(conn, params).await
+}
+
+pub async fn wiki_reextract_core(
+    conn: &DatabaseConnection,
+    source_id: String,
+) -> Result<WikiImportResult, AppCommandError> {
+    import::reextract(conn, source_id).await
+}
+
+pub async fn wiki_link_source_version_core(
+    conn: &DatabaseConnection,
+    params: LinkVersionParams,
+) -> Result<WikiSourceInfo, AppCommandError> {
+    import::link_source_version(conn, params).await
+}
+
 pub async fn wiki_vault_read_core(
     conn: &DatabaseConnection,
     path: String,
@@ -283,4 +330,126 @@ pub async fn wiki_vault_read(
     path: String,
 ) -> Result<WikiVaultFile, AppCommandError> {
     wiki_vault_read_core(&db.conn, path).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_import_text(
+    db: tauri::State<'_, AppDatabase>,
+    request_id: String,
+    text: String,
+    title: Option<String>,
+    source_url: Option<String>,
+    author: Option<String>,
+    material_role: Option<String>,
+    personal_role: Option<String>,
+    project_ids: Option<Vec<String>>,
+    area_ids: Option<Vec<String>>,
+) -> Result<WikiImportResult, AppCommandError> {
+    wiki_import_text_core(
+        &db.conn,
+        ImportTextParams {
+            request_id,
+            text,
+            title,
+            source_url,
+            author,
+            material_role,
+            personal_role,
+            project_ids,
+            area_ids,
+        },
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_import_files(
+    db: tauri::State<'_, AppDatabase>,
+    request_id: String,
+    files: Vec<ImportFilePart>,
+    material_role: Option<String>,
+    personal_role: Option<String>,
+    title: Option<String>,
+    source_url: Option<String>,
+    author: Option<String>,
+    batch_id: Option<String>,
+    project_ids: Option<Vec<String>>,
+    area_ids: Option<Vec<String>>,
+) -> Result<WikiImportResult, AppCommandError> {
+    wiki_import_files_core(
+        &db.conn,
+        ImportFilesParams {
+            request_id,
+            files,
+            material_role,
+            personal_role,
+            title,
+            source_url,
+            author,
+            batch_id,
+            project_ids,
+            area_ids,
+        },
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_accept_extraction(
+    db: tauri::State<'_, AppDatabase>,
+    source_id: String,
+) -> Result<WikiSourceInfo, AppCommandError> {
+    wiki_accept_extraction_core(&db.conn, source_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_update_source_annotations(
+    db: tauri::State<'_, AppDatabase>,
+    source_id: String,
+    material_role: Option<String>,
+    personal_role: Option<String>,
+    project_ids: Option<Vec<String>>,
+    area_ids: Option<Vec<String>>,
+) -> Result<WikiSourceInfo, AppCommandError> {
+    wiki_update_source_annotations_core(
+        &db.conn,
+        UpdateAnnotationsParams {
+            source_id,
+            material_role,
+            personal_role,
+            project_ids,
+            area_ids,
+        },
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_reextract(
+    db: tauri::State<'_, AppDatabase>,
+    source_id: String,
+) -> Result<WikiImportResult, AppCommandError> {
+    wiki_reextract_core(&db.conn, source_id).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_link_source_version(
+    db: tauri::State<'_, AppDatabase>,
+    source_id: String,
+    previous_source_id: String,
+) -> Result<WikiSourceInfo, AppCommandError> {
+    wiki_link_source_version_core(
+        &db.conn,
+        LinkVersionParams {
+            source_id,
+            previous_source_id,
+        },
+    )
+    .await
 }

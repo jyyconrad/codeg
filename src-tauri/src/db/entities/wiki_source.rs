@@ -31,6 +31,20 @@ pub struct Model {
     pub occurred_at: Option<DateTimeUtc>,
     pub truncated: bool,
     pub redacted: bool,
+    pub request_id: Option<String>,
+    pub original_filename: Option<String>,
+    pub format: Option<String>,
+    pub source_title: Option<String>,
+    pub source_url: Option<String>,
+    pub author: Option<String>,
+    #[sea_orm(column_type = "Text")]
+    pub project_ids: Option<String>,
+    #[sea_orm(column_type = "Text")]
+    pub area_ids: Option<String>,
+    #[sea_orm(column_type = "Text")]
+    pub warnings: Option<String>,
+    pub page_count: Option<i32>,
+    pub previous_source_id: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }

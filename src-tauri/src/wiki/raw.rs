@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 
+use crate::document_extract::{LocatorKind, TextSegment};
 use crate::wiki::snapshot::WikiTurnSnapshot;
 use crate::wiki::vault::{CONTENT_END, CONTENT_START};
 
@@ -201,6 +202,146 @@ pub fn raw_session_path(vault: &Path, source_id: &str) -> PathBuf {
     vault.join("raw/sessions").join(format!("{source_id}.md"))
 }
 
+pub fn raw_import_path(vault: &Path, source_id: &str) -> PathBuf {
+    vault.join("raw/imports").join(format!("{source_id}.md"))
+}
+
+#[derive(Debug, Clone)]
+pub struct RawImportMeta<'a> {
+    pub source_id: &'a str,
+    pub source_group_id: &'a str,
+    pub source_kind: &'a str,
+    pub captured_at: DateTime<Utc>,
+    pub title: &'a str,
+    pub source_title: Option<&'a str>,
+    pub source_url: Option<&'a str>,
+    pub author: Option<&'a str>,
+    pub material_role: &'a str,
+    pub personal_role: Option<&'a str>,
+    pub original_filename: Option<&'a str>,
+    pub format: &'a str,
+    pub extraction_status: &'a str,
+    pub extractor_version: &'a str,
+    pub redacted: bool,
+    pub truncated: bool,
+    pub page_count: Option<u32>,
+    pub warnings: &'a [String],
+}
+
+/// Deterministic document-dump raw. YAML is host-serialized; locators stay in the body.
+pub fn render_import_raw(segments: &[TextSegment], meta: &RawImportMeta<'_>) -> (String, String) {
+    let body = render_import_body(segments, meta);
+    let hash = content_hash(&body);
+    let date = meta.captured_at.date_naive();
+    let mut yaml = String::from("---\n");
+    push_str(&mut yaml, "title", meta.title);
+    push_str(&mut yaml, "type", "document-dump");
+    yaml.push_str("tags:\n  - \"type/document-dump\"\n");
+    push_str(&mut yaml, "date", &date.to_string());
+    push_str(&mut yaml, "source_kind", meta.source_kind);
+    push_str(&mut yaml, "codeg_source_id", meta.source_id);
+    push_str(&mut yaml, "codeg_source_group_id", meta.source_group_id);
+    push_str(&mut yaml, "captured_at", &meta.captured_at.to_rfc3339());
+    if let Some(title) = meta.source_title {
+        push_str(&mut yaml, "source_title", title);
+    }
+    if let Some(url) = meta.source_url {
+        push_str(&mut yaml, "source_url", url);
+    }
+    if let Some(author) = meta.author {
+        push_str(&mut yaml, "author", author);
+    }
+    push_str(&mut yaml, "material_role", meta.material_role);
+    if let Some(role) = meta.personal_role {
+        push_str(&mut yaml, "personal_role", role);
+    }
+    if let Some(name) = meta.original_filename {
+        push_str(&mut yaml, "original_filename", name);
+    }
+    push_str(&mut yaml, "format", meta.format);
+    push_str(&mut yaml, "extraction_status", meta.extraction_status);
+    push_str(&mut yaml, "extractor_version", meta.extractor_version);
+    push_str(&mut yaml, "codeg_content_hash", &hash);
+    yaml.push_str(&format!("codeg_truncated: {}\n", yaml_bool(meta.truncated)));
+    yaml.push_str(&format!("codeg_redacted: {}\n", yaml_bool(meta.redacted)));
+    yaml.push_str("---\n\n");
+    yaml.push_str(&body);
+    if !body.ends_with('\n') {
+        yaml.push('\n');
+    }
+    (yaml, hash)
+}
+
+fn render_import_body(segments: &[TextSegment], meta: &RawImportMeta<'_>) -> String {
+    let mut body = String::from("# Document dump\n\n");
+    body.push_str("Text extraction only. Original binaries are not sent to a model.\n\n");
+    if meta.redacted {
+        body.push_str("> Host redaction applied; secrets replaced with `[REDACTED]`.\n\n");
+    }
+    body.push_str("## Coverage\n\n");
+    body.push_str(&format!(
+        "- extraction_status: {}\n- format: {}\n",
+        meta.extraction_status, meta.format
+    ));
+    if let Some(pages) = meta.page_count {
+        body.push_str(&format!("- page_count: {pages}\n"));
+    }
+    body.push_str(&format!("- segments: {}\n", segments.len()));
+    if meta.warnings.is_empty() {
+        body.push_str("- warnings: none\n");
+    } else {
+        body.push_str("- warnings:\n");
+        for w in meta.warnings {
+            body.push_str("  - ");
+            body.push_str(&yaml_quote(w));
+            body.push('\n');
+        }
+    }
+    body.push_str("\n## Segments\n\n");
+    if segments.is_empty() {
+        body.push_str("_No extractable text segments._\n");
+        return body;
+    }
+    for seg in segments {
+        body.push_str(&format!("### {} — {}\n\n", seg.id, seg.locator.label));
+        match &seg.locator.kind {
+            LocatorKind::Page { number } => {
+                body.push_str(&format!("- locator_kind: page\n- page: {number}\n\n"));
+            }
+            LocatorKind::Paragraph {
+                heading_path,
+                index,
+            } => {
+                body.push_str("- locator_kind: paragraph\n");
+                if !heading_path.is_empty() {
+                    body.push_str("- heading_path: ");
+                    body.push_str(&yaml_quote(&heading_path.join(" / ")));
+                    body.push('\n');
+                }
+                body.push_str(&format!("- paragraph_index: {index}\n\n"));
+            }
+            LocatorKind::CharRange { start, end } => {
+                body.push_str(&format!(
+                    "- locator_kind: char_range\n- start: {start}\n- end: {end}\n\n"
+                ));
+            }
+        }
+        body.push_str(seg.text.trim_end());
+        body.push_str("\n\n");
+    }
+    body
+}
+
+/// Exclusive create of `raw/imports/<source-id>.md`.
+pub fn write_import_raw(
+    vault: &Path,
+    source_id: &str,
+    contents: &str,
+    hash: &str,
+) -> io::Result<RawWriteOutcome> {
+    write_raw_exclusive(&raw_import_path(vault, source_id), contents, hash)
+}
+
 /// Exclusive create. Same hash at path = success; different content = conflict.
 pub fn write_raw_exclusive(path: &Path, contents: &str, hash: &str) -> io::Result<RawWriteOutcome> {
     if let Some(parent) = path.parent() {
@@ -374,6 +515,48 @@ mod tests {
         let conflict = write_raw_exclusive(&path, &doc2, &hash2).unwrap();
         assert!(matches!(conflict, RawWriteOutcome::Conflict { .. }));
         assert_eq!(fs::read_to_string(&path).unwrap(), doc);
+    }
+
+    #[test]
+    fn import_raw_includes_locators_and_quotes_yaml() {
+        use crate::document_extract::{Locator, LocatorKind, TextSegment};
+        let segments = vec![TextSegment {
+            id: "page-001".into(),
+            text: "Visible text".into(),
+            locator: Locator {
+                kind: LocatorKind::Page { number: 1 },
+                label: "p.1".into(),
+            },
+        }];
+        let warnings = ["page 2 produced no extractable text".to_string()];
+        let meta = RawImportMeta {
+            source_id: "src-doc",
+            source_group_id: "grp-doc",
+            source_kind: "document",
+            captured_at: Utc::now(),
+            title: "Spec",
+            source_title: Some("Spec"),
+            source_url: None,
+            author: None,
+            material_role: "reference",
+            personal_role: None,
+            original_filename: Some("spec.pdf"),
+            format: "pdf",
+            extraction_status: "partial",
+            extractor_version: "codeg-document-extract/1.0.0",
+            redacted: false,
+            truncated: false,
+            page_count: Some(2),
+            warnings: &warnings,
+        };
+        let (doc, hash) = render_import_raw(&segments, &meta);
+        assert!(doc.contains("type: \"document-dump\""));
+        assert!(doc.contains("source_kind: \"document\""));
+        assert!(doc.contains("extraction_status: \"partial\""));
+        assert!(doc.contains("### page-001 — p.1"));
+        assert!(doc.contains("Visible text"));
+        assert!(doc.contains("locator_kind: page"));
+        assert_eq!(hash.len(), 64);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! PR1 is host-only. No model calls, no WikiWorker, no compile four-pass.
 
 pub mod filter;
+pub mod import;
 pub mod paths;
 pub mod raw;
 pub mod redact;

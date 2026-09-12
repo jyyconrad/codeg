@@ -5109,10 +5109,12 @@ export interface DeepSeekModelCatalog {
 export type {
   WikiCaptureSettings,
   WikiCompileSettings,
+  WikiImportResult,
   WikiJob,
   WikiJobKind,
   WikiJobStatus,
   WikiListPage,
+  WikiMaterialRole,
   WikiModelPromptSettings,
   WikiSettings,
   WikiSettingsView,

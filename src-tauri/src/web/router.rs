@@ -1603,6 +1603,28 @@ pub fn build_router(
         .route("/wiki_get_source", post(handlers::wiki::wiki_get_source))
         .route("/wiki_vault_tree", post(handlers::wiki::wiki_vault_tree))
         .route("/wiki_vault_read", post(handlers::wiki::wiki_vault_read))
+        .route(
+            "/wiki_import_text",
+            post(handlers::wiki::wiki_import_text).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
+            "/wiki_import_files",
+            // One file per request. 20 MiB decoded ≈ 27 MiB base64 + JSON envelope.
+            post(handlers::wiki::wiki_import_files).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/wiki_accept_extraction",
+            post(handlers::wiki::wiki_accept_extraction),
+        )
+        .route(
+            "/wiki_update_source_annotations",
+            post(handlers::wiki::wiki_update_source_annotations),
+        )
+        .route("/wiki_reextract", post(handlers::wiki::wiki_reextract))
+        .route(
+            "/wiki_link_source_version",
+            post(handlers::wiki::wiki_link_source_version),
+        )
         // ─── Workspace background ───
         .route(
             "/background_read",

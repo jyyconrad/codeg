@@ -110,8 +110,7 @@ pub async fn persist_acp_turn(
         root_folder_id,
         model_fallback,
     };
-    if let Err(e) = freeze_raw_and_log(conn, &vault_path, &snap, &inserted, meta).await
-    {
+    if let Err(e) = freeze_raw_and_log(conn, &vault_path, &snap, &inserted, meta).await {
         let msg = e.to_string();
         let _ = wiki_service::mark_job(
             conn,
