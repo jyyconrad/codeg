@@ -50,6 +50,16 @@ cargo insta review
 INSTA_UPDATE=auto cargo test --features test-utils     # 自动写新 .snap
 ```
 
+### 本地 macOS DMG
+
+只打本机架构，产物只允许出现在 `src-tauri/target/release/bundle/`。命令与安装见 [docs/releasing/local-packaging.md](docs/releasing/local-packaging.md)。
+
+```bash
+pnpm tauri:dmg
+```
+
+不要加 `--target aarch64-apple-darwin`，也不要把 dmg 拷到桌面或其他目录。
+
 ## 架构
 
 ### 双模式运行
