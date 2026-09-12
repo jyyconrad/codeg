@@ -43,6 +43,34 @@ pub struct NativeTurnTools {
     pub dynamic: Vec<DynamicTool>,
 }
 
+impl NativeTurnTools {
+    /// Wiki compile assembly: staging write/edit, no bash/subagent/plan/MCP.
+    /// `ctx.fs` must already be confined to the job allowlist (not `from_env`).
+    pub fn wiki_compile(ctx: crate::agent::tools::NativeToolCtx) -> Self {
+        use crate::agent::tools::{SkillCatalog, SkillTool};
+        Self {
+            read: ReadFileTool::new(ctx.clone()),
+            recall: RecallTool::new(ctx.clone()),
+            write: Some(WriteFileTool::new(ctx.clone())),
+            edit: Some(EditFileTool::new(ctx.clone())),
+            glob: GlobTool::new(ctx.clone()),
+            grep: GrepTool::new(ctx.clone()),
+            codegraph: None,
+            lsp: None,
+            bash: None,
+            skill: SkillTool::new(ctx, SkillCatalog::default()),
+            plan: None,
+            write_plan: None,
+            enter_plan: None,
+            exit_plan: None,
+            write_explore: None,
+            subagent: None,
+            echo: None,
+            dynamic: Vec::new(),
+        }
+    }
+}
+
 pub struct NativeTurnRequest {
     pub client: CodegLlmClient,
     pub model_id: String,
@@ -227,6 +255,22 @@ mod tests {
         assert_eq!(SubagentTool::NAME, "subagent");
         assert_eq!(CodegraphTool::NAME, "codegraph");
         assert_eq!(LspTool::NAME, "lsp");
+    }
+
+    #[test]
+    fn wiki_compile_tools_omit_bash_and_subagent() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::agent::tools::test_tool_ctx(dir.path(), "read_file", "c1");
+        let tools = super::NativeTurnTools::wiki_compile(ctx);
+        assert!(tools.bash.is_none());
+        assert!(tools.subagent.is_none());
+        assert!(tools.plan.is_none());
+        assert!(tools.write.is_some());
+        assert!(tools.edit.is_some());
+        assert!(tools.echo.is_none());
+        assert!(tools.codegraph.is_none());
+        assert!(tools.lsp.is_none());
+        assert!(tools.dynamic.is_empty());
     }
 
     #[test]

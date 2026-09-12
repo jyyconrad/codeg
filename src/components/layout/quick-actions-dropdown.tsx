@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react"
 import {
+  BookMarked,
   FolderGit2,
   FolderOpenDot,
   GamepadDirectional,
@@ -237,6 +238,10 @@ export function QuickActionsDropdown() {
           <DropdownMenuItem onSelect={() => setRoute("toolbox")}>
             <Wrench />
             {tSidebar("toolbox")}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setRoute("wiki")}>
+            <BookMarked />
+            {tSidebar("wiki")}
           </DropdownMenuItem>
 
           {desktop && (

@@ -5105,3 +5105,21 @@ export interface DeepSeekModelCatalog {
    *  fixed, sessions run on the agent's built-in catalog instead. */
   invalid: string | null
 }
+
+export type {
+  WikiCaptureSettings,
+  WikiCompileSettings,
+  WikiImportResult,
+  WikiJob,
+  WikiJobKind,
+  WikiJobStatus,
+  WikiListPage,
+  WikiMaterialRole,
+  WikiModelPromptSettings,
+  WikiSettings,
+  WikiSettingsView,
+  WikiSource,
+  WikiSourceEligibility,
+  WikiSourceKind,
+  WikiVaultTreeNode,
+} from "./wiki-types"

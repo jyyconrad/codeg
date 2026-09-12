@@ -857,6 +857,7 @@ async fn emit_prompt_start_error(
             session_id: session_id.to_string(),
             stop_reason: "error".into(),
             agent_type,
+            run_id: state.read().await.wiki_run_id.clone(),
         },
     )
     .await;
@@ -1338,6 +1339,7 @@ async fn finish_turn(
             session_id: session_id.to_string(),
             stop_reason: stop_reason.to_string(),
             agent_type,
+            run_id: state.read().await.wiki_run_id.clone(),
         },
     )
     .await;

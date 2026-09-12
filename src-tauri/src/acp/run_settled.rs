@@ -118,13 +118,21 @@ pub fn resolve_session_store(
     }
 }
 
-/// Channel IM is owned by the Events-tab subscriber. Kept as a no-op so
-/// existing lifecycle/cancel call sites stay stable.
+/// Channel IM is owned by the Events-tab subscriber. Wiki persist is queued
+/// off the ACP hot path from a frozen snapshot — never re-read last_*.
 pub async fn dispatch_run_settled(
-    _db_conn: &DatabaseConnection,
+    db_conn: &DatabaseConnection,
     _manager: &ConnectionManager,
     _state_arc: &Arc<RwLock<SessionState>>,
-    _kind: TerminalKind,
+    kind: TerminalKind,
     _error: Option<&str>,
+    snapshot: Option<crate::wiki::snapshot::WikiTurnSnapshot>,
 ) {
+    if kind != TerminalKind::Completed {
+        return;
+    }
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    crate::wiki::source::enqueue_persist(db_conn.clone(), snapshot);
 }

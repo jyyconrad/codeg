@@ -55,7 +55,8 @@
       "office_tools": "Office Tools",
       "skill_packs": "Skill Packs",
       "quick_messages": "Quick Messages",
-      "logs": "Runtime Logs"
+      "logs": "Runtime Logs",
+      "wiki": "Personal wiki"
     }
   },
   "CodeIntelligenceSettings": {
@@ -1654,7 +1655,8 @@
   "SettingsPages": {
     "agentsLoading": "Loading agent settings...",
     "skillPacksLoading": "Loading skill packs…",
-    "codegAgentLoading": "Loading built-in agent settings..."
+    "codegAgentLoading": "Loading built-in agent settings...",
+    "wikiLoading": "Loading wiki settings..."
   },
   "CodegAgentSettings": {
     "sectionTitle": "Built-in agent",
@@ -2010,6 +2012,7 @@
       "forge": "Repository panel",
       "canvas": "Infinite Conversations",
       "toolbox": "Toolbox",
+      "wiki": "Personal wiki",
       "folderGroup": {
         "newGroup": "New group",
         "newGroupTitle": "New folder group",
@@ -6271,6 +6274,181 @@
         "description": "Parse a PEM certificate: subject, SAN, validity, SHA-256 fingerprint. No CRL/OCSP.",
         "aliases": "x509 pem certificate"
       }
+    }
+  },
+
+  "WikiSettings": {
+    "sectionTitle": "Personal wiki",
+    "sectionDescription": "Capture completed work sessions and imported documents into a local Markdown vault. Compile turns those sources into work notes and capability notes with citations.",
+    "loading": "Loading...",
+    "loadFailed": "Failed to load wiki settings: {message}",
+    "retry": "Retry",
+    "save": "Save",
+    "saving": "Saving...",
+    "saved": "Wiki settings saved",
+    "saveFailed": "Failed to save wiki settings: {message}",
+    "enabled": "Enable personal wiki",
+    "enabledHint": "Turning this on stores session and imported text in a local vault. Extracted text may later be sent to the bound model for ingest and compile.",
+    "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
+    "statusTitle": "Schedule",
+    "statusDescription": "Next compile time and sources still waiting to be analyzed.",
+    "nextCompileAt": "Next compile",
+    "pendingSources": "Pending sources",
+    "notScheduled": "Not scheduled",
+    "vaultTitle": "Vault",
+    "vaultDescription": "One vault for work notes, capability notes, shared knowledge, and sources. Changing the path does not move files.",
+    "vaultPath": "Vault path",
+    "vaultPathHint": "Optional override. Leave empty to use the default Codeg wiki directory. Pause in-flight jobs before switching paths.",
+    "vaultPathPlaceholder": "Leave empty for the default path",
+    "timezone": "Timezone",
+    "timezoneHint": "IANA timezone for the compile schedule. First use follows the system timezone, then stays as saved.",
+    "compileCron": "Compile schedule (cron)",
+    "compileCronHint": "Five-field cron. Default is 0 3 * * * (03:00 every day).",
+    "captureTitle": "Capture",
+    "captureDescription": "Successful ACP turns can be saved as sources. Delegate and Loop sub-sessions are skipped.",
+    "acpEnabled": "Capture completed ACP sessions",
+    "acpEnabledHint": "Freeze successful ACP turns into the vault as sources.",
+    "excludeAgentTypes": "Exclude agent types",
+    "excludeAgentTypesHint": "Checked agents are not captured.",
+    "excludeFolders": "Exclude folders",
+    "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
+    "excludeFoldersPlaceholder": "e.g. 12, 34",
+    "unknownFolder": "Folder {id}",
+    "ingestTitle": "Ingest",
+    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
+    "ingestModel": "Ingest model id",
+    "ingestModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "ingestModelPlaceholder": "Bound default",
+    "ingestPrompt": "Ingest prompt",
+    "ingestPromptPlaceholder": "Optional extra instructions for source analysis",
+    "compileTitle": "Compile",
+    "compileDescription": "Compile updates work and capability notes from ready sources.",
+    "compileEnabled": "Enable compile",
+    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
+    "compileNowUnavailable": "Compile now on the workbench is unavailable while compile is disabled.",
+    "compileModel": "Compile model id",
+    "compileModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "compileModelPlaceholder": "Bound default",
+    "compilePrompt": "Compile prompt",
+    "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
+  },
+  "Wiki": {
+    "title": "Personal wiki",
+    "views": {
+      "all": "All",
+      "work": "Work",
+      "capabilities": "Capabilities",
+      "sources": "Sources",
+      "jobs": "Jobs"
+    },
+    "openInObsidian": "Open in Obsidian",
+    "openInObsidianSoon": "Desktop local opener in a later slice",
+    "loading": "Loading...",
+    "loadFailed": "Failed to load: {message}",
+    "retry": "Retry",
+    "refresh": "Refresh",
+    "loadMore": "Load more",
+    "empty": "Nothing here yet",
+    "treeTitle": "Vault · {path}",
+    "showRaw": "Show raw evidence (raw/)",
+    "all": {
+      "emptyTitle": "All notes",
+      "emptyDescription": "Every compiled note in this vault: index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md, and AGENTS.md. Open a Markdown file to read it. Wikilinks stay inside the vault."
+    },
+    "work": {
+      "emptyTitle": "No work notes yet",
+      "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."
+    },
+    "capabilities": {
+      "emptyTitle": "No capability notes yet",
+      "emptyDescription": "Capability pages are named after reusable work, not projects or models. Each page covers scope, methods, practice evidence, current boundaries, and a next practice suggestion. There are no mastery scores or proficiency ranks.",
+      "evidenceReference": "Reference — a method that can be learned; not proof you practiced it.",
+      "evidenceApplication": "Application — the method was used in work; the actor and role stay explicit.",
+      "evidenceResult": "Result — a test, review, or delivery in a stated context; one case is not universal proof.",
+      "evidenceReflection": "Reflection — a write-up of tradeoffs or failures; self-report is not external verification."
+    },
+    "sources": {
+      "emptyTitle": "No sources yet",
+      "emptyDescription": "Successful ACP sessions and imported documents land here. Import files or paste text below. Default material role is reference; authorship is never inferred.",
+      "importFiles": "Import files",
+      "importPaste": "Import pasted text",
+      "pastePlaceholder": "Paste Markdown or plain text to import…",
+      "importHint": "Markdown, TXT, PDF, and DOCX. Up to 20 files, 20 MiB each. Same file bytes return the existing source.",
+      "disabledHint": "Enable Wiki in Settings before importing.",
+      "privacyHint": "Original binaries stay on this machine. Extracted text may later be sent to the bound model during compile. Document links are not fetched and macros are not run.",
+      "warningsTitle": "Extraction warnings",
+      "partialBanner": "Text extraction is partial (missing pages or unreadable regions). Accept this coverage to allow compile, or keep the source waiting.",
+      "acceptExtraction": "Accept current extraction",
+      "accepting": "Accepting…",
+      "importing": "Importing…",
+      "importFailed": "Import failed: {message}",
+      "duplicateNotice": "This file was already imported; showing the existing source.",
+      "fileTooLarge": "{name} exceeds the 20 MiB limit and was skipped.",
+      "titlePlaceholder": "Title (optional)",
+      "sourceUrlPlaceholder": "Source URL (optional, not fetched)",
+      "authorPlaceholder": "Author (optional)",
+      "personalRolePlaceholder": "Your role (optional)",
+      "materialRoleLabel": "Material role",
+      "saveAnnotations": "Save annotations",
+      "materialRole": {
+        "reference": "Reference",
+        "own-work": "Own work",
+        "team-work": "Team work",
+        "unspecified": "Unspecified"
+      },
+      "listTitle": "{count, plural, one {# source} other {# sources}}",
+      "previewTitle": "Preview",
+      "untitled": "Untitled source",
+      "kind": {
+        "acp-turn": "ACP session",
+        "document": "Document",
+        "pasted-text": "Pasted text",
+        "unknown": "Source"
+      },
+      "eligibility": {
+        "processing": "Processing",
+        "awaiting-acceptance": "Awaiting acceptance",
+        "ready": "Ready",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "withdrawn": "Withdrawn",
+        "unknown": "Unknown"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "No jobs yet",
+      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here.",
+      "readOnlyHint": "Compile now queues a compile job. Retry a failed job; cancel one that has not committed yet.",
+      "compileNow": "Compile now",
+      "compiling": "Starting compile…",
+      "retryJob": "Retry job",
+      "cancelJob": "Cancel job",
+      "compileDisabled": "Compile is turned off in Settings.",
+      "allStatuses": "All statuses",
+      "detailPlaceholder": "Select a job to see details.",
+      "kind": {
+        "ingest": "Ingest",
+        "compile": "Compile",
+        "unknown": "Job"
+      },
+      "status": {
+        "queued": "Queued",
+        "running": "Running",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "unknown": "Unknown"
+      },
+      "error": "Error",
+      "attempt": "Attempt {n}",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "startedAt": "Started",
+      "finishedAt": "Finished"
+    },
+    "note": {
+      "untitled": "Untitled",
+      "preview": "Select a note to preview."
     }
   }
 }

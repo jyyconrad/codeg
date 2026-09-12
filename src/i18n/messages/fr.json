@@ -55,7 +55,8 @@
       "office_tools": "Outils bureautiques",
       "skill_packs": "Packs de compétences",
       "quick_messages": "Messages rapides",
-      "logs": "Journaux d'exécution"
+      "logs": "Journaux d'exécution",
+      "wiki": "Wiki personnel"
     }
   },
   "CodeIntelligenceSettings": {
@@ -1654,7 +1655,8 @@
   "SettingsPages": {
     "agentsLoading": "Chargement des paramètres des agents...",
     "skillPacksLoading": "Chargement des packs de compétences…",
-    "codegAgentLoading": "Chargement des paramètres de l'agent intégré..."
+    "codegAgentLoading": "Chargement des paramètres de l'agent intégré...",
+    "wikiLoading": "Chargement des paramètres du wiki..."
   },
   "CodegAgentSettings": {
     "sectionTitle": "Agent intégré",
@@ -2010,6 +2012,7 @@
       "forge": "Panneau du dépôt",
       "canvas": "Conversations infinies",
       "toolbox": "Boîte à outils",
+      "wiki": "Wiki personnel",
       "folderGroup": {
         "newGroup": "Nouveau groupe",
         "newGroupTitle": "Nouveau groupe de dossiers",
@@ -6271,6 +6274,181 @@
         "description": "Parse a PEM certificate: subject, SAN, validity, SHA-256 fingerprint. No CRL/OCSP.",
         "aliases": "x509 pem certificate"
       }
+    }
+  },
+
+  "WikiSettings": {
+    "sectionTitle": "Wiki personnel",
+    "sectionDescription": "Capture completed work sessions and imported documents into a local Markdown vault. Compile turns those sources into work notes and capability notes with citations.",
+    "loading": "Chargement...",
+    "loadFailed": "Échec du chargement des paramètres du wiki : {message}",
+    "retry": "Réessayer",
+    "save": "Enregistrer",
+    "saving": "Enregistrement...",
+    "saved": "Paramètres du wiki enregistrés",
+    "saveFailed": "Échec de l’enregistrement des paramètres du wiki : {message}",
+    "enabled": "Activer le wiki personnel",
+    "enabledHint": "Turning this on stores session and imported text in a local vault. Extracted text may later be sent to the bound model for ingest and compile.",
+    "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
+    "statusTitle": "Schedule",
+    "statusDescription": "Next compile time and sources still waiting to be analyzed.",
+    "nextCompileAt": "Prochaine compilation",
+    "pendingSources": "Sources en attente",
+    "notScheduled": "Non planifié",
+    "vaultTitle": "Vault",
+    "vaultDescription": "One vault for work notes, capability notes, shared knowledge, and sources. Changing the path does not move files.",
+    "vaultPath": "Vault path",
+    "vaultPathHint": "Optional override. Leave empty to use the default Codeg wiki directory. Pause in-flight jobs before switching paths.",
+    "vaultPathPlaceholder": "Leave empty for the default path",
+    "timezone": "Fuseau horaire",
+    "timezoneHint": "IANA timezone for the compile schedule. First use follows the system timezone, then stays as saved.",
+    "compileCron": "Compile schedule (cron)",
+    "compileCronHint": "Five-field cron. Default is 0 3 * * * (03:00 every day).",
+    "captureTitle": "Capture",
+    "captureDescription": "Successful ACP turns can be saved as sources. Delegate and Loop sub-sessions are skipped.",
+    "acpEnabled": "Capturer les sessions ACP terminées",
+    "acpEnabledHint": "Freeze successful ACP turns into the vault as sources.",
+    "excludeAgentTypes": "Exclure des types d’agent",
+    "excludeAgentTypesHint": "Checked agents are not captured.",
+    "excludeFolders": "Exclure des dossiers",
+    "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
+    "excludeFoldersPlaceholder": "e.g. 12, 34",
+    "unknownFolder": "Dossier {id}",
+    "ingestTitle": "Ingest",
+    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
+    "ingestModel": "Ingest model id",
+    "ingestModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "ingestModelPlaceholder": "Bound default",
+    "ingestPrompt": "Ingest prompt",
+    "ingestPromptPlaceholder": "Optional extra instructions for source analysis",
+    "compileTitle": "Compiler",
+    "compileDescription": "Compile updates work and capability notes from ready sources.",
+    "compileEnabled": "Activer la compilation",
+    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
+    "compileNowUnavailable": "Compiler maintenant dans le plan de travail est indisponible si la compilation est désactivée.",
+    "compileModel": "Compile model id",
+    "compileModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "compileModelPlaceholder": "Bound default",
+    "compilePrompt": "Compile prompt",
+    "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
+  },
+  "Wiki": {
+    "title": "Wiki personnel",
+    "views": {
+      "all": "Tout",
+      "work": "Travail",
+      "capabilities": "Capacités",
+      "sources": "Sources",
+      "jobs": "Tâches"
+    },
+    "openInObsidian": "Ouvrir dans Obsidian",
+    "openInObsidianSoon": "Desktop local opener in a later slice",
+    "loading": "Chargement...",
+    "loadFailed": "Échec du chargement : {message}",
+    "retry": "Réessayer",
+    "refresh": "Actualiser",
+    "loadMore": "Charger plus",
+    "empty": "Rien pour l’instant",
+    "treeTitle": "Vault · {path}",
+    "showRaw": "Afficher les preuves brutes (raw/)",
+    "all": {
+      "emptyTitle": "Toutes les notes",
+      "emptyDescription": "Tous les textes de connaissance de ce coffre : index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md et AGENTS.md. Ouvrez un fichier Markdown pour le lire. Les wikilinks restent dans le coffre."
+    },
+    "work": {
+      "emptyTitle": "Pas encore de notes de travail",
+      "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."
+    },
+    "capabilities": {
+      "emptyTitle": "Pas encore de notes de capacité",
+      "emptyDescription": "Capability pages are named after reusable work, not projects or models. Each page covers scope, methods, practice evidence, current boundaries, and a next practice suggestion. There are no mastery scores or proficiency ranks.",
+      "evidenceReference": "Reference — a method that can be learned; not proof you practiced it.",
+      "evidenceApplication": "Application — the method was used in work; the actor and role stay explicit.",
+      "evidenceResult": "Result — a test, review, or delivery in a stated context; one case is not universal proof.",
+      "evidenceReflection": "Reflection — a write-up of tradeoffs or failures; self-report is not external verification."
+    },
+    "sources": {
+      "emptyTitle": "Pas encore de sources",
+      "emptyDescription": "Successful ACP sessions and imported documents land here. Import files or paste text below. Default material role is reference; authorship is never inferred.",
+      "importFiles": "Importer des fichiers",
+      "importPaste": "Importer le texte collé",
+      "pastePlaceholder": "Collez du Markdown ou du texte à importer…",
+      "importHint": "Markdown, TXT, PDF et DOCX. Jusqu’à 20 fichiers, 20 Mio chacun. Les mêmes octets renvoient la source existante.",
+      "disabledHint": "Activez le Wiki dans les paramètres avant d’importer.",
+      "privacyHint": "Les binaires d’origine restent sur cette machine. Le texte extrait pourra plus tard être envoyé au modèle lié. Les liens du document ne sont pas récupérés et les macros ne s’exécutent pas.",
+      "warningsTitle": "Avertissements d’extraction",
+      "partialBanner": "L’extraction de texte est partielle (pages manquantes ou zones illisibles). Acceptez cette couverture pour autoriser la compilation.",
+      "acceptExtraction": "Accepter l’extraction actuelle",
+      "accepting": "Acceptation…",
+      "importing": "Importation…",
+      "importFailed": "Échec de l’import : {message}",
+      "duplicateNotice": "Ce fichier a déjà été importé ; affichage de la source existante.",
+      "fileTooLarge": "{name} dépasse la limite de 20 Mio et a été ignoré.",
+      "titlePlaceholder": "Titre (facultatif)",
+      "sourceUrlPlaceholder": "URL source (facultatif, non récupérée)",
+      "authorPlaceholder": "Auteur (facultatif)",
+      "personalRolePlaceholder": "Votre rôle (facultatif)",
+      "materialRoleLabel": "Rôle du matériau",
+      "saveAnnotations": "Enregistrer les annotations",
+      "materialRole": {
+        "reference": "Référence",
+        "own-work": "Travail personnel",
+        "team-work": "Travail d’équipe",
+        "unspecified": "Non spécifié"
+      },
+      "listTitle": "{count, plural, one {# source} other {# sources}}",
+      "previewTitle": "Aperçu",
+      "untitled": "Source sans titre",
+      "kind": {
+        "acp-turn": "ACP session",
+        "document": "Document",
+        "pasted-text": "Pasted text",
+        "unknown": "Source"
+      },
+      "eligibility": {
+        "processing": "Processing",
+        "awaiting-acceptance": "Awaiting acceptance",
+        "ready": "Ready",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "withdrawn": "Withdrawn",
+        "unknown": "Unknown"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "Pas encore de tâches",
+      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
+      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
+      "compileNow": "Compile now",
+      "compiling": "Starting compile…",
+      "retryJob": "Retry job",
+      "cancelJob": "Cancel job",
+      "compileDisabled": "Compile is turned off in Settings.",
+      "allStatuses": "Tous les statuts",
+      "detailPlaceholder": "Select a job to see details.",
+      "kind": {
+        "ingest": "Ingest",
+        "compile": "Compiler",
+        "unknown": "Tâche"
+      },
+      "status": {
+        "queued": "En file",
+        "running": "En cours",
+        "succeeded": "Réussi",
+        "failed": "Échoué",
+        "cancelled": "Annulé",
+        "unknown": "Inconnu"
+      },
+      "error": "Error",
+      "attempt": "Attempt {n}",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "startedAt": "Started",
+      "finishedAt": "Finished"
+    },
+    "note": {
+      "untitled": "Sans titre",
+      "preview": "Sélectionnez une note pour l’aperçu."
     }
   }
 }

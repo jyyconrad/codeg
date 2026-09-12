@@ -182,6 +182,14 @@ import type {
   TokenUsageReport,
   TokenUsageSyncResult,
   TokenUsageSyncStatus,
+  WikiImportResult,
+  WikiJob,
+  WikiJobStatus,
+  WikiSettings,
+  WikiSettingsView,
+  WikiSource,
+  WikiSourceKind,
+  WikiVaultTreeNode,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -5946,4 +5954,172 @@ export async function forgeSettingsSet(
   settings: ForgePanelSettings | null
 ): Promise<ForgeSettingsStore> {
   return getTransport().call("forge_settings_set", { folderId, settings })
+}
+
+export async function getWikiSettings(): Promise<WikiSettingsView> {
+  return getTransport().call("get_wiki_settings")
+}
+
+export async function updateWikiSettings(
+  settings: WikiSettings
+): Promise<WikiSettingsView> {
+  return getTransport().call("update_wiki_settings", { settings })
+}
+
+export async function wikiListJobs(params?: {
+  limit?: number
+  offset?: number
+  status?: WikiJobStatus
+}): Promise<unknown> {
+  return getTransport().call("wiki_list_jobs", {
+    limit: params?.limit ?? null,
+    offset: params?.offset ?? null,
+    status: params?.status ?? null,
+  })
+}
+
+export async function wikiGetJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_get_job", { id })
+}
+
+export async function wikiListSources(params?: {
+  limit?: number
+  offset?: number
+  source_kind?: WikiSourceKind
+}): Promise<unknown> {
+  return getTransport().call("wiki_list_sources", {
+    limit: params?.limit ?? null,
+    offset: params?.offset ?? null,
+    source_kind: params?.source_kind ?? null,
+  })
+}
+
+export async function wikiGetSource(id: string): Promise<WikiSource> {
+  return getTransport().call("wiki_get_source", { id })
+}
+
+export async function wikiVaultTree(params?: {
+  path?: string | null
+  recursive?: boolean
+  includeRaw?: boolean
+}): Promise<WikiVaultTreeNode[] | Record<string, unknown>> {
+  return getTransport().call("wiki_vault_tree", {
+    path: params?.path ?? null,
+    recursive: params?.recursive ?? null,
+    include_raw: params?.includeRaw ?? null,
+  })
+}
+
+export async function wikiVaultRead(path: string): Promise<unknown> {
+  return getTransport().call("wiki_vault_read", { path })
+}
+
+export async function wikiImportText(params: {
+  request_id: string
+  text: string
+  title?: string | null
+  source_url?: string | null
+  author?: string | null
+  material_role?: string | null
+  personal_role?: string | null
+  project_ids?: string[] | null
+  area_ids?: string[] | null
+}): Promise<WikiImportResult> {
+  return getTransport().call("wiki_import_text", {
+    request_id: params.request_id,
+    text: params.text,
+    title: params.title ?? null,
+    source_url: params.source_url ?? null,
+    author: params.author ?? null,
+    material_role: params.material_role ?? null,
+    personal_role: params.personal_role ?? null,
+    project_ids: params.project_ids ?? null,
+    area_ids: params.area_ids ?? null,
+  })
+}
+
+export async function wikiImportFiles(params: {
+  request_id: string
+  files: Array<{
+    filename: string
+    mime?: string | null
+    bytes_base64: string
+  }>
+  material_role?: string | null
+  personal_role?: string | null
+  title?: string | null
+  source_url?: string | null
+  author?: string | null
+  batch_id?: string | null
+  project_ids?: string[] | null
+  area_ids?: string[] | null
+}): Promise<WikiImportResult> {
+  return getTransport().call(
+    "wiki_import_files",
+    {
+      request_id: params.request_id,
+      files: params.files,
+      material_role: params.material_role ?? null,
+      personal_role: params.personal_role ?? null,
+      title: params.title ?? null,
+      source_url: params.source_url ?? null,
+      author: params.author ?? null,
+      batch_id: params.batch_id ?? null,
+      project_ids: params.project_ids ?? null,
+      area_ids: params.area_ids ?? null,
+    },
+    { timeoutMs: 90_000 }
+  )
+}
+
+export async function wikiAcceptExtraction(
+  sourceId: string
+): Promise<WikiSource> {
+  return getTransport().call("wiki_accept_extraction", {
+    source_id: sourceId,
+  })
+}
+
+export async function wikiUpdateSourceAnnotations(params: {
+  source_id: string
+  material_role?: string | null
+  personal_role?: string | null
+  project_ids?: string[] | null
+  area_ids?: string[] | null
+}): Promise<WikiSource> {
+  return getTransport().call("wiki_update_source_annotations", {
+    source_id: params.source_id,
+    material_role: params.material_role ?? null,
+    personal_role: params.personal_role ?? null,
+    project_ids: params.project_ids ?? null,
+    area_ids: params.area_ids ?? null,
+  })
+}
+
+export async function wikiReextract(
+  sourceId: string
+): Promise<WikiImportResult> {
+  return getTransport().call("wiki_reextract", { source_id: sourceId })
+}
+
+export async function wikiLinkSourceVersion(
+  sourceId: string,
+  previousSourceId: string
+): Promise<WikiSource> {
+  return getTransport().call("wiki_link_source_version", {
+    source_id: sourceId,
+    previous_source_id: previousSourceId,
+  })
+}
+
+export async function wikiCompileNow(requestId: string): Promise<WikiJob> {
+  return getTransport().call("wiki_compile_now", { request_id: requestId })
+}
+
+export async function wikiRetryJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_retry_job", { id })
+}
+
+export async function wikiCancelJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_cancel_job", { id })
 }

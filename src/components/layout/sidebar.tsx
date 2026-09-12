@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
+  BookMarked,
   Crosshair,
   Eye,
   ListChevronsDownUp,
@@ -106,6 +107,7 @@ const NAV_ITEM_ICONS: Record<SidebarNavItemId, LucideIcon> = {
   forge: LayoutTemplate,
   canvas: MapIcon,
   toolbox: Wrench,
+  wiki: BookMarked,
 }
 
 /**
@@ -588,6 +590,17 @@ export function Sidebar() {
             onClick={() => {
               if (isMobile) toggle()
               setRoute("toolbox")
+            }}
+          />
+        )}
+        {isNavItemVisible(navItems, "wiki") && (
+          <SidebarNavButton
+            icon={BookMarked}
+            label={t("wiki")}
+            active={routeId === "wiki"}
+            onClick={() => {
+              if (isMobile) toggle()
+              setRoute("wiki")
             }}
           />
         )}

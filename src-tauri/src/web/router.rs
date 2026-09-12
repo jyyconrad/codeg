@@ -1597,6 +1597,52 @@ pub fn build_router(
             "/work_task_template_delete",
             post(handlers::work_task::work_task_template_delete),
         )
+        // ─── Personal wiki ───
+        .route(
+            "/get_wiki_settings",
+            post(handlers::wiki::get_wiki_settings),
+        )
+        .route(
+            "/update_wiki_settings",
+            post(handlers::wiki::update_wiki_settings),
+        )
+        .route("/wiki_list_jobs", post(handlers::wiki::wiki_list_jobs))
+        .route("/wiki_get_job", post(handlers::wiki::wiki_get_job))
+        .route(
+            "/wiki_list_sources",
+            post(handlers::wiki::wiki_list_sources),
+        )
+        .route("/wiki_get_source", post(handlers::wiki::wiki_get_source))
+        .route("/wiki_vault_tree", post(handlers::wiki::wiki_vault_tree))
+        .route("/wiki_vault_read", post(handlers::wiki::wiki_vault_read))
+        .route(
+            "/wiki_import_text",
+            post(handlers::wiki::wiki_import_text).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
+            "/wiki_import_files",
+            // One file per request. 20 MiB decoded ≈ 27 MiB base64 + JSON envelope.
+            post(handlers::wiki::wiki_import_files).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/wiki_accept_extraction",
+            post(handlers::wiki::wiki_accept_extraction),
+        )
+        .route(
+            "/wiki_update_source_annotations",
+            post(handlers::wiki::wiki_update_source_annotations),
+        )
+        .route("/wiki_reextract", post(handlers::wiki::wiki_reextract))
+        .route(
+            "/wiki_link_source_version",
+            post(handlers::wiki::wiki_link_source_version),
+        )
+        .route(
+            "/wiki_compile_now",
+            post(handlers::wiki::wiki_compile_now),
+        )
+        .route("/wiki_retry_job", post(handlers::wiki::wiki_retry_job))
+        .route("/wiki_cancel_job", post(handlers::wiki::wiki_cancel_job))
         // ─── Workspace background ───
         .route(
             "/background_read",

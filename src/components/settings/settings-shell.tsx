@@ -9,6 +9,7 @@ import {
 } from "react"
 import {
   Bot,
+  BookMarked,
   BookOpenText,
   Boxes,
   Braces,
@@ -50,6 +51,7 @@ interface SettingsNavItem {
     | "code_intelligence"
     | "skills"
     | "skill_packs"
+    | "wiki"
     | "quick_messages"
     | "shortcuts"
     | "version_control"
@@ -94,6 +96,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/skill-packs",
     labelKey: "skill_packs",
     icon: Boxes,
+  },
+  {
+    href: "/settings/wiki",
+    labelKey: "wiki",
+    icon: BookMarked,
   },
   {
     href: "/settings/agents",

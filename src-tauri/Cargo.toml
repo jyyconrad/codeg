@@ -97,6 +97,10 @@ bzip2 = "0.5"
 zstd = "0.13"
 tar = "0.4"
 zip = "2"
+# Wiki document extractors (PR2 extract slice). Pure Rust; no poppler/Office/OCR.
+# `document_extract` is compiled via tests until the wiki orchestrator wires lib.rs.
+lopdf = { version = "0.44", default-features = false }
+quick-xml = "0.37"
 regex = "1"
 portable-pty = "0.8"
 urlencoding = "2"
@@ -194,6 +198,10 @@ temp-env = { version = "0.3", features = ["async_closure"] }
 tokio = { version = "1", features = ["test-util", "macros", "rt", "sync", "time"] }
 insta = { version = "1", features = ["json", "redactions"] }
 axum-test = { version = "17", features = ["ws"] }
+# Path-included by tests/document_extract.rs until lib.rs is wired.
+lopdf = { version = "0.44", default-features = false }
+quick-xml = "0.37"
+zip = "2"
 
 [patch.crates-io]
 sacp-tokio = { path = "vendor/sacp-tokio" }

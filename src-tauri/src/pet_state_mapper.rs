@@ -654,6 +654,7 @@ mod tests {
                 session_id: "s1".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         ));
         s.apply(&env(
@@ -731,6 +732,7 @@ mod tests {
                 session_id: "s1".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         ));
         s.apply(&env(
@@ -791,6 +793,7 @@ mod tests {
                 session_id: "s1".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         ));
 
@@ -1179,6 +1182,7 @@ mod tests {
                 session_id: "s".into(),
                 stop_reason: "cancelled".into(),
                 agent_type: "codex".into(),
+                run_id: None,
             },
             AcpEvent::StatusChanged {
                 status: ConnectionStatus::Disconnected,
@@ -1224,6 +1228,7 @@ mod tests {
                 session_id: "s".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
             AcpEvent::ConversationStatusChanged {
                 conversation_id: 1,
@@ -1446,6 +1451,7 @@ mod tests {
                 session_id: "s".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         );
 

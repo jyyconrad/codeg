@@ -55,7 +55,8 @@
       "office_tools": "أدوات المكتب",
       "skill_packs": "حزم المهارات",
       "quick_messages": "رسائل سريعة",
-      "logs": "سجلات التشغيل"
+      "logs": "سجلات التشغيل",
+      "wiki": "ويكي شخصي"
     }
   },
   "CodeIntelligenceSettings": {
@@ -1654,7 +1655,8 @@
   "SettingsPages": {
     "agentsLoading": "جارٍ تحميل إعدادات الوكلاء...",
     "skillPacksLoading": "جارٍ تحميل حزم المهارات…",
-    "codegAgentLoading": "جارٍ تحميل إعدادات الوكيل المدمج..."
+    "codegAgentLoading": "جارٍ تحميل إعدادات الوكيل المدمج...",
+    "wikiLoading": "جارٍ تحميل إعدادات الويكي..."
   },
   "CodegAgentSettings": {
     "sectionTitle": "الوكيل المدمج",
@@ -2010,6 +2012,7 @@
       "forge": "لوحة المستودع",
       "canvas": "محادثات لا نهائية",
       "toolbox": "صندوق الأدوات",
+      "wiki": "ويكي شخصي",
       "folderGroup": {
         "newGroup": "مجموعة جديدة",
         "newGroupTitle": "مجموعة مجلدات جديدة",
@@ -6271,6 +6274,181 @@
         "description": "Parse a PEM certificate: subject, SAN, validity, SHA-256 fingerprint. No CRL/OCSP.",
         "aliases": "x509 pem certificate"
       }
+    }
+  },
+
+  "WikiSettings": {
+    "sectionTitle": "ويكي شخصي",
+    "sectionDescription": "Capture completed work sessions and imported documents into a local Markdown vault. Compile turns those sources into work notes and capability notes with citations.",
+    "loading": "جارٍ التحميل...",
+    "loadFailed": "تعذر تحميل إعدادات الويكي: {message}",
+    "retry": "إعادة المحاولة",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ...",
+    "saved": "تم حفظ إعدادات الويكي",
+    "saveFailed": "تعذر حفظ إعدادات الويكي: {message}",
+    "enabled": "تفعيل الويكي الشخصي",
+    "enabledHint": "Turning this on stores session and imported text in a local vault. Extracted text may later be sent to the bound model for ingest and compile.",
+    "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
+    "statusTitle": "Schedule",
+    "statusDescription": "Next compile time and sources still waiting to be analyzed.",
+    "nextCompileAt": "التجميع التالي",
+    "pendingSources": "مصادر معلّقة",
+    "notScheduled": "غير مجدول",
+    "vaultTitle": "Vault",
+    "vaultDescription": "One vault for work notes, capability notes, shared knowledge, and sources. Changing the path does not move files.",
+    "vaultPath": "Vault path",
+    "vaultPathHint": "Optional override. Leave empty to use the default Codeg wiki directory. Pause in-flight jobs before switching paths.",
+    "vaultPathPlaceholder": "Leave empty for the default path",
+    "timezone": "المنطقة الزمنية",
+    "timezoneHint": "IANA timezone for the compile schedule. First use follows the system timezone, then stays as saved.",
+    "compileCron": "Compile schedule (cron)",
+    "compileCronHint": "Five-field cron. Default is 0 3 * * * (03:00 every day).",
+    "captureTitle": "التقاط",
+    "captureDescription": "Successful ACP turns can be saved as sources. Delegate and Loop sub-sessions are skipped.",
+    "acpEnabled": "التقاط جلسات ACP المكتملة",
+    "acpEnabledHint": "Freeze successful ACP turns into the vault as sources.",
+    "excludeAgentTypes": "استبعاد أنواع الوكلاء",
+    "excludeAgentTypesHint": "Checked agents are not captured.",
+    "excludeFolders": "استبعاد المجلدات",
+    "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
+    "excludeFoldersPlaceholder": "e.g. 12, 34",
+    "unknownFolder": "المجلد {id}",
+    "ingestTitle": "الاستيعاب",
+    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
+    "ingestModel": "Ingest model id",
+    "ingestModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "ingestModelPlaceholder": "Bound default",
+    "ingestPrompt": "Ingest prompt",
+    "ingestPromptPlaceholder": "Optional extra instructions for source analysis",
+    "compileTitle": "التجميع",
+    "compileDescription": "Compile updates work and capability notes from ready sources.",
+    "compileEnabled": "تفعيل التجميع",
+    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
+    "compileNowUnavailable": "«تجميع الآن» في منضدة العمل غير متاح عندما يكون التجميع معطّلًا.",
+    "compileModel": "Compile model id",
+    "compileModelHint": "Leave empty to use the bound Codeg Agent default model.",
+    "compileModelPlaceholder": "Bound default",
+    "compilePrompt": "Compile prompt",
+    "compilePromptPlaceholder": "Optional extra instructions for work and capability compile"
+  },
+  "Wiki": {
+    "title": "ويكي شخصي",
+    "views": {
+      "all": "الكل",
+      "work": "العمل",
+      "capabilities": "القدرات",
+      "sources": "المصادر",
+      "jobs": "المهام"
+    },
+    "openInObsidian": "فتح في Obsidian",
+    "openInObsidianSoon": "Desktop local opener in a later slice",
+    "loading": "جارٍ التحميل...",
+    "loadFailed": "تعذر التحميل: {message}",
+    "retry": "إعادة المحاولة",
+    "refresh": "تحديث",
+    "loadMore": "تحميل المزيد",
+    "empty": "لا يوجد شيء بعد",
+    "treeTitle": "Vault · {path}",
+    "showRaw": "إظهار الأدلة الأصلية (raw/)",
+    "all": {
+      "emptyTitle": "كل الملاحظات",
+      "emptyDescription": "كل نصوص المعرفة في هذا المخزن: index.md وwork/ وcapabilities/ وknowledge/ وsources/ وjournal/ وlog.md وAGENTS.md. افتح ملف Markdown لقراءة النص كاملاً. تبقى روابط [[wikilink]] داخل المخزن."
+    },
+    "work": {
+      "emptyTitle": "لا توجد ملاحظات عمل بعد",
+      "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."
+    },
+    "capabilities": {
+      "emptyTitle": "لا توجد ملاحظات قدرات بعد",
+      "emptyDescription": "Capability pages are named after reusable work, not projects or models. Each page covers scope, methods, practice evidence, current boundaries, and a next practice suggestion. There are no mastery scores or proficiency ranks.",
+      "evidenceReference": "Reference — a method that can be learned; not proof you practiced it.",
+      "evidenceApplication": "Application — the method was used in work; the actor and role stay explicit.",
+      "evidenceResult": "Result — a test, review, or delivery in a stated context; one case is not universal proof.",
+      "evidenceReflection": "Reflection — a write-up of tradeoffs or failures; self-report is not external verification."
+    },
+    "sources": {
+      "emptyTitle": "لا توجد مصادر بعد",
+      "emptyDescription": "Successful ACP sessions and imported documents land here. Import files or paste text below. Default material role is reference; authorship is never inferred.",
+      "importFiles": "استيراد ملفات",
+      "importPaste": "استيراد النص الملصق",
+      "pastePlaceholder": "الصق Markdown أو نصًا عاديًا للاستيراد…",
+      "importHint": "Markdown وTXT وPDF وDOCX. حتى 20 ملفًا، 20 ميبي بايت لكل ملف. نفس البايتات تعيد المصدر الحالي.",
+      "disabledHint": "فعّل Wiki من الإعدادات قبل الاستيراد.",
+      "privacyHint": "تبقى الملفات الثنائية الأصلية على هذا الجهاز. قد يُرسل النص المستخرج لاحقًا إلى النموذج المرتبط. لا تُجلب روابط المستند ولا تُنفَّذ الماكروات.",
+      "warningsTitle": "تحذيرات الاستخراج",
+      "partialBanner": "استخراج النص جزئي (صفحات ناقصة أو مناطق غير قابلة للقراءة). اقبل هذا النطاق للسماح بالتجميع.",
+      "acceptExtraction": "قبول الاستخراج الحالي",
+      "accepting": "جارٍ القبول…",
+      "importing": "جارٍ الاستيراد…",
+      "importFailed": "فشل الاستيراد: {message}",
+      "duplicateNotice": "تم استيراد هذا الملف مسبقًا؛ يتم عرض المصدر الحالي.",
+      "fileTooLarge": "{name} يتجاوز حد 20 ميبي بايت وتم تخطيه.",
+      "titlePlaceholder": "العنوان (اختياري)",
+      "sourceUrlPlaceholder": "رابط المصدر (اختياري، لا يُجلب)",
+      "authorPlaceholder": "المؤلف (اختياري)",
+      "personalRolePlaceholder": "دورك (اختياري)",
+      "materialRoleLabel": "دور المادة",
+      "saveAnnotations": "حفظ التعليقات",
+      "materialRole": {
+        "reference": "مرجع",
+        "own-work": "عمل شخصي",
+        "team-work": "عمل الفريق",
+        "unspecified": "غير محدد"
+      },
+      "listTitle": "{count, plural, one {مصدر واحد} other {# مصادر}}",
+      "previewTitle": "معاينة",
+      "untitled": "مصدر بلا عنوان",
+      "kind": {
+        "acp-turn": "ACP session",
+        "document": "Document",
+        "pasted-text": "Pasted text",
+        "unknown": "Source"
+      },
+      "eligibility": {
+        "processing": "Processing",
+        "awaiting-acceptance": "Awaiting acceptance",
+        "ready": "Ready",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "withdrawn": "Withdrawn",
+        "unknown": "Unknown"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "لا توجد مهام بعد",
+      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
+      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
+      "compileNow": "Compile now",
+      "compiling": "Starting compile…",
+      "retryJob": "Retry job",
+      "cancelJob": "Cancel job",
+      "compileDisabled": "Compile is turned off in Settings.",
+      "allStatuses": "كل الحالات",
+      "detailPlaceholder": "Select a job to see details.",
+      "kind": {
+        "ingest": "استيعاب",
+        "compile": "تجميع",
+        "unknown": "مهمة"
+      },
+      "status": {
+        "queued": "في الانتظار",
+        "running": "قيد التشغيل",
+        "succeeded": "نجح",
+        "failed": "فشل",
+        "cancelled": "أُلغي",
+        "unknown": "غير معروف"
+      },
+      "error": "Error",
+      "attempt": "Attempt {n}",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "startedAt": "Started",
+      "finishedAt": "Finished"
+    },
+    "note": {
+      "untitled": "بلا عنوان",
+      "preview": "اختر ملاحظة للمعاينة."
     }
   }
 }

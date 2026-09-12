@@ -714,6 +714,7 @@ mod permission_push_tests {
                 session_id: "s".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         }
     }
@@ -987,6 +988,7 @@ mod permission_push_tests {
                 session_id: "s".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         process_envelope(
@@ -1033,6 +1035,7 @@ mod permission_push_tests {
                 session_id: "s".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         process_envelope(
@@ -1114,6 +1117,7 @@ mod permission_push_tests {
                     session_id: "s".into(),
                     stop_reason: "end_turn".into(),
                     agent_type: "Grok".into(),
+                    run_id: None,
                 },
             },
             &bridge,
