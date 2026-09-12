@@ -49,9 +49,10 @@ coverage/
 *.p12
 certificate-base64.txt
 
-# Agent
+# Agent / local tooling (not product)
 .claude
 .docs
+.grok
 docs/superpowers
 
 # Tauri sidecar staging (built per-target by prepare-sidecars.mjs).
