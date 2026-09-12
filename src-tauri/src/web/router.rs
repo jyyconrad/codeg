@@ -90,6 +90,18 @@ pub fn build_router(
             post(handlers::feedback::submit_session_feedback),
         )
         .route(
+            "/get_code_intel_settings",
+            post(handlers::code_intel::get_code_intel_settings),
+        )
+        .route(
+            "/set_code_intel_settings",
+            post(handlers::code_intel::set_code_intel_settings),
+        )
+        .route(
+            "/get_code_intel_status",
+            post(handlers::code_intel::get_code_intel_status),
+        )
+        .route(
             "/get_question_settings",
             post(handlers::question::get_question_settings),
         )

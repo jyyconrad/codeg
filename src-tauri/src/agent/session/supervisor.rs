@@ -23,7 +23,10 @@ use crate::acp::types::{
     SessionConfigSelectOptionInfo, UserMessageBlock,
 };
 use crate::acp_transcript::{now_epoch_ms, record_header_critical_in, TranscriptHeader};
-use crate::agent::code_intel::{load_code_intel_config, resolve_codegraph_binary};
+use crate::agent::code_intel::{
+    load_code_intel_config, resolve_codegraph_binary, should_run_host_index, spawn_host_index,
+    HostIndexAction,
+};
 use crate::agent::context::transcript::tool_call_update_payload;
 use crate::agent::context::{
     agent_message_chunk, open_codeg_agent_session, BudgetConfig, CallIdentityBridge, ContextStore,
@@ -131,6 +134,24 @@ impl NativeSessionSupervisor {
 
 struct SessionOutcome {
     err: Option<String>,
+}
+
+fn spawn_session_host_index(args: &NativeSessionArgs) {
+    let intel = load_code_intel_config();
+    let binary = resolve_codegraph_binary(&intel.codegraph);
+    let action = should_run_host_index(&intel, binary.as_deref(), &args.launch_cwd);
+    if matches!(action, HostIndexAction::Skip) {
+        return;
+    }
+    let Some(binary) = binary else {
+        return;
+    };
+    let cwd = args.launch_cwd.clone();
+    let owners = args.shutdown.owners();
+    let cancel = args.shutdown.token();
+    tokio::spawn(async move {
+        spawn_host_index(binary, cwd, action, owners, cancel).await;
+    });
 }
 
 async fn run_session(
@@ -316,6 +337,7 @@ async fn run_session(
     .await;
     crate::agent::mode::emit_modes(&args.session_state, &args.emitter, &initial_mode).await;
     emit_with_state(&args.session_state, &args.emitter, AcpEvent::SelectorsReady).await;
+    spawn_session_host_index(args);
 
     let wire = resolve_session_wire_protocol(&args.effective_config).await;
     let client = match CodegLlmClient::build(

@@ -5051,6 +5051,70 @@ export async function setFeedbackSettings(
   return getTransport().call("set_feedback_settings", { settings })
 }
 
+// ─── Code intelligence settings ───────────────────────────────────────────
+
+/** Mirror of Rust `CustomLspServer`. */
+export interface CustomLspServer {
+  id: string
+  language: string
+  command: string
+  args: string[]
+  extensions: string[]
+  manifests: string[]
+}
+
+/** Mirror of Rust `CodeIntelConfig`. */
+export interface CodeIntelConfig {
+  enabled: boolean
+  codegraph: {
+    enabled: boolean
+    binary_path: string | null
+  }
+  lsp: {
+    auto_attach: boolean
+    max_concurrent: number
+    checked: string[]
+    custom: CustomLspServer[]
+  }
+}
+
+/** Mirror of Rust `LspServerStatus`. */
+export interface LspServerStatus {
+  id: string
+  language: string
+  binary: string
+  binary_on_path: boolean
+  checked: boolean
+  language_detected: boolean
+  default_checked: boolean
+  custom: boolean
+}
+
+/** Mirror of Rust `CodeIntelStatus`. */
+export interface CodeIntelStatus {
+  config: CodeIntelConfig
+  codegraph_binary: string | null
+  codegraph_indexed: boolean
+  cwd: string | null
+  lsp_servers: LspServerStatus[]
+}
+
+export async function getCodeIntelSettings(): Promise<CodeIntelConfig> {
+  return getTransport().call("get_code_intel_settings")
+}
+
+export async function setCodeIntelSettings(
+  settings: CodeIntelConfig
+): Promise<CodeIntelConfig> {
+  return getTransport().call("set_code_intel_settings", { settings })
+}
+
+export async function getCodeIntelStatus(
+  cwd?: string | null
+): Promise<CodeIntelStatus> {
+  return getTransport().call("get_code_intel_status", { cwd })
+}
+
 /**
  * Submit a live-feedback note to a running connection (the `check_user_feedback`
  * steering path). Returns the stored note (it also arrives via the
