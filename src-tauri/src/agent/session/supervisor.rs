@@ -1032,20 +1032,23 @@ async fn start_prompt(
             Arc::clone(&pending_continue),
         )
     });
-    let subagent = Some(SubagentTool::new(
-        tool_ctx.clone(),
-        client.clone(),
-        model_id.to_string(),
-        turn_preamble.clone(),
-        catalog,
-        BudgetConfig::new(window, max_output).with_compact(
-            args.effective_config.compact_soft_percent,
-            args.effective_config.compact_recent_turns as usize,
-        ),
-        subagents,
-        inject_tx,
-        artifacts_dir.clone(),
-    ));
+    let subagent = Some(
+        SubagentTool::new(
+            tool_ctx.clone(),
+            client.clone(),
+            model_id.to_string(),
+            turn_preamble.clone(),
+            catalog,
+            BudgetConfig::new(window, max_output).with_compact(
+                args.effective_config.compact_soft_percent,
+                args.effective_config.compact_recent_turns as usize,
+            ),
+            subagents,
+            inject_tx,
+            artifacts_dir.clone(),
+        )
+        .with_owners(args.shutdown.owners()),
+    );
     let mcp_tools = {
         let tools = mcp.dynamic_tools(tool_ctx.clone());
         if in_plan {

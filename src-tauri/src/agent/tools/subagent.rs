@@ -2,7 +2,7 @@
 //! returns immediately; the session shell injects the result later.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::agent::model::CodegLlmClient;
@@ -17,10 +17,13 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use super::codegraph::should_inject_codegraph;
 use super::{
-    schema_for, GlobTool, GrepTool, NativeToolCtx, ReadFileTool, RecallTool, SkillCatalog,
-    SkillTool, WriteExploreReportTool,
+    schema_for, CodegraphTool, GlobTool, GrepTool, NativeToolCtx, ReadFileTool, RecallTool,
+    SkillCatalog, SkillTool, WriteExploreReportTool,
 };
+use crate::acp::process_owner::ProcessOwnerRegistry;
+use crate::agent::code_intel::{load_code_intel_config, resolve_codegraph_binary, CodeIntelConfig};
 use crate::agent::context::budget::BudgetConfig;
 use crate::agent::context::{CallIdentityBridge, ContextStore, FactRecorder};
 use crate::agent::hook::{CodegHook, HookTrace, NativeRunState};
@@ -178,6 +181,7 @@ pub struct SubagentTool {
     table: Arc<Mutex<SubagentTable>>,
     inject_tx: mpsc::Sender<NativeInject>,
     artifacts_dir: PathBuf,
+    owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
 }
 
 impl SubagentTool {
@@ -202,7 +206,13 @@ impl SubagentTool {
             table,
             inject_tx,
             artifacts_dir,
+            owners: None,
         }
+    }
+
+    pub fn with_owners(mut self, owners: Arc<Mutex<ProcessOwnerRegistry>>) -> Self {
+        self.owners = Some(owners);
+        self
     }
 }
 
@@ -343,6 +353,7 @@ impl Tool for SubagentTool {
             tool_call_id: fact.tool_call_id.clone(),
             artifacts_dir: self.artifacts_dir.clone(),
             thoroughness,
+            owners: self.owners.clone(),
         };
         let handle = tokio::spawn(run_inner_and_inject(spawn));
         self.table
@@ -373,6 +384,7 @@ struct InnerSpawn {
     tool_call_id: String,
     artifacts_dir: PathBuf,
     thoroughness: String,
+    owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
 }
 
 async fn run_inner_and_inject(spawn: InnerSpawn) {
@@ -394,6 +406,7 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
         tool_call_id,
         artifacts_dir,
         thoroughness,
+        owners,
     } = spawn;
 
     let (outcome, text) = tokio::select! {
@@ -412,6 +425,7 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
             child.clone(),
             artifacts_dir.clone(),
             thoroughness,
+            owners,
         ) => result,
     };
 
@@ -461,6 +475,51 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
     table.lock().expect("subagent table").clear_if(&id);
 }
 
+/// Same injection predicate as the parent: master + codegraph enabled.
+/// A missing binary still injects so the inner model sees the install hint.
+fn inner_codegraph_tool(cfg: &CodeIntelConfig, _binary: Option<&Path>) -> bool {
+    should_inject_codegraph(cfg)
+}
+
+fn inner_codegraph_path(binary: Option<&Path>) -> PathBuf {
+    binary
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("codegraph"))
+}
+
+fn build_inner_codegraph(
+    ctx: NativeToolCtx,
+    cfg: &CodeIntelConfig,
+    binary: Option<&Path>,
+    owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
+) -> Option<CodegraphTool> {
+    inner_codegraph_tool(cfg, binary)
+        .then(|| CodegraphTool::new(ctx, inner_codegraph_path(binary), owners))
+}
+
+fn inner_tool_schemas(
+    read: &ReadFileTool,
+    recall: &RecallTool,
+    glob: &GlobTool,
+    grep: &GrepTool,
+    skill: &SkillTool,
+    write_explore: &WriteExploreReportTool,
+    codegraph: Option<&CodegraphTool>,
+) -> Vec<Value> {
+    let mut schemas = vec![
+        schema_for(read),
+        schema_for(recall),
+        schema_for(glob),
+        schema_for(grep),
+        schema_for(skill),
+        schema_for(write_explore),
+    ];
+    if let Some(tool) = codegraph {
+        schemas.push(schema_for(tool));
+    }
+    schemas
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_inner_subagent(
     client: CodegLlmClient,
@@ -475,6 +534,7 @@ async fn run_inner_subagent(
     cancel: CancellationToken,
     artifacts_dir: PathBuf,
     thoroughness: String,
+    owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
 ) -> (NativeTurnOutcome, String) {
     let identity = Arc::new(CallIdentityBridge::new());
     let store = Arc::new(Mutex::new(ContextStore::new(format!("sub:{session_id}"))));
@@ -489,6 +549,9 @@ async fn run_inner_subagent(
         session_id,
         spill_dir: PathBuf::new(),
     };
+    let intel = load_code_intel_config();
+    let resolved = resolve_codegraph_binary(&intel.codegraph);
+    let codegraph = build_inner_codegraph(inner_ctx.clone(), &intel, resolved.as_deref(), owners);
     let read = ReadFileTool::new(inner_ctx.clone());
     let recall = RecallTool::new(inner_ctx.clone());
     let glob = GlobTool::new(inner_ctx.clone());
@@ -497,14 +560,15 @@ async fn run_inner_subagent(
     let write_explore = WriteExploreReportTool::new(inner_ctx, artifacts_dir);
     let skill_body = catalog.skill_body("explore");
     let preamble = subagent_preamble(&parent_preamble, &thoroughness, skill_body.as_deref());
-    let tool_schemas = vec![
-        schema_for(&read),
-        schema_for(&recall),
-        schema_for(&glob),
-        schema_for(&grep),
-        schema_for(&skill),
-        schema_for(&write_explore),
-    ];
+    let tool_schemas = inner_tool_schemas(
+        &read,
+        &recall,
+        &glob,
+        &grep,
+        &skill,
+        &write_explore,
+        codegraph.as_ref(),
+    );
     let native = NativeRunState {
         turn_id: 1,
         turn_key: "sub:1".into(),
@@ -541,6 +605,7 @@ async fn run_inner_subagent(
                         grep,
                         skill,
                         write_explore,
+                        codegraph,
                         hook,
                     )
                     .await
@@ -557,6 +622,7 @@ async fn run_inner_subagent(
                         grep,
                         skill,
                         write_explore,
+                        codegraph,
                         hook,
                     )
                     .await
@@ -575,6 +641,7 @@ async fn run_inner_subagent(
 }
 
 /// Assemble a read-only inner agent. No write/edit/bash/mcp/companion/plan/subagent.
+#[allow(clippy::too_many_arguments)]
 async fn assemble_inner<C>(
     client: C,
     model_id: String,
@@ -586,13 +653,14 @@ async fn assemble_inner<C>(
     grep: GrepTool,
     skill: SkillTool,
     write_explore: WriteExploreReportTool,
+    codegraph: Option<CodegraphTool>,
     hook: CodegHook,
 ) -> rig::agent::StreamingResult
 where
     C: AgentClientExt + Send,
     C::CompletionModel: 'static,
 {
-    client
+    let mut builder = client
         .agent(&model_id)
         .preamble(&preamble)
         .default_max_turns(SUBAGENT_MAX_TURNS)
@@ -601,7 +669,11 @@ where
         .tool(glob)
         .tool(grep)
         .tool(skill)
-        .tool(write_explore)
+        .tool(write_explore);
+    if let Some(codegraph) = codegraph {
+        builder = builder.tool(codegraph);
+    }
+    builder
         .build()
         .runner(prompt)
         .history(Vec::<Message>::new())
@@ -891,6 +963,98 @@ mod tests {
             }
         }
         assert!(!table.lock().expect("table").is_inflight());
+    }
+
+    fn inner_tool_names(
+        cfg: &crate::agent::code_intel::CodeIntelConfig,
+        binary: Option<&Path>,
+    ) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_tool_ctx(dir.path(), "inner", "c1");
+        let read = ReadFileTool::new(ctx.clone());
+        let recall = RecallTool::new(ctx.clone());
+        let glob = GlobTool::new(ctx.clone());
+        let grep = GrepTool::new(ctx.clone());
+        let skill = SkillTool::new(ctx.clone(), SkillCatalog::default());
+        let write_explore = WriteExploreReportTool::new(ctx.clone(), dir.path().to_path_buf());
+        let codegraph = build_inner_codegraph(ctx, cfg, binary, None);
+        inner_tool_schemas(
+            &read,
+            &recall,
+            &glob,
+            &grep,
+            &skill,
+            &write_explore,
+            codegraph.as_ref(),
+        )
+        .iter()
+        .filter_map(|schema| {
+            schema
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+    }
+
+    #[test]
+    fn inner_codegraph_tool_follows_parent_injection_predicate() {
+        let mut cfg = crate::agent::code_intel::default_config();
+        assert!(!inner_codegraph_tool(&cfg, None));
+        cfg.enabled = true;
+        assert!(inner_codegraph_tool(&cfg, None));
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("fake-codegraph");
+        std::fs::write(&binary, "ok").unwrap();
+        assert!(inner_codegraph_tool(&cfg, Some(binary.as_path())));
+        cfg.codegraph.enabled = false;
+        assert!(!inner_codegraph_tool(&cfg, Some(binary.as_path())));
+    }
+
+    #[test]
+    fn inner_schema_includes_codegraph_when_enabled_and_binary_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("fake-codegraph");
+        std::fs::write(&binary, "ok").unwrap();
+        let mut cfg = crate::agent::code_intel::default_config();
+        cfg.enabled = true;
+        let names = inner_tool_names(&cfg, Some(binary.as_path()));
+        assert!(names.iter().any(|n| n == "codegraph"), "{names:?}");
+        assert!(names.iter().any(|n| n == "read_file"), "{names:?}");
+        assert!(names.iter().any(|n| n == "grep"), "{names:?}");
+        for forbidden in [
+            "write_file",
+            "edit_file",
+            "bash",
+            "subagent",
+            "lsp",
+            "update_plan",
+            "write_plan",
+            "enter_plan_mode",
+            "exit_plan_mode",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "{names:?} contains {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn inner_schema_includes_codegraph_when_enabled_without_binary() {
+        let mut cfg = crate::agent::code_intel::default_config();
+        cfg.enabled = true;
+        assert!(inner_codegraph_tool(&cfg, None));
+        let names = inner_tool_names(&cfg, None);
+        assert!(names.iter().any(|n| n == "codegraph"), "{names:?}");
+    }
+
+    #[test]
+    fn inner_schema_omits_codegraph_when_disabled() {
+        let cfg = crate::agent::code_intel::default_config();
+        assert!(!inner_codegraph_tool(&cfg, None));
+        let names = inner_tool_names(&cfg, None);
+        assert!(!names.iter().any(|n| n == "codegraph"), "{names:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
