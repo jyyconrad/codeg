@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::NativeToolCtx;
+use crate::acp::file_system_runtime::FileSystemRuntimeError;
 use crate::acp::process_owner::ProcessOwnerRegistry;
 use crate::agent::code_intel::{
     build_codegraph_argv, codegraph_has_index, spawn_codegraph, CodeIntelConfig, CodegraphOp,
@@ -52,10 +53,14 @@ impl CodegraphTool {
         if !codegraph_has_index(&self.ctx.launch_cwd) {
             return MISSING_INDEX.to_string();
         }
+        let path = match resolve_checked_path(&self.ctx, args.path.as_deref()) {
+            Ok(path) => path,
+            Err(msg) => return msg,
+        };
         let argv = match build_codegraph_argv(
             op,
             args.query.as_deref(),
-            args.path.as_deref(),
+            path.as_deref(),
             args.kind.as_deref(),
             args.limit,
             args.depth,
@@ -97,6 +102,22 @@ pub struct CodegraphArgs {
 
 pub(crate) fn should_inject_codegraph(cfg: &CodeIntelConfig) -> bool {
     cfg.enabled && cfg.codegraph.enabled
+}
+
+fn resolve_checked_path(ctx: &NativeToolCtx, path: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = path.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let resolved = ctx.resolve_path(raw).map_err(|err| {
+        err.model_feedback()
+            .unwrap_or_else(|| err.message())
+            .to_string()
+    })?;
+    ctx.fs.check_read(&resolved).map_err(|err| match err {
+        FileSystemRuntimeError::InvalidParams(message)
+        | FileSystemRuntimeError::Internal(message) => message,
+    })?;
+    Ok(Some(resolved.to_string_lossy().into_owned()))
 }
 
 fn parse_operation(raw: Option<&str>) -> Result<CodegraphOp, String> {
@@ -306,5 +327,48 @@ mod tests {
         assert!(out.contains("graph-ok"), "{out}");
         assert!(out.contains("explore"), "{out}");
         assert!(out.contains("auth"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn files_path_outside_policy_does_not_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".codegraph")).unwrap();
+        let binary = dir.path().join("fake-codegraph");
+        #[cfg(unix)]
+        {
+            std::fs::write(&binary, "#!/bin/sh\necho SHOULD_NOT_RUN\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&binary, "SHOULD_NOT_RUN").unwrap();
+        }
+        let ctx = test_tool_ctx(dir.path(), "codegraph", "c1");
+        let tool = CodegraphTool::new(ctx, binary, None);
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.rs");
+        std::fs::write(&secret, "fn x() {}\n").unwrap();
+        let mut tctx = ToolContext::new();
+        let out = tool
+            .call(
+                &mut tctx,
+                CodegraphArgs {
+                    operation: Some("files".into()),
+                    query: None,
+                    path: Some(secret.to_string_lossy().into_owned()),
+                    kind: None,
+                    limit: None,
+                    depth: None,
+                },
+            )
+            .await
+            .unwrap();
+        let lower = out.to_lowercase();
+        assert!(
+            lower.contains("outside") || lower.contains("denied") || lower.contains("not allowed"),
+            "{out}"
+        );
+        assert!(!out.contains("SHOULD_NOT_RUN"), "{out}");
     }
 }

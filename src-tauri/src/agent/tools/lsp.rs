@@ -146,7 +146,7 @@ impl LspTool {
     async fn open_document(&self, server_id: &str, path: &Path) -> Result<(), String> {
         self.ctx.fs.check_read(path).map_err(fs_err)?;
         let text = self.read_file_text(path).await?;
-        let language_id = self.pool.language_id_for(server_id);
+        let language_id = self.pool.language_id_for(server_id, Some(path));
         self.pool
             .did_open(server_id, path, &language_id, text)
             .await

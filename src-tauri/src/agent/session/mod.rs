@@ -88,10 +88,42 @@ mod tests {
     use axum::Router;
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
+    use std::ffi::OsString;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
     use tokio::sync::{mpsc, Notify, RwLock};
+
+    /// Session tests must not load the developer's `code-intel.json`.
+    struct IsolatedCodegHome {
+        _dir: tempfile::TempDir,
+        previous: Option<OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl IsolatedCodegHome {
+        fn install() -> Self {
+            static LOCK: StdMutex<()> = StdMutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let dir = tempfile::tempdir().expect("CODEG_HOME");
+            let previous = std::env::var_os("CODEG_HOME");
+            std::env::set_var("CODEG_HOME", dir.path());
+            Self {
+                _dir: dir,
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for IsolatedCodegHome {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var("CODEG_HOME", value),
+                None => std::env::remove_var("CODEG_HOME"),
+            }
+        }
+    }
 
     struct Harness {
         cmd_tx: mpsc::Sender<ConnectionCommand>,
@@ -99,6 +131,7 @@ mod tests {
         shutdown: Arc<NativeShutdownHandle>,
         started: tokio::sync::oneshot::Receiver<()>,
         events: tokio::sync::broadcast::Receiver<Arc<crate::acp::types::EventEnvelope>>,
+        _codeg_home: IsolatedCodegHome,
     }
 
     async fn spawn_session(
@@ -115,6 +148,7 @@ mod tests {
         init_hold: Option<Arc<Notify>>,
         fail_turn_end: bool,
     ) -> Harness {
+        let codeg_home = IsolatedCodegHome::install();
         let connection_id = format!("native-conn-{}", uuid::Uuid::new_v4());
         let session_id = format!("sess-native-{}", uuid::Uuid::new_v4());
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -177,6 +211,7 @@ mod tests {
             shutdown,
             started,
             events,
+            _codeg_home: codeg_home,
         }
     }
 

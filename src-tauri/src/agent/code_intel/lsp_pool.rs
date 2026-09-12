@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_lsp::concurrency::ConcurrencyLayer;
@@ -32,7 +32,10 @@ use crate::acp::process_owner::{
     force_kill_and_reap, lock_owners, pid_is_alive, ProcessOwnerRegistry,
 };
 
-use super::{detect_languages, preset_lsp_servers, CodeIntelConfig, DetectedLanguage};
+use super::{
+    detect_languages, preset_lsp_servers, CodeIntelConfig, CustomLspServer, DetectedLanguage,
+    PresetLsp,
+};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -64,6 +67,8 @@ pub struct LspPool {
     cancel: CancellationToken,
     inner: tokio::sync::Mutex<PoolInner>,
     diagnostics: Arc<Mutex<HashMap<Url, Vec<Diagnostic>>>>,
+    /// Session cwd is fixed; detect once and share between `eligible_ids` / `ensure_server`.
+    detected: OnceLock<Vec<DetectedLanguage>>,
 }
 
 impl LspPool {
@@ -85,6 +90,7 @@ impl LspPool {
                 epoch: 0,
             }),
             diagnostics: Arc::new(Mutex::new(HashMap::new())),
+            detected: OnceLock::new(),
         })
     }
 
@@ -101,14 +107,8 @@ impl LspPool {
             inner.epoch
         };
 
-        // Detect (up to 5000 files) and initialize (30s) must not hold `inner`.
-        let detected = detect_languages(
-            &self.cwd,
-            self.fs.as_ref(),
-            preset_lsp_servers(),
-            &self.cfg.lsp.custom,
-        );
-        let start = servers_to_start(&self.cfg, &detected, &|id| self.command_on_path(id));
+        // Initialize (30s) must not hold `inner`. Detection is cached (cwd is fixed).
+        let start = self.eligible_ids();
         if !start.iter().any(|id| id == server_id) {
             return Err("server not eligible".into());
         }
@@ -341,13 +341,31 @@ impl LspPool {
     }
 
     pub fn eligible_ids(&self) -> Vec<String> {
-        let detected = detect_languages(
-            &self.cwd,
-            self.fs.as_ref(),
-            preset_lsp_servers(),
-            &self.cfg.lsp.custom,
-        );
-        servers_to_start(&self.cfg, &detected, &|id| self.command_on_path(id))
+        servers_to_start(&self.cfg, self.detected_languages(), &|id| {
+            self.command_on_path(id)
+        })
+    }
+
+    fn detected_languages(&self) -> &[DetectedLanguage] {
+        self.detected.get_or_init(|| {
+            // Only languages we may start: empty-manifest unchecked presets
+            // (bash-ls, yaml-ls, taplo) must not force a tree walk.
+            let checked: HashSet<&str> = self.cfg.lsp.checked.iter().map(String::as_str).collect();
+            let presets: Vec<PresetLsp> = preset_lsp_servers()
+                .iter()
+                .copied()
+                .filter(|preset| checked.contains(preset.id))
+                .collect();
+            let custom: Vec<CustomLspServer> = self
+                .cfg
+                .lsp
+                .custom
+                .iter()
+                .filter(|server| checked.contains(server.id.as_str()))
+                .cloned()
+                .collect();
+            detect_languages(&self.cwd, self.fs.as_ref(), &presets, &custom)
+        })
     }
 
     pub fn pick_server(
@@ -374,20 +392,8 @@ impl LspPool {
             .ok_or_else(|| "no language server eligible for this file; fall back to grep".into())
     }
 
-    pub fn language_id_for(&self, server_id: &str) -> String {
-        let language = if let Some(preset) = preset_lsp_servers().iter().find(|p| p.id == server_id)
-        {
-            preset.language
-        } else if let Some(custom) = self.cfg.lsp.custom.iter().find(|s| s.id == server_id) {
-            custom.language.as_str()
-        } else {
-            return "plaintext".into();
-        };
-        language
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .find(|part| !part.is_empty())
-            .map(|part| part.to_ascii_lowercase())
-            .unwrap_or_else(|| "plaintext".into())
+    pub fn language_id_for(&self, server_id: &str, path: Option<&Path>) -> String {
+        language_id_for_file(path, server_id, &self.cfg)
     }
 
     fn server_matches_file(&self, server_id: &str, path: &Path) -> bool {
@@ -609,8 +615,67 @@ pub fn servers_to_start(
         push(&custom.id);
     }
 
-    ids.truncate(cfg.lsp.max_concurrent.max(1) as usize);
     ids
+}
+
+fn language_id_for_file(path: Option<&Path>, server_id: &str, cfg: &CodeIntelConfig) -> String {
+    if let Some(id) = language_id_from_extension(path) {
+        return id.to_string();
+    }
+    language_id_fallback(server_id, cfg)
+}
+
+fn language_id_from_extension(path: Option<&Path>) -> Option<&'static str> {
+    let ext = path?
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())?;
+    Some(match ext.as_str() {
+        "rs" => "rust",
+        "go" => "go",
+        "py" => "python",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "ts" | "tsx" | "mts" | "cts" => "typescript",
+        "cpp" | "hpp" | "cc" | "cxx" | "hxx" | "hh" => "cpp",
+        "c" | "h" => "c",
+        "lua" => "lua",
+        "sh" | "bash" => "shell",
+        "yaml" | "yml" => "yaml",
+        "kt" | "kts" => "kotlin",
+        "zig" => "zig",
+        "toml" => "toml",
+        _ => return None,
+    })
+}
+
+fn language_id_fallback(server_id: &str, cfg: &CodeIntelConfig) -> String {
+    match server_id {
+        "clangd" => "cpp".into(),
+        "typescript" => "typescript".into(),
+        "rust-analyzer" => "rust".into(),
+        "gopls" => "go".into(),
+        "pyright" => "python".into(),
+        "lua-ls" => "lua".into(),
+        "bash-ls" => "shell".into(),
+        "yaml-ls" => "yaml".into(),
+        "kotlin-ls" => "kotlin".into(),
+        "zls" => "zig".into(),
+        "taplo" => "toml".into(),
+        other => {
+            let Some(custom) = cfg.lsp.custom.iter().find(|server| server.id == other) else {
+                return "plaintext".into();
+            };
+            let language = custom.language.trim();
+            if language.is_empty()
+                || language.contains('/')
+                || language.split_whitespace().nth(1).is_some()
+            {
+                "plaintext".into()
+            } else {
+                language.to_ascii_lowercase()
+            }
+        }
+    }
 }
 
 fn command_and_args(cfg: &CodeIntelConfig, id: &str) -> Option<(String, Vec<String>)> {
@@ -881,26 +946,77 @@ mod tests {
     }
 
     #[test]
-    fn servers_to_start_caps_checked_detected_and_path() {
+    fn servers_to_start_is_full_intersection_not_truncated_to_cap() {
         let mut cfg = enabled_cfg();
         cfg.lsp.max_concurrent = 2;
         cfg.lsp.checked = vec![
             "rust-analyzer".into(),
             "gopls".into(),
+            "typescript".into(),
             "pyright".into(),
-            "elixir-ls".into(),
         ];
-        cfg.lsp.custom.push(CustomLspServer {
-            id: "elixir-ls".into(),
-            language: "Elixir".into(),
-            command: "elixir-ls".into(),
-            args: vec![],
-            extensions: vec![".ex".into()],
-            manifests: vec!["mix.exs".into()],
-        });
-        let hits = detected(&["rust-analyzer", "gopls", "pyright", "elixir-ls"]);
+        let hits = detected(&["rust-analyzer", "gopls", "typescript", "pyright"]);
         let ids = servers_to_start(&cfg, &hits, &|id| id != "pyright");
-        assert_eq!(ids, vec!["rust-analyzer", "gopls"]);
+        assert_eq!(ids, vec!["rust-analyzer", "gopls", "typescript"]);
+    }
+
+    #[test]
+    fn language_id_for_cpp_comes_from_extension_not_preset_label() {
+        let cfg = enabled_cfg();
+        assert_eq!(
+            language_id_for_file(Some(Path::new("src/main.cpp")), "clangd", &cfg),
+            "cpp"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("src/main.cc")), "clangd", &cfg),
+            "cpp"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("src/main.cxx")), "clangd", &cfg),
+            "cpp"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("src/main.hpp")), "clangd", &cfg),
+            "cpp"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("src/main.c")), "clangd", &cfg),
+            "c"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("src/main.h")), "clangd", &cfg),
+            "c"
+        );
+        assert_eq!(language_id_for_file(None, "clangd", &cfg), "cpp");
+        assert_eq!(
+            language_id_for_file(Some(Path::new("a.js")), "typescript", &cfg),
+            "javascript"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("a.jsx")), "typescript", &cfg),
+            "javascript"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("a.ts")), "typescript", &cfg),
+            "typescript"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("a.tsx")), "typescript", &cfg),
+            "typescript"
+        );
+        assert_eq!(language_id_for_file(None, "typescript", &cfg), "typescript");
+        assert_eq!(
+            language_id_for_file(Some(Path::new("a.rs")), "rust-analyzer", &cfg),
+            "rust"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("a.go")), "gopls", &cfg),
+            "go"
+        );
+        assert_eq!(
+            language_id_for_file(Some(Path::new("a.py")), "pyright", &cfg),
+            "python"
+        );
     }
 
     #[test]
@@ -1041,6 +1157,7 @@ if __name__ == "__main__":
         write_fake_ls_delayed(dir, name, 0.0)
     }
 
+    #[cfg(unix)]
     fn write_fake_ls_delayed(dir: &Path, name: &str, init_delay_secs: f64) -> PathBuf {
         let src = FAKE_LS.replace("INIT_DELAY = 0", &format!("INIT_DELAY = {init_delay_secs}"));
         let path = dir.join(name);
@@ -1050,7 +1167,6 @@ if __name__ == "__main__":
         path
     }
 
-    #[cfg(unix)]
     fn pool_for(
         dir: &Path,
         cfg: CodeIntelConfig,
@@ -1065,6 +1181,53 @@ if __name__ == "__main__":
             CancellationToken::new(),
         );
         (pool, owners)
+    }
+
+    fn write_path_stub(dir: &Path, name: &str) {
+        #[cfg(windows)]
+        let path = dir.join(format!("{name}.exe"));
+        #[cfg(not(windows))]
+        let path = dir.join(name);
+        std::fs::write(&path, []).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn pick_server_selects_typescript_when_two_others_would_fill_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        write_path_stub(bin.path(), "rust-analyzer");
+        write_path_stub(bin.path(), "gopls");
+        write_path_stub(bin.path(), "typescript-language-server");
+        std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
+        std::fs::write(dir.path().join("go.mod"), "").unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}\n").unwrap();
+        std::fs::write(dir.path().join("app.ts"), "export {}\n").unwrap();
+
+        let mut cfg = enabled_cfg();
+        cfg.lsp.max_concurrent = 2;
+        cfg.lsp.checked = vec!["rust-analyzer".into(), "gopls".into(), "typescript".into()];
+
+        let mut paths = vec![bin.path().to_path_buf()];
+        if let Some(existing) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        let path = std::env::join_paths(paths).unwrap();
+        temp_env::with_var("PATH", Some(&path), || {
+            let (pool, _) = pool_for(dir.path(), cfg);
+            let picked = pool
+                .pick_server(Some(&dir.path().join("app.ts")), None)
+                .expect("typescript should be eligible even when the running cap is 2");
+            assert_eq!(picked, "typescript");
+            assert_eq!(
+                pool.eligible_ids(),
+                vec!["rust-analyzer", "gopls", "typescript"]
+            );
+        });
     }
 
     #[cfg(unix)]
@@ -1172,12 +1335,11 @@ if __name__ == "__main__":
                 manifests: vec!["b.manifest".into()],
             },
         ];
+        std::fs::write(dir.path().join("b.manifest"), "").unwrap();
         let (pool, _) = pool_for(dir.path(), cfg);
         pool.ensure_server("fake-a").await.unwrap();
         assert_eq!(pool.running_ids().await, vec!["fake-a".to_string()]);
 
-        std::fs::remove_file(dir.path().join("a.manifest")).unwrap();
-        std::fs::write(dir.path().join("b.manifest"), "").unwrap();
         let err = pool.ensure_server("fake-b").await.unwrap_err();
         assert!(
             err.contains("LSP concurrency limit (1) reached"),
@@ -1226,5 +1388,61 @@ if __name__ == "__main__":
         );
         assert!(pool.running_ids().await.is_empty());
         assert!(lock_owners(&owners).pids().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pick_server_can_choose_third_language_then_ensure_hits_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let script_a = write_fake_ls(dir.path(), "fake-ls-a");
+        let script_b = write_fake_ls(dir.path(), "fake-ls-b");
+        let script_ts = write_fake_ls(dir.path(), "fake-ls-ts");
+        std::fs::write(dir.path().join("a.manifest"), "").unwrap();
+        std::fs::write(dir.path().join("b.manifest"), "").unwrap();
+        std::fs::write(dir.path().join("ts.manifest"), "").unwrap();
+        std::fs::write(dir.path().join("app.ts"), "export {}\n").unwrap();
+
+        let mut cfg = enabled_cfg();
+        cfg.lsp.max_concurrent = 2;
+        cfg.lsp.checked = vec!["fake-a".into(), "fake-b".into(), "fake-ts".into()];
+        cfg.lsp.custom = vec![
+            CustomLspServer {
+                id: "fake-a".into(),
+                language: "Fake".into(),
+                command: script_a.to_string_lossy().into_owned(),
+                args: vec![],
+                extensions: vec![".rs".into()],
+                manifests: vec!["a.manifest".into()],
+            },
+            CustomLspServer {
+                id: "fake-b".into(),
+                language: "Fake".into(),
+                command: script_b.to_string_lossy().into_owned(),
+                args: vec![],
+                extensions: vec![".go".into()],
+                manifests: vec!["b.manifest".into()],
+            },
+            CustomLspServer {
+                id: "fake-ts".into(),
+                language: "TypeScript / JavaScript".into(),
+                command: script_ts.to_string_lossy().into_owned(),
+                args: vec![],
+                extensions: vec![".ts".into(), ".tsx".into(), ".js".into(), ".jsx".into()],
+                manifests: vec!["ts.manifest".into()],
+            },
+        ];
+        let (pool, _) = pool_for(dir.path(), cfg);
+        pool.ensure_server("fake-a").await.unwrap();
+        pool.ensure_server("fake-b").await.unwrap();
+        let picked = pool
+            .pick_server(Some(&dir.path().join("app.ts")), None)
+            .expect("third language remains eligible after the running cap is full");
+        assert_eq!(picked, "fake-ts");
+        let err = pool.ensure_server("fake-ts").await.unwrap_err();
+        assert!(
+            err.contains("LSP concurrency limit (2) reached"),
+            "got {err}"
+        );
+        pool.shutdown_all().await;
     }
 }
