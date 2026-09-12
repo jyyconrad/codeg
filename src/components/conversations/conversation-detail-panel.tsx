@@ -121,6 +121,10 @@ import {
   lastUserPromptText,
   type SessionFailureAction,
 } from "@/lib/session-failures"
+import {
+  agentSupportsNamedFork,
+  type LastRoundEditTarget,
+} from "@/lib/edit-last-round"
 import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
@@ -336,6 +340,8 @@ const ConversationTabView = memo(function ConversationTabView({
   // docked one — so a single slot can serve both.
   const [composerInject, setComposerInject] =
     useState<ComposerInjectContent | null>(null)
+  const [editingLastRound, setEditingLastRound] =
+    useState<LastRoundEditTarget | null>(null)
 
   const hasPersistedConversation = dbConversationId != null
 
@@ -1267,9 +1273,9 @@ const ConversationTabView = memo(function ConversationTabView({
   // mounted transcript window for nothing. The ref is also the fresher answer
   // at click time.
   const handleForkFromTurn = useCallback(
-    async (turnId: string) => {
+    async (turnId: string): Promise<boolean> => {
       const connectionId = conn.connectionId
-      if (!connectionId || connStatusRef.current !== "connected") return
+      if (!connectionId || connStatusRef.current !== "connected") return false
       // Snapshot which live turns belong to the PRE-fork session, before the
       // await. The fork RPC is a window in which a send can still start — a
       // queued auto-flush, a fast typist, another client — and such a turn
@@ -1319,6 +1325,7 @@ const ConversationTabView = memo(function ConversationTabView({
           preserveLive: true,
           dropLiveTurnIds: staleLiveTurnIds,
         })
+        return true
       } catch (err) {
         // A turn in flight is transient here, not a failure to report as one —
         // there is no draft to re-queue, so say so and let the user retry.
@@ -1334,6 +1341,7 @@ const ConversationTabView = memo(function ConversationTabView({
                       : String(err),
               })
         )
+        return false
       }
     },
     [
@@ -1345,6 +1353,49 @@ const ConversationTabView = memo(function ConversationTabView({
       setExternalId,
       t,
     ]
+  )
+
+  const handleStartEditLastRound = useCallback(
+    (target: LastRoundEditTarget) => {
+      setEditingLastRound(target)
+      setComposerInject({
+        text: target.draft.displayText,
+        mode: "replace",
+        blocks: target.draft.blocks,
+      })
+    },
+    []
+  )
+
+  const handleCancelEditLastRound = useCallback(() => {
+    setEditingLastRound(null)
+  }, [])
+
+  const handleSendReplacingLastRound = useCallback(
+    (draft: PromptDraft, modeId?: string | null) => {
+      const target = editingLastRound
+      if (!target) {
+        handleSend(draft, modeId)
+        return
+      }
+      setEditingLastRound(null)
+      void (async () => {
+        const forked = await handleForkFromTurn(target.forkFromTurnId)
+        if (!forked) {
+          setEditingLastRound(target)
+          // The composer already cleared itself on send; put the edited
+          // draft back so a failed fork doesn't eat the user's changes.
+          setComposerInject({
+            text: draft.displayText,
+            mode: "replace",
+            blocks: draft.blocks,
+          })
+          return
+        }
+        handleSend(draft, modeId)
+      })()
+    },
+    [editingLastRound, handleForkFromTurn, handleSend]
   )
 
   /** Stop one AIR async task. Returns the adapter's verdict so the strip can
@@ -1986,6 +2037,15 @@ const ConversationTabView = memo(function ConversationTabView({
             ? handleForkFromTurn
             : undefined
         }
+        onEditLastRound={
+          connStatus === "connected" &&
+          hasPersistedConversation &&
+          !conn.isViewer &&
+          conn.supportsFork &&
+          agentSupportsNamedFork(selectedAgent)
+            ? handleStartEditLastRound
+            : undefined
+        }
       />
     </GoalControlProvider>
   )
@@ -2072,7 +2132,7 @@ const ConversationTabView = memo(function ConversationTabView({
       pendingAskQuestion={conn.pendingAskQuestion}
       pendingPlanApproval={conn.pendingPlanApproval}
       onFocus={handleFocus}
-      onSend={handleSend}
+      onSend={handleSendReplacingLastRound}
       onCancel={handleCancel}
       onRespondPermission={handleRespondPermission}
       onAnswerQuestion={handleAnswerQuestion}
@@ -2093,7 +2153,22 @@ const ConversationTabView = memo(function ConversationTabView({
       hideInput={isWelcomeMode || Boolean(acpLoadError)}
       injectContent={composerInject}
       onInjectConsumed={handleComposerInjectConsumed}
-      composerBanner={acpLoadErrorBanner}
+      composerBanner={
+        editingLastRound ? (
+          <div className="flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            <span>{tMessageList("editingLastRound")}</span>
+            <button
+              type="button"
+              className="shrink-0 font-medium text-foreground hover:underline"
+              onClick={handleCancelEditLastRound}
+            >
+              {tMessageList("cancelEditLastRound")}
+            </button>
+          </div>
+        ) : (
+          acpLoadErrorBanner
+        )
+      }
       feedbackList={
         feedback.showList ? (
           <FeedbackNotesDisplay

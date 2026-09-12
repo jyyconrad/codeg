@@ -61,6 +61,7 @@ import {
   Plus,
   RefreshCw,
   ListTodo,
+  Pencil,
 } from "lucide-react"
 import { useCreateTaskFromMessage } from "./use-create-task-from-message"
 import { Button } from "@/components/ui/button"
@@ -70,6 +71,10 @@ import {
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
 import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
+import {
+  lastRoundEditTarget,
+  type LastRoundEditTarget,
+} from "@/lib/edit-last-round"
 import { copyTextToClipboard } from "@/lib/utils"
 import { VirtualizedMessageThread } from "@/components/message/virtualized-message-thread"
 import { SelectionActionBubble } from "@/components/message/selection-action-bubble"
@@ -145,6 +150,12 @@ interface MessageListViewProps {
    * (see `forkBusy`) rather than making every reply's footer flicker.
    */
   onForkFromTurn?: (turnId: string) => void
+  /**
+   * Edit the last user bubble and replace that round (fork at the previous
+   * assistant turn, then prompt). Undefined hides the button — pass it only
+   * when the agent can name a fork point (Claude / Codex / DeepSeek).
+   */
+  onEditLastRound?: (target: LastRoundEditTarget) => void
 }
 
 export interface ResolvedMessageGroup {
@@ -801,6 +812,24 @@ const UserMessageCopyButton = memo(function UserMessageCopyButton({
   )
 })
 
+const UserMessageEditButton = memo(function UserMessageEditButton({
+  onEdit,
+}: {
+  onEdit: () => void
+}) {
+  const t = useTranslations("Folder.chat.messageList")
+  return (
+    <MessageAction
+      tooltip={t("editLastRound")}
+      className="opacity-0 group-hover/user-msg:opacity-100 transition-opacity self-end"
+      onClick={onEdit}
+      size="icon-xs"
+    >
+      <Pencil size={12} />
+    </MessageAction>
+  )
+})
+
 const UserMessageTaskButton = memo(function UserMessageTaskButton({
   parts,
 }: {
@@ -884,6 +913,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   onForkFromTurn,
   forkDisabled = false,
   isThreadTail = false,
+  onEditLastRound,
 }: {
   group: ResolvedMessageGroup
   dimmed?: boolean
@@ -900,6 +930,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   /** Whether nothing follows this group in the thread — the one position where
    *  a turn the backend cannot name still forks where the user pointed. */
   isThreadTail?: boolean
+  onEditLastRound?: () => void
 }) {
   if (group.role === "system") {
     return <CollapsibleSystemMessage parts={group.parts} />
@@ -920,6 +951,9 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
         ) : null}
         {group.role === "user" ? (
           <div className="group/user-msg flex w-fit ml-auto max-w-full items-start gap-1">
+            {onEditLastRound ? (
+              <UserMessageEditButton onEdit={onEditLastRound} />
+            ) : null}
             <UserMessageTaskButton parts={group.parts} />
             <UserMessageCopyButton parts={group.parts} />
             <MessageContent>
@@ -1039,6 +1073,7 @@ export function MessageListView({
   onAskSelection,
   onSaveNoteSelection,
   onForkFromTurn,
+  onEditLastRound,
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
@@ -1306,6 +1341,11 @@ export function MessageListView({
   // "not right now" instead of dropping its button and shifting the icon row.
   const forkBusy = connStatus === "prompting"
 
+  const editTarget = useMemo(() => {
+    if (!onEditLastRound) return null
+    return lastRoundEditTarget(timelineTurns, agentType)
+  }, [onEditLastRound, timelineTurns, agentType])
+
   const renderThreadItem = useCallback(
     (item: ThreadRenderItem) => {
       switch (item.kind) {
@@ -1340,6 +1380,15 @@ export function MessageListView({
                 onForkFromTurn={onForkFromTurn}
                 forkDisabled={forkBusy}
                 isThreadTail={item.isThreadTail}
+                onEditLastRound={
+                  onEditLastRound &&
+                  editTarget &&
+                  item.group.role === "user" &&
+                  item.group.id === editTarget.userTurn.id &&
+                  item.phase !== "optimistic"
+                    ? () => onEditLastRound(editTarget)
+                    : undefined
+                }
               />
             </div>
           )
@@ -1365,6 +1414,8 @@ export function MessageListView({
       handleRoundOpenChange,
       onForkFromTurn,
       forkBusy,
+      onEditLastRound,
+      editTarget,
     ]
   )
 

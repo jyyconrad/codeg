@@ -461,7 +461,9 @@ describe("ConversationDetailPanel session-load failure surface", () => {
       "hideInput={isWelcomeMode || Boolean(acpLoadError)}"
     )
     // …and the banner takes its place, explaining why and offering recovery.
-    expect(source).toContain("composerBanner={acpLoadErrorBanner}")
+    // The slot also hosts the last-round-edit notice; the load-error banner
+    // still occupies it whenever that notice isn't showing.
+    expect(source).toMatch(/composerBanner=\{[\s\S]*acpLoadErrorBanner/)
     const bannerStart = source.indexOf("const acpLoadErrorBanner")
     expect(bannerStart).toBeGreaterThan(-1)
     const bannerEnd = source.indexOf("const goalControlValue", bannerStart)

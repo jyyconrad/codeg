@@ -161,6 +161,12 @@ export interface ComposerInjectContent {
    *   which is only ever the *start* of what the user is about to write.
    */
   mode?: "replace" | "append"
+  /**
+   * Full prompt blocks for a replace (images, file badges). When present the
+   * composer restores these instead of `text` alone — used when editing the
+   * last user round.
+   */
+  blocks?: PromptInputBlock[]
 }
 
 interface MessageInputProps {
@@ -641,11 +647,15 @@ export function MessageInput({
           handle.focus()
           handle.insertTextAtCursor(`${gap}${payload.text}\n\n`)
         } else {
-          handle.setText(payload.text)
+          const editor = handle.getEditor()
+          if (payload.blocks && payload.blocks.length > 0 && editor) {
+            hydrateFromBlocks(editor, payload.blocks)
+          } else {
+            handle.setText(payload.text)
+          }
           // Prepend the skill as the leading invocation badge, so the sent
           // message opens with `${prefix}${id}`.
           if (payload.skill) {
-            const editor = handle.getEditor()
             if (editor) {
               applyExpertReference(editor, {
                 refType: "skill",
@@ -663,7 +673,13 @@ export function MessageInput({
       onInjectConsumed?.()
     })
     return () => cancelAnimationFrame(raf)
-  }, [injectContent, composerReady, skillPrefix, onInjectConsumed])
+  }, [
+    injectContent,
+    composerReady,
+    skillPrefix,
+    onInjectConsumed,
+    hydrateFromBlocks,
+  ])
 
   // A skill / expert badge freezes its invocation prefix (`$` for Codex, `/`
   // elsewhere) at insert time. On the welcome page users routinely click a
