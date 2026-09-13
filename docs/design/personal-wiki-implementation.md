@@ -7,7 +7,7 @@
 | 状态 | 主干可试用，**未达到方案 v1 验收** |
 | 分支 / 提交 | `develop-20260909` / 本次修复提交（见 git log） |
 | 对照基线 | `develop-20260909` |
-| 方案合同 | 本地 `docs/superpowers/specs/2026-09-12-personal-wiki-design.md`（该目录在 `.gitignore`，不入库） |
+| 方案合同 | 双 Wiki 目标：本地 `docs/superpowers/specs/2026-09-12-personal-wiki-design.md`。整理流水线：`docs/design/wiki-memory-pipeline-design.md`（2026-09-13，替换 ingest/compile 候选链） |
 | 事实口径 | **目标**以方案 §1–14 为准。**实现**以本分支代码为准。未完成项不得写成已交付 |
 
 本文只记当前代码做到哪、还差什么。页面合同、采集规则、Worker 边界仍以方案正文为准，不在这里改写。
