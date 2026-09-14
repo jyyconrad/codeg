@@ -1,4 +1,6 @@
-//! Immutable ACP-turn snapshot frozen under the SessionState write lock.
+//! 定义从 ACP 会话边界传给 Wiki 的用户、助手和工具观察片段。
+//! supervisor 结束成功轮次时构造，source 消费；不包含隐藏推理或额外读取会话存储。
+//! 按文本与工具数量预算保留有限材料，并记录截断情况供后续整理理解上下文。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

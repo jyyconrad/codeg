@@ -89,6 +89,8 @@ struct HookTraceInner {
 
 #[derive(Clone, Debug)]
 pub struct ToolResultRecord {
+    pub tool_call_id: String,
+    pub args: String,
     pub tool_name: String,
     pub status: String,
     pub presentation: String,
@@ -175,6 +177,8 @@ pub struct CodegHook {
     max_tokens: Option<u64>,
     host: Option<HostBridge>,
     native: Option<NativeRunState>,
+    /// Background tools share identity/cancellation without chat projection.
+    background_tools: Option<crate::agent::tools::NativeToolCtx>,
 }
 
 impl CodegHook {
@@ -187,7 +191,18 @@ impl CodegHook {
             max_tokens: None,
             host: None,
             native: None,
+            background_tools: None,
         }
+    }
+
+    pub fn auto_allow_with_tools(
+        trace: HookTrace,
+        tools: crate::agent::tools::NativeToolCtx,
+    ) -> Self {
+        let mut hook = Self::auto_allow(trace);
+        hook.cancel = tools.cancel.clone();
+        hook.background_tools = Some(tools);
+        hook
     }
 
     pub fn waiting(
@@ -203,6 +218,7 @@ impl CodegHook {
             max_tokens: None,
             host: None,
             native: None,
+            background_tools: None,
         }
     }
 
@@ -220,6 +236,7 @@ impl CodegHook {
             max_tokens: None,
             host: Some(host),
             native: None,
+            background_tools: None,
         }
     }
 
@@ -493,6 +510,14 @@ impl AgentHook for CodegHook {
             return ToolCallAction::stop("cancelled");
         }
 
+        if let Some(tools) = &self.background_tools {
+            tools.identity.set(CallIdentity {
+                turn_id: tools.turn_id,
+                turn_key: tools.session_id.clone(),
+                tool_call_id: tool_call_id(&event),
+                function_name: event.tool_name.to_string(),
+            });
+        }
         if let Some(native) = &self.native {
             native.identity.set(CallIdentity {
                 turn_id: native.turn_id,
@@ -584,10 +609,15 @@ impl AgentHook for CodegHook {
             .expect("hook trace")
             .tool_results
             .push(ToolResultRecord {
+                tool_call_id: tool_result_id(&event),
+                args: event.args.to_string(),
                 tool_name: event.tool_name.to_string(),
                 status: status_name.clone(),
                 presentation: presentation.clone(),
             });
+        if let Some(tools) = &self.background_tools {
+            tools.identity.clear();
+        }
         let card_status = acp_card_status_for_tool(event.tool_name, &status_name);
         let id = tool_result_id(&event);
         if let Some(native) = &self.native {

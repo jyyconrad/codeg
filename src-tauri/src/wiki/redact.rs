@@ -1,4 +1,6 @@
-//! Host redaction of known secret patterns. Runs before DB, raw, and any model.
+//! 在会话与导入元信息落入 Wiki 前遮蔽常见凭据和敏感字面值。
+//! source 和 import 复用同一脱敏规则，并把是否脱敏记入来源元数据。
+//! 该处理不请求外部服务，也不把脱敏后的文字当作已经验证的业务事实。
 
 use regex::Regex;
 use std::sync::OnceLock;

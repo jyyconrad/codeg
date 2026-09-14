@@ -1,17 +1,16 @@
-//! External document / pasted-text import. Host extract, hash, raw freeze.
-//!
-//! No model calls. Events (`wiki://job-changed`) are not emitted in this PR.
+//! 归档粘贴文本和上传文件：提取正文、保存原件、登记来源与项目注释。
+//! 桌面/HTTP 入口和目录批量导入共用；支持部分提取接受、重新提取与版本关联。
+//! 该入口只归档素材，不调用模型；错误保留到单文件结果，由上层发送界面刷新事件。
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app_error::AppCommandError;
-use crate::db::entities::wiki_job;
 use crate::db::error::DbError;
 use crate::db::service::wiki_service::{
     self, AnnotationPatch, NewImportSource, WikiImportResult, WikiSourceInfo,
@@ -90,10 +89,6 @@ pub struct ImportFileResult {
     pub duplicate: bool,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub job_status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -106,15 +101,7 @@ pub struct ImportBatchResult {
     pub succeeded: usize,
     pub failed: usize,
     pub duplicates: usize,
-}
-
-/// Single-file calls retain the historical flattened result shape. Multi-file
-/// calls return a batch with one result entry per requested file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ImportFilesResult {
-    Single(WikiImportResult),
-    Batch(ImportBatchResult),
+    pub partial: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -128,11 +115,6 @@ pub struct UpdateAnnotationsParams {
     pub project_ids: Option<Vec<String>>,
     #[serde(default)]
     pub area_ids: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SourceIdParams {
-    pub source_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -155,7 +137,6 @@ struct ImportPayload {
     personal_role: Option<String>,
     project_ids: Option<Vec<String>>,
     area_ids: Option<Vec<String>>,
-    batch_id: Option<String>,
     skip_hash_dedup: bool,
     source_group_id: Option<String>,
     previous_source_id: Option<String>,
@@ -199,7 +180,6 @@ pub async fn import_text(
             personal_role: empty_to_none(params.personal_role),
             project_ids: params.project_ids,
             area_ids: params.area_ids,
-            batch_id: None,
             skip_hash_dedup: false,
             source_group_id: None,
             previous_source_id: None,
@@ -208,29 +188,39 @@ pub async fn import_text(
     .await
 }
 
-pub async fn import_files(
+/// Test convenience for callers asserting one extracted source. Production
+/// file import always uses the per-file result contract, including one file.
+#[cfg(test)]
+async fn import_files(
     conn: &DatabaseConnection,
     params: ImportFilesParams,
 ) -> Result<WikiImportResult, AppCommandError> {
-    match import_files_with_result(conn, params).await? {
-        ImportFilesResult::Single(result) => Ok(result),
-        ImportFilesResult::Batch(batch) => batch
-            .results
-            .into_iter()
-            .find_map(|item| {
-                item.source.map(|source| WikiImportResult {
-                    source,
-                    duplicate: item.duplicate,
-                })
-            })
-            .ok_or_else(|| AppCommandError::invalid_input("all files failed to import")),
+    if params.files.len() != 1 {
+        return Err(AppCommandError::invalid_input("exactly one file required"));
     }
+    let mut batch = import_files_with_result(conn, params).await?;
+    let item = batch
+        .results
+        .pop()
+        .ok_or_else(|| AppCommandError::invalid_input("missing file result"))?;
+    if item.status == "failed" {
+        return Err(AppCommandError::invalid_input(
+            item.error
+                .unwrap_or_else(|| "document extraction failed".into()),
+        ));
+    }
+    Ok(WikiImportResult {
+        source: item
+            .source
+            .ok_or_else(|| AppCommandError::invalid_input("file did not produce a source"))?,
+        duplicate: item.duplicate,
+    })
 }
 
 pub async fn import_files_with_result(
     conn: &DatabaseConnection,
     params: ImportFilesParams,
-) -> Result<ImportFilesResult, AppCommandError> {
+) -> Result<ImportBatchResult, AppCommandError> {
     let request_id = require_request_id(&params.request_id)?;
     if params.files.is_empty() {
         return Err(AppCommandError::invalid_input("no files provided"));
@@ -241,7 +231,6 @@ pub async fn import_files_with_result(
         )));
     }
     let material_role = parse_material_role(params.material_role.clone())?;
-    let multi = params.files.len() > 1;
     let batch_id = empty_to_none(params.batch_id.clone());
     let mut results = Vec::with_capacity(params.files.len());
     for (index, file) in params.files.into_iter().enumerate() {
@@ -278,7 +267,6 @@ pub async fn import_files_with_result(
                     personal_role: empty_to_none(params.personal_role.clone()),
                     project_ids: params.project_ids.clone(),
                     area_ids: params.area_ids.clone(),
-                    batch_id: batch_id.clone(),
                     skip_hash_dedup: false,
                     source_group_id: batch_id.clone(),
                     previous_source_id: None,
@@ -289,76 +277,96 @@ pub async fn import_files_with_result(
         .await;
 
         match import_result {
-            Ok(imported) if !multi => return Ok(ImportFilesResult::Single(imported)),
-            Ok(imported) => {
-                let (job_id, job_status) = latest_ingest_job(conn, &imported.source.id).await;
-                results.push(ImportFileResult {
-                    filename,
-                    request_id: file_request_id,
-                    source: Some(imported.source),
-                    duplicate: imported.duplicate,
-                    status: if imported.duplicate {
-                        "duplicate"
-                    } else {
-                        "succeeded"
-                    }
-                    .into(),
-                    job_id,
-                    job_status,
-                    error: None,
-                })
-            }
-            Err(err) if !multi => return Err(err),
+            Ok(imported) => results.push(file_result(filename, file_request_id, imported)),
             Err(err) => results.push(ImportFileResult {
                 filename,
                 request_id: file_request_id,
                 source: None,
                 duplicate: false,
                 status: "failed".into(),
-                job_id: None,
-                job_status: None,
                 error: Some(err.to_string()),
             }),
         }
     }
-    let succeeded = results
-        .iter()
-        .filter(|r| r.status == "succeeded" || r.status == "duplicate")
-        .count();
-    let duplicates = results.iter().filter(|r| r.duplicate).count();
-    Ok(ImportFilesResult::Batch(ImportBatchResult {
+    Ok(ImportBatchResult {
         request_id,
         batch_id,
-        failed: results.len() - succeeded,
-        succeeded,
-        duplicates,
+        succeeded: results
+            .iter()
+            .filter(|r| matches!(r.status.as_str(), "succeeded" | "duplicate"))
+            .count(),
+        failed: results.iter().filter(|r| r.status == "failed").count(),
+        duplicates: results.iter().filter(|r| r.status == "duplicate").count(),
+        partial: results
+            .iter()
+            .filter(|r| {
+                r.source
+                    .as_ref()
+                    .is_some_and(|s| s.extraction_status.as_deref() == Some("partial"))
+            })
+            .count(),
         results,
-    }))
+    })
 }
 
-async fn latest_ingest_job(
+pub(crate) fn file_result(
+    filename: String,
+    request_id: String,
+    imported: WikiImportResult,
+) -> ImportFileResult {
+    let failed = imported.source.eligibility == "failed";
+    let error = failed.then(|| extraction_error(&imported.source));
+    let status = if failed {
+        "failed"
+    } else if imported.duplicate {
+        "duplicate"
+    } else {
+        "succeeded"
+    };
+    ImportFileResult {
+        filename,
+        request_id,
+        source: Some(imported.source),
+        duplicate: imported.duplicate,
+        status: status.into(),
+        error,
+    }
+}
+fn extraction_error(source: &WikiSourceInfo) -> String {
+    source
+        .warnings
+        .iter()
+        .find(|warning| warning.starts_with("extraction_failed["))
+        .cloned()
+        .unwrap_or_else(|| "document extraction failed".into())
+}
+
+/// Source mutations share the same captured vault as settings changes. The
+/// caller holds the lifecycle guard; this helper never re-enters that lock.
+async fn current_source(
     conn: &DatabaseConnection,
-    source_id: &str,
-) -> (Option<String>, Option<String>) {
-    wiki_job::Entity::find()
-        .filter(wiki_job::Column::SourceId.eq(source_id))
-        .filter(wiki_job::Column::Kind.eq("ingest"))
-        .order_by_desc(wiki_job::Column::CreatedAt)
-        .one(conn)
+    id: &str,
+) -> Result<crate::db::entities::wiki_source::Model, AppCommandError> {
+    let source = wiki_service::get_source_model(conn, id)
         .await
-        .ok()
-        .flatten()
-        .map(|job| (Some(job.id), Some(job.status)))
-        .unwrap_or((None, None))
+        .map_err(AppCommandError::from)?;
+    let active = wiki_service::active_vault(conn)
+        .await
+        .map_err(AppCommandError::from)?;
+    if !active.is_some_and(|vault| vault.id == source.vault_id) {
+        return Err(AppCommandError::not_found(
+            "source is not in the active Wiki",
+        ));
+    }
+    Ok(source)
 }
 
 pub async fn accept_extraction(
     conn: &DatabaseConnection,
     source_id: String,
 ) -> Result<WikiSourceInfo, AppCommandError> {
-    let row = wiki_service::get_source_model(conn, &source_id)
-        .await
-        .map_err(AppCommandError::from)?;
+    let _transition = crate::wiki::lifecycle::lock().await;
+    let row = current_source(conn, &source_id).await?;
     if row.eligibility != "awaiting-acceptance" {
         return Err(AppCommandError::invalid_input(
             "source is not awaiting extraction acceptance",
@@ -383,6 +391,8 @@ pub async fn update_source_annotations(
             "no annotation fields provided",
         ));
     }
+    let _transition = crate::wiki::lifecycle::lock().await;
+    current_source(conn, &params.source_id).await?;
     let material_role = match params.material_role {
         Some(role) => Some(parse_material_role(Some(role))?),
         None => None,
@@ -406,9 +416,8 @@ pub async fn reextract(
     conn: &DatabaseConnection,
     source_id: String,
 ) -> Result<WikiImportResult, AppCommandError> {
-    let row = wiki_service::get_source_model(conn, &source_id)
-        .await
-        .map_err(AppCommandError::from)?;
+    let _transition = crate::wiki::lifecycle::lock().await;
+    let row = current_source(conn, &source_id).await?;
     if row.source_kind != "document" && row.source_kind != "pasted-text" {
         return Err(AppCommandError::invalid_input(
             "reextract is only supported for imported documents",
@@ -420,7 +429,7 @@ pub async fn reextract(
     if !settings.enabled {
         return Err(wiki_disabled());
     }
-    let state_root = resolve_state_root(settings.vault_path.as_deref());
+    let state_root = resolve_state_root();
     let filename = row
         .original_filename
         .clone()
@@ -436,7 +445,7 @@ pub async fn reextract(
         .original_hash
         .clone()
         .unwrap_or_else(|| sha256_hex(&bytes));
-    ingest(
+    let result = ingest_locked(
         conn,
         ImportPayload {
             request_id: format!("reextract:{}:{}", row.id, uuid::Uuid::new_v4()),
@@ -455,13 +464,18 @@ pub async fn reextract(
             personal_role: row.personal_role.clone(),
             project_ids: parse_json_list(&row.project_ids),
             area_ids: parse_json_list(&row.area_ids),
-            batch_id: None,
             skip_hash_dedup: true,
             source_group_id: Some(row.source_group_id.clone()),
             previous_source_id: Some(row.id.clone()),
         },
     )
-    .await
+    .await?;
+    if result.source.eligibility == "failed" {
+        return Err(AppCommandError::invalid_input(extraction_error(
+            &result.source,
+        )));
+    }
+    Ok(result)
 }
 
 pub async fn link_source_version(
@@ -473,6 +487,9 @@ pub async fn link_source_version(
             "cannot link a source to itself",
         ));
     }
+    let _transition = crate::wiki::lifecycle::lock().await;
+    current_source(conn, &params.source_id).await?;
+    current_source(conn, &params.previous_source_id).await?;
     let updated =
         wiki_service::link_source_version(conn, &params.source_id, &params.previous_source_id)
             .await
@@ -487,6 +504,15 @@ async fn ingest(
     conn: &DatabaseConnection,
     payload: ImportPayload,
 ) -> Result<WikiImportResult, AppCommandError> {
+    let _transition = crate::wiki::lifecycle::lock().await;
+    ingest_locked(conn, payload).await
+}
+
+/// Caller holds the lifecycle gate through all reads and source/raw writes.
+async fn ingest_locked(
+    conn: &DatabaseConnection,
+    payload: ImportPayload,
+) -> Result<WikiImportResult, AppCommandError> {
     let settings = settings::load_settings(conn)
         .await
         .map_err(AppCommandError::from)?;
@@ -495,7 +521,7 @@ async fn ingest(
     }
 
     let vault_path = resolve_vault_path(settings.vault_path.as_deref());
-    let state_root = resolve_state_root(settings.vault_path.as_deref());
+    let state_root = resolve_state_root();
     vault::initialize_vault(&vault_path).map_err(|e| AppCommandError::io_error(e.to_string()))?;
     vault::initialize_state_root(&state_root)
         .map_err(|e| AppCommandError::io_error(e.to_string()))?;
@@ -512,7 +538,7 @@ async fn ingest(
     {
         return Ok(WikiImportResult {
             source: wiki_service::source_info(existing),
-            duplicate: false,
+            duplicate: true,
         });
     }
     if !payload.skip_hash_dedup {
@@ -558,6 +584,23 @@ async fn ingest(
         redacted |= changed;
     }
     let mut warnings = extract_outcome.warnings;
+    if !extract_outcome.ok {
+        warnings.push(format!(
+            "extraction_failed[{}]: {}",
+            extract_outcome
+                .error_code
+                .as_deref()
+                .unwrap_or("extract_failed"),
+            extract_outcome
+                .error_message
+                .as_deref()
+                .unwrap_or("document extraction failed")
+        ));
+    }
+    if extract_outcome.eligibility == "awaiting-acceptance" && warnings.is_empty() {
+        warnings
+            .push("extraction_partial: extracted text requires review before acceptance".into());
+    }
     for w in &mut warnings {
         let (text, changed) = redact::redact_text(w);
         *w = text;
@@ -630,15 +673,6 @@ async fn ingest(
         Some(serde_json::to_string(&warnings).unwrap_or_else(|_| "[]".into()))
     };
     let captured_at = Utc::now();
-    let input_manifest = serde_json::json!({
-        "request_id": payload.request_id,
-        "filename": payload.filename,
-        "original_hash": payload.original_hash,
-        "batch_id": payload.batch_id,
-        "kind": "import",
-    })
-    .to_string();
-
     let new = NewImportSource {
         id: Some(source_id.clone()),
         vault_id: vault_row.id,
@@ -673,40 +707,26 @@ async fn ingest(
         skip_hash_dedup: payload.skip_hash_dedup,
         raw_path,
         raw_hash,
-        // Extraction is host work; ingest summary is still processed by the worker.
-        job_status: if extract_outcome.ok {
-            "queued".into()
-        } else {
-            "failed".into()
-        },
-        error_code: extract_outcome.error_code.clone(),
-        error_message: extract_outcome.error_message.clone(),
-        input_manifest: Some(input_manifest),
     };
 
-    let inserted = wiki_service::insert_import_source_and_ingest_job(conn, new)
+    let inserted = wiki_service::insert_import_source(conn, new)
         .await
         .map_err(AppCommandError::from)?;
 
     if inserted.created {
-        let job_id = inserted
-            .job
-            .as_ref()
-            .map(|j| j.id.as_str())
-            .unwrap_or("none");
+        let log_key = format!("source:{}", inserted.source.id);
         let log_line = format!(
-            "{} import {} job={} source={} import={}",
+            "{} import {} source={} import={}",
             Utc::now().to_rfc3339(),
             if extract_outcome.ok {
                 "succeeded"
             } else {
                 "failed"
             },
-            job_id,
             inserted.source.id,
             inserted.source.source_kind
         );
-        raw::append_log_idempotent(&vault_path.join("log.md"), job_id, &log_line)
+        raw::append_log_idempotent(&vault_path.join("log.md"), &log_key, &log_line)
             .map_err(|e| AppCommandError::io_error(e.to_string()))?;
     } else {
         let _ = fs::remove_dir_all(originals_dir(&state_root, &source_id));
@@ -1000,9 +1020,11 @@ mod tests {
     use zip::{CompressionMethod, ZipWriter};
 
     async fn enable_wiki(conn: &DatabaseConnection, vault: &Path) {
-        let mut s = WikiSettings::default();
-        s.enabled = true;
-        s.vault_path = Some(vault.to_string_lossy().to_string());
+        let s = WikiSettings {
+            enabled: true,
+            vault_path: Some(vault.to_string_lossy().to_string()),
+            ..Default::default()
+        };
         settings::save_settings(conn, &s).await.unwrap();
     }
 
@@ -1054,6 +1076,16 @@ mod tests {
             project_ids: None,
             area_ids: None,
         }
+    }
+
+    fn source_segments(raw: &str) -> Vec<serde_json::Value> {
+        raw.lines()
+            .filter_map(|line| {
+                line.strip_prefix("<!-- codeg-source-segment ")
+                    .and_then(|text| text.strip_suffix(" -->"))
+            })
+            .map(|json| serde_json::from_str(json).unwrap())
+            .collect()
     }
 
     fn xml_escape(s: &str) -> String {
@@ -1109,7 +1141,7 @@ mod tests {
         let push_obj = |body: &mut Vec<u8>, offsets: &mut Vec<u32>, obj: &str| {
             offsets.push(body.len() as u32);
             body.extend_from_slice(obj.as_bytes());
-            if !body.ends_with(&[b'\n']) {
+            if !body.ends_with(b"\n") {
                 body.push(b'\n');
             }
         };
@@ -1235,7 +1267,9 @@ mod tests {
             let raw = std::fs::read_to_string(&raw_path).unwrap();
             assert!(raw.contains("source_kind: \"pasted-text\""));
             assert!(raw.contains("Hello") || raw.contains("Body paragraph"));
-            assert!(raw.contains("locator_kind: paragraph") || raw.contains("## Segments"));
+            assert!(source_segments(&raw)
+                .iter()
+                .any(|segment| segment["locator"]["kind"] == "paragraph"));
             let originals = dir.path().join("wiki-state/originals").join(&out.source.id);
             assert!(originals.is_dir(), "originals should live under wiki-state");
         })
@@ -1265,7 +1299,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_request_id_retry_returns_same_source() {
+    async fn same_request_id_retry_reports_existing_source_without_counting_a_new_import() {
         let db = fresh_in_memory_db().await;
         let dir = tempdir().unwrap();
         enable_wiki(&db.conn, dir.path()).await;
@@ -1276,7 +1310,7 @@ mod tests {
             let second = import_text(&db.conn, import_text_params("req-retry", "retry body"))
                 .await
                 .unwrap();
-            assert!(!second.duplicate);
+            assert!(second.duplicate);
             assert_eq!(first.source.id, second.source.id);
         })
         .await;
@@ -1297,7 +1331,10 @@ mod tests {
             let pdf_raw =
                 std::fs::read_to_string(dir.path().join(pdf_out.source.raw_path.as_ref().unwrap()))
                     .unwrap();
-            assert!(pdf_raw.contains("locator_kind: page"));
+            assert!(source_segments(&pdf_raw)
+                .iter()
+                .any(|segment| segment["locator"]["kind"] == "page"
+                    && segment["locator"]["number"] == 1));
             assert!(pdf_raw.contains("PDF locator page"));
 
             let docx = heading_docx("Overview", "Imported from Word.");
@@ -1311,14 +1348,16 @@ mod tests {
                 dir.path().join(docx_out.source.raw_path.as_ref().unwrap()),
             )
             .unwrap();
-            assert!(docx_raw.contains("locator_kind: paragraph"));
+            assert!(source_segments(&docx_raw)
+                .iter()
+                .any(|segment| segment["locator"]["kind"] == "paragraph"));
             assert!(docx_raw.contains("Imported from Word."));
         })
         .await;
     }
 
     #[tokio::test]
-    async fn multi_file_import_creates_one_queued_ingest_job_per_file() {
+    async fn multi_file_import_returns_every_source_without_queueing_generation() {
         let db = fresh_in_memory_db().await;
         let dir = tempdir().unwrap();
         enable_wiki(&db.conn, dir.path()).await;
@@ -1347,7 +1386,7 @@ mod tests {
                 project_ids: None,
                 area_ids: None,
             };
-            let first = import_files(&db.conn, params).await.unwrap();
+            let first = import_files_with_result(&db.conn, params).await.unwrap();
             let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
                 .await
                 .unwrap();
@@ -1362,7 +1401,10 @@ mod tests {
                 "imports freeze sources only"
             );
             assert!(sources.iter().all(|s| s.source_group_id == "batch-1"));
-            assert!(sources.iter().any(|s| s.id == first.source.id));
+            assert_eq!(first.results.len(), 2);
+            assert!(first.results.iter().all(|item| sources
+                .iter()
+                .any(|s| Some(&s.id) == item.source.as_ref().map(|source| &source.id))));
         })
         .await;
     }
@@ -1400,9 +1442,6 @@ mod tests {
             let first = import_files_with_result(&db.conn, params.clone())
                 .await
                 .unwrap();
-            let ImportFilesResult::Batch(first) = first else {
-                panic!("multi-file import should return a batch result")
-            };
             assert_eq!(first.results.len(), 2);
             assert_eq!(first.succeeded, 1);
             assert_eq!(first.failed, 1);
@@ -1411,9 +1450,6 @@ mod tests {
             assert_eq!(first.results[1].status, "failed");
 
             let second = import_files_with_result(&db.conn, params).await.unwrap();
-            let ImportFilesResult::Batch(second) = second else {
-                panic!("multi-file retry should return a batch result")
-            };
             assert_eq!(second.results.len(), 2);
             assert_eq!(
                 second.results[0].source.as_ref().map(|s| s.id.as_str()),
@@ -1431,28 +1467,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn extraction_failure_is_reported_per_file_with_persisted_reason() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempdir().unwrap();
+        enable_wiki(&db.conn, dir.path()).await;
+        with_home(dir.path(), || async {
+            let outcome = import_files_with_result(
+                &db.conn,
+                import_file_params("failed-result", "secret.pdf", &encrypted_pdf()),
+            )
+            .await
+            .unwrap();
+            let wire = serde_json::to_value(outcome).unwrap();
+            assert_eq!(wire["results"].as_array().map(Vec::len), Some(1));
+            assert_eq!(wire["failed"], 1);
+            assert_eq!(wire["succeeded"], 0);
+            assert_eq!(wire["results"][0]["status"], "failed");
+            assert!(wire["results"][0]["error"]
+                .as_str()
+                .is_some_and(|e| !e.is_empty()));
+            let id = wire["results"][0]["source"]["id"].as_str().unwrap();
+            let source = wiki_service::get_source(&db.conn, id).await.unwrap();
+            assert!(source.warnings.iter().any(|w| w.contains("encrypted_pdf")));
+            assert!(source.raw_path.is_none());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn failed_extraction_in_mixed_batch_never_counts_as_succeeded() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempdir().unwrap();
+        enable_wiki(&db.conn, dir.path()).await;
+        with_home(dir.path(), || async {
+            let mut params =
+                import_file_params("mixed-extraction", "ok.txt", b"A readable source.");
+            params
+                .files
+                .extend(import_file_params("unused", "secret.pdf", &encrypted_pdf()).files);
+            let wire =
+                serde_json::to_value(import_files_with_result(&db.conn, params).await.unwrap())
+                    .unwrap();
+            assert_eq!(wire["results"].as_array().unwrap().len(), 2);
+            assert_eq!(wire["succeeded"], 1);
+            assert_eq!(wire["failed"], 1);
+            assert_eq!(wire["results"][1]["status"], "failed");
+            assert!(wire["results"][1]["source"].is_object());
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn encrypted_and_empty_pdf_are_failed_not_ready() {
         let db = fresh_in_memory_db().await;
         let dir = tempdir().unwrap();
         enable_wiki(&db.conn, dir.path()).await;
         with_home(dir.path(), || async {
-            let enc = import_files(
+            let enc = import_files_with_result(
                 &db.conn,
                 import_file_params("req-enc", "secret.pdf", &encrypted_pdf()),
             )
             .await
             .unwrap();
-            assert_eq!(enc.source.eligibility, "failed");
-            assert!(enc.source.raw_path.is_none());
+            assert_eq!(enc.failed, 1);
+            let enc = &enc.results[0];
+            assert!(enc.error.is_some());
+            let enc = enc.source.as_ref().unwrap();
+            assert_eq!(enc.eligibility, "failed");
+            assert!(enc.raw_path.is_none());
 
-            let empty = import_files(
+            let empty = import_files_with_result(
                 &db.conn,
                 import_file_params("req-empty", "scan.pdf", &build_pdf(&[""])),
             )
             .await
             .unwrap();
-            assert_eq!(empty.source.eligibility, "failed");
-            assert_ne!(empty.source.eligibility, "ready");
+            assert_eq!(empty.failed, 1);
+            let empty = empty.results[0].source.as_ref().unwrap();
+            assert_eq!(empty.eligibility, "failed");
+            assert_ne!(empty.eligibility, "ready");
         })
         .await;
     }
@@ -1504,6 +1597,147 @@ mod tests {
                 "{}",
                 err.message
             );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn stale_source_actions_cannot_write_into_another_vault() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempdir().unwrap();
+        let first_vault = dir.path().join("a");
+        let second_vault = dir.path().join("b");
+        enable_wiki(&db.conn, &first_vault).await;
+        with_home(dir.path(), || async {
+            let first = import_files(
+                &db.conn,
+                import_file_params(
+                    "stale-source",
+                    "note.pdf",
+                    &build_pdf(&["Readable source", ""]),
+                ),
+            )
+            .await
+            .unwrap();
+            crate::commands::wiki::update_wiki_settings_core(
+                &db.conn,
+                WikiSettings {
+                    enabled: true,
+                    vault_path: Some(second_vault.to_string_lossy().into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert!(reextract(&db.conn, first.source.id.clone()).await.is_err());
+            assert!(accept_extraction(&db.conn, first.source.id.clone())
+                .await
+                .is_err());
+            assert!(update_source_annotations(
+                &db.conn,
+                UpdateAnnotationsParams {
+                    source_id: first.source.id.clone(),
+                    material_role: Some("own-work".into()),
+                    personal_role: None,
+                    project_ids: None,
+                    area_ids: None
+                }
+            )
+            .await
+            .is_err());
+            assert_eq!(
+                crate::wiki::read_model::list_sources(&db.conn, None, None, None)
+                    .await
+                    .unwrap()
+                    .total,
+                0
+            );
+            assert_eq!(
+                fs::read_dir(second_vault.join("raw/imports"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            let unchanged = wiki_service::get_source(&db.conn, &first.source.id)
+                .await
+                .unwrap();
+            assert_eq!(unchanged.eligibility, "awaiting-acceptance");
+            assert_eq!(unchanged.material_role.as_deref(), Some("reference"));
+            assert_eq!(
+                unchanged.annotation_revision,
+                first.source.annotation_revision
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn failed_reextraction_preserves_previous_readable_version() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempdir().unwrap();
+        enable_wiki(&db.conn, dir.path()).await;
+        with_home(dir.path(), || async {
+            let first = import_files(
+                &db.conn,
+                import_file_params(
+                    "readable-version",
+                    "note.pdf",
+                    &build_pdf(&["Previously readable text."]),
+                ),
+            )
+            .await
+            .unwrap();
+            let rel = first.source.raw_path.clone().unwrap();
+            let old_bytes = fs::read(dir.path().join(&rel)).unwrap();
+            let original = originals_dir(&resolve_state_root(), &first.source.id).join("note.pdf");
+            fs::write(original, encrypted_pdf()).unwrap();
+            let error = reextract(&db.conn, first.source.id.clone())
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("encrypted_pdf"));
+            let still_readable = wiki_service::get_source(&db.conn, &first.source.id)
+                .await
+                .unwrap();
+            assert_eq!(still_readable.eligibility, "ready");
+            assert_eq!(still_readable.raw_hash, first.source.raw_hash);
+            assert_eq!(fs::read(dir.path().join(rel)).unwrap(), old_bytes);
+            let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
+                .await
+                .unwrap();
+            let failed = sources
+                .iter()
+                .find(|s| s.previous_source_id.as_deref() == Some(&first.source.id))
+                .unwrap();
+            assert_eq!(failed.eligibility, "failed");
+            assert!(failed.raw_path.is_none());
+            assert!(failed.warnings.iter().any(|w| w.contains("encrypted_pdf")));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn partial_file_result_reports_review_requirement_without_failure() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempdir().unwrap();
+        enable_wiki(&db.conn, dir.path()).await;
+        with_home(dir.path(), || async {
+            let out = import_files_with_result(
+                &db.conn,
+                import_file_params(
+                    "partial-result",
+                    "partial.pdf",
+                    &build_pdf(&["Readable first page", ""]),
+                ),
+            )
+            .await
+            .unwrap();
+            assert_eq!(out.results.len(), 1);
+            assert_eq!(out.partial, 1);
+            assert_eq!(out.succeeded, 1);
+            assert_eq!(out.failed, 0);
+            let source = out.results[0].source.as_ref().unwrap();
+            assert_eq!(source.eligibility, "awaiting-acceptance");
+            assert_eq!(source.extraction_status.as_deref(), Some("partial"));
         })
         .await;
     }
@@ -1570,9 +1804,11 @@ mod tests {
     async fn disabled_settings_reject_import() {
         let db = fresh_in_memory_db().await;
         let dir = tempdir().unwrap();
-        let mut s = WikiSettings::default();
-        s.enabled = false;
-        s.vault_path = Some(dir.path().to_string_lossy().to_string());
+        let s = WikiSettings {
+            enabled: false,
+            vault_path: Some(dir.path().to_string_lossy().to_string()),
+            ..Default::default()
+        };
         settings::save_settings(&db.conn, &s).await.unwrap();
         with_home(dir.path(), || async {
             let err = import_text(&db.conn, import_text_params("req-off", "should not import"))

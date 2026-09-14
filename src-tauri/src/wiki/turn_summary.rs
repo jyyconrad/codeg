@@ -1,4 +1,6 @@
-//! Host-wrapped ACP turn memory pages (`work/turns/{source_id}.md`).
+//! 把完成的ACP单轮记录整理为work/turns中的Wiki笔记。
+//! source负责归档原始材料，engine/worker触发整理；Agent依据来源路径产出正文，
+//! 本模块补身份、项目与来源元数据，经commit保护人工修改后写入并登记来源关联。
 
 use std::fs;
 use std::path::Path;
@@ -13,8 +15,9 @@ use crate::db::error::DbError;
 use crate::db::service::wiki_service;
 use crate::wiki::commit::{self, StagedProposal};
 use crate::wiki::compile::{self, check_leaf_body, yaml_string, CompileError};
-use crate::wiki::llm::{WikiLlm, WIKI_TURN_SUMMARY_MAX_TURNS};
+use crate::wiki::llm::{SourceReference, WikiLlm, WikiLlmError, WIKI_TURN_SUMMARY_MAX_TURNS};
 use crate::wiki::raw;
+use crate::wiki::result::{JobOutputManifest, WikiInput, WikiOutput};
 use crate::wiki::vault::{self, CONTENT_END, CONTENT_START};
 use crate::wiki::worker::WorkerError;
 
@@ -60,18 +63,19 @@ pub async fn enqueue_for_source(
 }
 
 pub fn yaml_quote(s: &str) -> String {
-    format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-    )
+    // JSON quoted scalars are valid YAML and correctly escape control bytes.
+    serde_json::to_string(s).expect("serializing a string cannot fail")
 }
 
 pub fn wrap_memory_page(fields: MemoryPageFields<'_>) -> String {
-    let mut yaml = String::from("---\n");
+    let mut yaml = String::from("---\ncodeg_schema_version: 2\n");
     yaml.push_str("title: ");
     yaml.push_str(&yaml_quote(fields.title));
+    yaml.push('\n');
+    yaml.push_str("summary: ");
+    yaml.push_str(&yaml_quote(&first_body_paragraph(fields.body)));
+    yaml.push_str("\nupdated_at: ");
+    yaml.push_str(&yaml_quote(&Utc::now().to_rfc3339()));
     yaml.push('\n');
     yaml.push_str("type: ");
     yaml.push_str(fields.page_type);
@@ -85,9 +89,6 @@ pub fn wrap_memory_page(fields: MemoryPageFields<'_>) -> String {
     if let Some(sid) = fields.source_id {
         yaml.push_str("codeg_source_id: ");
         yaml.push_str(&yaml_quote(sid));
-        yaml.push('\n');
-        yaml.push_str("sources:\n  - ");
-        yaml.push_str(&yaml_quote(&format!("[[sources/{sid}]]")));
         yaml.push('\n');
     }
     match fields.conversation_id {
@@ -120,6 +121,24 @@ pub fn wrap_memory_page(fields: MemoryPageFields<'_>) -> String {
             yaml.push('\n');
         }
     }
+    if !fields.source_references.is_empty() {
+        let source_ids: std::collections::BTreeSet<_> = fields
+            .source_references
+            .iter()
+            .flat_map(|source| source.source_ids.iter())
+            .collect();
+        yaml.push_str("source_ids:\n");
+        for id in source_ids {
+            yaml.push_str(&format!("  - {}\n", yaml_quote(id)));
+        }
+        yaml.push_str("sources:\n");
+        for source in fields.source_references {
+            yaml.push_str(&format!(
+                "  - {}\n",
+                yaml_quote(&format!("[[{}]]", source.rel.trim_end_matches(".md")))
+            ));
+        }
+    }
     yaml.push_str("---\n\n");
     yaml.push_str(CONTENT_START);
     yaml.push('\n');
@@ -127,6 +146,20 @@ pub fn wrap_memory_page(fields: MemoryPageFields<'_>) -> String {
     yaml.push_str(body);
     if !body.ends_with('\n') {
         yaml.push('\n');
+    }
+    if !fields.source_references.is_empty() {
+        yaml.push_str("\n## 来源\n\n");
+        for source in fields.source_references {
+            let title = if source.rel.starts_with("raw/") {
+                "原始记录"
+            } else {
+                "相关记录"
+            };
+            yaml.push_str(&format!(
+                "- [[{}|{title}]]\n",
+                source.rel.trim_end_matches(".md")
+            ));
+        }
     }
     yaml.push_str(CONTENT_END);
     yaml.push('\n');
@@ -143,6 +176,7 @@ pub struct MemoryPageFields<'a> {
     pub project_binding_id: Option<&'a str>,
     pub turn_rels: &'a [String],
     pub body: &'a str,
+    pub source_references: &'a [SourceReference],
 }
 
 pub fn first_body_paragraph(md: &str) -> String {
@@ -204,82 +238,56 @@ pub async fn run_turn_summary_job(
     let source_id = job
         .source_id
         .as_deref()
-        .ok_or_else(|| WorkerError::Failed("turn_summary job has no source_id".into()))?;
+        .ok_or_else(|| WikiLlmError::InvalidOutput("turn job missing source".into()))?;
     let source = wiki_service::get_source_model(conn, source_id).await?;
-    let Some(raw_rel) = source.raw_path.as_deref().filter(|s| !s.is_empty()) else {
-        return Err(WorkerError::Failed(
-            "turn_summary source has no frozen raw".into(),
-        ));
-    };
-    let abs = vault.join(raw_rel);
-    if !abs.is_file() {
-        return Err(WorkerError::Failed(format!(
-            "raw file missing: {}",
-            abs.display()
-        )));
+    if source.vault_id != job.vault_id {
+        return Err(WikiLlmError::InvalidOutput("source belongs to another vault".into()).into());
     }
-    let raw_hash = source.raw_hash.clone().unwrap_or_default();
+    let raw_rel = source
+        .raw_path
+        .as_deref()
+        .ok_or_else(|| WikiLlmError::SourceMissing(source.id.clone()))?;
+    let required = source_inputs(&[(raw_rel.to_string(), vec![source.id.clone()])])?;
+    let source_references = source_references(&required);
     let rel = page_rel(&source.id);
-    let staging = state_root.join("staging").join(&job.id);
+    let existing = read_existing(vault, &rel)?;
+    let staging = state_root
+        .join("staging")
+        .join(&job.id)
+        .join(job.attempt.to_string());
     fs::create_dir_all(&staging).map_err(|e| WorkerError::Failed(e.to_string()))?;
-
     let input = json!({
-        "schema": "codeg.wiki.turn_summary.v1",
-        "source_id": source.id,
-        "source_kind": source.source_kind,
+        "schema": crate::wiki::llm::TURN_SUMMARY_CONTRACT_VERSION,
+        "job_id": job.id, "attempt": job.attempt,
+        "source_id": source.id, "source_kind": source.source_kind,
         "raw_path": raw_rel,
-        "raw_hash": raw_hash,
-        "conversation_id": source.conversation_id,
-        "rel": rel,
-        "vault_abs": vault.to_string_lossy(),
-        "staging_abs": staging.to_string_lossy(),
+        "conversation_id": source.conversation_id, "rel": rel,
+        "source_references": source_references,
+        "vault_abs": vault, "staging_abs": staging,
         "max_turns": WIKI_TURN_SUMMARY_MAX_TURNS,
-        "instruction": "Read the converted markdown at raw_path with read_file. Return JSON title+body. Do not emit YAML front matter. Do not write work/capability pages.",
+        "instruction": "Read source_references as needed and organize this turn into a readable Wiki note. Return schema, source_id, title, body, nothing_to_summarize, reason_code and warnings. No YAML or line evidence is required; the host adds source metadata. Do not invent success when a read fails.",
     });
-    let out = llm.complete_json(KIND, input).await.map_err(|e| match e {
-        crate::wiki::llm::WikiLlmError::Blocked(s) => WorkerError::Blocked(s),
-        crate::wiki::llm::WikiLlmError::Failed(s) => WorkerError::Failed(s),
-    })?;
-    let parsed = validate_turn_summary(&out, &source.id)?;
+    let run = llm.complete_json(KIND, input).await?;
+    let parsed = validate_turn_summary(&run.output, &source.id)?;
     if parsed.nothing_to_summarize {
-        let output = json!({
-            "rel": rel,
-            "nothing_to_summarize": true,
-            "warnings": parsed.warnings,
-            "raw_preserved": true,
-        });
-        wiki_service::set_job_output_manifest(
-            conn,
-            &job.id,
-            &serde_json::to_string(&output).unwrap_or_else(|_| "{}".into()),
-        )
-        .await?;
-        let _ = raw::append_log_idempotent(
-            &vault.join("log.md"),
-            &job.id,
-            &format!(
-                "{} turn_summary nothing_to_summarize job={} source={}",
-                Utc::now().to_rfc3339(),
-                job.id,
-                source.id
-            ),
+        crate::wiki::worker::ensure_commit_allowed(conn, &job.id, llm).await?;
+        let result = JobOutputManifest::no_content(
+            &required,
+            parsed
+                .reason_code
+                .as_deref()
+                .unwrap_or("no_durable_content"),
+            parsed.warnings,
         );
-        return Ok(output);
+        return save_result(conn, job, &result).await;
     }
-
-    let dest = vault.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let existing = fs::read_to_string(&dest).ok();
     let note_id = existing
         .as_deref()
         .and_then(|t| yaml_string(t, "codeg_note_id"))
-        .filter(|s| !s.is_empty())
+        .filter(|id| !id.is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let before_hash = existing
-        .as_deref()
-        .map(crate::wiki::raw::content_hash)
-        .unwrap_or_default();
-    let title = sanitize_turn_title(&parsed.title, &source.id);
     let binding = first_project_id(&source.project_ids);
+    let title = sanitize_turn_title(&parsed.title, &source.id);
     let after = wrap_memory_page(MemoryPageFields {
         title: &title,
         page_type: PAGE_TYPE,
@@ -290,16 +298,19 @@ pub async fn run_turn_summary_job(
         project_binding_id: binding.as_deref(),
         turn_rels: &[],
         body: &parsed.body,
+        source_references: &source_references,
     });
-    if let Err(e) = check_leaf_body(PAGE_TYPE, &after) {
-        return Err(WorkerError::Compile(e));
-    }
+    check_leaf_body(PAGE_TYPE, &after)?;
+    crate::wiki::worker::ensure_commit_allowed(conn, &job.id, llm).await?;
     let proposal = StagedProposal {
         rel: rel.clone(),
         page_type: PAGE_TYPE.into(),
-        before_hash,
-        after: after.clone(),
-        op: if dest.exists() {
+        before_hash: existing
+            .as_deref()
+            .map(raw::content_hash)
+            .unwrap_or_default(),
+        after,
+        op: if existing.is_some() {
             "update".into()
         } else {
             "create".into()
@@ -307,106 +318,197 @@ pub async fn run_turn_summary_job(
     };
     commit::commit_proposals(vault, state_root, &job.id, &[proposal])
         .map_err(CompileError::from)?;
-
-    let summary = first_body_paragraph(&after);
-    let _ = wiki_service::fill_source_title_if_empty(conn, &source.id, &title).await;
-    wiki_service::insert_contribution(
-        conn,
-        &source.id,
-        &raw_hash,
-        source.annotation_revision,
-        &note_id,
-        Some(&job.id),
-    )
-    .await?;
-
-    let output = json!({
-        "rel": rel,
-        "codeg_note_id": note_id,
-        "title": title,
-        "summary": summary,
-        "nothing_to_summarize": false,
-        "warnings": parsed.warnings,
-        "raw_preserved": true,
-    });
-    wiki_service::set_job_output_manifest(
-        conn,
-        &job.id,
-        &serde_json::to_string(&output).unwrap_or_else(|_| "{}".into()),
-    )
-    .await?;
-    let _ = raw::append_log_idempotent(
-        &vault.join("log.md"),
-        &job.id,
-        &format!(
-            "{} turn_summary succeeded job={} source={} rel={}",
-            Utc::now().to_rfc3339(),
-            job.id,
-            source.id,
-            rel
-        ),
+    let actual =
+        fs::read_to_string(vault.join(&rel)).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    let result = JobOutputManifest::generated(
+        vec![WikiOutput {
+            note_id: note_id.clone(),
+            path: rel,
+            title: title.clone(),
+            page_type: PAGE_TYPE.into(),
+            content_hash: raw::content_hash(&actual),
+        }],
+        &required,
+        parsed.warnings,
     );
-    if !abs.is_file() {
-        return Err(WorkerError::Failed(
-            "raw was deleted during turn_summary".into(),
-        ));
+    // Persist the output before nonessential title updates; a crash can recover
+    // the protected commit without invoking the model again.
+    let out = save_result(conn, job, &result).await?;
+    register_memory_contributions(conn, job, &result).await?;
+    let _ = wiki_service::fill_source_title_if_empty(conn, &source.id, &title).await;
+    commit::mark_finalized(state_root, &job.id).map_err(CompileError::from)?;
+    Ok(out)
+}
+
+/// The plain memory commit manifest can be recovered without a model call.
+/// Register source links idempotently before marking that manifest finalized.
+pub(crate) async fn register_memory_contributions(
+    conn: &DatabaseConnection,
+    job: &wiki_job::Model,
+    result: &JobOutputManifest,
+) -> Result<(), WorkerError> {
+    let source_ids: std::collections::BTreeSet<_> = result
+        .processed_inputs
+        .iter()
+        .flat_map(|input| input.source_ids.iter())
+        .collect();
+    for source_id in source_ids {
+        let source = wiki_service::get_source_model(conn, source_id).await?;
+        let existing = wiki_service::list_contributions_for_source(conn, source_id).await?;
+        for output in &result.outputs {
+            if existing.iter().any(|item| {
+                item.note_id == output.note_id && item.commit_id.as_deref() == Some(&job.id)
+            }) {
+                continue;
+            }
+            wiki_service::insert_contribution(
+                conn,
+                source_id,
+                source.raw_hash.as_deref().unwrap_or(""),
+                source.annotation_revision,
+                &output.note_id,
+                Some(&job.id),
+            )
+            .await?;
+        }
     }
+    Ok(())
+}
+
+pub(crate) async fn save_result(
+    conn: &DatabaseConnection,
+    job: &wiki_job::Model,
+    result: &JobOutputManifest,
+) -> Result<Value, WorkerError> {
+    let output = serde_json::to_value(result).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    wiki_service::set_job_output_manifest(conn, &job.id, &output.to_string()).await?;
     Ok(output)
 }
 
-struct ParsedTurn {
-    title: String,
-    body: String,
-    nothing_to_summarize: bool,
-    warnings: Vec<String>,
+pub(crate) fn read_existing(vault: &Path, rel: &str) -> Result<Option<String>, WorkerError> {
+    match fs::read_to_string(vault.join(rel)) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(WikiLlmError::SourceReadFailed(e.to_string()).into()),
+    }
+}
+
+pub(crate) fn source_inputs(
+    paths: &[(String, Vec<String>)],
+) -> Result<Vec<WikiInput>, WorkerError> {
+    paths
+        .iter()
+        .map(|(rel, source_ids)| {
+            if !crate::wiki::paths::is_safe_vault_relative(rel) {
+                return Err(WikiLlmError::SourceReadFailed("unsafe source path".into()).into());
+            }
+            Ok(WikiInput {
+                rel: rel.clone(),
+                source_ids: source_ids.clone(),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn source_references(inputs: &[WikiInput]) -> Vec<SourceReference> {
+    inputs
+        .iter()
+        .map(|input| SourceReference {
+            rel: input.rel.clone(),
+            source_ids: input.source_ids.clone(),
+        })
+        .collect()
+}
+
+pub(crate) struct ParsedTurn {
+    pub title: String,
+    pub body: String,
+    pub nothing_to_summarize: bool,
+    pub reason_code: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 fn validate_turn_summary(v: &Value, source_id: &str) -> Result<ParsedTurn, WorkerError> {
-    let obj = v
-        .as_object()
-        .ok_or_else(|| WorkerError::Failed("turn_summary is not an object".into()))?;
-    if let Some(echo) = obj.get("source_id").and_then(|x| x.as_str()) {
-        if !echo.is_empty() && echo != source_id {
-            return Err(WorkerError::Failed(
-                "turn_summary JSON source_id does not match the frozen source".into(),
-            ));
-        }
+    if v.get("source_id").and_then(Value::as_str) != Some(source_id) {
+        return Err(
+            WikiLlmError::InvalidOutput("source_id must match the supplied source".into()).into(),
+        );
     }
-    let nothing = obj
+    let parsed = validate_memory_output(v, crate::wiki::llm::TURN_SUMMARY_CONTRACT_VERSION)?;
+    if !parsed.nothing_to_summarize
+        && (parsed.title.contains(source_id) || parsed.title.starts_with("ACP turn:"))
+    {
+        return Err(WikiLlmError::InvalidOutput(
+            "title must describe the work, not echo source identity".into(),
+        )
+        .into());
+    }
+    Ok(parsed)
+}
+
+pub(crate) fn validate_memory_output(v: &Value, schema: &str) -> Result<ParsedTurn, WorkerError> {
+    let invalid = |message: &str| WorkerError::Llm(WikiLlmError::InvalidOutput(message.into()));
+    if v.get("schema").and_then(Value::as_str) != Some(schema) {
+        return Err(invalid("schema must be v2"));
+    }
+    let nothing = v
         .get("nothing_to_summarize")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(false);
-    let warnings = obj
-        .get("warnings")
-        .and_then(|x| x.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let title = obj
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid("nothing_to_summarize is required"))?;
+    let reason = v
+        .get("reason_code")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let title = v
         .get("title")
-        .and_then(|x| x.as_str())
+        .and_then(Value::as_str)
         .unwrap_or("")
         .trim()
         .to_string();
-    let body = obj
+    let body = v
         .get("body")
-        .and_then(|x| x.as_str())
+        .and_then(Value::as_str)
         .unwrap_or("")
         .trim()
         .to_string();
-    if !nothing && (title.is_empty() || body.is_empty()) {
-        return Err(WorkerError::Failed(
-            "turn_summary JSON missing title/body".into(),
+    if nothing {
+        if !matches!(
+            reason.as_deref(),
+            Some("empty_input" | "fully_redacted" | "no_durable_content")
+        ) {
+            return Err(invalid("no_content requires a supported reason_code"));
+        }
+    } else if title.is_empty()
+        || !has_substantive_body(&body)
+        || body.starts_with("---")
+        || body.contains(CONTENT_START)
+        || body.contains(CONTENT_END)
+    {
+        return Err(invalid(
+            "title and substantive Markdown body are required; host owns YAML and markers",
         ));
     }
+    let warnings = serde_json::from_value(v.get("warnings").cloned().unwrap_or_else(|| json!([])))
+        .map_err(|_| invalid("warnings must be strings"))?;
     Ok(ParsedTurn {
         title,
         body,
         nothing_to_summarize: nothing,
+        reason_code: reason,
         warnings,
+    })
+}
+
+pub(crate) fn has_substantive_body(body: &str) -> bool {
+    body.lines().any(|line| {
+        let line = line.trim();
+        let content = line.trim_start_matches(['-', '*', ' ']);
+        !content.is_empty()
+            && !content.starts_with('#')
+            && !content.starts_with("<!--")
+            && !(content.starts_with('[') && (content.ends_with(')') || content.ends_with("]]")))
+            && content.chars().filter(|c| c.is_alphanumeric()).count() >= 4
     })
 }
 
@@ -430,6 +532,27 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn heading_only_model_body_is_invalid_output() {
+        let result = validate_turn_summary(
+            &json!({"schema":"codeg.wiki.turn_summary.v2","source_id":"s1","title":"Work","body":"# Work","nothing_to_summarize":false}),
+            "s1",
+        );
+        assert!(result.is_err(), "a heading alone is not a generated memory");
+    }
+
+    #[test]
+    fn no_content_requires_an_enumerated_reason() {
+        let result = validate_turn_summary(
+            &json!({"schema":"codeg.wiki.turn_summary.v2","source_id":"s1","nothing_to_summarize":true,"warnings":["read failed"]}),
+            "s1",
+        );
+        assert!(
+            result.is_err(),
+            "a model warning cannot certify legal no-content"
+        );
+    }
+
+    #[test]
     fn wrap_writes_host_yaml_and_markers() {
         let page = wrap_memory_page(MemoryPageFields {
             title: "Fixed pagination",
@@ -441,6 +564,7 @@ mod tests {
             project_binding_id: Some("bind-1"),
             turn_rels: &[],
             body: "Edited list.rs.",
+            source_references: &[],
         });
         assert!(page.contains("type: turn-summary"));
         assert!(page.contains("codeg_source_id: \"src-1\""));
@@ -549,6 +673,7 @@ mod tests {
             error_code: Set(None),
             error_message: Set(None),
             output_manifest: Set(None),
+            next_attempt_at: Set(None),
             started_at: Set(Some(now)),
             finished_at: Set(None),
             created_at: Set(now),
@@ -558,6 +683,10 @@ mod tests {
         .await
         .unwrap();
         (dir, db, vault, state, source_id.into(), job, abs)
+    }
+
+    fn fixture_llm(_vault: &Path) -> MockWikiLlm {
+        MockWikiLlm::default()
     }
 
     #[tokio::test]
@@ -573,31 +702,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn changed_source_can_generate_memory_without_line_evidence() {
+        let (_dir, db, vault, state, _sid, job, abs) = fixture().await;
+        fs::write(&abs, "Source changed after capture; still valid material.").unwrap();
+        let out = run_turn_summary_job(&db.conn, &job, &MockWikiLlm::default(), &vault, &state)
+            .await
+            .unwrap();
+        assert_eq!(out["outcome"], "generated");
+        let note = fs::read_to_string(vault.join("work/turns/src-turn-1.md")).unwrap();
+        assert!(note.contains("[[raw/sessions/src-turn-1]]"));
+        assert!(!note.contains("start_line:"));
+        let current = wiki_service::get_job_model(&db.conn, &job.id)
+            .await
+            .unwrap();
+        assert!(!current
+            .input_manifest
+            .unwrap_or_default()
+            .contains("required_inputs"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_job_does_not_commit_generated_memory() {
+        let (_dir, db, vault, state, _sid, job, _abs) = fixture().await;
+        wiki_service::cancel_job(&db.conn, &job.id).await.unwrap();
+        let err = run_turn_summary_job(&db.conn, &job, &fixture_llm(&vault), &vault, &state)
+            .await
+            .unwrap_err();
+        assert_eq!(err.error_code(), "cancelled");
+        assert!(!vault.join("work/turns/src-turn-1.md").exists());
+    }
+
+    #[tokio::test]
     async fn nothing_to_summarize_succeeds_without_page() {
         let (_dir, db, vault, state, _sid, job, abs) = fixture().await;
-        let llm = MockWikiLlm::default().with_stage(
+        let llm = fixture_llm(&vault).with_stage(
             KIND,
             json!({
-                "schema": "codeg.wiki.turn_summary.v1",
+                "schema": "codeg.wiki.turn_summary.v2",
                 "source_id": "src-turn-1",
                 "title": "",
                 "body": "",
                 "nothing_to_summarize": true,
-                "warnings": ["empty"]
+                "warnings": [],
+                "reason_code": "no_durable_content"
             }),
         );
         let out = run_turn_summary_job(&db.conn, &job, &llm, &vault, &state)
             .await
             .unwrap();
-        assert_eq!(out["nothing_to_summarize"], true);
+        assert_eq!(out["outcome"], "no_content");
+        assert!(out["outputs"].as_array().unwrap().is_empty());
         assert!(abs.is_file());
         assert!(!vault.join("work/turns/src-turn-1.md").exists());
     }
 
     #[tokio::test]
+    async fn session_rollup_uses_source_paths_and_registers_references() {
+        let (_dir, db, vault, state, sid, turn_job, _abs) = fixture().await;
+        let job = crate::wiki::session_rollup::enqueue_session_job(&db.conn, &turn_job.vault_id, 3)
+            .await
+            .unwrap();
+        let out = crate::wiki::session_rollup::run_session_rollup_job(
+            &db.conn,
+            &job,
+            &fixture_llm(&vault),
+            &vault,
+            &state,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["outcome"], "generated");
+        assert_eq!(out["outputs"][0]["path"], "work/sessions/c3.md");
+        let text = fs::read_to_string(vault.join("work/sessions/c3.md")).unwrap();
+        assert!(text.contains("type: session-summary"));
+        assert!(text.contains("[[raw/sessions/src-turn-1]]"));
+        let contributions = wiki_service::list_contributions_for_source(&db.conn, &sid)
+            .await
+            .unwrap();
+        assert_eq!(contributions.len(), 1);
+        let result: JobOutputManifest = serde_json::from_value(out).unwrap();
+        register_memory_contributions(&db.conn, &job, &result)
+            .await
+            .unwrap();
+        assert_eq!(
+            wiki_service::list_contributions_for_source(&db.conn, &sid)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "recovery must not duplicate source references"
+        );
+    }
+
+    #[tokio::test]
     async fn success_writes_one_turn_page_and_is_idempotent_on_hash() {
         let (_dir, db, vault, state, sid, job, _) = fixture().await;
-        let llm = MockWikiLlm::default();
+        let llm = fixture_llm(&vault);
         let out = run_turn_summary_job(&db.conn, &job, &llm, &vault, &state)
             .await
             .unwrap();
@@ -607,7 +807,8 @@ mod tests {
         assert!(text.contains("type: turn-summary"));
         assert!(text.contains("codeg_source_id: \"src-turn-1\""));
         assert!(!text.contains("ACP turn:"));
-        assert_eq!(out["rel"], "work/turns/src-turn-1.md");
+        assert_eq!(out["outputs"][0]["path"], "work/turns/src-turn-1.md");
+        assert_eq!(out["outputs"][0]["content_hash"], raw::content_hash(&text));
         let src = wiki_service::get_source_model(&db.conn, &sid)
             .await
             .unwrap();

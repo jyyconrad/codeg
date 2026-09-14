@@ -1,4 +1,6 @@
-//! Deterministic raw session dumps. Host YAML serializer; exclusive create.
+//! 将会话片段与提取后的文件文本写成带来源元数据的原始 Markdown。
+//! source、import 和 session_rollup 共用序列化与只创建写入，避免重复导入覆盖已有材料。
+//! 内容摘要用于重复识别与落盘一致性，不要求后续 Agent 锁定相同输入版本。
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -261,6 +263,15 @@ pub fn render_import_raw(segments: &[TextSegment], meta: &RawImportMeta<'_>) -> 
     push_str(&mut yaml, "format", meta.format);
     push_str(&mut yaml, "extraction_status", meta.extraction_status);
     push_str(&mut yaml, "extractor_version", meta.extractor_version);
+    if let Some(pages) = meta.page_count {
+        yaml.push_str(&format!("page_count: {pages}\n"));
+    }
+    if !meta.warnings.is_empty() {
+        yaml.push_str("warnings:\n");
+        for warning in meta.warnings {
+            yaml.push_str(&format!("  - {}\n", yaml_quote(warning)));
+        }
+    }
     push_str(&mut yaml, "codeg_content_hash", &hash);
     yaml.push_str(&format!("codeg_truncated: {}\n", yaml_bool(meta.truncated)));
     yaml.push_str(&format!("codeg_redacted: {}\n", yaml_bool(meta.redacted)));
@@ -272,61 +283,53 @@ pub fn render_import_raw(segments: &[TextSegment], meta: &RawImportMeta<'_>) -> 
     (yaml, hash)
 }
 
-fn render_import_body(segments: &[TextSegment], meta: &RawImportMeta<'_>) -> String {
-    let mut body = String::from("# Document dump\n\n");
-    body.push_str("Text extraction only. Original binaries are not sent to a model.\n\n");
-    if meta.redacted {
-        body.push_str("> Host redaction applied; secrets replaced with `[REDACTED]`.\n\n");
-    }
-    body.push_str("## Coverage\n\n");
-    body.push_str(&format!(
-        "- extraction_status: {}\n- format: {}\n",
-        meta.extraction_status, meta.format
-    ));
-    if let Some(pages) = meta.page_count {
-        body.push_str(&format!("- page_count: {pages}\n"));
-    }
-    body.push_str(&format!("- segments: {}\n", segments.len()));
-    if meta.warnings.is_empty() {
-        body.push_str("- warnings: none\n");
-    } else {
-        body.push_str("- warnings:\n");
-        for w in meta.warnings {
-            body.push_str("  - ");
-            body.push_str(&yaml_quote(w));
-            body.push('\n');
-        }
-    }
-    body.push_str("\n## Segments\n\n");
-    if segments.is_empty() {
-        body.push_str("_No extractable text segments._\n");
-        return body;
-    }
-    for seg in segments {
-        body.push_str(&format!("### {} — {}\n\n", seg.id, seg.locator.label));
-        match &seg.locator.kind {
-            LocatorKind::Page { number } => {
-                body.push_str(&format!("- locator_kind: page\n- page: {number}\n\n"));
-            }
+fn render_import_body(segments: &[TextSegment], _meta: &RawImportMeta<'_>) -> String {
+    // Locators remain with the evidence file, while the default Markdown view
+    // contains the extracted document rather than extraction-engine scaffolding.
+    let mut body = String::new();
+    let mut previous_heading: Vec<String> = Vec::new();
+    for segment in segments {
+        let locator = match &segment.locator.kind {
+            LocatorKind::Page { number } => serde_json::json!({"kind":"page","number":number}),
             LocatorKind::Paragraph {
                 heading_path,
                 index,
-            } => {
-                body.push_str("- locator_kind: paragraph\n");
-                if !heading_path.is_empty() {
-                    body.push_str("- heading_path: ");
-                    body.push_str(&yaml_quote(&heading_path.join(" / ")));
-                    body.push('\n');
-                }
-                body.push_str(&format!("- paragraph_index: {index}\n\n"));
-            }
+            } => serde_json::json!({"kind":"paragraph","heading_path":heading_path,"index":index}),
             LocatorKind::CharRange { start, end } => {
+                serde_json::json!({"kind":"char_range","start":start,"end":end})
+            }
+        };
+        let metadata = serde_json::json!({"id":segment.id,"locator":locator})
+            .to_string()
+            .replace("-->", "\\u002d\\u002d>");
+        body.push_str(&format!("<!-- codeg-source-segment {metadata} -->\n"));
+        if let LocatorKind::Paragraph {
+            heading_path,
+            index,
+        } = &segment.locator.kind
+        {
+            let common = previous_heading
+                .iter()
+                .zip(heading_path)
+                .take_while(|(a, b)| a == b)
+                .count();
+            for (level, heading) in heading_path.iter().enumerate().skip(common) {
                 body.push_str(&format!(
-                    "- locator_kind: char_range\n- start: {start}\n- end: {end}\n\n"
+                    "{} {}\n\n",
+                    "#".repeat((level + 1).min(6)),
+                    heading
                 ));
             }
+            previous_heading = heading_path.clone();
+            if *index == 0
+                && heading_path
+                    .last()
+                    .is_some_and(|title| title.trim() == segment.text.trim())
+            {
+                continue;
+            }
         }
-        body.push_str(seg.text.trim_end());
+        body.push_str(segment.text.trim_end());
         body.push_str("\n\n");
     }
     body
@@ -553,9 +556,13 @@ mod tests {
         assert!(doc.contains("type: \"document-dump\""));
         assert!(doc.contains("source_kind: \"document\""));
         assert!(doc.contains("extraction_status: \"partial\""));
-        assert!(doc.contains("### page-001 — p.1"));
+        assert!(doc.contains("codeg-source-segment"));
+        assert!(doc.contains("page-001"));
         assert!(doc.contains("Visible text"));
-        assert!(doc.contains("locator_kind: page"));
+        let reading = crate::wiki::read_model::document::Document::parse(&doc);
+        assert_eq!(reading.body, "Visible text");
+        assert!(!reading.body.contains("Coverage"));
+        assert!(!reading.body.contains("Document dump"));
         assert_eq!(hash.len(), 64);
     }
 

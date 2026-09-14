@@ -1,3 +1,7 @@
+//! 为 Wiki 文件导入增加来源标注、提取状态、原件信息及批次字段。
+//! 现行 import 服务继续使用其中的来源字段；旧分段结构由后续 v2 reset 迁移移除。
+//! 保留迁移顺序以支持已有安装升级，不在代码清理时修改历史数据库结构。
+
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]

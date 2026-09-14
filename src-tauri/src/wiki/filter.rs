@@ -1,4 +1,6 @@
-//! Host-side capture filter. Runs before persist; no model.
+//! 决定 ACP 轮次是否进入个人 Wiki 自动采集。
+//! source 持久化前依据总开关、代理类型、文件夹和会话类别统一过滤。
+//! 跳过原因用于采集诊断，不负责模型生成或笔记内容质量判断。
 
 use crate::db::entities::conversation::ConversationKind;
 use crate::wiki::settings::WikiSettings;

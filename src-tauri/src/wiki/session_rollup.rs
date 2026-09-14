@@ -1,4 +1,6 @@
-//! Session memory pages after `ConversationStatus::Completed`.
+//! 在对话明确完成后生成work/sessions中的会话总结。
+//! 优先提供已有轮次笔记，必要时使用本地会话导出的Markdown；与turn_summary
+//! 共用正文包装和来源关联规则，经commit写入，保持与原始归档相互独立。
 
 use std::fs;
 use std::path::Path;
@@ -16,9 +18,10 @@ use crate::db::service::{folder_service, wiki_service};
 use crate::models::{AgentType, ConversationDetail};
 use crate::wiki::commit::{self, StagedProposal};
 use crate::wiki::compile::{check_leaf_body, yaml_string, CompileError};
-use crate::wiki::llm::{WikiLlm, WIKI_SESSION_ROLLUP_MAX_TURNS};
+use crate::wiki::llm::{WikiLlm, WikiLlmError, WIKI_SESSION_ROLLUP_MAX_TURNS};
 use crate::wiki::paths::{resolve_state_root, resolve_vault_path};
 use crate::wiki::raw::{self, RawWriteOutcome};
+use crate::wiki::result::{JobOutputManifest, WikiOutput};
 use crate::wiki::settings;
 use crate::wiki::turn_summary::{self, MemoryPageFields};
 use crate::wiki::vault;
@@ -26,7 +29,6 @@ use crate::wiki::worker::WorkerError;
 
 pub const KIND: &str = "session_rollup";
 pub const PAGE_TYPE: &str = "session-summary";
-pub const SOURCE_KIND_LOCAL: &str = "local-session";
 
 pub fn page_rel(conversation_id: i32) -> String {
     format!("work/sessions/c{conversation_id}.md")
@@ -37,22 +39,8 @@ pub fn dedupe_key(conversation_id: i32) -> String {
 }
 
 pub fn conversation_id_from_job(job: &wiki_job::Model) -> Option<i32> {
-    if let Some(raw) = job.input_manifest.as_deref() {
-        if let Ok(v) = serde_json::from_str::<Value>(raw) {
-            if let Some(n) = v.get("conversation_id").and_then(|x| x.as_i64()) {
-                return Some(n as i32);
-            }
-            if let Some(s) = v.get("conversation_id").and_then(|x| x.as_str()) {
-                if let Ok(n) = s.parse::<i32>() {
-                    return Some(n);
-                }
-            }
-        }
-    }
-    job.dedupe_key
-        .as_deref()
-        .and_then(|k| k.strip_prefix("session_rollup:"))
-        .and_then(|s| s.parse().ok())
+    let manifest: Value = serde_json::from_str(job.input_manifest.as_deref()?).ok()?;
+    i32::try_from(manifest.get("conversation_id")?.as_i64()?).ok()
 }
 
 /// Thin hook from `conversation_service`. No-ops when wiki is off or capture
@@ -71,6 +59,7 @@ async fn enqueue_on_completed_inner(
     conn: &DatabaseConnection,
     conversation_id: i32,
 ) -> Result<(), DbError> {
+    let _transition = crate::wiki::lifecycle::lock().await;
     let settings = settings::load_settings(conn).await?;
     if !settings.enabled {
         return Ok(());
@@ -111,13 +100,13 @@ async fn enqueue_on_completed_inner(
 
     let vault = resolve_vault_path(settings.vault_path.as_deref());
     vault::initialize_vault(&vault).map_err(DbError::from)?;
-    vault::initialize_state_root(&resolve_state_root(settings.vault_path.as_deref()))
-        .map_err(DbError::from)?;
+    vault::initialize_state_root(&resolve_state_root()).map_err(DbError::from)?;
     let canonical = vault.to_string_lossy().to_string();
     let vault_row = wiki_service::ensure_active_vault(conn, &canonical).await?;
     let _ = settings::ensure_db_instance_id(conn).await?;
 
-    let sources = wiki_service::list_sources_for_conversation(conn, conversation_id).await?;
+    let sources =
+        wiki_service::list_sources_for_conversation(conn, &vault_row.id, conversation_id).await?;
     let has_acp = sources.iter().any(|s| s.source_kind == "acp-turn");
     if !has_acp {
         ensure_local_session_raw(
@@ -168,7 +157,8 @@ async fn ensure_local_session_raw(
     folder_path: Option<&str>,
     root_folder_id: Option<i32>,
 ) -> Result<String, DbError> {
-    if let Some(existing) = wiki_service::find_local_session_source(conn, conv.id).await? {
+    if let Some(existing) = wiki_service::find_local_session_source(conn, vault_id, conv.id).await?
+    {
         if existing
             .raw_path
             .as_deref()
@@ -324,96 +314,90 @@ pub async fn run_session_rollup_job(
     vault::initialize_vault(vault).map_err(|e| WorkerError::Failed(e.to_string()))?;
     vault::initialize_state_root(state_root).map_err(|e| WorkerError::Failed(e.to_string()))?;
     let conversation_id = conversation_id_from_job(job)
-        .ok_or_else(|| WorkerError::Failed("session_rollup job missing conversation_id".into()))?;
+        .ok_or_else(|| WikiLlmError::InvalidOutput("session job missing conversation_id".into()))?;
     let rel = page_rel(conversation_id);
-    let staging = state_root.join("staging").join(&job.id);
+    let sources =
+        wiki_service::list_sources_for_conversation(conn, &job.vault_id, conversation_id).await?;
+    let mut paths = Vec::new();
+    let mut turn_rels = Vec::new();
+    for source in &sources {
+        let turn = turn_summary::page_rel(&source.id);
+        let path = if source.source_kind == "acp-turn" && vault.join(&turn).is_file() {
+            turn_rels.push(turn.clone());
+            Some(turn)
+        } else {
+            source.raw_path.clone()
+        };
+        if let Some(path) = path {
+            paths.push((path, vec![source.id.clone()]));
+        }
+    }
+    let required = turn_summary::source_inputs(&paths)?;
+    let source_references = turn_summary::source_references(&required);
+    let existing = turn_summary::read_existing(vault, &rel)?;
+    let staging = state_root
+        .join("staging")
+        .join(&job.id)
+        .join(job.attempt.to_string());
     fs::create_dir_all(&staging).map_err(|e| WorkerError::Failed(e.to_string()))?;
-
-    let sources = wiki_service::list_sources_for_conversation(conn, conversation_id).await?;
-    let turn_rels: Vec<String> = sources
-        .iter()
-        .filter(|s| s.source_kind == "acp-turn")
-        .map(|s| turn_summary::page_rel(&s.id))
-        .collect();
-    let raw_paths: Vec<String> = sources.iter().filter_map(|s| s.raw_path.clone()).collect();
-    let local_raw = sources
-        .iter()
-        .find(|s| s.source_kind == SOURCE_KIND_LOCAL)
-        .and_then(|s| s.raw_path.clone());
-    if turn_rels.is_empty() && local_raw.is_none() && raw_paths.is_empty() {
-        return Err(WorkerError::Failed(
-            "session_rollup has no turn pages or local-session raw".into(),
-        ));
-    }
-
     let input = json!({
-        "schema": "codeg.wiki.session_rollup.v1",
-        "conversation_id": conversation_id,
-        "rel": rel,
-        "turn_rels": turn_rels,
-        "raw_paths": raw_paths,
-        "local_session_raw": local_raw,
-        "vault_abs": vault.to_string_lossy(),
-        "staging_abs": staging.to_string_lossy(),
+        "schema": crate::wiki::llm::SESSION_ROLLUP_CONTRACT_VERSION,
+        "job_id": job.id, "attempt": job.attempt,
+        "conversation_id": conversation_id, "rel": rel,
+        "turn_rels": turn_rels, "source_references": source_references,
+        "vault_abs": vault, "staging_abs": staging,
         "max_turns": WIKI_SESSION_ROLLUP_MAX_TURNS,
-        "instruction": "Read turn pages first. Only read raw/session export if summaries are insufficient. Return JSON title+body. Do not emit YAML front matter.",
+        "instruction": "Use source_references to read the conversation material needed for a coherent Wiki note. Return title and substantive body, or nothing_to_summarize with reason_code empty_input, fully_redacted or no_durable_content. No YAML or line evidence is required; the host adds source metadata. Do not invent success when a read fails.",
     });
-    let out = llm.complete_json(KIND, input).await.map_err(|e| match e {
-        crate::wiki::llm::WikiLlmError::Blocked(s) => WorkerError::Blocked(s),
-        crate::wiki::llm::WikiLlmError::Failed(s) => WorkerError::Failed(s),
-    })?;
-    let parsed = validate_session_rollup(&out, conversation_id)?;
+    let run = llm.complete_json(KIND, input).await?;
+    let parsed = validate_session_rollup(&run.output, conversation_id)?;
     if parsed.nothing_to_summarize {
-        let output = json!({
-            "rel": rel,
-            "conversation_id": conversation_id,
-            "nothing_to_summarize": true,
-            "warnings": parsed.warnings,
-        });
-        wiki_service::set_job_output_manifest(
+        crate::wiki::worker::ensure_commit_allowed(conn, &job.id, llm).await?;
+        return turn_summary::save_result(
             conn,
-            &job.id,
-            &serde_json::to_string(&output).unwrap_or_else(|_| "{}".into()),
+            job,
+            &JobOutputManifest::no_content(
+                &required,
+                parsed
+                    .reason_code
+                    .as_deref()
+                    .unwrap_or("no_durable_content"),
+                parsed.warnings,
+            ),
         )
-        .await?;
-        return Ok(output);
+        .await;
     }
-
-    let dest = vault.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let existing = fs::read_to_string(&dest).ok();
     let note_id = existing
         .as_deref()
         .and_then(|t| yaml_string(t, "codeg_note_id"))
-        .filter(|s| !s.is_empty())
+        .filter(|id| !id.is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let before_hash = existing
-        .as_deref()
-        .map(raw::content_hash)
-        .unwrap_or_default();
     let binding = sources
         .iter()
         .find_map(|s| first_project_id(&s.project_ids));
-    let occurred = sources.iter().filter_map(|s| s.occurred_at).max();
     let after = turn_summary::wrap_memory_page(MemoryPageFields {
         title: &parsed.title,
         page_type: PAGE_TYPE,
         note_id: &note_id,
         source_id: None,
         conversation_id: Some(conversation_id),
-        occurred_at: occurred,
+        occurred_at: sources.iter().filter_map(|s| s.occurred_at).max(),
         project_binding_id: binding.as_deref(),
         turn_rels: &turn_rels,
         body: &parsed.body,
+        source_references: &source_references,
     });
-    if let Err(e) = check_leaf_body(PAGE_TYPE, &after) {
-        return Err(WorkerError::Compile(e));
-    }
+    check_leaf_body(PAGE_TYPE, &after)?;
+    crate::wiki::worker::ensure_commit_allowed(conn, &job.id, llm).await?;
     let proposal = StagedProposal {
         rel: rel.clone(),
         page_type: PAGE_TYPE.into(),
-        before_hash,
-        after: after.clone(),
-        op: if dest.exists() {
+        before_hash: existing
+            .as_deref()
+            .map(raw::content_hash)
+            .unwrap_or_default(),
+        after,
+        op: if existing.is_some() {
             "update".into()
         } else {
             "create".into()
@@ -421,98 +405,36 @@ pub async fn run_session_rollup_job(
     };
     commit::commit_proposals(vault, state_root, &job.id, &[proposal])
         .map_err(CompileError::from)?;
-    let output = json!({
-        "rel": rel,
-        "codeg_note_id": note_id,
-        "conversation_id": conversation_id,
-        "title": parsed.title,
-        "summary": turn_summary::first_body_paragraph(&after),
-        "nothing_to_summarize": false,
-        "warnings": parsed.warnings,
-    });
-    wiki_service::set_job_output_manifest(
-        conn,
-        &job.id,
-        &serde_json::to_string(&output).unwrap_or_else(|_| "{}".into()),
-    )
-    .await?;
-    let _ = raw::append_log_idempotent(
-        &vault.join("log.md"),
-        &job.id,
-        &format!(
-            "{} session_rollup succeeded job={} conversation={} rel={}",
-            Utc::now().to_rfc3339(),
-            job.id,
-            conversation_id,
-            rel
-        ),
+    let actual =
+        fs::read_to_string(vault.join(&rel)).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    let result = JobOutputManifest::generated(
+        vec![WikiOutput {
+            note_id,
+            path: rel,
+            title: parsed.title,
+            page_type: PAGE_TYPE.into(),
+            content_hash: raw::content_hash(&actual),
+        }],
+        &required,
+        parsed.warnings,
     );
-    Ok(output)
+    let out = turn_summary::save_result(conn, job, &result).await?;
+    turn_summary::register_memory_contributions(conn, job, &result).await?;
+    commit::mark_finalized(state_root, &job.id).map_err(CompileError::from)?;
+    Ok(out)
 }
 
-struct ParsedSession {
-    title: String,
-    body: String,
-    nothing_to_summarize: bool,
-    warnings: Vec<String>,
-}
-
-fn validate_session_rollup(v: &Value, conversation_id: i32) -> Result<ParsedSession, WorkerError> {
-    let obj = v
-        .as_object()
-        .ok_or_else(|| WorkerError::Failed("session_rollup is not an object".into()))?;
-    if let Some(echo) = obj.get("conversation_id") {
-        let ok = echo
-            .as_i64()
-            .map(|n| n as i32 == conversation_id)
-            .or_else(|| {
-                echo.as_str()
-                    .and_then(|s| s.parse::<i32>().ok())
-                    .map(|n| n == conversation_id)
-            })
-            .unwrap_or(true);
-        if !ok {
-            return Err(WorkerError::Failed(
-                "session_rollup JSON conversation_id does not match".into(),
-            ));
-        }
+fn validate_session_rollup(
+    v: &Value,
+    conversation_id: i32,
+) -> Result<turn_summary::ParsedTurn, WorkerError> {
+    if v.get("conversation_id").and_then(Value::as_i64) != Some(i64::from(conversation_id)) {
+        return Err(WikiLlmError::InvalidOutput(
+            "conversation_id must match the supplied conversation".into(),
+        )
+        .into());
     }
-    let nothing = obj
-        .get("nothing_to_summarize")
-        .and_then(|x| x.as_bool())
-        .unwrap_or(false);
-    let warnings = obj
-        .get("warnings")
-        .and_then(|x| x.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let title = obj
-        .get("title")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let body = obj
-        .get("body")
-        .and_then(|x| x.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if !nothing && (title.is_empty() || body.is_empty()) {
-        return Err(WorkerError::Failed(
-            "session_rollup JSON missing title/body".into(),
-        ));
-    }
-    Ok(ParsedSession {
-        title,
-        body,
-        nothing_to_summarize: nothing,
-        warnings,
-    })
+    turn_summary::validate_memory_output(v, crate::wiki::llm::SESSION_ROLLUP_CONTRACT_VERSION)
 }
 
 fn first_project_id(raw: &Option<String>) -> Option<String> {
@@ -600,9 +522,11 @@ mod tests {
     }
 
     async fn enable_wiki(conn: &DatabaseConnection, vault: &Path) {
-        let mut s = WikiSettings::default();
-        s.enabled = true;
-        s.vault_path = Some(vault.to_string_lossy().to_string());
+        let s = WikiSettings {
+            enabled: true,
+            vault_path: Some(vault.to_string_lossy().to_string()),
+            ..WikiSettings::default()
+        };
         settings::save_settings(conn, &s).await.unwrap();
     }
 
@@ -693,6 +617,7 @@ mod tests {
             project_binding_id: None,
             turn_rels: &[String::from("work/turns/src.md")],
             body: "Implemented list cursors.",
+            source_references: &[],
         });
         assert!(page.contains("type: session-summary"));
         assert!(page.contains("codeg_conversation_id: 12"));

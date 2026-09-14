@@ -1,4 +1,7 @@
-//! Validate staged pages, persist a commit manifest, atomic-replace, recover.
+//! 安全提交Wiki生成页面，并恢复被中断的文件写入。
+//! 轮次/对话/综合整理传入完整页面；本模块校验输出路径与身份、保留人工区域，
+//! 将最终字节写入提交日志后原子替换文件；数据库登记完成后标记finalized。
+//! 输出哈希保护并发编辑及崩溃恢复，不用于限制Agent读取哪个输入版本。
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -28,6 +31,13 @@ const MANAGED_YAML_KEYS: &[&str] = &[
     "codeg_note_id",
     "evidence_level",
     "decision_state",
+    "source_ids",
+    "source_paths",
+    "source_urls",
+    "personal_role",
+    "verification_status",
+    "superseded_by",
+    "evidence",
 ];
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -70,6 +80,48 @@ pub struct CommitManifest {
     pub files: Vec<CommitFile>,
     /// Full after-bodies keyed by vault-relative path. Persisted before apply.
     pub after_contents: BTreeMap<String, String>,
+    #[serde(default)]
+    pub commit_id: Option<String>,
+    #[serde(default)]
+    pub finalized: bool,
+    #[serde(default)]
+    pub batch: Option<BatchMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BatchMetadata {
+    pub vault_id: String,
+    pub attempt: i32,
+    pub batch_id: String,
+    pub contract_version: String,
+    pub result: crate::wiki::result::JobOutputManifest,
+    #[serde(default)]
+    pub source_ids_by_note: BTreeMap<String, Vec<String>>,
+}
+
+impl CommitManifest {
+    pub fn storage_id(&self) -> &str {
+        self.commit_id.as_deref().unwrap_or(&self.job_id)
+    }
+}
+
+pub fn immutable_manifest_hash(manifest: &CommitManifest) -> Result<String, CommitError> {
+    let mut stable = manifest.clone();
+    stable.finalized = false;
+    for file in &mut stable.files {
+        file.applied = false;
+    }
+    serde_json::to_string(&stable)
+        .map(|s| content_hash(&s))
+        .map_err(|e| CommitError::Validation(e.to_string()))
+}
+
+pub fn mark_finalized(state_root: &Path, job_id: &str) -> Result<(), CommitError> {
+    if let Some(mut manifest) = load_manifest(state_root, job_id)? {
+        manifest.finalized = true;
+        persist_manifest(state_root, &manifest)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,8 +168,8 @@ pub fn load_manifest(
 pub fn persist_manifest(state_root: &Path, manifest: &CommitManifest) -> Result<(), CommitError> {
     let dir = commits_dir(state_root);
     fs::create_dir_all(&dir)?;
-    let dest = manifest_path(state_root, &manifest.job_id);
-    let tmp = dir.join(format!(".{}.tmp", manifest.job_id));
+    let dest = manifest_path(state_root, manifest.storage_id());
+    let tmp = dir.join(format!(".{}.tmp", manifest.storage_id()));
     let json = serde_json::to_string_pretty(manifest)
         .map_err(|e| CommitError::Validation(format!("serialize commit manifest: {e}")))?;
     {
@@ -130,6 +182,7 @@ pub fn persist_manifest(state_root: &Path, manifest: &CommitManifest) -> Result<
         f.sync_all()?;
     }
     fs::rename(&tmp, &dest)?;
+    sync_parent(&dest)?;
     Ok(())
 }
 
@@ -141,30 +194,140 @@ pub fn commit_proposals(
     job_id: &str,
     proposals: &[StagedProposal],
 ) -> Result<CommitManifest, CommitError> {
-    let policy = WikiFsPolicy::new(vault, state_root);
+    prepare_and_commit(vault, state_root, job_id, job_id, proposals, None)
+}
+
+pub fn commit_batch(
+    vault: &Path,
+    state_root: &Path,
+    job_id: &str,
+    proposals: &[StagedProposal],
+    metadata: BatchMetadata,
+) -> Result<CommitManifest, CommitError> {
+    let storage_id = format!("{job_id}-a{}-{}", metadata.attempt, metadata.batch_id);
+    prepare_and_commit(
+        vault,
+        state_root,
+        job_id,
+        &storage_id,
+        proposals,
+        Some(metadata),
+    )
+}
+
+fn prepare_and_commit(
+    vault: &Path,
+    state_root: &Path,
+    job_id: &str,
+    storage_id: &str,
+    proposals: &[StagedProposal],
+    mut batch: Option<BatchMetadata>,
+) -> Result<CommitManifest, CommitError> {
+    if let Some(mut manifest) = load_manifest(state_root, storage_id)? {
+        if !manifest.finalized {
+            recover_manifest(vault, state_root, &mut manifest)?;
+        }
+        return Ok(manifest);
+    }
+    let _lock = acquire_vault_lock(vault)?;
+    let policy = WikiFsPolicy::new(vault);
     let mut files = Vec::new();
     let mut after_contents = BTreeMap::new();
     for p in proposals {
         validate_proposal(&policy, p)?;
-        let after_hash = content_hash(&p.after);
+        if after_contents.contains_key(&p.rel) {
+            return Err(CommitError::Validation(
+                "duplicate target within batch".into(),
+            ));
+        }
+        let dest = policy.check_commit_rel(&p.rel)?;
+        let current = if dest.exists() {
+            Some(fs::read_to_string(&dest)?)
+        } else {
+            None
+        };
+        let current_hash = current.as_deref().map(content_hash).unwrap_or_default();
+        if current_hash != p.before_hash || (p.op == "create" && current.is_some()) {
+            let file = CommitFile {
+                rel: p.rel.clone(),
+                op: p.op.clone(),
+                before_hash: p.before_hash.clone(),
+                after_hash: content_hash(&p.after),
+                applied: false,
+                page_type: p.page_type.clone(),
+            };
+            save_conflict(state_root, job_id, &file, vault, &p.after)?;
+            return Err(CommitError::Conflict(format!(
+                "{} changed after input was frozen",
+                p.rel
+            )));
+        }
+        let final_text = match current.as_deref() {
+            Some(cur) => splice_user_regions(cur, &p.after)?,
+            None => ensure_content_markers(&p.after),
+        };
+        validate_markdown(&final_text, &p.page_type)?;
         files.push(CommitFile {
             rel: p.rel.clone(),
             op: p.op.clone(),
             before_hash: p.before_hash.clone(),
-            after_hash,
+            after_hash: content_hash(&final_text),
             applied: false,
             page_type: p.page_type.clone(),
         });
-        after_contents.insert(p.rel.clone(), p.after.clone());
+        after_contents.insert(p.rel.clone(), final_text);
+    }
+    if let Some(meta) = batch.as_mut() {
+        meta.result.outputs = files
+            .iter()
+            .map(|file| {
+                let text = &after_contents[&file.rel];
+                let (yaml, _) = split_frontmatter(text)
+                    .ok_or_else(|| CommitError::Validation("missing final metadata".into()))?;
+                let fields: serde_yaml::Value = serde_yaml::from_str(&yaml)
+                    .map_err(|e| CommitError::Validation(e.to_string()))?;
+                let note_id = fields
+                    .get("codeg_note_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| CommitError::Validation("missing final identity".into()))?;
+                let title = fields
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                Ok(crate::wiki::result::WikiOutput {
+                    note_id: note_id.into(),
+                    path: file.rel.clone(),
+                    title: title.into(),
+                    page_type: file.page_type.clone(),
+                    content_hash: file.after_hash.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, CommitError>>()?;
+    }
+    if let Some(meta) = batch.as_mut() {
+        meta.source_ids_by_note = meta
+            .result
+            .outputs
+            .iter()
+            .map(|output| {
+                (
+                    output.note_id.clone(),
+                    crate::wiki::compile::yaml_list(&after_contents[&output.path], "source_ids"),
+                )
+            })
+            .collect();
     }
     let mut manifest = CommitManifest {
-        job_id: job_id.to_string(),
+        job_id: job_id.into(),
         vault: vault.to_string_lossy().into_owned(),
         files,
         after_contents,
+        commit_id: (storage_id != job_id).then(|| storage_id.to_string()),
+        finalized: false,
+        batch,
     };
     persist_manifest(state_root, &manifest)?;
-    apply_manifest(vault, state_root, &mut manifest)?;
+    apply_manifest_locked(vault, state_root, &mut manifest)?;
     persist_manifest(state_root, &manifest)?;
     Ok(manifest)
 }
@@ -174,6 +337,9 @@ pub fn recover_manifest(
     state_root: &Path,
     manifest: &mut CommitManifest,
 ) -> Result<RecoverStatus, CommitError> {
+    if manifest.finalized {
+        return Ok(RecoverStatus::Complete);
+    }
     apply_manifest(vault, state_root, manifest)?;
     persist_manifest(state_root, manifest)?;
     if manifest.files.iter().all(|f| f.applied) {
@@ -225,6 +391,9 @@ pub fn recover_all(state_root: &Path) -> Vec<(String, Result<RecoverStatus, Comm
                 continue;
             }
         };
+        if manifest.batch.is_some() || manifest.finalized {
+            continue;
+        }
         if manifest.files.iter().all(|f| f.applied) {
             out.push((manifest.job_id.clone(), Ok(RecoverStatus::Complete)));
             continue;
@@ -241,27 +410,45 @@ fn apply_manifest(
     state_root: &Path,
     manifest: &mut CommitManifest,
 ) -> Result<(), CommitError> {
-    let policy = WikiFsPolicy::new(vault, state_root);
-    fs::create_dir_all(vault)?;
-    let _vault_lock = acquire_vault_lock(vault)?;
-    for file in manifest.files.iter_mut() {
-        if file.applied {
-            continue;
+    let _lock = acquire_vault_lock(vault)?;
+    apply_manifest_locked(vault, state_root, manifest)
+}
+
+fn apply_manifest_locked(
+    vault: &Path,
+    state_root: &Path,
+    manifest: &mut CommitManifest,
+) -> Result<(), CommitError> {
+    let policy = WikiFsPolicy::new(vault);
+    // Check the entire batch before touching any file, including previously
+    // applied entries. An applied flag alone cannot prove the bytes survived.
+    for file in &manifest.files {
+        let dest = policy.check_commit_rel(&file.rel)?;
+        policy.check_page_type_path(&file.page_type, &file.rel)?;
+        let after = manifest
+            .after_contents
+            .get(&file.rel)
+            .ok_or_else(|| CommitError::Validation("missing after content".into()))?;
+        if content_hash(after) != file.after_hash {
+            return Err(CommitError::Validation(
+                "commit manifest hash mismatch".into(),
+            ));
         }
-        let Some(after) = manifest.after_contents.get(&file.rel).cloned() else {
-            return Err(CommitError::Validation(format!(
-                "missing after content for {}",
+        let current = file_hash(&dest)?;
+        if current != file.after_hash && (current != file.before_hash || file.applied) {
+            save_conflict(state_root, &manifest.job_id, file, vault, after)?;
+            return Err(CommitError::Conflict(format!(
+                "{} changed before commit recovery",
                 file.rel
             )));
-        };
-        match apply_one(&policy, vault, state_root, &manifest.job_id, file, &after) {
-            Ok(()) => file.applied = true,
-            Err(CommitError::Conflict(reason)) => {
-                save_conflict(state_root, &manifest.job_id, file, vault, &after)?;
-                return Err(CommitError::Conflict(reason));
-            }
-            Err(e) => return Err(e),
         }
+    }
+    for index in 0..manifest.files.len() {
+        let file = &manifest.files[index];
+        let after = &manifest.after_contents[&file.rel];
+        apply_one(&policy, vault, state_root, &manifest.job_id, file, after)?;
+        manifest.files[index].applied = true;
+        persist_manifest(state_root, manifest)?;
     }
     Ok(())
 }
@@ -292,32 +479,38 @@ fn apply_one(
         )));
     }
 
-    let final_text = match current.as_deref() {
-        Some(cur) => splice_user_regions(cur, after)?,
-        None => ensure_content_markers(after),
-    };
+    // `after` already contains the preserved human regions. Re-merging here
+    // would change the bytes that the durable manifest promises to write.
+    let final_text = after;
 
-    if !dest.exists() && file.op == "create" {
+    if file.op == "create" {
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
-        match OpenOptions::new().write(true).create_new(true).open(&dest) {
-            Ok(mut f) => {
-                f.write_all(final_text.as_bytes())?;
-                f.sync_all()?;
+        let tmp = dest.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(final_text.as_bytes())?;
+        f.sync_all()?;
+        // Linking a complete staged inode atomically supplies create-only
+        // semantics; a crash cannot leave a partially written destination.
+        let linked = fs::hard_link(&tmp, &dest);
+        let _ = fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => {
+                sync_parent(&dest)?;
                 return Ok(());
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 return Err(CommitError::Conflict(format!(
-                    "{}: refusing to overwrite an unexpected file on create",
+                    "{} appeared during create",
                     file.rel
-                )));
+                )))
             }
             Err(e) => return Err(e.into()),
         }
     }
 
-    atomic_replace(vault, &dest, &final_text, job_id)?;
+    atomic_replace(vault, &dest, final_text, job_id)?;
     Ok(())
 }
 
@@ -368,10 +561,18 @@ fn atomic_replace(
         f.sync_all()?;
     }
     fs::rename(&tmp, dest)?;
+    sync_parent(dest)?;
     Ok(())
 }
 
-fn acquire_vault_lock(vault: &Path) -> Result<File, CommitError> {
+fn sync_parent(path: &Path) -> Result<(), CommitError> {
+    if let Some(parent) = path.parent() {
+        File::open(parent)?.sync_all()?;
+    }
+    Ok(())
+}
+
+pub(crate) fn acquire_vault_lock(vault: &Path) -> Result<File, CommitError> {
     fs::create_dir_all(vault)?;
     let path = vault.join(".codeg-wiki.lock");
     let file = OpenOptions::new()
@@ -449,22 +650,21 @@ pub fn split_frontmatter(md: &str) -> Option<(String, String)> {
         (i, 5)
     } else if let Some(i) = rest.find("\r\n---\r\n") {
         (i, 7)
-    } else if let Some(i) = rest.find("\n---") {
-        (i, 4)
     } else {
-        return None;
+        (rest.find("\n---")?, 4)
     };
     let yaml = rest[..nl.0].to_string();
     let body = rest[nl.0 + nl.1..].to_string();
     Some((yaml, body))
 }
 
+/// 只替换明确标出的生成区域；无标记文件视为用户所有，避免接管手写笔记。
 pub fn splice_user_regions(current: &str, proposed: &str) -> Result<String, CommitError> {
     let (cur_yaml, cur_body) = match split_frontmatter(current) {
         Some(v) => v,
         None => {
             return Err(CommitError::Conflict(
-                "existing note has no YAML front matter; v1 will not take it over".into(),
+                "existing note has no YAML front matter".into(),
             ));
         }
     };
@@ -602,6 +802,72 @@ Design request/response contracts.\n\n\
     }
 
     #[test]
+    fn committed_hash_describes_final_bytes_including_human_regions() {
+        let dir = tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        let state = dir.path().join("state");
+        initialize_vault(&vault).unwrap();
+        let rel = "capabilities/human.md";
+        let original = format!("{}\nHuman annotation stays.\n", capability_page("n", "s"));
+        fs::write(vault.join(rel), &original).unwrap();
+        let manifest = commit_proposals(
+            &vault,
+            &state,
+            "human-hash",
+            &[StagedProposal {
+                rel: rel.into(),
+                page_type: "capability".into(),
+                before_hash: content_hash(&original),
+                after: capability_page("n", "s").replace(
+                    "Design request/response contracts.",
+                    "Check cursor edge cases.",
+                ),
+                op: "update".into(),
+            }],
+        )
+        .unwrap();
+        let actual = fs::read_to_string(vault.join(rel)).unwrap();
+        assert!(actual.contains("Human annotation stays."));
+        assert!(actual.contains("Check cursor edge cases."));
+        assert_eq!(manifest.files[0].after_hash, content_hash(&actual));
+        assert_eq!(manifest.after_contents[rel], actual);
+    }
+
+    #[test]
+    fn later_conflict_prevents_earlier_page_from_being_written() {
+        let dir = tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        let state = dir.path().join("state");
+        initialize_vault(&vault).unwrap();
+        fs::write(
+            vault.join("capabilities/changed.md"),
+            capability_page("old", "s"),
+        )
+        .unwrap();
+        let proposals = vec![
+            StagedProposal {
+                rel: "capabilities/new.md".into(),
+                page_type: "capability".into(),
+                before_hash: String::new(),
+                after: capability_page("new", "s"),
+                op: "create".into(),
+            },
+            StagedProposal {
+                rel: "capabilities/changed.md".into(),
+                page_type: "capability".into(),
+                before_hash: "frozen-before-user-edit".into(),
+                after: capability_page("old", "s"),
+                op: "update".into(),
+            },
+        ];
+        assert!(matches!(
+            commit_proposals(&vault, &state, "preflight", &proposals),
+            Err(CommitError::Conflict(_))
+        ));
+        assert!(!vault.join("capabilities/new.md").exists());
+    }
+
+    #[test]
     fn commit_writes_capability_and_is_idempotent() {
         let dir = tempdir().unwrap();
         let vault = dir.path().join("vault");
@@ -620,7 +886,7 @@ Design request/response contracts.\n\n\
             after: after.clone(),
             op: "create".into(),
         };
-        let m1 = commit_proposals(&vault, &state, job, &[proposal.clone()]).unwrap();
+        let m1 = commit_proposals(&vault, &state, job, std::slice::from_ref(&proposal)).unwrap();
         assert!(m1.files.iter().all(|f| f.applied));
         let path = vault.join(&rel);
         let first = fs::read_to_string(&path).unwrap();
@@ -698,6 +964,9 @@ Design request/response contracts.\n\n\
         fs::write(vault.join(b_rel), &b_before).unwrap();
 
         let mut manifest = CommitManifest {
+            commit_id: None,
+            finalized: false,
+            batch: None,
             job_id: "job-recover".into(),
             vault: vault.to_string_lossy().into_owned(),
             files: vec![

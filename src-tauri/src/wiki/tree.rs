@@ -1,16 +1,6 @@
-//! Vault directory listing for the workbench wiki browser.
-//!
-//! `wiki_vault_tree` returns a JSON array of [`WikiVaultTreeEntry`].
-//!
-//! - Non-recursive (`recursive: false`, default): one directory level.
-//!   `children` is omitted so the payload stays compatible with older
-//!   clients that expected a flat `{ path, name, is_dir }` list.
-//! - Recursive (`recursive: true`): nested `children` up to
-//!   [`MAX_TREE_DEPTH`]. `.obsidian` and `.git` are skipped. `raw/` is
-//!   skipped unless `include_raw` is true.
-//!
-//! Paths are vault-relative with `/` separators. `..` and absolute
-//! segments are rejected.
+//! 列出 Wiki 目录，供默认目录阅读器和高级文件浏览器导航使用。
+//! 支持单层懒加载与有限深度递归；返回目录内相对路径，不跟随符号链接。
+//! 默认隐藏素材及维护文件，高级入口可显式展示；.git/.obsidian 始终隐藏。
 
 use std::fs;
 use std::io;
@@ -27,6 +17,8 @@ pub const MAX_TREE_DEPTH: u32 = 8;
 pub struct WikiVaultTreeEntry {
     pub path: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub is_dir: bool,
     /// Present only for recursive listings of directories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -44,7 +36,13 @@ pub enum VaultTreeError {
 fn skip_child_name(name: &str, include_raw: bool) -> bool {
     name.eq_ignore_ascii_case(".obsidian")
         || name.eq_ignore_ascii_case(".git")
-        || (!include_raw && name.eq_ignore_ascii_case("raw"))
+        || (!include_raw
+            && (name.eq_ignore_ascii_case("raw")
+                || name.eq_ignore_ascii_case("sources")
+                || name.eq_ignore_ascii_case("journal")
+                || name.eq_ignore_ascii_case("AGENTS.md")
+                || name.eq_ignore_ascii_case("log.md")
+                || name.starts_with(".codeg")))
 }
 
 fn child_rel(parent: &str, name: &str) -> String {
@@ -70,6 +68,11 @@ fn list_level(
         }
         return Err(VaultTreeError::NotFound);
     }
+    let canonical_root = vault.canonicalize().map_err(VaultTreeError::Io)?;
+    let canonical_dir = dir.canonicalize().map_err(VaultTreeError::Io)?;
+    if !canonical_dir.starts_with(canonical_root) {
+        return Err(VaultTreeError::UnsafePath);
+    }
     if !dir.is_dir() {
         return Err(VaultTreeError::NotDirectory);
     }
@@ -86,8 +89,13 @@ fn list_level(
         if !is_safe_vault_relative(&child) {
             continue;
         }
-        let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let kind = ent.file_type().map_err(VaultTreeError::Io)?;
+        if kind.is_symlink() {
+            continue;
+        }
+        let is_dir = kind.is_dir();
         entries.push(WikiVaultTreeEntry {
+            title: None,
             path: child.replace('\\', "/"),
             name,
             is_dir,
@@ -196,7 +204,7 @@ mod tests {
         let alpha = find(&entries, "work/projects/alpha.md").expect("nested note");
         assert!(!alpha.is_dir);
         assert!(find(&entries, "index.md").is_some());
-        assert!(find(&entries, "AGENTS.md").is_some());
+        assert!(find(&entries, "AGENTS.md").is_none());
         assert!(find(&entries, ".obsidian").is_none());
         assert!(find(&entries, ".obsidian/app.json").is_none());
         assert!(find(&entries, ".git").is_none());
@@ -213,6 +221,7 @@ mod tests {
         seed_vault(dir.path());
         let entries = list_vault_tree(dir.path(), "", true, true).unwrap();
         assert!(find(&entries, "raw/sessions/turn.md").is_some());
+        assert!(find(&entries, "AGENTS.md").is_some());
         assert!(find(&entries, ".obsidian").is_none());
         assert!(find(&entries, ".git").is_none());
     }

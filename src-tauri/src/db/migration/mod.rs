@@ -48,6 +48,9 @@ mod m20260907_000001_canvas_node_path;
 mod m20260909_000001_folder_chat_channel;
 mod m20260912_000001_wiki;
 mod m20260912_000002_wiki_import;
+mod m20260914_000001_wiki_v2_reset;
+mod m20260914_000002_wiki_pipeline;
+mod m20260914_000003_wiki_attempts;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -102,6 +105,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260909_000001_folder_chat_channel::Migration),
             Box::new(m20260912_000001_wiki::Migration),
             Box::new(m20260912_000002_wiki_import::Migration),
+            Box::new(m20260914_000001_wiki_v2_reset::Migration),
+            Box::new(m20260914_000002_wiki_pipeline::Migration),
+            Box::new(m20260914_000003_wiki_attempts::Migration),
         ]
     }
 }

@@ -1,3 +1,6 @@
+//! 建立个人 Wiki 最初的来源、任务、项目绑定、贡献和资料库表。
+//! 这是已发布迁移历史；后续 v2 迁移会清理旧数据和弃用表，不能按当前模型直接删去本迁移。
+
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]

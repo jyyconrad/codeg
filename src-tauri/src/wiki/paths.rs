@@ -1,8 +1,6 @@
-//! Vault and wiki-state path resolution.
-//!
-//! Priority (do not use `paths::codeg_home_dir`, which has no `CODEG_DATA_DIR`
-//! fallback): explicit settings path → `$CODEG_HOME/wiki` → `$CODEG_DATA_DIR/wiki`
-//! → `~/.codeg/wiki`. State root uses the same order with `wiki-state/`.
+//! 解析 Wiki 正文目录与独立运行状态目录，并校验目录内相对路径。
+//! 正文优先使用用户配置，再依次读取 CODEG_HOME、CODEG_DATA_DIR、~/.codeg。
+//! 状态目录始终独立于用户的 Obsidian 目录，供原件、暂存和恢复记录使用。
 
 use std::path::{Path, PathBuf};
 
@@ -42,16 +40,8 @@ pub fn resolve_vault_path(explicit: Option<&str>) -> PathBuf {
 }
 
 /// State root (originals, logs, staging): same priority with `wiki-state/`.
-pub fn resolve_state_root(explicit_vault: Option<&str>) -> PathBuf {
-    if let Some(raw) = explicit_vault.map(str::trim).filter(|s| !s.is_empty()) {
-        // Explicit vault path is independent of state; state still follows env
-        // so originals never land inside a user-chosen Obsidian vault.
-        let _ = raw;
-    }
-    if env_dir("CODEG_HOME").is_some() || env_dir("CODEG_DATA_DIR").is_some() {
-        return resolve_under(None, WIKI_STATE_DIR_NAME);
-    }
-    default_codeg_dir().join(WIKI_STATE_DIR_NAME)
+pub fn resolve_state_root() -> PathBuf {
+    resolve_under(None, WIKI_STATE_DIR_NAME)
 }
 
 /// True when `rel` is a vault-relative path with no `..` or absolute prefix.
@@ -122,7 +112,7 @@ mod tests {
                     PathBuf::from("/tmp/codeg-home-wiki-test/wiki")
                 );
                 assert_eq!(
-                    resolve_state_root(None),
+                    resolve_state_root(),
                     PathBuf::from("/tmp/codeg-home-wiki-test/wiki-state")
                 );
             },

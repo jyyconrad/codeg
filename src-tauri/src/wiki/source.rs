@@ -1,4 +1,6 @@
-//! Host ingest of an ACP turn snapshot: filter → redact → source/job → raw.
+//! 接收 ACP 成功轮次，按采集配置过滤、脱敏并登记原始记录和总结任务。
+//! supervisor 通过 enqueue_persist 异步提交；写入失败保存在 pending 中，engine 启动时重试。
+//! 这里只采集来源与事实片段，不生成知识笔记；后续由 turn_summary 和 compile 整理。
 
 use sea_orm::DatabaseConnection;
 use std::fs;
@@ -23,14 +25,22 @@ pub struct PersistOutcome {
     pub skipped: Option<String>,
 }
 
-/// Persist a frozen ACP snapshot. Never reads `session_store`. No model calls.
+/// 保存 ACP 边界已提供的会话片段；不回读 session_store，也不调用模型。
 pub async fn persist_acp_turn(
     conn: &DatabaseConnection,
     mut snap: WikiTurnSnapshot,
 ) -> Result<PersistOutcome, DbError> {
+    let _transition = crate::wiki::lifecycle::lock().await;
     let settings = settings::load_settings(conn).await?;
-    let (kind, folder_id, root_folder_id, folder_path, git_branch, conv_model, conv_title) =
-        enrich_from_db(conn, &snap).await?;
+    let CaptureContext {
+        kind,
+        folder_id,
+        root_folder_id,
+        folder_path,
+        git_branch,
+        model: conv_model,
+        title: conv_title,
+    } = enrich_from_db(conn, &snap).await?;
 
     let ctx = FilterContext {
         settings: settings.clone(),
@@ -66,14 +76,14 @@ pub async fn persist_acp_turn(
     }
 
     let vault_path = resolve_vault_path(settings.vault_path.as_deref());
-    let state_root = resolve_state_root(settings.vault_path.as_deref());
+    let state_root = resolve_state_root();
     vault::initialize_vault(&vault_path).map_err(DbError::from)?;
     vault::initialize_state_root(&state_root).map_err(DbError::from)?;
     let canonical = vault_path.to_string_lossy().to_string();
     let vault_row = wiki_service::ensure_active_vault(conn, &canonical).await?;
     let _ = settings::ensure_db_instance_id(conn).await?;
 
-    let inserted = wiki_service::insert_acp_source_and_ingest_job(
+    let inserted = wiki_service::insert_acp_source_and_turn_job(
         conn,
         NewAcpSource {
             vault_id: vault_row.id.clone(),
@@ -184,29 +194,33 @@ async fn freeze_raw_and_log(
             "rel": crate::wiki::turn_summary::page_rel(&inserted.source.id),
         })
         .to_string();
-        let _ = wiki_service::set_job_dedupe_and_manifest(conn, &job.id, &key, &manifest).await;
+        wiki_service::set_job_dedupe_and_manifest(conn, &job.id, &key, &manifest).await?;
     }
     crate::wiki::engine::notify_jobs();
     Ok(())
 }
 
+/// 会话和文件夹为来源补充的业务上下文，字段名避免长元组的位置耦合。
+#[derive(Default)]
+struct CaptureContext {
+    kind: Option<crate::db::entities::conversation::ConversationKind>,
+    folder_id: Option<i32>,
+    root_folder_id: Option<i32>,
+    folder_path: Option<String>,
+    git_branch: Option<String>,
+    model: Option<String>,
+    title: Option<String>,
+}
+
 async fn enrich_from_db(
     conn: &DatabaseConnection,
     snap: &WikiTurnSnapshot,
-) -> Result<
-    (
-        Option<crate::db::entities::conversation::ConversationKind>,
-        Option<i32>,
-        Option<i32>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ),
-    DbError,
-> {
+) -> Result<CaptureContext, DbError> {
     let Some(cid) = snap.conversation_id else {
-        return Ok((None, snap.folder_id, None, None, None, None, None));
+        return Ok(CaptureContext {
+            folder_id: snap.folder_id,
+            ..Default::default()
+        });
     };
     let conv = conversation_service::get_by_id(conn, cid).await?;
     let folder_id = snap.folder_id.or(Some(conv.folder_id));
@@ -218,21 +232,21 @@ async fn enrich_from_db(
             root_folder_id = Some(folder.parent_id.unwrap_or(fid));
         }
     }
-    Ok((
-        Some(conv.kind),
+    Ok(CaptureContext {
+        kind: Some(conv.kind),
         folder_id,
         root_folder_id,
         folder_path,
-        conv.git_branch,
-        conv.model,
-        conv.title,
-    ))
+        git_branch: conv.git_branch,
+        model: conv.model,
+        title: conv.title,
+    })
 }
 
 /// Off-hot-path enqueue. Failures do not change conversation success.
 pub fn enqueue_persist(conn: DatabaseConnection, snap: WikiTurnSnapshot) {
-    // Freeze the snapshot before scheduling async work. This closes the crash
-    // window between ACP turn completion and the database transaction.
+    // 先写待登记记录，再启动异步数据库操作，避免应用退出时丢失已完成的轮次。
+    // 这是采集恢复日志，不限制后续整理时读取当前素材版本。
     let pending = pending_path();
     if let Err(e) = persist_pending_snapshot(&pending, &snap) {
         tracing::warn!(error = %e, "[wiki] failed to durably enqueue ACP snapshot");
@@ -269,7 +283,7 @@ pub fn enqueue_persist(conn: DatabaseConnection, snap: WikiTurnSnapshot) {
 }
 
 fn pending_dir() -> PathBuf {
-    pending_dir_at(&resolve_state_root(None))
+    pending_dir_at(&resolve_state_root())
 }
 
 fn pending_dir_at(state_root: &Path) -> PathBuf {
@@ -292,19 +306,9 @@ fn persist_pending_snapshot(path: &Path, snap: &WikiTurnSnapshot) -> Result<(), 
     Ok(())
 }
 
-/// Replay snapshots persisted before an ACP enqueue task could run.
+/// 启动时重放尚未完成数据库登记的轮次；状态目录与用户 Wiki 位置无关。
 pub async fn recover_pending(conn: &DatabaseConnection) -> Result<usize, DbError> {
-    recover_pending_at(conn, &resolve_state_root(None)).await
-}
-
-/// Replay snapshots from a specific wiki-state root. The default enqueue path
-/// is retained for crash safety, while the engine can also scan the currently
-/// configured root after a vault switch.
-pub async fn recover_pending_at(
-    conn: &DatabaseConnection,
-    state_root: &Path,
-) -> Result<usize, DbError> {
-    let dir = pending_dir_at(state_root);
+    let dir = pending_dir();
     let entries = match fs::read_dir(&dir) {
         Ok(v) => v,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -400,9 +404,11 @@ mod tests {
     }
 
     async fn enable_wiki(conn: &DatabaseConnection, vault: &std::path::Path) {
-        let mut s = WikiSettings::default();
-        s.enabled = true;
-        s.vault_path = Some(vault.to_string_lossy().to_string());
+        let s = WikiSettings {
+            enabled: true,
+            vault_path: Some(vault.to_string_lossy().to_string()),
+            ..Default::default()
+        };
         settings::save_settings(conn, &s).await.unwrap();
     }
 
@@ -412,9 +418,11 @@ mod tests {
         let folder = seed_folder(&db, "/tmp/wiki-disabled").await;
         let cid = seed_conversation(&db, folder, AgentType::ClaudeCode).await;
         let dir = tempdir().unwrap();
-        let mut s = WikiSettings::default();
-        s.enabled = false;
-        s.vault_path = Some(dir.path().to_string_lossy().to_string());
+        let s = WikiSettings {
+            enabled: false,
+            vault_path: Some(dir.path().to_string_lossy().to_string()),
+            ..Default::default()
+        };
         settings::save_settings(&db.conn, &s).await.unwrap();
         let out = persist_acp_turn(&db.conn, snap_for("run-d", cid, folder))
             .await

@@ -1,8 +1,9 @@
-//! `wiki_settings` app_metadata JSON (spec §12.1 / memory pipeline §4.2).
+//! 保存与校验 Wiki 设置：开关、目录、采集过滤、定时整理和三个模型阶段。
+//! commands/wiki 负责设置用例与初次模型建议，engine 按这里的计划调度任务。
+//! 统一使用 wiki_settings 保存配置；模型绑定独立，不跟随聊天模型隐式变化。
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::db::error::DbError;
 use crate::db::service::app_metadata_service;
@@ -35,6 +36,8 @@ impl Default for WikiCaptureSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct WikiPromptSettings {
     #[serde(default)]
+    pub provider_id: Option<i32>,
+    #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
@@ -45,6 +48,8 @@ pub struct WikiSynthesizeSettings {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
+    pub provider_id: Option<i32>,
+    #[serde(default)]
     pub model_id: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
@@ -54,6 +59,7 @@ impl Default for WikiSynthesizeSettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            provider_id: None,
             model_id: None,
             prompt: None,
         }
@@ -61,6 +67,7 @@ impl Default for WikiSynthesizeSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct WikiSettings {
     #[serde(default)]
     pub enabled: bool,
@@ -137,38 +144,8 @@ pub async fn load_settings(conn: &DatabaseConnection) -> Result<WikiSettings, Db
 }
 
 fn parse_settings_json(s: &str) -> Result<WikiSettings, DbError> {
-    let value: Value = serde_json::from_str(s)
-        .map_err(|e| DbError::Validation(format!("failed to parse wiki_settings: {e}")))?;
-    let mut settings: WikiSettings = serde_json::from_value(value.clone())
-        .map_err(|e| DbError::Validation(format!("failed to parse wiki_settings: {e}")))?;
-    if value.pointer("/synthesize/enabled").is_none() {
-        settings.synthesize.enabled = value
-            .pointer("/compile/enabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-    }
-    // Never copy old ingest/compile custom prompts into the new slots.
-    if value.get("turn_summary").is_none() {
-        settings.turn_summary = WikiPromptSettings::default();
-    }
-    if value.get("session_rollup").is_none() {
-        settings.session_rollup = WikiPromptSettings::default();
-    }
-    if value
-        .get("synthesize")
-        .and_then(|v| v.get("prompt"))
-        .is_none()
-        && value
-            .get("synthesize")
-            .and_then(|v| v.get("model_id"))
-            .is_none()
-    {
-        if value.get("synthesize").is_none() {
-            settings.synthesize.model_id = None;
-            settings.synthesize.prompt = None;
-        }
-    }
-    Ok(settings)
+    serde_json::from_str(s)
+        .map_err(|e| DbError::Validation(format!("failed to parse wiki_settings: {e}")))
 }
 
 pub async fn save_settings(
@@ -188,7 +165,7 @@ pub fn validate_settings(settings: &WikiSettings) -> Result<(), DbError> {
         Utc::now(),
     )?;
     if let Some(p) = settings.vault_path.as_deref() {
-        if p.contains('\0') {
+        if p.contains('\0') || (!p.trim().is_empty() && !std::path::Path::new(p).is_absolute()) {
             return Err(DbError::Validation("vault_path is invalid".into()));
         }
     }
@@ -225,6 +202,26 @@ pub async fn ensure_db_instance_id<C: ConnectionTrait>(conn: &C) -> Result<Strin
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn settings_use_one_stable_key_and_preserve_database_identity() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let instance_id = ensure_db_instance_id(&db.conn).await.unwrap();
+        let saved = WikiSettings {
+            enabled: true,
+            vault_path: Some("/tmp/personal-notes".into()),
+            ..Default::default()
+        };
+        save_settings(&db.conn, &saved).await.unwrap();
+        assert_eq!(WIKI_SETTINGS_KEY, "wiki_settings");
+        let stored = app_metadata_service::get_value(&db.conn, "wiki_settings")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(parse_settings_json(&stored).unwrap(), saved);
+        assert_eq!(load_settings(&db.conn).await.unwrap(), saved);
+        assert_eq!(ensure_db_instance_id(&db.conn).await.unwrap(), instance_id);
+    }
+
     #[test]
     fn defaults_match_spec() {
         let s = WikiSettings::default();
@@ -243,36 +240,21 @@ mod tests {
         assert!(WIKI_TURN_SUMMARY_BUILTIN.contains("name: wiki-turn-summary"));
         assert!(WIKI_SESSION_ROLLUP_BUILTIN.contains("name: wiki-session-rollup"));
         assert!(WIKI_SYNTHESIZE_BUILTIN.contains("name: wiki-synthesize"));
-        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("Four steps"));
-        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("Do not return a `candidates` array"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("codeg.wiki.synthesize.v2"));
     }
 
     #[test]
-    fn read_copies_compile_enabled_not_prompts() {
-        let raw = r#"{
-            "enabled": true,
-            "compile_cron": "0 3 * * *",
-            "ingest": {"model_id": "old-in", "prompt": "do ingest"},
-            "compile": {"enabled": false, "model_id": "old-co", "prompt": "do compile"}
-        }"#;
-        let s = parse_settings_json(raw).unwrap();
-        assert!(s.enabled);
-        assert!(!s.synthesize.enabled);
-        assert!(s.synthesize.prompt.is_none());
-        assert!(s.synthesize.model_id.is_none());
-        assert!(s.turn_summary.prompt.is_none());
-        assert!(s.session_rollup.prompt.is_none());
+    fn unknown_configuration_fields_are_rejected() {
+        let raw = r#"{"enabled":true,"unsupported_setting":{}}"#;
+        assert!(parse_settings_json(raw).is_err());
     }
 
     #[test]
-    fn synthesize_enabled_wins_over_compile() {
-        let raw = r#"{
-            "enabled": true,
-            "compile": {"enabled": false},
-            "synthesize": {"enabled": true, "prompt": "custom"}
-        }"#;
-        let s = parse_settings_json(raw).unwrap();
-        assert!(s.synthesize.enabled);
-        assert_eq!(s.synthesize.prompt.as_deref(), Some("custom"));
+    fn current_configuration_roundtrips_without_chat_defaults() {
+        let mut expected = WikiSettings::default();
+        expected.turn_summary.provider_id = Some(7);
+        expected.turn_summary.model_id = Some("saved-model".into());
+        let encoded = serde_json::to_string(&expected).unwrap();
+        assert_eq!(parse_settings_json(&encoded).unwrap(), expected);
     }
 }
