@@ -1,0 +1,6 @@
+# Keep local cargo/rustc on the same channel as CI
+# (dtolnay/rust-toolchain@stable) and Docker (rust:slim-bookworm).
+# Do not rustup override this repo to Homebrew rust; 1.88 cannot
+# compile current lockfile crates (aes 0.9.3, ordered-float 5.5.0).
+[toolchain]
+channel = "stable"
