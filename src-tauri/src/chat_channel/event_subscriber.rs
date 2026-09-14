@@ -7,15 +7,18 @@ use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use super::i18n::Lang;
+use super::i18n::{self, Lang};
 use super::manager::ChatChannelManager;
 use super::message_formatter;
 use super::session_bridge::SessionBridge;
 use super::types::RichMessage;
 use crate::acp::internal_bus::InternalEventBus;
+use crate::acp::manager::ConnectionManager;
 use crate::acp::types::{AcpEvent, EventEnvelope};
+use crate::db::entities::conversation::ConversationKind;
 use crate::db::service::{
     app_metadata_service, chat_channel_message_log_service, chat_channel_service,
+    conversation_service,
 };
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 
@@ -273,7 +276,10 @@ async fn process_envelope(
     last_push: &mut HashMap<(i32, String), Instant>,
     webhook_client: &reqwest::Client,
 ) {
-    let Some((event_type, msg)) = parse_acp_event(&envelope.payload, config.lang) else {
+    let conn_mgr = manager.connection_manager().await;
+    let Some((event_type, msg)) =
+        parse_acp_event(envelope, db_conn, conn_mgr.as_ref(), config.lang).await
+    else {
         return;
     };
 
@@ -397,12 +403,75 @@ async fn process_envelope(
     }
 }
 
+fn nonempty_agent(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+struct SessionCardContext {
+    agent_type: String,
+    conversation_title: Option<String>,
+    last_message: Option<String>,
+    file_paths: Vec<String>,
+    working_dir: Option<std::path::PathBuf>,
+    skip: bool,
+}
+
+async fn load_session_card_context(
+    connection_id: &str,
+    event_agent: &str,
+    db: &DatabaseConnection,
+    conn_mgr: Option<&ConnectionManager>,
+) -> SessionCardContext {
+    let mut ctx = SessionCardContext {
+        agent_type: event_agent.to_string(),
+        conversation_title: None,
+        last_message: None,
+        file_paths: Vec::new(),
+        working_dir: None,
+        skip: false,
+    };
+    let Some(mgr) = conn_mgr else {
+        return ctx;
+    };
+    let Some(state) = mgr.get_state(connection_id).await else {
+        return ctx;
+    };
+    let snap = state.read().await;
+    ctx.agent_type = snap.agent_type.to_string();
+    ctx.last_message = snap.concluding_assistant_text();
+    ctx.file_paths = snap
+        .concluding_file_changes()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    ctx.working_dir = snap.working_dir.clone();
+    let Some(cid) = snap.conversation_id else {
+        return ctx;
+    };
+    drop(snap);
+    if let Ok(row) = conversation_service::get_by_id(db, cid).await {
+        ctx.skip = row.kind == ConversationKind::Delegate;
+        ctx.conversation_title = row.title;
+    }
+    ctx
+}
+
 /// Map an ACP event into the chat-channel push tuple. Pattern-match on the
 /// typed `AcpEvent` variant — Phase 5 source-of-truth replaces the prior
 /// JSON `type`-string dispatch (which paid `serde_json::from_value` per
 /// event for the global broadcaster path).
-fn parse_acp_event(payload: &AcpEvent, lang: Lang) -> Option<(String, RichMessage)> {
-    match payload {
+async fn parse_acp_event(
+    envelope: &EventEnvelope,
+    db: &DatabaseConnection,
+    conn_mgr: Option<&ConnectionManager>,
+    lang: Lang,
+) -> Option<(String, RichMessage)> {
+    match &envelope.payload {
         AcpEvent::TurnComplete {
             stop_reason,
             agent_type,
@@ -412,31 +481,95 @@ fn parse_acp_event(payload: &AcpEvent, lang: Lang) -> Option<(String, RichMessag
             if stop_reason != "end_turn" {
                 return None;
             }
+            let ctx =
+                load_session_card_context(&envelope.connection_id, agent_type, db, conn_mgr).await;
+            if ctx.skip {
+                return None;
+            }
             Some((
                 "turn_complete".to_string(),
-                message_formatter::format_turn_complete(agent_type, stop_reason, lang),
+                message_formatter::format_turn_complete(
+                    &ctx.agent_type,
+                    ctx.conversation_title.as_deref(),
+                    ctx.last_message.as_deref(),
+                    &ctx.file_paths,
+                    ctx.working_dir.as_deref(),
+                    lang,
+                ),
             ))
         }
         AcpEvent::Error {
             message,
             agent_type,
             ..
-        } => Some((
-            "error".to_string(),
-            message_formatter::format_agent_error(agent_type, message, lang),
-        )),
+        } => {
+            let ctx =
+                load_session_card_context(&envelope.connection_id, agent_type, db, conn_mgr).await;
+            if ctx.skip {
+                return None;
+            }
+            Some((
+                "error".to_string(),
+                message_formatter::format_agent_error(
+                    &ctx.agent_type,
+                    ctx.conversation_title.as_deref(),
+                    ctx.last_message.as_deref(),
+                    Some(message.as_str()),
+                    &ctx.file_paths,
+                    ctx.working_dir.as_deref(),
+                    lang,
+                ),
+            ))
+        }
         AcpEvent::PermissionRequest { tool_call, .. } => Some((
             "permission_request".to_string(),
             message_formatter::format_permission_request(tool_call, lang),
         )),
-        AcpEvent::UserPromptSent { text_preview } => Some((
-            "user_prompt_sent".to_string(),
-            message_formatter::format_user_prompt_sent(text_preview, lang),
-        )),
-        AcpEvent::QuestionRequest { questions, .. } => Some((
-            "question_request".to_string(),
-            message_formatter::format_question_request(questions, lang),
-        )),
+        AcpEvent::UserPromptSent { text_preview } => {
+            let ctx = load_session_card_context(&envelope.connection_id, "", db, conn_mgr).await;
+            if ctx.skip {
+                return None;
+            }
+            Some((
+                "user_prompt_sent".to_string(),
+                message_formatter::format_user_prompt_sent(
+                    text_preview,
+                    ctx.conversation_title.as_deref(),
+                    nonempty_agent(&ctx.agent_type),
+                    lang,
+                ),
+            ))
+        }
+        AcpEvent::QuestionRequest { questions, .. } => {
+            let ctx = load_session_card_context(&envelope.connection_id, "", db, conn_mgr).await;
+            if ctx.skip {
+                return None;
+            }
+            let mut msg = message_formatter::format_question_request(questions, lang);
+            if !ctx.agent_type.is_empty() || ctx.conversation_title.is_some() {
+                msg.title = Some(
+                    message_formatter::format_session_card(
+                        &message_formatter::SessionEventCard {
+                            kind: message_formatter::SessionEventKind::Question,
+                            agent_type: if ctx.agent_type.is_empty() {
+                                "Agent"
+                            } else {
+                                ctx.agent_type.as_str()
+                            },
+                            conversation_title: ctx.conversation_title.as_deref(),
+                            last_message: None,
+                            error: None,
+                            file_paths: &[],
+                            working_dir: None,
+                        },
+                        lang,
+                    )
+                    .title
+                    .unwrap_or_else(|| i18n::question_request_title(lang).to_string()),
+                );
+            }
+            Some(("question_request".to_string(), msg))
+        }
         _ => None,
     }
 }
@@ -581,6 +714,7 @@ mod permission_push_tests {
                 session_id: "s".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         }
     }
@@ -854,6 +988,7 @@ mod permission_push_tests {
                 session_id: "s".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         process_envelope(
@@ -900,6 +1035,7 @@ mod permission_push_tests {
                 session_id: "s".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         process_envelope(
@@ -913,7 +1049,169 @@ mod permission_push_tests {
         )
         .await;
 
-        assert_eq!(sent(&rec).await.len(), 1);
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 1);
+        assert!(
+            msgs[0].contains("Done ") || msgs[0].contains("完成 "),
+            "must title with status + agent, got {:?}",
+            msgs[0]
+        );
+        assert!(
+            !msgs[0].contains("Stop Reason") && !msgs[0].contains("结束原因"),
+            "must not use the old stop-reason card, got {:?}",
+            msgs[0]
+        );
+    }
+
+    /// With a live connection, the Events card carries last-message, the
+    /// truncated session title, and changed-file paths.
+    #[tokio::test]
+    async fn turn_complete_card_uses_session_last_message_and_files() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::db::service::conversation_service;
+        use crate::web::event_bridge::EventEmitter;
+        use std::path::PathBuf;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-card").await;
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("User Greeting and Session Start".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        let (chat, rec) = manager_with_recorder(7).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live(
+                "c1",
+                AgentType::Grok,
+                Some(PathBuf::from("/work/app")),
+                EventEmitter::Noop,
+            )
+            .await;
+        {
+            let state = conn_mgr.get_state("c1").await.unwrap();
+            let mut snap = state.write().await;
+            snap.conversation_id = Some(conv.id);
+            snap.last_assistant_text = Some("Hi — ready to help.".into());
+            snap.last_file_changes = vec![crate::acp::run_settled::FileChange {
+                path: "/work/app/src/a.rs".into(),
+                operation: crate::acp::run_settled::FileChangeOp::Edit,
+            }];
+        }
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut config = config_all_on(7);
+        config.lang = Lang::ZhCn;
+        let mut last_push = HashMap::new();
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "c1".into(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "s".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "Grok".into(),
+                    run_id: None,
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 1, "got {msgs:?}");
+        assert!(
+            msgs[0].contains("完成 User Greeting and Session Start Grok"),
+            "title must be status + session50 + agent, got {:?}",
+            msgs[0]
+        );
+        assert!(
+            msgs[0].contains("Hi — ready to help."),
+            "body must be last-message, got {:?}",
+            msgs[0]
+        );
+        assert!(
+            msgs[0].contains("1个文件被改动") && msgs[0].contains("src/a.rs"),
+            "must list changed files, got {:?}",
+            msgs[0]
+        );
+        assert!(
+            !msgs[0].contains("结束原因") && !msgs[0].contains("会话已完成"),
+            "must not use the old card, got {:?}",
+            msgs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn user_prompt_sent_title_uses_session_and_agent() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::db::service::conversation_service;
+        use crate::web::event_bridge::EventEmitter;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-user-msg").await;
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("User Greeting and Session Start".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        let (chat, rec) = manager_with_recorder(7).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live("c1", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        conn_mgr
+            .get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(conv.id);
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut config = config_all_on(7);
+        config.lang = Lang::ZhCn;
+        config.global_filter = Some(vec!["user_prompt_sent".to_string()]);
+        let mut last_push = HashMap::new();
+        process_envelope(
+            &user_prompt_envelope("c1", "你好"),
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 1, "got {msgs:?}");
+        assert!(
+            msgs[0].contains("开始任务 User Greeting and Session Start Grok"),
+            "title must be status + session50 + agent, got {:?}",
+            msgs[0]
+        );
+        assert!(
+            msgs[0].contains("你好"),
+            "body must be the prompt, got {:?}",
+            msgs[0]
+        );
     }
 
     /// Once explicitly enabled (filter contains the id), a user_prompt_sent
@@ -943,7 +1241,7 @@ mod permission_push_tests {
 
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 1, "expected one push, got {msgs:?}");
-        assert!(msgs[0].contains("User Message"), "got {:?}", msgs[0]);
+        assert!(msgs[0].contains("Start"), "got {:?}", msgs[0]);
         assert!(
             msgs[0].contains("refactor the auth module"),
             "got {:?}",

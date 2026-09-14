@@ -584,7 +584,9 @@ impl ChatChannelBackend for WeixinBackend {
                                 }
                                 // Session expired — pause and wait for re-auth
                                 if r == -14 {
-                                    tracing::info!("[Weixin] session expired (ret=-14), pausing 30s");
+                                    tracing::info!(
+                                        "[Weixin] session expired (ret=-14), pausing 30s"
+                                    );
                                     *status.lock().await = ChannelConnectionStatus::Error;
                                     tokio::time::sleep(Duration::from_secs(30)).await;
                                     continue;
@@ -679,7 +681,9 @@ impl ChatChannelBackend for WeixinBackend {
                                                     })
                                                     .await;
                                                     if let Err(e) = ok {
-                                                        tracing::error!("[Weixin] resend error: {e}");
+                                                        tracing::error!(
+                                                            "[Weixin] resend error: {e}"
+                                                        );
                                                         // Re-buffer remaining on hard error
                                                         let mut buf = pending_messages.lock().await;
                                                         if buf.len() < MAX_PENDING_MESSAGES {
@@ -750,8 +754,7 @@ impl ChatChannelBackend for WeixinBackend {
         &self,
         message: &RichMessage,
     ) -> Result<SentMessageId, ChatChannelError> {
-        let plain_text = message.to_plain_text();
-        self.send_text(&plain_text).await
+        self.send_text(&message.to_markdown()).await
     }
 
     async fn test_connection(&self) -> Result<(), ChatChannelError> {

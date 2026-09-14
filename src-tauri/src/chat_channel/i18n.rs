@@ -36,123 +36,109 @@ impl Lang {
 
 // ── Event messages ──
 
-pub fn turn_complete_title(lang: Lang) -> &'static str {
+// ── Session event cards (Events-tab IM) ──
+
+pub fn user_stopped_message(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "会话完成",
-        Lang::ZhTw => "對話完成",
-        Lang::Ja => "セッション完了",
-        Lang::Ko => "세션 완료",
-        Lang::Es => "Sesión completada",
-        Lang::De => "Sitzung abgeschlossen",
-        Lang::Fr => "Session terminée",
-        Lang::Pt => "Sessão concluída",
-        Lang::Ar => "اكتملت الجلسة",
-        Lang::En => "Turn Complete",
+        Lang::ZhCn => "用户已停止",
+        Lang::ZhTw => "使用者已停止",
+        Lang::Ja => "ユーザーによって停止されました",
+        Lang::Ko => "사용자가 중지했습니다",
+        Lang::Es => "Detenido por el usuario",
+        Lang::De => "Vom Benutzer gestoppt",
+        Lang::Fr => "Arrêté par l'utilisateur",
+        Lang::Pt => "Interrompido pelo usuário",
+        Lang::Ar => "أوقفه المستخدم",
+        Lang::En => "Stopped by the user",
     }
 }
 
-pub fn turn_complete_body(lang: Lang, agent_type: &str) -> String {
+pub fn session_event_status_complete(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => format!("{agent_type} 会话已完成"),
-        Lang::ZhTw => format!("{agent_type} 對話已完成"),
-        Lang::Ja => format!("{agent_type} セッションが完了しました"),
-        Lang::Ko => format!("{agent_type} 세션이 완료되었습니다"),
-        Lang::Es => format!("{agent_type} sesión completada"),
-        Lang::De => format!("{agent_type} Sitzung abgeschlossen"),
-        Lang::Fr => format!("Session {agent_type} terminée"),
-        Lang::Pt => format!("Sessão {agent_type} concluída"),
-        Lang::Ar => format!("اكتملت جلسة {agent_type}"),
-        Lang::En => format!("{agent_type} session completed"),
+        Lang::ZhCn | Lang::ZhTw => "完成",
+        Lang::Ja => "完了",
+        Lang::Ko => "완료",
+        Lang::Es => "Hecho",
+        Lang::De => "Fertig",
+        Lang::Fr => "Terminé",
+        Lang::Pt => "Concluído",
+        Lang::Ar => "تم",
+        Lang::En => "Done",
     }
 }
 
-pub fn stop_reason_label(lang: Lang) -> &'static str {
+pub fn session_event_status_error(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "结束原因",
-        Lang::ZhTw => "結束原因",
-        Lang::Ja => "終了理由",
-        Lang::Ko => "종료 사유",
-        Lang::Es => "Motivo de fin",
-        Lang::De => "Beendigungsgrund",
-        Lang::Fr => "Raison de fin",
-        Lang::Pt => "Motivo do término",
-        Lang::Ar => "سبب الانتهاء",
-        Lang::En => "Stop Reason",
+        Lang::ZhCn => "异常",
+        Lang::ZhTw => "異常",
+        Lang::Ja => "異常",
+        Lang::Ko => "오류",
+        Lang::Es | Lang::De | Lang::Fr | Lang::Pt | Lang::En => "Error",
+        Lang::Ar => "خطأ",
     }
 }
 
-pub fn stop_reason_end_turn(lang: Lang) -> &'static str {
+pub fn session_event_status_notice(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "正常结束",
-        Lang::ZhTw => "正常結束",
-        Lang::Ja => "正常終了",
-        Lang::Ko => "정상 종료",
-        Lang::Es => "Finalizado",
-        Lang::De => "Normal beendet",
-        Lang::Fr => "Terminé normalement",
-        Lang::Pt => "Finalizado",
-        Lang::Ar => "انتهى بشكل طبيعي",
-        Lang::En => "Completed",
+        Lang::ZhCn | Lang::ZhTw => "提醒",
+        Lang::Ja => "通知",
+        Lang::Ko => "알림",
+        Lang::Es => "Aviso",
+        Lang::De => "Hinweis",
+        Lang::Fr => "Avis",
+        Lang::Pt => "Aviso",
+        Lang::Ar => "تنبيه",
+        Lang::En => "Notice",
     }
 }
 
-pub fn stop_reason_cancelled(lang: Lang) -> &'static str {
+pub fn session_event_status_question(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "已取消",
-        Lang::ZhTw => "已取消",
-        Lang::Ja => "キャンセル",
-        Lang::Ko => "취소됨",
-        Lang::Es => "Cancelado",
-        Lang::De => "Abgebrochen",
-        Lang::Fr => "Annulé",
-        Lang::Pt => "Cancelado",
-        Lang::Ar => "تم الإلغاء",
-        Lang::En => "Cancelled",
+        Lang::ZhCn | Lang::ZhTw => "提问",
+        Lang::Ja => "質問",
+        Lang::Ko => "질문",
+        Lang::Es => "Pregunta",
+        Lang::De => "Frage",
+        Lang::Fr => "Question",
+        Lang::Pt => "Pergunta",
+        Lang::Ar => "سؤال",
+        Lang::En => "Question",
     }
 }
 
-pub fn agent_error_title(lang: Lang) -> &'static str {
+pub fn files_changed_count_label(lang: Lang, count: usize) -> String {
     match lang {
-        Lang::ZhCn => "代理错误",
-        Lang::ZhTw => "代理錯誤",
-        Lang::Ja => "エージェントエラー",
-        Lang::Ko => "에이전트 오류",
-        Lang::Es => "Error del agente",
-        Lang::De => "Agent-Fehler",
-        Lang::Fr => "Erreur de l'agent",
-        Lang::Pt => "Erro do agente",
-        Lang::Ar => "خطأ في الوكيل",
-        Lang::En => "Agent Error",
+        Lang::ZhCn => format!("{count}个文件被改动"),
+        Lang::ZhTw => format!("{count}個檔案被改動"),
+        Lang::Ja => format!("{count}件のファイルが変更されました"),
+        Lang::Ko => format!("{count}개 파일 변경"),
+        Lang::Es => format!("{count} archivos modificados"),
+        Lang::De => format!("{count} Dateien geändert"),
+        Lang::Fr => format!("{count} fichiers modifiés"),
+        Lang::Pt => format!("{count} arquivos alterados"),
+        Lang::Ar => format!("{count} ملفات تم تغييرها"),
+        Lang::En => {
+            if count == 1 {
+                "1 file changed".to_string()
+            } else {
+                format!("{count} files changed")
+            }
+        }
     }
 }
 
-pub fn agent_error_body(lang: Lang, agent_type: &str) -> String {
+pub fn agent_error_fallback(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => format!("{agent_type} 发生错误"),
-        Lang::ZhTw => format!("{agent_type} 發生錯誤"),
-        Lang::Ja => format!("{agent_type} でエラーが発生しました"),
-        Lang::Ko => format!("{agent_type}에서 오류 발생"),
-        Lang::Es => format!("{agent_type} encontró un error"),
-        Lang::De => format!("{agent_type} hat einen Fehler"),
-        Lang::Fr => format!("{agent_type} a rencontré une erreur"),
-        Lang::Pt => format!("{agent_type} encontrou um erro"),
-        Lang::Ar => format!("حدث خطأ في {agent_type}"),
-        Lang::En => format!("{agent_type} encountered an error"),
-    }
-}
-
-pub fn error_message_label(lang: Lang) -> &'static str {
-    match lang {
-        Lang::ZhCn => "错误信息",
-        Lang::ZhTw => "錯誤訊息",
-        Lang::Ja => "エラーメッセージ",
-        Lang::Ko => "오류 메시지",
-        Lang::Es => "Mensaje de error",
-        Lang::De => "Fehlermeldung",
-        Lang::Fr => "Message d'erreur",
-        Lang::Pt => "Mensagem de erro",
-        Lang::Ar => "رسالة الخطأ",
-        Lang::En => "Error Message",
+        Lang::ZhCn => "代理发生错误",
+        Lang::ZhTw => "代理發生錯誤",
+        Lang::Ja => "エージェントでエラーが発生しました",
+        Lang::Ko => "에이전트에서 오류가 발생했습니다",
+        Lang::Es => "El agente encontró un error",
+        Lang::De => "Der Agent hat einen Fehler",
+        Lang::Fr => "L'agent a rencontré une erreur",
+        Lang::Pt => "O agente encontrou um erro",
+        Lang::Ar => "حدث خطأ في الوكيل",
+        Lang::En => "The agent encountered an error",
     }
 }
 
@@ -207,16 +193,16 @@ pub fn permission_operation_label(lang: Lang) -> &'static str {
 
 pub fn user_message_title(lang: Lang) -> &'static str {
     match lang {
-        Lang::ZhCn => "用户消息",
-        Lang::ZhTw => "使用者訊息",
-        Lang::Ja => "ユーザーメッセージ",
-        Lang::Ko => "사용자 메시지",
-        Lang::Es => "Mensaje del usuario",
-        Lang::De => "Benutzernachricht",
-        Lang::Fr => "Message de l'utilisateur",
-        Lang::Pt => "Mensagem do usuário",
-        Lang::Ar => "رسالة المستخدم",
-        Lang::En => "User Message",
+        Lang::ZhCn => "开始任务",
+        Lang::ZhTw => "開始任務",
+        Lang::Ja => "開始",
+        Lang::Ko => "시작",
+        Lang::Es => "Inicio",
+        Lang::De => "Start",
+        Lang::Fr => "Début",
+        Lang::Pt => "Início",
+        Lang::Ar => "بدء",
+        Lang::En => "Start",
     }
 }
 

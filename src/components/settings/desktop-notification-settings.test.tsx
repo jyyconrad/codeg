@@ -173,7 +173,7 @@ describe("DesktopNotificationSettingsSection", () => {
     // The trigger reflects the default before anything is touched.
     expect(
       screen.getByRole("combobox", { name: /notify when/i })
-    ).toHaveTextContent("Window is not visible")
+    ).toHaveTextContent("Window is not focused")
 
     writeFromAnotherWindow({
       ...DEFAULT_DESKTOP_NOTIFICATION_PREFS,

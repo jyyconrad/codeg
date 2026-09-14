@@ -1,6 +1,7 @@
 import type {
   ActiveDelegationState,
   AsyncTaskRecord,
+  WorkflowRun,
   AvailableCommandInfo,
   ConfigStaleKind,
   ConnectionStatus,
@@ -84,6 +85,9 @@ export interface SnapshotPatch {
    *  Terminal rows included — they are the ids subsequent live deltas revise.
    *  `[]` when the server omitted the field. */
   asyncTasks: AsyncTaskRecord[]
+  /** Canonical workflow runs carried by the snapshot (Grok `workflow_updated`,
+   *  AIR `taskType=workflow`). Terminal rows included. `[]` when omitted. */
+  workflows: WorkflowRun[]
   /** Latest ACP runtime error carried by the snapshot. `null` means none. */
   lastError: string | null
   /** Diagnostic evidence attached to `lastError` (agent stderr tail, unparsed
@@ -159,6 +163,7 @@ export function denormalizeSnapshot(wire: LiveSessionSnapshot): SnapshotPatch {
     backgroundOutstanding: wire.background_outstanding ?? 0,
     sessionFailures: wire.session_failures ?? [],
     asyncTasks: wire.async_tasks ?? [],
+    workflows: wire.workflows ?? [],
     lastError,
     lastErrorDetails,
     eventSeq: wire.event_seq,

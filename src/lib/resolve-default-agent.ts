@@ -10,8 +10,9 @@ export interface ResolveDefaultAgentInput {
    */
   inherit: AgentType | null
   /**
-   * User-sorted list of enabled+available agents. Empty during cold start
-   * before the first successful `acpListAgents()` call.
+   * User-sorted list of enabled, platform-available, installed agents.
+   * Empty during cold start before the first successful `acpListAgents()`
+   * call.
    */
   sortedTypes: AgentType[]
   /** True once `acpListAgents()` has succeeded at least once this session. */

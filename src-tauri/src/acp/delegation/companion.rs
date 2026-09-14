@@ -52,8 +52,8 @@ use crate::acp::delegation::transport::{
     client_task_progress_round_trip, BrokerAskRequest, BrokerCancelRequest,
     BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
     BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -207,7 +207,9 @@ impl CompanionFeatures {
             "task_progress" | "task_complete" => self.tasks,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
-            "delegate_to_agent" | "get_delegation_status" | "cancel_delegation"
+            "delegate_to_agent"
+            | "get_delegation_status"
+            | "cancel_delegation"
             | "resume_delegation" => self.delegation,
             _ => false,
         }
@@ -422,7 +424,10 @@ pub async fn dispatch_line(
 /// property / enum array leaves the tools untouched, and a slug the embedded
 /// list doesn't contain is a no-op — a parent/companion version skew can
 /// narrow the enum, never corrupt it.
-fn remove_disabled_agents_from_delegate_enum(tools: &mut Value, disabled_agents: &[String]) {
+pub(crate) fn remove_disabled_agents_from_delegate_enum(
+    tools: &mut Value,
+    disabled_agents: &[String],
+) {
     if disabled_agents.is_empty() {
         return;
     }
@@ -453,7 +458,7 @@ fn remove_disabled_agents_from_delegate_enum(tools: &mut Value, disabled_agents:
 /// schema shape change) leaves the tools untouched rather than erroring —
 /// serving the narrower built-in enum is strictly better than serving no
 /// tools at all.
-fn append_custom_agents_to_delegate_enum(tools: &mut Value, custom_agents: &[String]) {
+pub(crate) fn append_custom_agents_to_delegate_enum(tools: &mut Value, custom_agents: &[String]) {
     if custom_agents.is_empty() {
         return;
     }
@@ -1043,7 +1048,7 @@ pub async fn drain_and_cancel_all(
 /// dropped (not rejected): `items` carries no `minLength`, so `""` satisfies the
 /// schema and is treated as a formatting nicety. No upper bound on the count: a
 /// fan-out can be arbitrarily wide.
-fn normalize_status_task_ids(arguments: &Value) -> Result<Vec<String>, String> {
+pub(crate) fn normalize_status_task_ids(arguments: &Value) -> Result<Vec<String>, String> {
     let Some(arr) = arguments.get("task_ids").and_then(|v| v.as_array()) else {
         return Ok(Vec::new());
     };
@@ -1244,7 +1249,7 @@ const CRON_FIELDS: usize = 5;
 /// and its error comes back as a soft outcome the LLM can correct; only the
 /// field count is checked, because that is the one shape that would be accepted
 /// and then mean something other than what was asked (see [`CRON_FIELDS`]).
-fn parse_automation_spec(arguments: &Value) -> Result<NewAutomationSpec, String> {
+pub(crate) fn parse_automation_spec(arguments: &Value) -> Result<NewAutomationSpec, String> {
     let name = required_string(arguments, "name", "create_automation")?;
     let prompt = required_string(arguments, "prompt", "create_automation")?;
     let action = match optional_string(arguments, "action").as_deref() {
@@ -1285,7 +1290,7 @@ fn parse_automation_spec(arguments: &Value) -> Result<NewAutomationSpec, String>
 }
 
 /// Validate `create_work_task` arguments into a [`NewWorkTaskSpec`].
-fn parse_work_task_spec(arguments: &Value) -> Result<NewWorkTaskSpec, String> {
+pub(crate) fn parse_work_task_spec(arguments: &Value) -> Result<NewWorkTaskSpec, String> {
     let title = required_string(arguments, "title", "create_work_task")?;
     let prompt = required_string(arguments, "prompt", "create_work_task")?;
     Ok(NewWorkTaskSpec {
@@ -1305,7 +1310,7 @@ fn truncate_chars(s: &str, cap: usize) -> String {
 /// tolerating a JSON number (int or whole float) or a numeric string — some MCP
 /// hosts stringify integer args. `None` for missing / non-integer / out-of-range,
 /// which the dispatcher maps to a synchronous `-32602` the LLM can fix.
-fn parse_session_id(arguments: &Value) -> Option<i32> {
+pub(crate) fn parse_session_id(arguments: &Value) -> Option<i32> {
     let v = arguments.get("session_id")?;
     if let Some(n) = v.as_i64() {
         return i32::try_from(n).ok();
@@ -1328,7 +1333,7 @@ fn parse_session_id(arguments: &Value) -> Option<i32> {
 /// wrapping to a small number. An absent OR unparseable value falls back to the
 /// default window — it is an optional knob, not a hard error — while an explicit
 /// `0` (or `"0"`) is preserved to mean metadata-only.
-fn parse_max_messages(arguments: &Value) -> u32 {
+pub(crate) fn parse_max_messages(arguments: &Value) -> u32 {
     const DEFAULT_MAX_MESSAGES: u32 = 20;
     let Some(v) = arguments.get("max_messages") else {
         return DEFAULT_MAX_MESSAGES;
@@ -1646,7 +1651,7 @@ mod tests {
         let required = resume["inputSchema"]["required"].as_array().unwrap();
         assert_eq!(required.len(), 1);
         assert!(required.iter().any(|v| v == "task_id"));
-        // delegate_to_agent schema still enumerates all 13 agent types.
+        // delegate_to_agent schema still enumerates all 16 built-in agent types.
         let delegate = tools
             .iter()
             .find(|t| t["name"] == "delegate_to_agent")
@@ -1654,7 +1659,7 @@ mod tests {
         let agents = delegate["inputSchema"]["properties"]["agent_type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(agents.len(), 15);
+        assert_eq!(agents.len(), 16);
         assert!(agents.iter().any(|a| a == "hermes"));
         assert!(agents.iter().any(|a| a == "code_buddy"));
         assert!(agents.iter().any(|a| a == "kimi_code"));
@@ -1664,6 +1669,7 @@ mod tests {
         assert!(agents.iter().any(|a| a == "deepseek"));
         assert!(agents.iter().any(|a| a == "qoder"));
         assert!(agents.iter().any(|a| a == "antigravity"));
+        assert!(agents.iter().any(|a| a == "codeg_agent"));
         // get_delegation_status takes a single id param — task_ids (required) —
         // plus wait_ms. The legacy single `task_id` param is gone.
         let status = tools
@@ -1703,11 +1709,11 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 17, "15 builtins + 2 distinct customs");
+        assert_eq!(agents.len(), 18, "16 builtins + 2 distinct customs");
         // Builtins keep the embedded order and come first.
         assert_eq!(agents[0], "claude_code");
-        assert_eq!(agents[15], "custom:goose");
-        assert_eq!(agents[16], "custom:amp");
+        assert_eq!(agents[16], "custom:goose");
+        assert_eq!(agents[17], "custom:amp");
         // The other delegation tools carry no agent_type and are untouched.
         let status = tools
             .as_array()
@@ -1742,13 +1748,13 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 14, "15 builtins - 2 disabled + 1 custom");
+        assert_eq!(agents.len(), 15, "16 builtins - 2 disabled + 1 custom");
         assert!(!agents.contains(&serde_json::json!("codex")));
         assert!(!agents.contains(&serde_json::json!("grok")));
         // Survivors keep the embedded order, customs still come last.
         assert_eq!(agents[0], "claude_code");
         assert_eq!(agents[1], "open_code");
-        assert_eq!(agents[13], "custom:goose");
+        assert_eq!(agents[14], "custom:goose");
     }
 
     // An empty disabled list (the parent omitted `--disabled-agents`) leaves
@@ -1770,9 +1776,10 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 15);
+        assert_eq!(agents.len(), 16);
         assert_eq!(agents[0], "claude_code");
         assert_eq!(agents[14], "antigravity");
+        assert_eq!(agents[15], "codeg_agent");
     }
 
     #[tokio::test]
@@ -2336,7 +2343,10 @@ mod tests {
                 "params": { "name": "resume_delegation", "arguments": arguments }
             })
             .to_string();
-            assert!(matches!(dispatch_for_test(&line).await, LineAction::Spawn(_)));
+            assert!(matches!(
+                dispatch_for_test(&line).await,
+                LineAction::Spawn(_)
+            ));
         }
     }
 

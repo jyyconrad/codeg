@@ -12,13 +12,36 @@ import {
   type SidebarSectionOrder,
 } from "@/lib/sidebar-view-mode-storage"
 
-// How many conversations the "Recent" section shows before its "show more" row,
-// and how many each click adds. Recent deliberately re-lists what the Folders /
-// Chat sections already show, so an unbounded one pushes every section below it
-// off the screen — a page keeps it a glance-able "where was I" list. Lives here
-// (not in the list component) because `buildRows` needs it to tell an untouched
-// first page from an expanded one.
+// How many conversations a paged sidebar bucket (Recent, each folder, Chat)
+// shows before its "show more" row, and how many each click adds. Recent
+// re-lists what Folders / Chat already show, so an unbounded one pushes every
+// section below it off the screen; folders and Chat have the same problem once
+// a workspace accumulates sessions. Lives here (not in the list component)
+// because `buildRows` needs it to tell an untouched first page from an
+// expanded one.
 export const RECENT_PAGE_SIZE = 15
+
+/**
+ * Slice `items` to `limit` and report how many remain plus whether folding
+ * back to `pageSize` would hide anything. `limit == null` is the unpaged
+ * mode (tests, and the historical folder/chat behavior): everything is shown
+ * and there is no footer to emit.
+ */
+function slicePaged<T>(
+  items: readonly T[],
+  limit: number | undefined,
+  pageSize: number
+): { shown: readonly T[]; remaining: number; canReset: boolean } {
+  if (limit == null) {
+    return { shown: items, remaining: 0, canReset: false }
+  }
+  const shown = items.slice(0, Math.max(0, limit))
+  return {
+    shown,
+    remaining: Math.max(0, items.length - shown.length),
+    canReset: shown.length > pageSize,
+  }
+}
 
 export function parseTimestamp(value: string): number {
   const timestamp = Date.parse(value)
@@ -974,6 +997,32 @@ export interface RecentMoreRow {
 }
 
 /**
+ * The paging footer under one folder's conversation rows. Same contract as
+ * {@link RecentMoreRow}: a page at a time, `remaining` for the label, and
+ * `canReset` once more than the first page is on screen so the list can fold
+ * back. Per-folder (and per-worktree) so expanding one bucket does not expand
+ * its siblings. `depth` matches the conversation rows it sits under, so the
+ * renderer can indent it with the same rail as those cards.
+ */
+export interface FolderMoreRow {
+  kind: "folder-more"
+  folderId: number
+  remaining: number
+  depth: number
+  canReset?: true
+}
+
+/**
+ * The paging footer of the flat "Chat" section. Same contract as
+ * {@link RecentMoreRow}; a single bucket, so no folder id.
+ */
+export interface ChatsMoreRow {
+  kind: "chats-more"
+  remaining: number
+  canReset?: true
+}
+
+/**
  * A collapsible section heading. Four exist: "pinned" (always on top, shown only
  * when there are pinned conversations) plus the three user-reorderable ones —
  * "folders" (wraps the whole folder list), "chats" (a flat list of folderless
@@ -1047,6 +1096,8 @@ export type SidebarRow =
   | FoldersEmptyRow
   | RecentEmptyRow
   | RecentMoreRow
+  | FolderMoreRow
+  | ChatsMoreRow
   | SubsessionLoadingRow
 
 const MAX_RENDER_DEPTH = 32
@@ -1068,6 +1119,7 @@ const EMPTY_CONVERSATIONS: readonly DbConversationSummary[] = []
 // No group is collapsed by default (absent key = expanded), matching
 // `folderExpanded`. Shared so the group-free path allocates nothing.
 const EMPTY_GROUP_EXPANDED: Record<number, boolean> = {}
+const EMPTY_FOLDER_LIMITS: ReadonlyMap<number, number> = new Map()
 
 /**
  * Merge a freshly-fetched children snapshot with child summaries already applied
@@ -1222,6 +1274,17 @@ export function buildRows(args: {
    *  footer row carries `canReset` once it is past the first page so the list
    *  can be folded back to {@link RECENT_PAGE_SIZE}. */
   recentLimit?: number
+  /** First-page size for each folder's conversation bucket. Optional —
+   *  omitted means no paging (the historical behavior, kept for tests). The
+   *  app always passes {@link RECENT_PAGE_SIZE}. */
+  folderPageSize?: number
+  /** Raised per-folder limits keyed by folder id. Absent key uses
+   *  `folderPageSize`. Ignored when `folderPageSize` is omitted. Optional. */
+  folderLimits?: ReadonlyMap<number, number>
+  /** How many Chat conversations to emit before stopping and appending a
+   *  {@link ChatsMoreRow}. Optional — omitted means no limit (the historical
+   *  behavior, kept for tests). The app raises it a page at a time. */
+  chatLimit?: number
   /** Vertical order of the Folders / Chat / Recent sections. The Pinned section
    *  (when present) always stays on top regardless. Normalized defensively, so
    *  a partial or repeated list still renders each section exactly once.
@@ -1278,6 +1341,9 @@ export function buildRows(args: {
     recentExpanded = true,
     showRecent = false,
     recentLimit,
+    folderPageSize,
+    folderLimits = EMPTY_FOLDER_LIMITS,
+    chatLimit,
     sectionOrder = DEFAULT_SECTION_ORDER,
     conversationExpanded = EMPTY_EXPANDED,
     childrenByParent = EMPTY_CHILDREN,
@@ -1329,7 +1395,16 @@ export function buildRows(args: {
       })
       return
     }
-    for (const conv of convs) {
+    const limit =
+      folderPageSize == null
+        ? undefined
+        : (folderLimits.get(folderId) ?? folderPageSize)
+    const { shown, remaining, canReset } = slicePaged(
+      convs,
+      limit,
+      folderPageSize ?? RECENT_PAGE_SIZE
+    )
+    for (const conv of shown) {
       pushConversationRow(
         rows,
         conv,
@@ -1338,6 +1413,16 @@ export function buildRows(args: {
         childrenByParent,
         childrenLoading
       )
+    }
+    if (remaining > 0 || canReset) {
+      const row: FolderMoreRow = {
+        kind: "folder-more",
+        folderId,
+        remaining,
+        depth: baseDepth,
+      }
+      if (canReset) row.canReset = true
+      rows.push(row)
     }
   }
 
@@ -1434,7 +1519,12 @@ export function buildRows(args: {
       if (chatConversations.length === 0) {
         rows.push({ kind: "chats-empty" })
       } else {
-        for (const conv of chatConversations) {
+        const { shown, remaining, canReset } = slicePaged(
+          chatConversations,
+          chatLimit,
+          RECENT_PAGE_SIZE
+        )
+        for (const conv of shown) {
           pushConversationRow(
             rows,
             conv,
@@ -1443,6 +1533,11 @@ export function buildRows(args: {
             childrenByParent,
             childrenLoading
           )
+        }
+        if (remaining > 0 || canReset) {
+          const row: ChatsMoreRow = { kind: "chats-more", remaining }
+          if (canReset) row.canReset = true
+          rows.push(row)
         }
       }
     }
@@ -1464,10 +1559,11 @@ export function buildRows(args: {
     // paged: only the first `recentLimit` land, and a "show more" row offers
     // the rest. No limit given (tests, and the section's original behavior) =
     // the whole bucket. The header's own count always reports the total.
-    const shown =
-      recentLimit == null
-        ? recentConversations
-        : recentConversations.slice(0, Math.max(0, recentLimit))
+    const { shown, remaining, canReset } = slicePaged(
+      recentConversations,
+      recentLimit,
+      RECENT_PAGE_SIZE
+    )
     for (const conv of shown) {
       pushConversationRow(
         rows,
@@ -1479,13 +1575,6 @@ export function buildRows(args: {
         true
       )
     }
-    const remaining = recentConversations.length - shown.length
-    // The gate is "more than a page is on screen", not "recentLimit is past a
-    // page": a raised limit outlives the conversations it revealed (delete them
-    // and the limit still reads 30), which would leave a reset button that
-    // changes nothing on click. `recentLimit == null` is the unpaged mode —
-    // nothing was ever collapsed, so there is nothing to restore.
-    const canReset = recentLimit != null && shown.length > RECENT_PAGE_SIZE
     if (remaining > 0 || canReset) {
       const row: RecentMoreRow = { kind: "recent-more", remaining }
       if (canReset) row.canReset = true

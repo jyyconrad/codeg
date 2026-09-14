@@ -11,9 +11,13 @@ use super::session_bridge::{PendingPermission, SessionBridge};
 use super::tool_detail::{format_tool_call_detail, truncate_str};
 use super::types::{ChannelMessageTarget, MessageLevel, RichMessage};
 use crate::acp::internal_bus::InternalEventBus;
+use crate::acp::lifecycle::{format_terminal_error, maybe_publish_run_terminal};
 use crate::acp::manager::ConnectionManager;
 use crate::acp::types::{
     AcpEvent, ConnectionStatus, DelegationResultSummary, EventEnvelope, PromptInputBlock,
+};
+use crate::chat_channel::terminal_message::{
+    publish_run_terminal_message, terminal_body, TerminalKind,
 };
 
 use crate::db::service::{
@@ -26,7 +30,6 @@ use super::manager::ChatChannelManager;
 
 const FLUSH_INTERVAL_SECS: u64 = 10;
 const BUFFER_FLUSH_THRESHOLD: usize = 500;
-const MAX_MESSAGE_LEN: usize = 2000;
 const MESSAGE_LANGUAGE_KEY: &str = "chat_message_language";
 const COMMAND_PREFIX_KEY: &str = "chat_command_prefix";
 const DEFAULT_COMMAND_PREFIX: &str = "/";
@@ -137,8 +140,7 @@ async fn handle_acp_envelope(
                 // session was re-minted (codeg#500). Whichever of this
                 // subscriber and the lifecycle one wins the race, the loser
                 // gets `None` and the row is preserved exactly once.
-                let continues =
-                    crate::acp::continued_session_ids(session.agent_type, session_id);
+                let continues = crate::acp::continued_session_ids(session.agent_type, session_id);
                 match conversation_service::bind_external_id(
                     db,
                     session.conversation_id,
@@ -206,7 +208,8 @@ async fn handle_acp_envelope(
 
                         let is_current = match conn_mgr.get_state(connection_id).await {
                             Some(state) => {
-                                state.read().await.external_id.as_deref() == Some(session_id.as_str())
+                                state.read().await.external_id.as_deref()
+                                    == Some(session_id.as_str())
                             }
                             None => false,
                         };
@@ -251,8 +254,7 @@ async fn handle_acp_envelope(
                                 &target,
                                 &RichMessage::error(match lang {
                                     Lang::ZhCn | Lang::ZhTw => {
-                                        "无法启动任务：该智能体会话已归属于另一个对话。"
-                                            .to_string()
+                                        "无法启动任务：该智能体会话已归属于另一个对话。".to_string()
                                     }
                                     _ => "Could not start the task: this agent session \
                                           already belongs to another conversation."
@@ -597,17 +599,12 @@ async fn handle_acp_envelope(
             }
         }
 
-        AcpEvent::TurnComplete {
-            stop_reason,
-            agent_type,
-            ..
-        } => {
+        AcpEvent::TurnComplete { stop_reason, .. } => {
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.get_mut(connection_id) {
                 let target = session.target.clone();
                 let conv_id = session.conversation_id;
-                let content = std::mem::take(&mut session.content_buffer);
-                let tool_count = session.tool_calls.len();
+                session.content_buffer.clear();
                 session.tool_calls.clear();
                 session.last_flushed = Instant::now();
                 // A kickoff prompt deferred by `SessionStarted` (the connection
@@ -616,25 +613,6 @@ async fn handle_acp_envelope(
                 // double-send it; retry below once the lock is released.
                 let deferred_kickoff = session.pending_prompt.take();
                 drop(guard);
-
-                let lang = get_lang(db).await;
-                let body = format_completion(&content, tool_count, lang);
-
-                let msg = RichMessage::info(body)
-                    .with_title(match lang {
-                        Lang::ZhCn | Lang::ZhTw => "任务完成",
-                        _ => "Turn Complete",
-                    })
-                    .with_field("Agent", agent_type)
-                    .with_field(
-                        match lang {
-                            Lang::ZhCn | Lang::ZhTw => "结束原因",
-                            _ => "Stop Reason",
-                        },
-                        localize_stop_reason(stop_reason, lang),
-                    );
-
-                let _ = manager.send_to_target(&target, &msg).await;
 
                 if stop_reason == "end_turn" {
                     let _ = conversation_service::update_status(
@@ -664,7 +642,9 @@ async fn handle_acp_envelope(
                                  next TurnComplete"
                             );
                         } else {
-                            tracing::error!("[SessionEventSub] failed to send deferred kickoff: {e}");
+                            tracing::error!(
+                                "[SessionEventSub] failed to send deferred kickoff: {e}"
+                            );
                             let msg = RichMessage::error(format!("Failed to send task: {e}"));
                             let _ = manager.send_to_target(&target, &msg).await;
                         }
@@ -677,6 +657,7 @@ async fn handle_acp_envelope(
             message,
             agent_type,
             terminal,
+            code,
             ..
         } => {
             // Non-terminal Errors (`turn_failure_error_event`,
@@ -689,18 +670,22 @@ async fn handle_acp_envelope(
             // message would spawn a brand-new session, losing context).
             // The lifecycle worker mirrors this gating; see F2 in the
             // v0.14.3 sub-agent delegation post-mortem.
-            let lang = get_lang(db).await;
-            let msg = RichMessage {
-                title: Some(match lang {
-                    Lang::ZhCn | Lang::ZhTw => "Agent 错误".to_string(),
-                    _ => "Agent Error".to_string(),
-                }),
-                body: format!("[{agent_type}] {message}"),
-                fields: Vec::new(),
-                level: MessageLevel::Error,
-            };
-
             if !*terminal {
+                // Grok `retry_state` failed is live-only; the prompt-unwind
+                // terminal Error owns the single final IM body.
+                if code.as_deref() == Some("retry_state") {
+                    return;
+                }
+                let lang = get_lang(db).await;
+                let msg = RichMessage {
+                    title: Some(match lang {
+                        Lang::ZhCn | Lang::ZhTw => "Agent 错误".to_string(),
+                        _ => "Agent Error".to_string(),
+                    }),
+                    body: format!("[{agent_type}] {message}"),
+                    fields: Vec::new(),
+                    level: MessageLevel::Error,
+                };
                 let target = {
                     let guard = bridge.lock().await;
                     guard.get(connection_id).map(|s| s.target.clone())
@@ -711,6 +696,37 @@ async fn handle_acp_envelope(
                 return;
             }
 
+            // Publish while the Bridge row is still present, then tear down.
+            let detail = format_terminal_error(message, code.as_deref());
+            if let Some(state_arc) = conn_mgr.get_state(connection_id).await {
+                maybe_publish_run_terminal(
+                    db,
+                    conn_mgr,
+                    &state_arc,
+                    TerminalKind::Error,
+                    Some(&detail),
+                    None,
+                )
+                .await;
+            } else if let Some((target, conv_id)) = {
+                let guard = bridge.lock().await;
+                guard
+                    .get(connection_id)
+                    .map(|s| (s.target.clone(), s.conversation_id))
+            } {
+                let lang = get_lang(db).await;
+                if let Some(body) = terminal_body(TerminalKind::Error, None, Some(&detail), lang) {
+                    let message = crate::chat_channel::types::RichMessage::error(body);
+                    let _ = publish_run_terminal_message(
+                        db,
+                        manager,
+                        std::slice::from_ref(&target),
+                        conv_id,
+                        &message,
+                    )
+                    .await;
+                }
+            }
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.remove(connection_id) {
                 let channel_id = session.channel_id;
@@ -718,8 +734,6 @@ async fn handle_acp_envelope(
                 let target = session.target.clone();
                 let conv_id = session.conversation_id;
                 drop(guard);
-
-                let _ = manager.send_to_target(&target, &msg).await;
 
                 let _ = conversation_service::update_status(
                     db,
@@ -797,151 +811,6 @@ async fn clear_session_route(
     } else {
         let _ = sender_context_service::clear_session(db, channel_id, sender_id).await;
     }
-}
-
-fn format_completion(content: &str, tool_count: usize, lang: Lang) -> String {
-    if content.is_empty() {
-        return match lang {
-            Lang::ZhCn | Lang::ZhTw => format!("(无文本输出, {tool_count} 次工具调用)"),
-            _ => format!("(No text output, {tool_count} tool calls)"),
-        };
-    }
-
-    if content.len() <= MAX_MESSAGE_LEN {
-        let mut body = content.to_string();
-        if tool_count > 0 {
-            body.push_str(&format!(
-                "\n\n[{} {}]",
-                tool_count,
-                match lang {
-                    Lang::ZhCn | Lang::ZhTw => "次工具调用",
-                    _ => "tool calls",
-                }
-            ));
-        }
-        return body;
-    }
-
-    // Truncate long content (use char boundaries to avoid panic on multi-byte)
-    let head_end = content
-        .char_indices()
-        .nth(500)
-        .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let head = &content[..head_end];
-    let tail_start = content
-        .char_indices()
-        .rev()
-        .nth(499)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let tail = &content[tail_start..];
-
-    match lang {
-        Lang::ZhCn | Lang::ZhTw => {
-            format!(
-                "{head}\n\n...\n\n{tail}\n\n[完整回复: {} 字符, {tool_count} 次工具调用]",
-                content.len()
-            )
-        }
-        _ => {
-            format!(
-                "{head}\n\n...\n\n{tail}\n\n[Full response: {} chars, {tool_count} tool calls]",
-                content.len()
-            )
-        }
-    }
-}
-
-fn localize_stop_reason(reason: &str, lang: Lang) -> String {
-    match lang {
-        Lang::ZhCn => match reason {
-            "end_turn" => "正常结束",
-            "cancelled" => "已取消",
-            "max_tokens" => "达到最大长度",
-            "stop_sequence" => "遇到停止序列",
-            "error" => "错误",
-            "timeout" => "超时",
-            other => other,
-        },
-        Lang::ZhTw => match reason {
-            "end_turn" => "正常結束",
-            "cancelled" => "已取消",
-            "max_tokens" => "達到最大長度",
-            "stop_sequence" => "遇到停止序列",
-            "error" => "錯誤",
-            "timeout" => "逾時",
-            other => other,
-        },
-        Lang::Ja => match reason {
-            "end_turn" => "正常終了",
-            "cancelled" => "キャンセル",
-            "max_tokens" => "最大トークン数到達",
-            "stop_sequence" => "停止シーケンス",
-            "error" => "エラー",
-            "timeout" => "タイムアウト",
-            other => other,
-        },
-        Lang::Ko => match reason {
-            "end_turn" => "정상 종료",
-            "cancelled" => "취소됨",
-            "max_tokens" => "최대 길이 도달",
-            "stop_sequence" => "정지 시퀀스",
-            "error" => "오류",
-            "timeout" => "시간 초과",
-            other => other,
-        },
-        Lang::Es => match reason {
-            "end_turn" => "Finalizado",
-            "cancelled" => "Cancelado",
-            "max_tokens" => "Longitud máxima alcanzada",
-            "error" => "Error",
-            "timeout" => "Tiempo agotado",
-            other => other,
-        },
-        Lang::De => match reason {
-            "end_turn" => "Abgeschlossen",
-            "cancelled" => "Abgebrochen",
-            "max_tokens" => "Maximale Länge erreicht",
-            "error" => "Fehler",
-            "timeout" => "Zeitüberschreitung",
-            other => other,
-        },
-        Lang::Fr => match reason {
-            "end_turn" => "Terminé",
-            "cancelled" => "Annulé",
-            "max_tokens" => "Longueur maximale atteinte",
-            "error" => "Erreur",
-            "timeout" => "Délai dépassé",
-            other => other,
-        },
-        Lang::Pt => match reason {
-            "end_turn" => "Concluído",
-            "cancelled" => "Cancelado",
-            "max_tokens" => "Comprimento máximo atingido",
-            "error" => "Erro",
-            "timeout" => "Tempo esgotado",
-            other => other,
-        },
-        Lang::Ar => match reason {
-            "end_turn" => "اكتمل",
-            "cancelled" => "ملغى",
-            "max_tokens" => "تم بلوغ الحد الأقصى",
-            "error" => "خطأ",
-            "timeout" => "انتهت المهلة",
-            other => other,
-        },
-        Lang::En => match reason {
-            "end_turn" => "Completed",
-            "cancelled" => "Cancelled",
-            "max_tokens" => "Max length reached",
-            "stop_sequence" => "Stop sequence",
-            "error" => "Error",
-            "timeout" => "Timeout",
-            other => other,
-        },
-    }
-    .to_string()
 }
 
 /// Title-side match for `delegate_to_agent`. Title is free-form text the
@@ -1104,9 +973,7 @@ mod delegation_relay_tests {
         assert!(is_delegation_title("delegate_to_agent"));
         assert!(is_delegation_title("Delegate To Agent"));
         assert!(is_delegation_title("delegate-to-agent"));
-        assert!(is_delegation_title(
-            "mcp__codeg-mcp__delegate_to_agent"
-        ));
+        assert!(is_delegation_title("mcp__codeg-mcp__delegate_to_agent"));
         assert!(is_delegation_title("Run mcp__codeg__delegate_to_agent"));
         assert!(!is_delegation_title("agent"));
         assert!(!is_delegation_title("write"));
@@ -1426,7 +1293,15 @@ mod async_relay_dedup_tests {
         let (bridge, chat, rec) = harness().await;
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &delegation_completed_ok(),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
         // The later terminal update carries raw_input (re-creating the old
         // input-map token) AND terminal output.
         handle_acp_envelope(
@@ -1463,7 +1338,15 @@ mod async_relay_dedup_tests {
             &EventEmitter::Noop,
         )
         .await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &delegation_completed_ok(),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
         let msgs = sent(&rec).await;
         assert_eq!(msgs.len(), 2, "ack + result, got {msgs:?}");
         assert!(msgs[0].contains("running in background"));
@@ -1477,7 +1360,15 @@ mod async_relay_dedup_tests {
         let (bridge, chat, rec) = harness().await;
         let conn = ConnectionManager::new();
         let db = test_helpers::fresh_in_memory_db().await;
-        handle_acp_envelope(&delegation_completed_ok(), &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &delegation_completed_ok(),
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
         // Host re-emits the running ack after completion, with raw_input.
         handle_acp_envelope(
             &completed_update(ACK, true),
@@ -1550,7 +1441,15 @@ mod async_relay_dedup_tests {
                 session_id: "S1".into(),
             },
         };
-        handle_acp_envelope(&started, &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &started,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
 
         assert_eq!(
             bridge
@@ -1589,9 +1488,18 @@ mod async_relay_dedup_tests {
                 session_id: "S1".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude".into(),
+                run_id: None,
             },
         };
-        handle_acp_envelope(&complete, &bridge, &chat, &conn, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &complete,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
 
         assert!(
             bridge
@@ -1614,6 +1522,156 @@ mod async_relay_dedup_tests {
         assert!(
             matches!(blocks.as_slice(), [PromptInputBlock::Text { text }] if text == "do the task"),
             "the retried prompt must carry the deferred text, got {blocks:?}"
+        );
+    }
+
+    /// TurnComplete used to post a `format_completion` card titled
+    /// "Turn Complete" / "任务完成". Terminal delivery now lives in
+    /// lifecycle; this arm must not send a completion card.
+    #[tokio::test]
+    async fn turn_complete_does_not_send_format_completion_card() {
+        let (bridge, chat, rec) = harness().await;
+        bridge.lock().await.get_mut("conn").unwrap().content_buffer = "hello answer".into();
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let complete = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "S1".into(),
+                stop_reason: "end_turn".into(),
+                agent_type: "claude".into(),
+                run_id: None,
+            },
+        };
+        handle_acp_envelope(
+            &complete,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.is_empty(),
+            "TurnComplete must not send a format_completion card, got {msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .all(|m| !m.contains("Turn Complete") && !m.contains("任务完成")),
+            "got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_error_does_not_send_agent_error_card() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::Error {
+                message: "transport closed".into(),
+                agent_type: "claude_code".into(),
+                code: None,
+                details: None,
+                terminal: true,
+            },
+        };
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.iter()
+                .all(|m| !m.contains("[claude_code]") && !m.contains("Agent Error")),
+            "must not send the titled Agent Error card, got {msgs:?}"
+        );
+        assert!(
+            bridge.lock().await.get("conn").is_none(),
+            "terminal Error must still tear the bridge session down"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_terminal_error_still_posts_agent_error_card() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::Error {
+                message: "Failed to set mode: bad id".into(),
+                agent_type: "claude_code".into(),
+                code: None,
+                details: None,
+                terminal: false,
+            },
+        };
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("Failed to set mode: bad id")),
+            "non-terminal Errors still post to the channel, got {msgs:?}"
+        );
+        assert!(
+            bridge.lock().await.get("conn").is_some(),
+            "non-terminal Error must leave the bridge session in place"
+        );
+    }
+
+    #[tokio::test]
+    async fn grok_retry_state_failed_does_not_post_agent_error_card() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "conn".into(),
+            payload: AcpEvent::Error {
+                message: "reqwest error stream".into(),
+                agent_type: "grok".into(),
+                code: Some("retry_state".into()),
+                details: None,
+                terminal: false,
+            },
+        };
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.is_empty(),
+            "retry_state failed is live-only; terminal Error owns IM, got {msgs:?}"
+        );
+        assert!(
+            bridge.lock().await.get("conn").is_some(),
+            "non-terminal retry_state must leave the bridge session in place"
         );
     }
 }
@@ -1737,7 +1795,11 @@ mod error_terminal_gate_tests {
             .all(&db.conn)
             .await
             .expect("list rows");
-        assert_eq!(rows.len(), 2, "the old session must keep a row, got {rows:?}");
+        assert_eq!(
+            rows.len(),
+            2,
+            "the old session must keep a row, got {rows:?}"
+        );
         let preserved = rows
             .iter()
             .find(|r| r.external_id.as_deref() == Some("S1"))
@@ -1879,6 +1941,7 @@ mod error_terminal_gate_tests {
                     session_id: "S_SHARED".to_string(),
                     stop_reason: "end_turn".to_string(),
                     agent_type: "claude_code".to_string(),
+                    run_id: None,
                 },
             },
             &bridge,
@@ -1954,7 +2017,12 @@ mod error_terminal_gate_tests {
 
         let conn_mgr = ConnectionManager::new();
         let _cmd_rx = conn_mgr
-            .insert_test_connection_live("conn-moved-on", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .insert_test_connection_live(
+                "conn-moved-on",
+                AgentType::ClaudeCode,
+                None,
+                EventEmitter::Noop,
+            )
             .await;
         // The LIVE session is S2 — S1 is a straggler.
         conn_mgr
@@ -2019,7 +2087,15 @@ mod error_terminal_gate_tests {
                 terminal: false,
             },
         };
-        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat_mgr,
+            &conn_mgr,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
 
         // Session bridge entry is preserved — the next user message on the
         // same connection can still flow through it.
@@ -2052,7 +2128,15 @@ mod error_terminal_gate_tests {
                 terminal: true,
             },
         };
-        handle_acp_envelope(&envelope, &bridge, &chat_mgr, &conn_mgr, &db.conn, &EventEmitter::Noop).await;
+        handle_acp_envelope(
+            &envelope,
+            &bridge,
+            &chat_mgr,
+            &conn_mgr,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
 
         assert!(
             bridge.lock().await.get("c-term").is_none(),

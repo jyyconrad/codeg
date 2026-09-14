@@ -358,6 +358,8 @@ describe("Sidebar — Navigation item visibility", () => {
     expect(navRow("Automations")).toBeTruthy()
     expect(navRow("To-dos")).toBeTruthy()
     expect(navRow(FORGE_ROW)).toBeTruthy()
+    expect(navRow("Infinite Conversations")).toBeTruthy()
+    expect(navRow("Toolbox")).toBeTruthy()
   })
 
   it("hides a row when its menu toggle is switched off, and persists it", async () => {

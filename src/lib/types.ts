@@ -1,4 +1,4 @@
-/** The fifteen agents codeg ships hand-written support for. */
+/** The sixteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -15,6 +15,7 @@ export type BuiltinAgentType =
   | "deepseek"
   | "qoder"
   | "antigravity"
+  | "codeg_agent"
 
 /**
  * Which agent backs a conversation.
@@ -925,6 +926,7 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "deepseek",
   "qoder",
   "antigravity",
+  "codeg_agent",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -959,12 +961,14 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "deepseek",
   "qoder",
   "antigravity",
+  "codeg_agent",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
   "claude_code",
   "codex",
   "gemini",
+  "codeg_agent",
 ]
 
 /**
@@ -1270,6 +1274,7 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   deepseek: "DeepSeek Harness",
   qoder: "Qoder",
   antigravity: "Google Antigravity",
+  codeg_agent: "Codeg Agent",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1288,6 +1293,7 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   deepseek: "bg-[#4D6BFE]",
   qoder: "bg-[#6C4CF1]",
   antigravity: "bg-[#1A73E8]",
+  codeg_agent: "bg-[#1a1a2e]",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -2623,6 +2629,10 @@ export type AcpEvent =
       delta: AsyncTaskDelta
     }
   | {
+      type: "workflow"
+      delta: WorkflowDelta
+    }
+  | {
       type: "session_load_failed"
       session_id: string
       message: string
@@ -3075,6 +3085,71 @@ export interface AsyncTaskDelta {
   tool_call_id?: string | null
 }
 
+export interface WorkflowPhase {
+  title: string
+  /** Static one-line summary from the workflow script, when published. */
+  detail?: string | null
+  /** `pending` | `active` | `done` | `failed`. */
+  state: string
+}
+
+/** One child agent (node) inside a workflow run. */
+export interface WorkflowAgent {
+  agent_id: string
+  label: string
+  phase?: string | null
+  /** `pending` | `running` | `done` | `failed` | `cancelled`. */
+  state: string
+  /** Task/summary line when the speaker sent one. `label` is the name fallback. */
+  summary?: string | null
+  tokens_used?: number | null
+  duration_ms?: number | null
+}
+
+/**
+ * Canonical live projection of a background workflow. Agent-specific frames
+ * (Grok `workflow_updated`, AIR `async_task` with `taskType=workflow`) are
+ * adapted into this shape before they reach the UI.
+ */
+export interface WorkflowRun {
+  run_id: string
+  name: string
+  objective?: string | null
+  state: string
+  phases: WorkflowPhase[]
+  current_phase?: string | null
+  agents: WorkflowAgent[]
+  agents_done: number
+  agents_running: number
+  agents_used: number
+  agent_budget?: number | null
+  agents_remaining?: number | null
+  elapsed_ms?: number | null
+  last_event?: string | null
+  last_event_detail?: string | null
+  can_stop: boolean
+}
+
+export interface WorkflowDelta {
+  run_id: string
+  spawned: boolean
+  name?: string | null
+  objective?: string | null
+  state?: string | null
+  phases?: WorkflowPhase[] | null
+  current_phase?: string | null
+  agents?: WorkflowAgent[] | null
+  agents_done?: number | null
+  agents_running?: number | null
+  agents_used?: number | null
+  agent_budget?: number | null
+  agents_remaining?: number | null
+  elapsed_ms?: number | null
+  last_event?: string | null
+  last_event_detail?: string | null
+  can_stop?: boolean | null
+}
+
 export interface LiveSessionSnapshot {
   connection_id: string
   conversation_id: number | null
@@ -3140,6 +3215,8 @@ export interface LiveSessionSnapshot {
    *  re-create a settled task as a running one on its next correction. Absent
    *  while empty (the common case). */
   async_tasks?: AsyncTaskRecord[]
+  /** Canonical workflow runs. Terminal rows included. Absent while empty. */
+  workflows?: WorkflowRun[]
   /** Goal-control action vocabulary the goal card gates its buttons on: the
    *  advertised `_meta.goal.actions` for neutral-goal adapters (claude has no
    *  "pause"), else the legacy ["pause","clear"] pair. `null` while the
@@ -3854,6 +3931,7 @@ export type McpAppType =
   | "qoder"
   | "antigravity"
   | "pi"
+  | "codeg_agent"
 
 export interface LocalMcpServer {
   id: string
@@ -4575,6 +4653,110 @@ export function parseClaudeProviderModel(
   }
 }
 
+/** Default token window written when binding a channel that has no catalog window. */
+export const DEFAULT_CODEG_CONTEXT_WINDOW = 128000
+
+/**
+ * Peek a Codeg Agent catalog JSON without importing the settings parser.
+ * Claude / Codex blobs (no `kind`) return null.
+ */
+function codegAgentCatalogHint(raw: string): {
+  defaultId: string
+  windowFor: (id: string) => number | null
+} | null {
+  if (!raw.startsWith("{")) return null
+  try {
+    const value = JSON.parse(raw) as {
+      kind?: unknown
+      default?: unknown
+      models?: unknown
+    }
+    if (value?.kind !== "codeg_agent_catalog") return null
+    const models = Array.isArray(value.models) ? value.models : []
+    const ids: { id: string; window: number }[] = []
+    for (const item of models) {
+      if (typeof item === "string" && item.trim()) {
+        ids.push({ id: item.trim(), window: DEFAULT_CODEG_CONTEXT_WINDOW })
+        continue
+      }
+      if (!item || typeof item !== "object") continue
+      const row = item as {
+        id?: unknown
+        slug?: unknown
+        context_window?: unknown
+      }
+      const id = String(row.id ?? row.slug ?? "").trim()
+      if (!id) continue
+      const windowRaw = row.context_window
+      const window =
+        typeof windowRaw === "number" && windowRaw > 0
+          ? windowRaw
+          : DEFAULT_CODEG_CONTEXT_WINDOW
+      ids.push({ id, window })
+    }
+    if (ids.length === 0) return null
+    const requested =
+      typeof value.default === "string" ? value.default.trim() : ""
+    const defaultId = ids.some((row) => row.id === requested)
+      ? requested
+      : ids[0].id
+    return {
+      defaultId,
+      windowFor: (id) => ids.find((row) => row.id === id)?.window ?? null,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Chat Completions model id from a model-provider row. Codeg catalog JSON uses
+ * `default`. Claude JSON uses `main`, Codex catalogs use `default` then the
+ * first custom slug, plain strings pass through. Unrecognized JSON yields an
+ * empty string rather than the raw blob.
+ */
+export function completionsModelIdFromProvider(provider: {
+  agent_type: string
+  model?: string | null
+}): string {
+  const raw = provider.model?.trim() ?? ""
+  if (!raw) return ""
+  const codeg = codegAgentCatalogHint(raw)
+  if (codeg) return codeg.defaultId
+  if (provider.agent_type === "claude_code" || raw.startsWith("{")) {
+    const claude = parseClaudeProviderModel(raw)
+    if (claude.main?.trim()) return claude.main.trim()
+    if (claude.customOption?.trim()) return claude.customOption.trim()
+  }
+  if (provider.agent_type === "codex" || raw.startsWith("{")) {
+    const codex = parseCodexModelConfig(raw)
+    if (codex.default?.trim()) return codex.default.trim()
+    const slug = codex.customs[0]?.slug?.trim()
+    if (slug) return slug
+    if (raw.startsWith("{")) return ""
+  }
+  return raw
+}
+
+/** Window to write for a newly bound Codeg Agent model, preferring catalogs. */
+export function suggestedCodegContextWindow(provider: {
+  agent_type: string
+  model?: string | null
+}): number {
+  const raw = provider.model?.trim() ?? ""
+  const codeg = codegAgentCatalogHint(raw)
+  if (codeg) {
+    return codeg.windowFor(codeg.defaultId) ?? DEFAULT_CODEG_CONTEXT_WINDOW
+  }
+  if (provider.agent_type === "codex" || raw.startsWith("{")) {
+    const parsed = parseCodexModelConfig(provider.model ?? null)
+    const slug = completionsModelIdFromProvider(provider)
+    const hit = parsed.customs.find((entry) => entry.slug === slug)
+    if (hit?.contextWindow && hit.contextWindow > 0) return hit.contextWindow
+  }
+  return DEFAULT_CODEG_CONTEXT_WINDOW
+}
+
 export function serializeClaudeProviderModel(
   obj: ClaudeProviderModel
 ): string | null {
@@ -4923,3 +5105,27 @@ export interface DeepSeekModelCatalog {
    *  fixed, sessions run on the agent's built-in catalog instead. */
   invalid: string | null
 }
+
+export type {
+  WikiCaptureSettings,
+  WikiCompileSettings,
+  WikiImportResult,
+  WikiImportBatchResult,
+  WikiImportFileResult,
+  WikiBulkImportResult,
+  WikiMemoryNote,
+  WikiProjectBinding,
+  WikiJob,
+  WikiJobKind,
+  WikiJobStatus,
+  WikiListPage,
+  WikiMaterialRole,
+  WikiModelPromptSettings,
+  WikiSettings,
+  WikiSettingsView,
+  WikiSource,
+  WikiSourceEligibility,
+  WikiSourceKind,
+  WikiSynthesizeSettings,
+  WikiVaultTreeNode,
+} from "./wiki-types"

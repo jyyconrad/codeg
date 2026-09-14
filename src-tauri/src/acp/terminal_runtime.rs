@@ -1,18 +1,22 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use sacp::schema::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse,
-    ReleaseTerminalRequest, ReleaseTerminalResponse, TerminalExitStatus, TerminalOutputRequest,
-    TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
+    ReleaseTerminalRequest, ReleaseTerminalResponse, SessionId, TerminalExitStatus,
+    TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
+    WaitForTerminalExitResponse,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{watch, Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
+use crate::acp::process_owner::{force_kill_and_reap, lock_owners, ProcessOwnerRegistry};
 use crate::terminal::shell_flavor::{classify_shell_family, ShellFamily};
 
 type TerminalMap = HashMap<String, Arc<TerminalInstance>>;
@@ -105,6 +109,11 @@ struct TerminalInstance {
     /// short-lived command that exits before anyone subscribes would strand
     /// every later waiter.
     completion: watch::Sender<TerminalCompletion>,
+    /// OS pid while the owner task still holds the child. 0 = unknown / reaped.
+    pid: AtomicU32,
+    /// Cancelled only after the owner task has finished — the OS reap, not the
+    /// possibly-early `Exited` publication used to unblock `terminal/output`.
+    reaped: CancellationToken,
 }
 
 impl TerminalInstance {
@@ -116,7 +125,17 @@ impl TerminalInstance {
             reader_handles: Mutex::new(Vec::new()),
             kill: Notify::new(),
             completion: watch::Sender::new(TerminalCompletion::Running),
+            pid: AtomicU32::new(0),
+            reaped: CancellationToken::new(),
         }
+    }
+
+    fn pid(&self) -> u32 {
+        self.pid.load(Ordering::SeqCst)
+    }
+
+    async fn wait_reaped(&self) {
+        self.reaped.cancelled().await;
     }
 
     /// Wait briefly for stdout/stderr reader tasks to finish; abort any that
@@ -170,10 +189,7 @@ impl TerminalInstance {
     }
 
     async fn kill_command(&self) -> Result<(), TerminalRuntimeError> {
-        if matches!(
-            *self.completion.borrow(),
-            TerminalCompletion::Exited(_)
-        ) {
+        if matches!(*self.completion.borrow(), TerminalCompletion::Exited(_)) {
             return Ok(());
         }
 
@@ -419,6 +435,13 @@ impl TerminalShellRuntimeConfig {
 
 pub struct TerminalRuntime {
     terminals: Mutex<TerminalMap>,
+    /// Terminals already removed from `terminals` whose owner task is still
+    /// reaping. `Exited` is not the same as OS-reaped; this set is.
+    reaping: Arc<Mutex<TerminalMap>>,
+    /// Optional native-session owner registry. Spawned pids are registered
+    /// here so disconnect can force-kill after the terminals map is gone.
+    /// `std` mutex so panic `Drop` can reap without the Tokio runtime.
+    owners: Option<Arc<StdMutex<ProcessOwnerRegistry>>>,
     /// Base environment merged into every spawned terminal command before
     /// the agent's per-request `env` is applied. This is where the codeg
     /// git credential helper (`GIT_CONFIG_*`) lives so an agent that runs
@@ -449,6 +472,37 @@ pub struct TerminalOutputDelta {
     pub exit_status: Option<TerminalExitStatus>,
 }
 
+/// Explicit shell-script spawn. Always wraps `script` with the configured
+/// (or platform) shell. Does not use the empty-`args` direct-exec fallback.
+#[derive(Debug, Clone)]
+pub struct CreateShellTerminalRequest {
+    pub session_id: String,
+    pub script: String,
+    pub cwd: Option<PathBuf>,
+    pub output_byte_limit: Option<u64>,
+}
+
+impl CreateShellTerminalRequest {
+    pub fn new(session_id: impl Into<String>, script: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+            script: script.into(),
+            cwd: None,
+            output_byte_limit: None,
+        }
+    }
+
+    pub fn cwd(mut self, cwd: PathBuf) -> Self {
+        self.cwd = Some(cwd);
+        self
+    }
+
+    pub fn output_byte_limit(mut self, limit: u64) -> Self {
+        self.output_byte_limit = Some(limit);
+        self
+    }
+}
+
 impl TerminalRuntime {
     /// Construct a runtime where every spawned command starts with `base_env`
     /// applied, before the agent's per-request env overrides are layered on
@@ -457,10 +511,18 @@ impl TerminalRuntime {
     pub fn with_base_env(base_env: BTreeMap<String, String>) -> Self {
         Self {
             terminals: Mutex::new(HashMap::new()),
+            reaping: Arc::new(Mutex::new(HashMap::new())),
+            owners: None,
             base_env,
             default_cwd: None,
             default_shell: TerminalShellRuntimeConfig::new(),
         }
+    }
+
+    /// Register every spawned pid with the native session's process-owner set.
+    pub fn with_process_owners(mut self, owners: Arc<StdMutex<ProcessOwnerRegistry>>) -> Self {
+        self.owners = Some(owners);
+        self
     }
 
     /// Set the fallback working directory used when a `terminal/create` request
@@ -473,12 +535,17 @@ impl TerminalRuntime {
     /// Use a shared General Settings shell value for ACP terminal fallbacks.
     /// The config is read at command creation time so existing connections pick
     /// up setting changes without being restarted.
-    pub fn with_default_shell_config(
-        mut self,
-        default_shell: TerminalShellRuntimeConfig,
-    ) -> Self {
+    pub fn with_default_shell_config(mut self, default_shell: TerminalShellRuntimeConfig) -> Self {
         self.default_shell = default_shell;
         self
+    }
+
+    /// Snapshot of the shell used for explicit script execution.
+    pub async fn selected_shell(&self) -> String {
+        self.default_shell
+            .snapshot()
+            .await
+            .unwrap_or_else(default_platform_shell)
     }
 
     /// Apply stdio, working directory, and environment to a freshly built
@@ -593,7 +660,7 @@ impl TerminalRuntime {
             && (request.command.contains(char::is_whitespace)
                 || classify_shell_family(&fallback_shell).resolves_bare_builtins());
         let spawned = crate::process::spawn_retrying_exec_busy(|| direct.spawn()).await;
-        let mut child = match spawned {
+        let child = match spawned {
             Ok(child) => child,
             Err(err)
                 if matches!(
@@ -618,14 +685,67 @@ impl TerminalRuntime {
             }
         };
 
+        self.register_spawned_child(request.session_id.to_string(), output_byte_limit, child)
+            .await
+    }
+
+    /// Run `script` through the user's shell (or the platform default). The
+    /// whole script is one argv element to `-c` / `-Command` / `/C` — never
+    /// treated as an executable name, even when it has no whitespace.
+    pub async fn create_shell_terminal(
+        &self,
+        request: CreateShellTerminalRequest,
+    ) -> Result<CreateTerminalResponse, TerminalRuntimeError> {
+        if let Some(cwd) = request.cwd.as_ref() {
+            if !cwd.is_absolute() {
+                return Err(TerminalRuntimeError::InvalidParams(
+                    "create_shell_terminal requires an absolute cwd when provided".to_string(),
+                ));
+            }
+        }
+        if request.script.trim().is_empty() {
+            return Err(TerminalRuntimeError::InvalidParams(
+                "create_shell_terminal requires a non-empty script".to_string(),
+            ));
+        }
+        let output_byte_limit = request
+            .output_byte_limit
+            .unwrap_or(DEFAULT_OUTPUT_BYTE_LIMIT);
+        if output_byte_limit == 0 {
+            return Err(TerminalRuntimeError::InvalidParams(
+                "create_shell_terminal outputByteLimit must be greater than 0".to_string(),
+            ));
+        }
+
+        let shell = self.selected_shell().await;
+        let mut command = shell_wrapped_command(&shell, &request.script);
+        let mut synthetic =
+            CreateTerminalRequest::new(SessionId::new(request.session_id.clone()), request.script);
+        synthetic.cwd = request.cwd;
+        synthetic.output_byte_limit = Some(output_byte_limit);
+        self.configure_command(&mut command, &synthetic);
+
+        let child = crate::process::spawn_retrying_exec_busy(|| command.spawn())
+            .await
+            .map_err(|err| {
+                TerminalRuntimeError::Internal(format!("failed to spawn shell script: {err}"))
+            })?;
+
+        self.register_spawned_child(request.session_id, output_byte_limit, child)
+            .await
+    }
+
+    async fn register_spawned_child(
+        &self,
+        session_id: String,
+        output_byte_limit: u64,
+        mut child: tokio::process::Child,
+    ) -> Result<CreateTerminalResponse, TerminalRuntimeError> {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
         let terminal_id = format!("term_{}", uuid::Uuid::new_v4().simple());
-        let terminal = Arc::new(TerminalInstance::new(
-            request.session_id.to_string(),
-            Some(output_byte_limit),
-        ));
+        let terminal = Arc::new(TerminalInstance::new(session_id, Some(output_byte_limit)));
 
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
         if let Some(reader) = stdout {
@@ -650,7 +770,28 @@ impl TerminalRuntime {
         // registered: the owner drains them before publishing the exit status,
         // and a command that exits instantly would otherwise drain an empty
         // list and leave the readers running past the published completion.
-        tokio::spawn(own_terminal_process(terminal.clone(), child));
+        let pid = child.id().unwrap_or(0);
+        terminal.pid.store(pid, Ordering::SeqCst);
+        if pid != 0 {
+            if let Some(owners) = &self.owners {
+                lock_owners(owners).register(pid);
+            }
+        }
+        let owners = self.owners.clone();
+        let reaping = Arc::clone(&self.reaping);
+        let reaping_id = terminal_id.clone();
+        let owned = Arc::clone(&terminal);
+        tokio::spawn(async move {
+            own_terminal_process(owned.clone(), child).await;
+            if pid != 0 {
+                if let Some(owners) = &owners {
+                    lock_owners(owners).unregister(pid);
+                }
+                owned.pid.store(0, Ordering::SeqCst);
+            }
+            reaping.lock().await.remove(&reaping_id);
+            owned.reaped.cancel();
+        });
 
         self.terminals
             .lock()
@@ -756,6 +897,10 @@ impl TerminalRuntime {
             }
             terminals.remove(&terminal_id).expect("terminal exists")
         };
+        self.reaping
+            .lock()
+            .await
+            .insert(terminal_id.clone(), Arc::clone(&terminal));
 
         terminal.kill_command().await?;
         Ok(ReleaseTerminalResponse::new())
@@ -771,8 +916,10 @@ impl TerminalRuntime {
                 .collect();
 
             let mut removed = Vec::with_capacity(ids.len());
+            let mut reaping = self.reaping.lock().await;
             for id in ids {
                 if let Some(term) = terminals.remove(&id) {
+                    reaping.insert(id, Arc::clone(&term));
                     removed.push(term);
                 }
             }
@@ -788,6 +935,33 @@ impl TerminalRuntime {
             }
         }))
         .await;
+    }
+
+    /// Force-kill every live and still-reaping terminal, then wait until the
+    /// owner tasks have actually reaped (or `timeout` elapses). Returns pids
+    /// still alive — a published `Exited` status is not enough.
+    pub async fn force_kill_all_and_wait_reaped(&self, timeout: Duration) -> Vec<u32> {
+        let parked = {
+            let mut terminals = self.terminals.lock().await;
+            let mut reaping = self.reaping.lock().await;
+            for (id, term) in terminals.drain() {
+                reaping.entry(id).or_insert(term);
+            }
+            reaping.values().cloned().collect::<Vec<_>>()
+        };
+        for terminal in &parked {
+            terminal.kill.notify_waiters();
+        }
+        let pids: Vec<u32> = parked.iter().map(|t| t.pid()).filter(|p| *p != 0).collect();
+        let leftover = force_kill_and_reap(&pids, timeout).await;
+        let wait_budget = timeout / 2;
+        for terminal in parked {
+            let _ = tokio::time::timeout(wait_budget, terminal.wait_reaped()).await;
+        }
+        leftover
+            .into_iter()
+            .filter(|&pid| crate::acp::process_owner::pid_is_alive(pid))
+            .collect()
     }
 
     async fn find_terminal(
@@ -1178,9 +1352,7 @@ mod tests {
         let config = TerminalShellRuntimeConfig::new();
         let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
             .with_default_shell_config(config.clone());
-        config
-            .set(Some(shell.to_string_lossy().to_string()))
-            .await;
+        config.set(Some(shell.to_string_lossy().to_string())).await;
 
         let session_id = SessionId::new("selected-shell".to_string());
         let request = CreateTerminalRequest::new(
@@ -1282,8 +1454,7 @@ mod tests {
 
         // Genuine shell operators must evaluate, not be passed as literal args.
         let session_id = SessionId::new("shell-ops".to_string());
-        let request =
-            CreateTerminalRequest::new(session_id.clone(), "true && echo OK".to_string());
+        let request = CreateTerminalRequest::new(session_id.clone(), "true && echo OK".to_string());
         let output = run_and_capture(&runtime, &session_id, request).await;
         assert!(
             output.contains("OK"),
@@ -1304,8 +1475,7 @@ mod tests {
 
         let session_id = SessionId::new("overlong-cmd".to_string());
         let marker = "x".repeat(5000);
-        let request =
-            CreateTerminalRequest::new(session_id.clone(), format!("echo {marker}"));
+        let request = CreateTerminalRequest::new(session_id.clone(), format!("echo {marker}"));
         let output = run_and_capture(&runtime, &session_id, request).await;
         assert!(
             output.contains(&marker),
@@ -1341,8 +1511,7 @@ mod tests {
         let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
 
         let session_id = SessionId::new("direct-exec".to_string());
-        let mut request =
-            CreateTerminalRequest::new(session_id.clone(), "/bin/echo".to_string());
+        let mut request = CreateTerminalRequest::new(session_id.clone(), "/bin/echo".to_string());
         request.args = vec!["hello world".into()];
         let output = run_and_capture(&runtime, &session_id, request).await;
         assert!(
@@ -1550,7 +1719,8 @@ mod tests {
             async move {
                 runtime
                     .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
-                        session_id, terminal_id,
+                        session_id,
+                        terminal_id,
                     ))
                     .await
             }
@@ -1602,7 +1772,8 @@ mod tests {
                 tokio::spawn(async move {
                     runtime
                         .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
-                            session_id, terminal_id,
+                            session_id,
+                            terminal_id,
                         ))
                         .await
                 })
@@ -1998,6 +2169,180 @@ mod tests {
         assert!(
             output.contains("ran-after-busy"),
             "transient ETXTBSY was not retried; got:\n{output}"
+        );
+    }
+
+    async fn run_shell_and_capture(
+        runtime: &TerminalRuntime,
+        session_id: &str,
+        request: CreateShellTerminalRequest,
+    ) -> (String, bool, Option<TerminalExitStatus>) {
+        let sid = SessionId::new(session_id.to_string());
+        let response = runtime
+            .create_shell_terminal(request)
+            .await
+            .expect("create_shell_terminal");
+        let terminal_id = response.terminal_id.clone();
+        runtime
+            .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                sid.clone(),
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("wait for shell exit");
+        let out = runtime
+            .terminal_output(TerminalOutputRequest::new(sid.clone(), terminal_id.clone()))
+            .await
+            .expect("shell output");
+        runtime.release_all_for_session(session_id).await;
+        (out.output, out.truncated, out.exit_status)
+    }
+
+    #[tokio::test]
+    async fn create_shell_terminal_runs_compound_and_redirects() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
+            .with_default_cwd(Some(dir.path().to_path_buf()));
+
+        let (pwd, _, _) = run_shell_and_capture(
+            &runtime,
+            "shell-pwd",
+            CreateShellTerminalRequest::new("shell-pwd", "pwd; pwd"),
+        )
+        .await;
+        let pwd_hits = pwd
+            .lines()
+            .filter(|line| line.contains(canonical.to_string_lossy().as_ref()))
+            .count();
+        assert!(
+            pwd_hits >= 2,
+            "pwd; pwd should print cwd twice; got:\n{pwd}"
+        );
+
+        let (out, _, status) = run_shell_and_capture(
+            &runtime,
+            "shell-and",
+            CreateShellTerminalRequest::new("shell-and", "true && false"),
+        )
+        .await;
+        let _ = out;
+        assert_eq!(
+            status.and_then(|s| s.exit_code),
+            Some(1),
+            "true && false must keep a non-zero exit"
+        );
+
+        let (out, _, status) = run_shell_and_capture(
+            &runtime,
+            "shell-redir",
+            CreateShellTerminalRequest::new(
+                "shell-redir",
+                "echo redirected > out.txt && cat out.txt",
+            ),
+        )
+        .await;
+        assert!(
+            out.contains("redirected"),
+            "redirect did not run through the shell; got:\n{out}"
+        );
+        assert_eq!(status.and_then(|s| s.exit_code), Some(0));
+
+        let (out, _, status) = run_shell_and_capture(
+            &runtime,
+            "shell-colon",
+            CreateShellTerminalRequest::new("shell-colon", ":"),
+        )
+        .await;
+        let _ = out;
+        assert_eq!(
+            status.and_then(|s| s.exit_code),
+            Some(0),
+            "bare `:` builtin must run via the shell, not as an executable name"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_shell_terminal_uses_the_selected_shell() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let shell = dir.path().join("selected-shell");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\nprintf '%s\\n' selected-shell\nexec /bin/sh \"$@\"\n",
+        )
+        .expect("write shell");
+        let mut permissions = std::fs::metadata(&shell)
+            .expect("shell metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shell, permissions).expect("make shell executable");
+
+        let config = TerminalShellRuntimeConfig::new();
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new())
+            .with_default_shell_config(config.clone());
+        config.set(Some(shell.to_string_lossy().to_string())).await;
+
+        let (out, _, _) = run_shell_and_capture(
+            &runtime,
+            "selected-shell-script",
+            CreateShellTerminalRequest::new("selected-shell-script", "printf 'command-output\\n'"),
+        )
+        .await;
+        assert!(
+            out.contains("selected-shell") && out.contains("command-output"),
+            "configured shell did not interpret the script; got:\n{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_shell_terminal_truncates_and_release_drops_cache() {
+        let runtime = TerminalRuntime::with_base_env(BTreeMap::new());
+        let session_id = "shell-truncate";
+        let sid = SessionId::new(session_id.to_string());
+        let created = runtime
+            .create_shell_terminal(
+                CreateShellTerminalRequest::new(
+                    session_id,
+                    "printf '%s' \"$(printf '%*s' 200 '' | tr ' ' x)\"",
+                )
+                .output_byte_limit(64),
+            )
+            .await
+            .expect("create truncated shell");
+        let terminal_id = created.terminal_id.clone();
+        runtime
+            .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                sid.clone(),
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("wait truncated");
+        let out = runtime
+            .terminal_output(TerminalOutputRequest::new(sid.clone(), terminal_id.clone()))
+            .await
+            .expect("truncated output");
+        assert!(
+            out.truncated,
+            "expected truncated capture; got {}",
+            out.output.len()
+        );
+        assert!(out.output.len() <= 64);
+
+        runtime
+            .release_terminal(ReleaseTerminalRequest::new(
+                sid.clone(),
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("release");
+        let missing = runtime
+            .terminal_output(TerminalOutputRequest::new(sid, terminal_id))
+            .await;
+        assert!(
+            missing.is_err(),
+            "released shell output must not be reread; got {missing:?}"
         );
     }
 }

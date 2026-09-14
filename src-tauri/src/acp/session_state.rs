@@ -1,7 +1,7 @@
 //! 会话级状态结构。后端权威：流式累积、in-flight tool calls、待处理 permission 等
 //! 全部住在这里。Phase 2 的 snapshot 端点直接从此处读取 live 部分。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use crate::acp::question::PendingQuestionState;
 use crate::acp::types::{
     AcpEvent, AsyncTaskRecord, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus,
     EventEnvelope, GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo,
-    SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo,
+    SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo, WorkflowRun,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;
@@ -50,8 +50,181 @@ pub enum LiveContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_tool_use_id: Option<String>,
     },
-    ToolCallRef { tool_call_id: String },
-    Plan { entries: serde_json::Value },
+    ToolCallRef {
+        tool_call_id: String,
+    },
+    Plan {
+        entries: serde_json::Value,
+    },
+}
+
+/// Main-thread text after the last tool call. Empty / tool-only turns
+/// return `None` so a prior turn's `last_assistant_text` cannot leak.
+fn assemble_concluding_assistant_text(live: &LiveMessage) -> Option<String> {
+    let after_last_tool_call = live
+        .content
+        .iter()
+        .rposition(|b| matches!(b, LiveContentBlock::ToolCallRef { .. }))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let assembled: String = live.content[after_last_tool_call..]
+        .iter()
+        .filter_map(|b| match b {
+            LiveContentBlock::Text {
+                text,
+                parent_tool_use_id: None,
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<&str>>()
+        .join("");
+    let trimmed = assembled.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(assembled)
+    }
+}
+
+fn visible_assistant_text(live: &LiveMessage) -> String {
+    live.content
+        .iter()
+        .filter_map(|b| match b {
+            LiveContentBlock::Text {
+                text,
+                parent_tool_use_id: None,
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<&str>>()
+        .join("")
+}
+
+fn user_text_from_pending(pending: &PendingUserMessage) -> String {
+    pending
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            crate::acp::types::UserMessageBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+fn tool_kind_str(kind: &ToolKind) -> &'static str {
+    match kind {
+        ToolKind::Read => "read",
+        ToolKind::Edit => "edit",
+        ToolKind::Delete => "delete",
+        ToolKind::Move => "move",
+        ToolKind::Search => "search",
+        ToolKind::Execute => "execute",
+        ToolKind::Think => "think",
+        ToolKind::Fetch => "fetch",
+        ToolKind::Other => "other",
+    }
+}
+
+fn tool_status_str(status: &ToolCallStatus) -> &'static str {
+    match status {
+        ToolCallStatus::Pending => "pending",
+        ToolCallStatus::InProgress => "in_progress",
+        ToolCallStatus::Completed => "completed",
+        ToolCallStatus::Failed => "failed",
+    }
+}
+
+fn first_tool_path(call: &ToolCallState) -> Option<String> {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Some(loc) = call.locations.as_ref() {
+        collect_path_strings(loc, &mut paths, &mut seen);
+    }
+    if paths.is_empty() {
+        if let Some(input) = call.input.as_ref() {
+            collect_path_strings(input, &mut paths, &mut seen);
+        }
+    }
+    paths.into_iter().next()
+}
+
+fn collect_path_strings(
+    value: &serde_json::Value,
+    paths: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_path_strings(item, paths, seen);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["path", "file_path", "filePath", "target_file", "targetFile"] {
+                if let Some(serde_json::Value::String(s)) = map.get(key) {
+                    let normalized = s.trim().replace('\\', "/");
+                    if !normalized.is_empty() && seen.insert(normalized.clone()) {
+                        paths.push(normalized);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn tool_summary(call: &ToolCallState) -> String {
+    if let Some(content) = call
+        .content
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        return content.chars().take(2000).collect();
+    }
+    match &call.output {
+        Some(ToolCallOutput::Text { content }) if !content.trim().is_empty() => {
+            content.chars().take(2000).collect()
+        }
+        Some(ToolCallOutput::Error { message }) if !message.trim().is_empty() => {
+            message.chars().take(2000).collect()
+        }
+        _ => call.label.clone(),
+    }
+}
+
+fn tool_observations_from_calls(
+    calls: &BTreeMap<String, ToolCallState>,
+) -> Vec<crate::wiki::snapshot::WikiToolObservation> {
+    calls
+        .values()
+        .map(|call| crate::wiki::snapshot::WikiToolObservation {
+            id: call.id.clone(),
+            path: first_tool_path(call),
+            kind: tool_kind_str(&call.kind).to_string(),
+            status: tool_status_str(&call.status).to_string(),
+            summary: tool_summary(call),
+        })
+        .collect()
+}
+
+fn model_and_mode(state: &SessionState) -> (Option<String>, Option<String>) {
+    let model = state.config_options.as_ref().and_then(|opts| {
+        opts.iter()
+            .find(|o| o.category.as_deref() == Some("model") || o.id.eq_ignore_ascii_case("model"))
+            .and_then(|o| match &o.kind {
+                crate::acp::types::SessionConfigKindInfo::Select(sel) => {
+                    if sel.current_value.is_empty() {
+                        None
+                    } else {
+                        Some(sel.current_value.clone())
+                    }
+                }
+                _ => None,
+            })
+    });
+    (model, state.current_mode.clone())
 }
 
 /// 工具调用的运行态。turn 完成时统一 clear。
@@ -522,6 +695,11 @@ pub struct SessionState {
     /// deterministic snapshot order.
     pub async_tasks: BTreeMap<String, AsyncTaskRecord>,
 
+    /// Canonical workflow runs, adapted from Grok `workflow_updated` and AIR
+    /// `async_task` frames with `taskType=workflow`. Same retain-after-settle
+    /// rule as [`Self::async_tasks`].
+    pub workflows: BTreeMap<String, WorkflowRun>,
+
     /// When the last async-task delta of any kind landed. Bounds the keep-alive
     /// exemption in `has_active_background_work` exactly the way
     /// `background_activity_at` bounds the watcher's half — see
@@ -531,7 +709,9 @@ pub struct SessionState {
     /// Concatenated text content of the just-completed turn's assistant
     /// message. Captured at TurnComplete (just before live_message is
     /// cleared) so the lifecycle subscriber can surface it as the
-    /// `delegation_call_id`-bound child outcome. Cleared on the next prompt.
+    /// `delegation_call_id`-bound child outcome. Not cleared on the next
+    /// prompt until that turn completes — in-flight text lives on
+    /// `live_message` (`concluding_assistant_text`).
     pub last_assistant_text: Option<String>,
 
     /// The in-flight user prompt for the current turn, captured from
@@ -613,6 +793,27 @@ pub struct SessionState {
     /// `ConversationLinked` so a title dropped while the row was still
     /// unbound can be accepted on the next send.
     pub last_native_title: Option<String>,
+
+    /// Whether this connection run already fanned out a terminal IM message.
+    /// One publish per run; reset when a new prompt starts (`turn_in_flight`
+    /// rises / `send_prompt`). Not serialized: backend-internal, like
+    /// `turn_in_flight`.
+    pub terminal_message_published: bool,
+
+    /// Write/edit/delete/move paths from the just-finished turn. Snapshotted
+    /// at TurnComplete before `active_tool_calls` is cleared, same timing as
+    /// `last_assistant_text`. Backend-internal: not on the client snapshot.
+    pub last_file_changes: Vec<crate::acp::run_settled::FileChange>,
+
+    /// UUID allocated when a prompt is accepted (`turn_in_flight` rises).
+    /// Repeat TurnComplete for the same run keeps this id. Next prompt gets a
+    /// new one. Backend-internal: not on the client snapshot.
+    pub wiki_run_id: Option<String>,
+    /// Whether this `wiki_run_id` already froze a `WikiTurnSnapshot`.
+    pub wiki_run_snapshotted: bool,
+    /// Frozen snapshots waiting for `dispatch_run_settled` to take them.
+    /// Not overwritten by a later turn so a late consumer still sees the prior run.
+    pub wiki_pending_snapshots: VecDeque<crate::wiki::snapshot::WikiTurnSnapshot>,
 }
 
 impl SessionState {
@@ -669,6 +870,7 @@ impl SessionState {
             goal_active: false,
             session_failures: BTreeMap::new(),
             async_tasks: BTreeMap::new(),
+            workflows: BTreeMap::new(),
             async_task_activity_at: None,
             last_assistant_text: None,
             pending_user_message: None,
@@ -679,6 +881,11 @@ impl SessionState {
             config_stale: false,
             config_stale_kind: None,
             last_native_title: None,
+            terminal_message_published: false,
+            last_file_changes: Vec::new(),
+            wiki_run_id: None,
+            wiki_run_snapshotted: false,
+            wiki_pending_snapshots: VecDeque::new(),
         }
     }
 
@@ -720,6 +927,105 @@ impl SessionState {
         rx
     }
 
+    /// First valid `end_turn` for the current `wiki_run_id` freezes a snapshot
+    /// from live user/assistant/tools. Late completes with a different run_id
+    /// do not snapshot the current turn. Does not change last_assistant_text.
+    fn try_freeze_wiki_snapshot(&mut self, stop_reason: &str, event_run_id: Option<&str>) {
+        if stop_reason != "end_turn" {
+            return;
+        }
+        let Some(run_id) = self.wiki_run_id.clone() else {
+            return;
+        };
+        // Late completes must carry the run they ended. Guessing from live
+        // state after the next prompt starts would snapshot the new turn.
+        let Some(eid) = event_run_id else {
+            return;
+        };
+        if eid != run_id {
+            return;
+        }
+        if self.wiki_run_snapshotted {
+            return;
+        }
+
+        let user_text = self
+            .pending_user_message
+            .as_ref()
+            .map(user_text_from_pending)
+            .unwrap_or_default();
+        let assistant_text = self
+            .live_message
+            .as_ref()
+            .map(visible_assistant_text)
+            .unwrap_or_default();
+        let tool_observations = tool_observations_from_calls(&self.active_tool_calls);
+        let file_changes = self
+            .last_file_changes
+            .iter()
+            .map(|c| crate::wiki::snapshot::WikiFileChange {
+                path: c.path.clone(),
+                operation: match c.operation {
+                    crate::acp::run_settled::FileChangeOp::Edit => "edit",
+                    crate::acp::run_settled::FileChangeOp::Delete => "delete",
+                    crate::acp::run_settled::FileChangeOp::Move => "move",
+                }
+                .to_string(),
+            })
+            .collect();
+        let (model, mode) = model_and_mode(self);
+        let occurred_at = self
+            .pending_user_message_started_at
+            .or_else(|| self.live_message.as_ref().map(|m| m.started_at))
+            .unwrap_or_else(Utc::now);
+
+        let mut snap = crate::wiki::snapshot::WikiTurnSnapshot {
+            run_id,
+            connection_id: self.connection_id.clone(),
+            conversation_id: self.conversation_id,
+            agent_type: self.agent_type.as_wire().into_owned(),
+            working_dir: self
+                .working_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            folder_id: self.folder_id,
+            model,
+            mode,
+            occurred_at,
+            captured_at: Utc::now(),
+            user_text,
+            assistant_text,
+            user_original_chars: 0,
+            assistant_original_chars: 0,
+            user_truncated: false,
+            assistant_truncated: false,
+            tool_observations,
+            tool_dropped_count: 0,
+            file_changes,
+        };
+        snap.apply_acp_truncation();
+        self.wiki_pending_snapshots.push_back(snap);
+        self.wiki_run_snapshotted = true;
+    }
+
+    /// Take a frozen snapshot for dispatch. Prefer matching `run_id` when set.
+    pub fn take_wiki_snapshot(
+        &mut self,
+        run_id: Option<&str>,
+    ) -> Option<crate::wiki::snapshot::WikiTurnSnapshot> {
+        if let Some(id) = run_id {
+            if let Some(pos) = self
+                .wiki_pending_snapshots
+                .iter()
+                .position(|s| s.run_id == id)
+            {
+                return self.wiki_pending_snapshots.remove(pos);
+            }
+            return None;
+        }
+        self.wiki_pending_snapshots.pop_front()
+    }
+
     /// 单一分发器：把一个 AcpEvent 应用到 self。注意此方法**不**自增 event_seq——
     /// seq 由 emit_with_state 在外层管理（这样 apply_event 可独立单元测试）。
     pub fn apply_event(&mut self, payload: &AcpEvent) {
@@ -739,6 +1045,7 @@ impl SessionState {
                     // the turn that started it, and "fork from here" is only
                     // accepted between turns.
                     self.async_tasks.clear();
+                    self.workflows.clear();
                     self.async_task_activity_at = None;
                 }
                 self.external_id = Some(session_id.clone());
@@ -984,7 +1291,11 @@ impl SessionState {
                     self.pending_plan_approval = None;
                 }
             }
-            AcpEvent::TurnComplete { stop_reason, .. } => {
+            AcpEvent::TurnComplete {
+                stop_reason,
+                run_id,
+                ..
+            } => {
                 // Diagnostic only (no behavior change): pairs with the
                 // StatusChanged log above. This is the ACTUAL point the turn
                 // settles (`self.status` flips to `Connected` right below,
@@ -1056,32 +1367,17 @@ impl SessionState {
                     self.last_assistant_text = None;
                 }
                 if let Some(live) = self.live_message.as_ref() {
-                    let after_last_tool_call = live
-                        .content
-                        .iter()
-                        .rposition(|b| matches!(b, LiveContentBlock::ToolCallRef { .. }))
-                        .map(|i| i + 1)
-                        .unwrap_or(0);
-                    let assembled: String = live.content[after_last_tool_call..]
-                        .iter()
-                        .filter_map(|b| match b {
-                            // Main-thread text only: a subagent's trailing
-                            // prose (parented blocks, claude-agent-acp ≥0.63
-                            // subagent transcripts) is the CHILD's voice and
-                            // must never read as the parent's delegation
-                            // result.
-                            LiveContentBlock::Text {
-                                text,
-                                parent_tool_use_id: None,
-                            } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<&str>>()
-                        .join("");
-                    if !assembled.trim().is_empty() {
+                    if let Some(assembled) = assemble_concluding_assistant_text(live) {
                         self.last_assistant_text = Some(assembled);
                     }
                 }
+                self.last_file_changes = crate::acp::run_settled::collect_file_changes_from_tools(
+                    &self.active_tool_calls,
+                );
+                // Wiki freeze uses live user/assistant/tools BEFORE they are
+                // cleared. last_assistant_text stays a separate concluding-text
+                // capture and is not reused as the wiki snapshot.
+                self.try_freeze_wiki_snapshot(stop_reason, run_id.as_deref());
                 self.live_message = None;
                 self.active_tool_calls.clear();
                 // The turn's user prompt is no longer "in flight" — the
@@ -1152,6 +1448,9 @@ impl SessionState {
                 // queued prompt sent instead of answering) must not leave a dead
                 // approval in the snapshot for a mid-turn attach to render.
                 self.pending_plan_approval = None;
+                // A new prompt starts a new connection run for IM fan-out.
+                self.terminal_message_published = false;
+                self.last_file_changes.clear();
                 // Starting a prompt past an active AIR failure acknowledges it
                 // — settle EVERYTHING, mirroring the frontend reducer's
                 // prompt-start settle so a client hydrating mid-turn doesn't
@@ -1341,6 +1640,22 @@ impl SessionState {
                         .insert(record.id.clone(), record.clone());
                 }
             }
+            AcpEvent::Workflow { delta } => {
+                match self.workflows.get_mut(&delta.run_id) {
+                    Some(existing) => delta.apply_to(existing),
+                    None if delta.spawned => {
+                        self.workflows
+                            .insert(delta.run_id.clone(), delta.to_record());
+                    }
+                    None => {
+                        tracing::debug!(
+                            run_id = %delta.run_id,
+                            "[ACP] ignoring workflow delta for an unannounced run"
+                        );
+                    }
+                }
+                self.async_task_activity_at = Some(Utc::now());
+            }
             AcpEvent::AsyncTask { delta } => {
                 // The SAME merge the frontend reducer applies, so a client
                 // seeded from the snapshot and one that watched every delta
@@ -1431,8 +1746,8 @@ impl SessionState {
     /// is handled directly (`SessionStarted` clears the table on a session-id
     /// change); this window is what catches the ones nobody predicted.
     ///
-    /// Refreshed by ANY async-task delta, so a task that keeps reporting keeps
-    /// its exemption for as long as it runs.
+    /// Refreshed by ANY async-task or workflow delta, so a task that keeps
+    /// reporting keeps its exemption for as long as it runs.
     ///
     /// That clause is claude-only in practice. codex-acp publishes no
     /// `async_task_progress` channel at all (only `_spawned` and
@@ -1444,16 +1759,48 @@ impl SessionState {
     /// mean pinning a connection open on a liveness claim nothing re-verifies —
     /// the exact failure this age bound exists to prevent.
     pub fn has_live_async_task(&self, now: DateTime<Utc>) -> bool {
-        if !self
+        let live_task = self
             .async_tasks
             .values()
-            .any(|t| !crate::acp::types::async_task_state_is_terminal(&t.state))
-        {
+            .any(|t| !crate::acp::types::async_task_state_is_terminal(&t.state));
+        let live_workflow = self
+            .workflows
+            .values()
+            .any(|w| !crate::acp::types::workflow_state_is_terminal(&w.state));
+        if !live_task && !live_workflow {
             return false;
         }
         match self.async_task_activity_at {
             Some(at) => now.signed_duration_since(at) < background_keepalive_max_age(),
             None => false,
+        }
+    }
+
+    /// Assistant text for a run-end IM body. While `live_message` is still
+    /// open (user stop / mid-turn crash), use the in-flight concluding
+    /// text — never the previous turn's `last_assistant_text`. After
+    /// TurnComplete has snapshotted and cleared live_message, fall back
+    /// to `last_assistant_text`.
+    pub fn concluding_assistant_text(&self) -> Option<String> {
+        if let Some(live) = self.live_message.as_ref() {
+            assemble_concluding_assistant_text(live)
+        } else {
+            self.last_assistant_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        }
+    }
+
+    /// File writes from the in-flight turn, else the TurnComplete snapshot.
+    /// Mirrors [`Self::concluding_assistant_text`]: cancel mid-turn must not
+    /// leak the previous turn's paths.
+    pub fn concluding_file_changes(&self) -> Vec<crate::acp::run_settled::FileChange> {
+        if !self.active_tool_calls.is_empty() {
+            crate::acp::run_settled::collect_file_changes_from_tools(&self.active_tool_calls)
+        } else {
+            self.last_file_changes.clone()
         }
     }
 
@@ -1840,6 +2187,7 @@ impl SessionState {
             last_error: self.last_error.clone(),
             session_failures: self.session_failures.values().cloned().collect(),
             async_tasks: self.async_tasks.values().cloned().collect(),
+            workflows: self.workflows.values().cloned().collect(),
             goal_actions: self.goal_actions.clone(),
             event_seq: self.event_seq,
         }
@@ -1963,6 +2311,10 @@ pub struct LiveSessionSnapshot {
     /// keep the wire shape byte-identical pre-feature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub async_tasks: Vec<AsyncTaskRecord>,
+    /// Canonical workflow runs. Terminal rows included for the same reason as
+    /// `async_tasks`. Omitted while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<WorkflowRun>,
     /// Goal-control action vocabulary the goal card gates its buttons on
     /// (see `SessionState.goal_actions`): the advertised list for neutral-goal
     /// adapters, the legacy ["pause","clear"] pair for the rest.
@@ -2072,6 +2424,7 @@ mod tests {
         AcpEvent, AsyncTaskDelta, AsyncTaskUsage, ConnectionStatus, DelegationResultSummary,
         EventEnvelope, PromptCapabilitiesInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
         SessionConfigSelectInfo, SessionModeInfo, SessionModeStateInfo, UserMessageBlock,
+        WorkflowDelta, WorkflowPhase,
     };
 
     fn fresh_state() -> SessionState {
@@ -2177,6 +2530,7 @@ mod tests {
             session_id: "sid".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert!(s.session_failures["t1:error"].resolved);
         assert!(!s.session_failures["s:notice"].resolved);
@@ -2295,7 +2649,10 @@ mod tests {
         assert_eq!(row.task_type, "shell");
         assert_eq!(row.last_tool_name.as_deref(), Some("Bash"));
         assert_eq!(row.usage.as_ref().unwrap().total_tokens, 1200);
-        assert_eq!(row.output_file_path.as_deref(), Some("/tmp/tasks/t1.output"));
+        assert_eq!(
+            row.output_file_path.as_deref(),
+            Some("/tmp/tasks/t1.output")
+        );
 
         // The adapter revises a task AFTER it settles — correcting a
         // best-effort `stopped` into the real outcome, or attaching a late
@@ -2414,6 +2771,146 @@ mod tests {
         assert!(!s.has_active_background_work(Utc::now()));
     }
 
+    fn workflow_delta(run_id: &str, spawned: bool) -> WorkflowDelta {
+        WorkflowDelta {
+            run_id: run_id.into(),
+            spawned,
+            name: None,
+            objective: None,
+            state: None,
+            phases: None,
+            current_phase: None,
+            agents: None,
+            agents_done: None,
+            agents_running: None,
+            agents_used: None,
+            agent_budget: None,
+            agents_remaining: None,
+            elapsed_ms: None,
+            last_event: None,
+            last_event_detail: None,
+            can_stop: None,
+        }
+    }
+
+    #[test]
+    fn workflow_rows_are_created_only_by_a_spawn_delta() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::Workflow {
+            delta: workflow_delta("ghost", false),
+        });
+        assert!(s.workflows.is_empty());
+
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("running".into()),
+                phases: Some(vec![
+                    WorkflowPhase {
+                        title: "Plan".into(),
+                        detail: None,
+                        state: "pending".into(),
+                    },
+                    WorkflowPhase {
+                        title: "Research".into(),
+                        detail: None,
+                        state: "pending".into(),
+                    },
+                ]),
+                ..workflow_delta("wf_1", true)
+            },
+        });
+        let row = &s.workflows["wf_1"];
+        assert_eq!(row.name, "deep-research");
+        assert_eq!(row.state, "running");
+        assert_eq!(row.phases.len(), 2);
+    }
+
+    #[test]
+    fn workflow_deltas_revise_only_the_fields_they_carry() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                name: Some("deep-research".into()),
+                ..workflow_delta("wf_1", true)
+            },
+        });
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                current_phase: Some("Research".into()),
+                agents_done: Some(1),
+                agents_running: Some(4),
+                elapsed_ms: Some(43_362),
+                ..workflow_delta("wf_1", false)
+            },
+        });
+        let row = &s.workflows["wf_1"];
+        assert_eq!(row.name, "deep-research");
+        assert_eq!(row.current_phase.as_deref(), Some("Research"));
+        assert_eq!(row.agents_done, 1);
+        assert_eq!(row.agents_running, 4);
+        assert_eq!(row.elapsed_ms, Some(43_362));
+
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                state: Some("completed".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        });
+        assert_eq!(s.workflows["wf_1"].state, "completed");
+        let snap = s.to_snapshot();
+        assert_eq!(snap.workflows.len(), 1);
+        assert_eq!(snap.workflows[0].run_id, "wf_1");
+    }
+
+    #[test]
+    fn a_live_workflow_alone_defers_the_idle_sweep() {
+        let mut s = fresh_state();
+        let now = Utc::now();
+        assert!(!s.has_active_background_work(now));
+
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                name: Some("deep-research".into()),
+                ..workflow_delta("wf_1", true)
+            },
+        });
+        assert_eq!(s.background_outstanding, 0);
+        assert!(s.async_tasks.is_empty());
+        assert!(s.has_active_background_work(now));
+
+        s.apply_event(&AcpEvent::Workflow {
+            delta: WorkflowDelta {
+                state: Some("completed".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        });
+        assert!(!s.has_active_background_work(now));
+    }
+
+    #[test]
+    fn a_session_id_change_drops_the_previous_session_workflows() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s1".into(),
+        });
+        s.apply_event(&AcpEvent::Workflow {
+            delta: workflow_delta("wf_1", true),
+        });
+        assert!(s.has_active_background_work(Utc::now()));
+
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s1".into(),
+        });
+        assert_eq!(s.workflows.len(), 1);
+
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s2".into(),
+        });
+        assert!(s.workflows.is_empty());
+        assert!(!s.has_active_background_work(Utc::now()));
+    }
+
     #[test]
     fn session_failure_warnings_survive_non_clean_turn_ends() {
         fn failure(id: &str, revision: u64, severity: &str, title: &str) -> AcpEvent {
@@ -2435,10 +2932,16 @@ mod tests {
                 session_id: "sid".into(),
                 stop_reason: stop_reason.into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             }
         }
         let mut s = fresh_state();
-        s.apply_event(&failure("t1:error", 5, "warning", "Reconnecting, attempt 5 of 5."));
+        s.apply_event(&failure(
+            "t1:error",
+            5,
+            "warning",
+            "Reconnecting, attempt 5 of 5.",
+        ));
 
         // A cancelled/failed/empty exit is NOT recovery — the incident (e.g.
         // reconnect attempts with the network still down) must stay active
@@ -2544,6 +3047,7 @@ mod tests {
             session_id: "sid".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert!(s.session_failures["notice"].resolved);
         assert!(!s.session_failures["err"].resolved);
@@ -2562,6 +3066,7 @@ mod tests {
             session_id: "sid".into(),
             stop_reason: "end_turn".into(),
             agent_type: "grok".into(),
+            run_id: None,
         });
         assert!(s.pending_plan_approval.is_none());
     }
@@ -2708,6 +3213,7 @@ mod tests {
             session_id: "sess".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         });
         assert!(
             s.pending_user_message.is_none(),
@@ -2890,7 +3396,10 @@ mod tests {
             text: "Answer ".into(),
             parent_tool_use_id: None,
         });
-        s.apply_event(&AcpEvent::Thinking { text: "hmm".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::Thinking {
+            text: "hmm".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&AcpEvent::ContentDelta {
             text: "continues here".into(),
             parent_tool_use_id: None,
@@ -3086,9 +3595,18 @@ mod tests {
     #[test]
     fn thinking_delta_creates_separate_block_from_text() {
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "T".into(), parent_tool_use_id: None });
-        s.apply_event(&AcpEvent::Thinking { text: "X".into(), parent_tool_use_id: None });
-        s.apply_event(&AcpEvent::ContentDelta { text: "Y".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "T".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::Thinking {
+            text: "X".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "Y".into(),
+            parent_tool_use_id: None,
+        });
         let live = s.live_message.as_ref().unwrap();
         assert_eq!(live.content.len(), 3);
         match &live.content[0] {
@@ -3294,8 +3812,120 @@ mod tests {
             session_id: "sess-1".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         });
         assert_eq!(s.last_assistant_text.as_deref(), Some("final answer"));
+    }
+
+    #[test]
+    fn concluding_assistant_text_prefers_live_over_previous_turn() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.last_assistant_text = Some("previous answer".into());
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "partial now".into(),
+            parent_tool_use_id: None,
+        });
+        assert_eq!(
+            s.concluding_assistant_text().as_deref(),
+            Some("partial now")
+        );
+    }
+
+    #[test]
+    fn concluding_assistant_text_falls_back_after_turn_complete() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "final answer".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sess-1".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+            run_id: None,
+        });
+        assert!(s.live_message.is_none());
+        assert_eq!(
+            s.concluding_assistant_text().as_deref(),
+            Some("final answer")
+        );
+    }
+
+    #[test]
+    fn turn_complete_snapshots_edit_file_changes_and_skips_reads() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-read".into(),
+            title: "Read".into(),
+            kind: "read".into(),
+            status: "completed".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: Some(serde_json::json!([{"path": "src/skip.rs"}])),
+            meta: None,
+            images: None,
+        });
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-edit".into(),
+            title: "Edit".into(),
+            kind: "edit".into(),
+            status: "completed".into(),
+            content: None,
+            raw_input: Some(r#"{"file_path":"src/app.rs"}"#.into()),
+            raw_output: None,
+            locations: Some(serde_json::json!([{"path": "src/app.rs"}])),
+            meta: None,
+            images: None,
+        });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "done".into(),
+            parent_tool_use_id: None,
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "sess-1".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+            run_id: None,
+        });
+
+        assert!(s.active_tool_calls.is_empty());
+        let files = s.concluding_file_changes();
+        assert_eq!(files.len(), 1, "reads must not count as file changes");
+        assert_eq!(files[0].path, "src/app.rs");
+        assert_eq!(
+            files[0].operation,
+            crate::acp::run_settled::FileChangeOp::Edit
+        );
+    }
+
+    #[test]
+    fn concluding_file_changes_prefers_in_flight_tools_over_previous_turn() {
+        let mut s = fresh_state();
+        s.status = ConnectionStatus::Prompting;
+        s.last_file_changes = vec![crate::acp::run_settled::FileChange {
+            path: "old.rs".into(),
+            operation: crate::acp::run_settled::FileChangeOp::Edit,
+        }];
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-now".into(),
+            title: "Edit".into(),
+            kind: "edit".into(),
+            status: "in_progress".into(),
+            content: None,
+            raw_input: None,
+            raw_output: None,
+            locations: Some(serde_json::json!([{"path": "now.rs"}])),
+            meta: None,
+            images: None,
+        });
+
+        let files = s.concluding_file_changes();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "now.rs");
     }
 
     #[test]
@@ -3447,7 +4077,10 @@ mod tests {
     #[test]
     fn turn_complete_clears_live_and_tool_calls_and_pending_permission() {
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "hi".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&AcpEvent::ToolCall {
             tool_call_id: "tc-1".into(),
             title: "x".into(),
@@ -3473,6 +4106,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         });
         assert!(s.live_message.is_none());
         assert!(s.active_tool_calls.is_empty());
@@ -3562,6 +4196,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         });
 
         assert!(
@@ -3680,6 +4315,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert_eq!(s.last_assistant_text.as_deref(), Some("the answer is 42"));
     }
@@ -3707,6 +4343,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert_eq!(s.last_assistant_text.as_deref(), Some("part 1 part 2"));
     }
@@ -3734,6 +4371,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert_eq!(s.last_assistant_text, None);
     }
@@ -3769,6 +4407,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert_eq!(s.last_assistant_text.as_deref(), Some("the answer is 42"));
     }
@@ -3797,6 +4436,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert_eq!(s.last_assistant_text, None);
     }
@@ -3816,11 +4456,15 @@ mod tests {
             text: String::new(),
             parent_tool_use_id: None,
         });
-        assert!(s.live_message.is_none(), "empty chunk opens no live message");
+        assert!(
+            s.live_message.is_none(),
+            "empty chunk opens no live message"
+        );
         s.apply_event(&AcpEvent::TurnComplete {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert_eq!(s.last_assistant_text, None);
     }
@@ -3846,6 +4490,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "cancelled".into(),
             agent_type: "codex".into(),
+            run_id: None,
         };
         s.apply_event(&complete);
         assert_eq!(s.last_assistant_text.as_deref(), Some("the answer"));
@@ -3855,6 +4500,219 @@ mod tests {
             Some("the answer"),
             "the agent's late response must not erase the captured result"
         );
+    }
+
+    #[test]
+    fn wiki_first_end_turn_freezes_snapshot_with_user_assistant_tools() {
+        let mut s = fresh_state();
+        s.wiki_run_id = Some("run-a".into());
+        s.turn_in_flight = true;
+        s.conversation_id = Some(7);
+        s.folder_id = Some(3);
+        s.pending_user_message = Some(PendingUserMessage {
+            message_id: "u1".into(),
+            blocks: vec![UserMessageBlock::Text {
+                text: "please fix login".into(),
+            }],
+        });
+        s.apply_event(&AcpEvent::ToolCall {
+            tool_call_id: "tc-edit".into(),
+            title: "Edit".into(),
+            kind: "edit".into(),
+            status: "completed".into(),
+            content: Some("patched".into()),
+            raw_input: Some(r#"{"file_path":"src/app.rs"}"#.into()),
+            raw_output: None,
+            locations: Some(serde_json::json!([{"path": "src/app.rs"}])),
+            meta: None,
+            images: None,
+        });
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![
+                LiveContentBlock::Text {
+                    text: "looking ".into(),
+                    parent_tool_use_id: None,
+                },
+                LiveContentBlock::ToolCallRef {
+                    tool_call_id: "tc-edit".into(),
+                },
+                LiveContentBlock::Text {
+                    text: "fixed it".into(),
+                    parent_tool_use_id: None,
+                },
+            ],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+            run_id: Some("run-a".into()),
+        });
+        assert_eq!(s.wiki_pending_snapshots.len(), 1);
+        let snap = s.wiki_pending_snapshots.front().unwrap();
+        assert_eq!(snap.run_id, "run-a");
+        assert_eq!(snap.user_text, "please fix login");
+        assert_eq!(snap.assistant_text, "looking fixed it");
+        assert_eq!(snap.conversation_id, Some(7));
+        assert_eq!(snap.folder_id, Some(3));
+        assert_eq!(snap.tool_observations.len(), 1);
+        assert_eq!(
+            snap.tool_observations[0].path.as_deref(),
+            Some("src/app.rs")
+        );
+        assert_eq!(snap.file_changes.len(), 1);
+        assert_eq!(s.last_assistant_text.as_deref(), Some("fixed it"));
+        assert!(s.live_message.is_none());
+        assert!(s.pending_user_message.is_none());
+    }
+
+    #[test]
+    fn wiki_duplicate_turn_complete_same_run_does_not_create_second_snapshot() {
+        let mut s = fresh_state();
+        s.wiki_run_id = Some("run-a".into());
+        s.turn_in_flight = true;
+        s.pending_user_message = Some(PendingUserMessage {
+            message_id: "u1".into(),
+            blocks: vec![UserMessageBlock::Text {
+                text: "hello".into(),
+            }],
+        });
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![LiveContentBlock::Text {
+                text: "world".into(),
+                parent_tool_use_id: None,
+            }],
+            started_at: Utc::now(),
+        });
+        let complete = AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+            run_id: Some("run-a".into()),
+        };
+        s.apply_event(&complete);
+        s.apply_event(&complete);
+        assert_eq!(s.wiki_pending_snapshots.len(), 1);
+        assert_eq!(s.wiki_pending_snapshots[0].assistant_text, "world");
+        assert_eq!(s.last_assistant_text.as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn wiki_late_complete_old_run_id_does_not_snapshot_new_turn() {
+        let mut s = fresh_state();
+        s.wiki_run_id = Some("run-a".into());
+        s.turn_in_flight = true;
+        s.pending_user_message = Some(PendingUserMessage {
+            message_id: "u1".into(),
+            blocks: vec![UserMessageBlock::Text {
+                text: "user a".into(),
+            }],
+        });
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![LiveContentBlock::Text {
+                text: "assistant a".into(),
+                parent_tool_use_id: None,
+            }],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+            run_id: Some("run-a".into()),
+        });
+        assert_eq!(s.wiki_pending_snapshots.len(), 1);
+
+        s.wiki_run_id = Some("run-b".into());
+        s.wiki_run_snapshotted = false;
+        s.turn_in_flight = true;
+        s.pending_user_message = Some(PendingUserMessage {
+            message_id: "u2".into(),
+            blocks: vec![UserMessageBlock::Text {
+                text: "user b".into(),
+            }],
+        });
+        s.live_message = Some(LiveMessage {
+            id: "m2".into(),
+            role: MessageRole::Assistant,
+            content: vec![LiveContentBlock::Text {
+                text: "assistant b".into(),
+                parent_tool_use_id: None,
+            }],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+            run_id: Some("run-a".into()),
+        });
+        assert_eq!(s.wiki_pending_snapshots.len(), 1);
+        assert_eq!(s.wiki_pending_snapshots[0].run_id, "run-a");
+        assert_eq!(s.wiki_pending_snapshots[0].user_text, "user a");
+        assert_eq!(s.wiki_pending_snapshots[0].assistant_text, "assistant a");
+        assert_eq!(
+            s.last_assistant_text.as_deref(),
+            Some("assistant b"),
+            "late complete still updates last_assistant_text from current live"
+        );
+    }
+
+    #[test]
+    fn wiki_missing_event_run_id_does_not_freeze() {
+        let mut s = fresh_state();
+        s.wiki_run_id = Some("run-a".into());
+        s.turn_in_flight = true;
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![LiveContentBlock::Text {
+                text: "answer".into(),
+                parent_tool_use_id: None,
+            }],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "end_turn".into(),
+            agent_type: "claude_code".into(),
+            run_id: None,
+        });
+        assert!(
+            s.wiki_pending_snapshots.is_empty(),
+            "must not guess the current run when TurnComplete omits run_id"
+        );
+    }
+
+    #[test]
+    fn wiki_skips_freeze_when_stop_reason_is_not_end_turn() {
+        let mut s = fresh_state();
+        s.wiki_run_id = Some("run-a".into());
+        s.turn_in_flight = true;
+        s.live_message = Some(LiveMessage {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            content: vec![LiveContentBlock::Text {
+                text: "partial".into(),
+                parent_tool_use_id: None,
+            }],
+            started_at: Utc::now(),
+        });
+        s.apply_event(&AcpEvent::TurnComplete {
+            session_id: "ext".into(),
+            stop_reason: "cancelled".into(),
+            agent_type: "claude_code".into(),
+            run_id: Some("run-a".into()),
+        });
+        assert!(s.wiki_pending_snapshots.is_empty());
+        assert_eq!(s.last_assistant_text.as_deref(), Some("partial"));
     }
 
     #[test]
@@ -3898,7 +4756,10 @@ mod tests {
         s.apply_event(&AcpEvent::PermissionQueueDepth { depth: 2 });
         let p = s.pending_permission.as_ref().expect("card still up");
         assert_eq!(p.queued, 2);
-        assert_eq!(p.request_id, "p-1", "depth must not change which card is up");
+        assert_eq!(
+            p.request_id, "p-1",
+            "depth must not change which card is up"
+        );
     }
 
     #[test]
@@ -4499,7 +5360,10 @@ mod tests {
     fn plan_update_appends_at_end_replacing_existing() {
         use crate::acp::types::PlanEntryInfo;
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "A".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "A".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
                 content: "step v1".into(),
@@ -4507,7 +5371,10 @@ mod tests {
                 status: "pending".into(),
             }],
         });
-        s.apply_event(&AcpEvent::ContentDelta { text: "B".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "B".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
                 content: "step v2".into(),
@@ -4569,7 +5436,10 @@ mod tests {
     fn turn_complete_clears_plan_and_tool_refs() {
         use crate::acp::types::PlanEntryInfo;
         let mut s = fresh_state();
-        s.apply_event(&AcpEvent::ContentDelta { text: "x".into(), parent_tool_use_id: None });
+        s.apply_event(&AcpEvent::ContentDelta {
+            text: "x".into(),
+            parent_tool_use_id: None,
+        });
         s.apply_event(&tool_call_event("tc-1", "ls"));
         s.apply_event(&AcpEvent::PlanUpdate {
             entries: vec![PlanEntryInfo {
@@ -4586,6 +5456,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         });
         // The existing `live_message = None` clear handles the new block kinds
         // automatically — they live inside live_message, not as siblings.
@@ -4599,7 +5470,10 @@ mod tests {
         let env = EventEnvelope {
             seq: 7,
             connection_id: "conn-x".into(),
-            payload: AcpEvent::ContentDelta { text: "abc".into(), parent_tool_use_id: None },
+            payload: AcpEvent::ContentDelta {
+                text: "abc".into(),
+                parent_tool_use_id: None,
+            },
         };
         let json = serde_json::to_string(&env).unwrap();
         let back: EventEnvelope = serde_json::from_str(&json).unwrap();

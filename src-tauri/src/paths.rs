@@ -28,6 +28,29 @@ pub fn codeg_home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(CODEG_DIR_NAME))
 }
 
+/// Codeg Agent skills / MCP store: `<codeg root>/codeg-agent`.
+///
+/// Resolution: `$CODEG_HOME` → `$CODEG_DATA_DIR` → `~/.codeg`, then
+/// `codeg-agent`. Skills and MCP share this helper.
+pub fn codeg_agent_dir() -> PathBuf {
+    if let Some(custom) = std::env::var_os("CODEG_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(custom).join("codeg-agent");
+    }
+    if let Some(data) = std::env::var_os("CODEG_DATA_DIR").filter(|s| !s.is_empty()) {
+        return PathBuf::from(data).join("codeg-agent");
+    }
+    codeg_home_dir().join("codeg-agent")
+}
+
+/// Codeg Agent ACP-native session transcripts:
+/// `<codeg_agent_dir()>/sessions/<percent-encoded-cwd>/<session-id>.jsonl`.
+///
+/// Custom ACP agents stay under [`codeg_acp_transcripts_root`]. Pre-U6 Codeg
+/// Agent files under `acp-transcripts/codeg-agent/` remain a read-only fallback.
+pub fn codeg_agent_sessions_root() -> PathBuf {
+    codeg_agent_dir().join("sessions")
+}
+
 /// Root directory for desktop-pet assets.
 ///
 /// Resolution order:
@@ -153,6 +176,9 @@ pub fn codeg_turn_timings_root() -> PathBuf {
 /// transcript parser of their own. Written by the live connection, read back
 /// by `crate::parsers::acp_native`.
 ///
+/// Codeg Agent sessions live under [`codeg_agent_sessions_root`]; this tree
+/// is still the read-only fallback for pre-U6 `codeg-agent/` files.
+///
 /// Resolution mirrors [`codeg_turn_timings_root`]:
 /// 1. `$CODEG_HOME/acp-transcripts`
 /// 2. `$CODEG_DATA_DIR/acp-transcripts` (server-mode data directory)
@@ -274,6 +300,14 @@ mod tests {
         assert_eq!(
             simplify_verbatim_path(Path::new(r"\\?\unc\srv\share\img.png")),
             PathBuf::from(r"\\srv\share\img.png")
+        );
+    }
+
+    #[test]
+    fn codeg_agent_sessions_root_is_under_codeg_agent_dir() {
+        assert_eq!(
+            codeg_agent_sessions_root(),
+            codeg_agent_dir().join("sessions")
         );
     }
 

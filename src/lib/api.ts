@@ -182,6 +182,17 @@ import type {
   TokenUsageReport,
   TokenUsageSyncResult,
   TokenUsageSyncStatus,
+  WikiImportResult,
+  WikiImportBatchResult,
+  WikiJob,
+  WikiJobStatus,
+  WikiBulkImportResult,
+  WikiSettings,
+  WikiSettingsView,
+  WikiSource,
+  WikiProjectBinding,
+  WikiSourceKind,
+  WikiVaultTreeNode,
 } from "./types"
 
 export async function listConversations(params?: {
@@ -359,7 +370,9 @@ export async function acpFork(
   // "Fork from here": the rendered turn to fork at. The UI always passes one;
   // omitting it forks at the tail, which the backend also falls back to for a
   // turn the agent cannot name — its call, see `resolve_fork_point`.
-  forkFromTurnId?: string | null
+  forkFromTurnId?: string | null,
+  // First-round edit: empty `session/new` instead of `session/fork`.
+  rewindToOrigin?: boolean
 ): Promise<ForkResult> {
   try {
     return await getTransport().call("acp_fork", {
@@ -367,6 +380,7 @@ export async function acpFork(
       conversationId: conversationId ?? null,
       folderId: folderId ?? null,
       forkFromTurnId: forkFromTurnId ?? null,
+      rewindToOrigin: rewindToOrigin ?? false,
     })
   } catch (e) {
     // A fork is serialized with prompts on the backend: it returns
@@ -4749,6 +4763,22 @@ export async function listChatChannels(): Promise<ChatChannelInfo[]> {
   return getTransport().call("list_chat_channels")
 }
 
+export async function listFolderChatChannels(
+  folderId: number
+): Promise<number[]> {
+  return getTransport().call("list_folder_chat_channels", { folderId })
+}
+
+export async function setFolderChatChannels(
+  folderId: number,
+  channelIds: number[]
+): Promise<number[]> {
+  return getTransport().call("set_folder_chat_channels", {
+    folderId,
+    channelIds,
+  })
+}
+
 export async function createChatChannel(params: {
   name: string
   channelType: string
@@ -5030,6 +5060,79 @@ export async function setFeedbackSettings(
   settings: FeedbackSettings
 ): Promise<FeedbackSettings> {
   return getTransport().call("set_feedback_settings", { settings })
+}
+
+// ─── Code intelligence settings ───────────────────────────────────────────
+
+/** Mirror of Rust `CustomLspServer`. */
+export interface CustomLspServer {
+  id: string
+  language: string
+  command: string
+  args: string[]
+  extensions: string[]
+  manifests: string[]
+}
+
+/** Mirror of Rust `CodeIntelConfig`. */
+export interface CodeIntelConfig {
+  enabled: boolean
+  codegraph: {
+    enabled: boolean
+    binary_path: string | null
+  }
+  lsp: {
+    auto_attach: boolean
+    max_concurrent: number
+    checked: string[]
+    custom: CustomLspServer[]
+  }
+}
+
+/** Mirror of Rust `LspServerStatus`. */
+export interface LspServerStatus {
+  id: string
+  language: string
+  binary: string
+  binary_on_path: boolean
+  checked: boolean
+  language_detected: boolean
+  default_checked: boolean
+  custom: boolean
+}
+
+/** Mirror of Rust `CodeIntelMcpToolStatus`. */
+export interface CodeIntelMcpToolStatus {
+  name: string
+  group: string
+  description: string
+  advertised: boolean
+}
+
+/** Mirror of Rust `CodeIntelStatus`. */
+export interface CodeIntelStatus {
+  config: CodeIntelConfig
+  codegraph_binary: string | null
+  codegraph_indexed: boolean
+  cwd: string | null
+  lsp_servers: LspServerStatus[]
+  mcp_tools?: CodeIntelMcpToolStatus[]
+}
+
+export async function getCodeIntelSettings(): Promise<CodeIntelConfig> {
+  return getTransport().call("get_code_intel_settings")
+}
+
+export async function setCodeIntelSettings(
+  settings: CodeIntelConfig
+): Promise<CodeIntelConfig> {
+  return getTransport().call("set_code_intel_settings", { settings })
+}
+
+export async function getCodeIntelStatus(
+  cwd?: string | null
+): Promise<CodeIntelStatus> {
+  return getTransport().call("get_code_intel_status", { cwd })
 }
 
 /**
@@ -5863,4 +5966,233 @@ export async function forgeSettingsSet(
   settings: ForgePanelSettings | null
 ): Promise<ForgeSettingsStore> {
   return getTransport().call("forge_settings_set", { folderId, settings })
+}
+
+export async function getWikiSettings(): Promise<WikiSettingsView> {
+  return getTransport().call("get_wiki_settings")
+}
+
+export async function updateWikiSettings(
+  settings: WikiSettings
+): Promise<WikiSettingsView> {
+  return getTransport().call("update_wiki_settings", { settings })
+}
+
+export async function wikiListJobs(params?: {
+  limit?: number
+  offset?: number
+  status?: WikiJobStatus
+}): Promise<unknown> {
+  return getTransport().call("wiki_list_jobs", {
+    limit: params?.limit ?? null,
+    offset: params?.offset ?? null,
+    status: params?.status ?? null,
+  })
+}
+
+export async function wikiGetJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_get_job", { id })
+}
+
+export async function wikiListSources(params?: {
+  limit?: number
+  offset?: number
+  source_kind?: WikiSourceKind
+  project_id?: string
+}): Promise<unknown> {
+  return getTransport().call("wiki_list_sources", {
+    limit: params?.limit ?? null,
+    offset: params?.offset ?? null,
+    source_kind: params?.source_kind ?? null,
+    project_id: params?.project_id ?? null,
+  })
+}
+
+export async function wikiListMemoryNotes(): Promise<unknown> {
+  return getTransport().call("wiki_list_memory_notes")
+}
+
+export const WIKI_JOB_CHANGED_EVENT = "wiki://job-changed"
+
+export type WikiJobChangedEvent = {
+  id?: string
+  status?: string
+  version?: number
+}
+
+export async function subscribeWikiJobChanged(
+  handler: (event: WikiJobChangedEvent) => void
+): Promise<() => void> {
+  return getTransport().subscribe<WikiJobChangedEvent>(
+    WIKI_JOB_CHANGED_EVENT,
+    handler
+  )
+}
+
+export async function wikiListProjectBindings(params?: {
+  vault_id?: string | null
+}): Promise<WikiProjectBinding[]> {
+  return getTransport().call("wiki_list_project_bindings", {
+    vault_id: params?.vault_id ?? null,
+  })
+}
+
+export async function wikiGetSource(id: string): Promise<WikiSource> {
+  return getTransport().call("wiki_get_source", { id })
+}
+
+export async function wikiVaultTree(params?: {
+  path?: string | null
+  recursive?: boolean
+  includeRaw?: boolean
+}): Promise<WikiVaultTreeNode[] | Record<string, unknown>> {
+  return getTransport().call("wiki_vault_tree", {
+    path: params?.path ?? null,
+    recursive: params?.recursive ?? null,
+    include_raw: params?.includeRaw ?? null,
+  })
+}
+
+export async function wikiVaultRead(path: string): Promise<unknown> {
+  return getTransport().call("wiki_vault_read", { path })
+}
+
+export async function wikiImportText(params: {
+  request_id: string
+  text: string
+  title?: string | null
+  source_url?: string | null
+  author?: string | null
+  material_role?: string | null
+  personal_role?: string | null
+  project_ids?: string[] | null
+  area_ids?: string[] | null
+}): Promise<WikiImportResult> {
+  return getTransport().call("wiki_import_text", {
+    request_id: params.request_id,
+    text: params.text,
+    title: params.title ?? null,
+    source_url: params.source_url ?? null,
+    author: params.author ?? null,
+    material_role: params.material_role ?? null,
+    personal_role: params.personal_role ?? null,
+    project_ids: params.project_ids ?? null,
+    area_ids: params.area_ids ?? null,
+  })
+}
+
+export async function wikiImportFiles(params: {
+  request_id: string
+  files: Array<{
+    filename: string
+    mime?: string | null
+    bytes_base64: string
+  }>
+  material_role?: string | null
+  personal_role?: string | null
+  title?: string | null
+  source_url?: string | null
+  author?: string | null
+  batch_id?: string | null
+  project_ids?: string[] | null
+  area_ids?: string[] | null
+}): Promise<WikiImportResult | WikiImportBatchResult> {
+  return getTransport().call(
+    "wiki_import_files",
+    {
+      request_id: params.request_id,
+      files: params.files,
+      material_role: params.material_role ?? null,
+      personal_role: params.personal_role ?? null,
+      title: params.title ?? null,
+      source_url: params.source_url ?? null,
+      author: params.author ?? null,
+      batch_id: params.batch_id ?? null,
+      project_ids: params.project_ids ?? null,
+      area_ids: params.area_ids ?? null,
+    },
+    { timeoutMs: 90_000 }
+  )
+}
+
+export async function wikiAcceptExtraction(
+  sourceId: string
+): Promise<WikiSource> {
+  return getTransport().call("wiki_accept_extraction", {
+    source_id: sourceId,
+  })
+}
+
+export async function wikiUpdateSourceAnnotations(params: {
+  source_id: string
+  material_role?: string | null
+  personal_role?: string | null
+  project_ids?: string[] | null
+  area_ids?: string[] | null
+}): Promise<WikiSource> {
+  return getTransport().call("wiki_update_source_annotations", {
+    source_id: params.source_id,
+    material_role: params.material_role ?? null,
+    personal_role: params.personal_role ?? null,
+    project_ids: params.project_ids ?? null,
+    area_ids: params.area_ids ?? null,
+  })
+}
+
+export async function wikiReextract(
+  sourceId: string
+): Promise<WikiImportResult> {
+  return getTransport().call("wiki_reextract", { source_id: sourceId })
+}
+
+export async function wikiLinkSourceVersion(
+  sourceId: string,
+  previousSourceId: string
+): Promise<WikiSource> {
+  return getTransport().call("wiki_link_source_version", {
+    source_id: sourceId,
+    previous_source_id: previousSourceId,
+  })
+}
+
+export async function wikiImportLocalSessions(params: {
+  request_id: string
+  selections?: SelectedSessionKey[]
+  all?: boolean
+}): Promise<WikiBulkImportResult> {
+  return getTransport().call(
+    "wiki_import_local_sessions",
+    {
+      request_id: params.request_id,
+      selections: params.selections ?? [],
+      all: params.all ?? false,
+    },
+    { timeoutMs: 300_000 }
+  )
+}
+
+export async function wikiImportDirectory(params: {
+  request_id: string
+  path: string
+}): Promise<WikiBulkImportResult> {
+  return getTransport().call(
+    "wiki_import_directory",
+    {
+      request_id: params.request_id,
+      path: params.path,
+    },
+    { timeoutMs: 300_000 }
+  )
+}
+
+export async function wikiCompileNow(requestId: string): Promise<WikiJob> {
+  return getTransport().call("wiki_compile_now", { request_id: requestId })
+}
+
+export async function wikiRetryJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_retry_job", { id })
+}
+
+export async function wikiCancelJob(id: string): Promise<WikiJob> {
+  return getTransport().call("wiki_cancel_job", { id })
 }

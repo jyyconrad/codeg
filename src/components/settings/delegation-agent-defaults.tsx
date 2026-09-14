@@ -71,6 +71,7 @@ const BUILTIN_AGENT_TYPES: AgentType[] = [
   "deepseek",
   "qoder",
   "antigravity",
+  "codeg_agent",
 ]
 
 interface CachedSnapshot {

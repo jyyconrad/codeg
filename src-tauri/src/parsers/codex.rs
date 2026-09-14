@@ -14,9 +14,8 @@ use crate::acp::agent_mentions::{
 use crate::models::*;
 use crate::parsers::codex_code_mode::{
     extract_chunk_ids, extract_shell_session_ids, is_code_mode_call, parse_code_mode_script,
-    script_card_input,
-    split_code_mode_output, with_note, CodeModeCall, CodeModeOutput, CodeModeScript, ScriptStatus,
-    Separator, CODEX_SCRIPT_TOOL_NAME,
+    script_card_input, split_code_mode_output, with_note, CodeModeCall, CodeModeOutput,
+    CodeModeScript, ScriptStatus, Separator, CODEX_SCRIPT_TOOL_NAME,
 };
 use crate::parsers::{
     folder_name_from_path, title_from_user_text, truncate_str, AgentParser, ParseError,
@@ -295,10 +294,7 @@ impl CodexParser {
         titles
     }
 
-    fn parse_jsonl_summary(
-        &self,
-        path: &Path,
-    ) -> Result<Option<ConversationSummary>, ParseError> {
+    fn parse_jsonl_summary(&self, path: &Path) -> Result<Option<ConversationSummary>, ParseError> {
         let lines = self.rollout_lines(path)?;
 
         let mut conversation_id: Option<String> = None;
@@ -630,9 +626,7 @@ impl CodexParser {
                                         pending_promotions.push((
                                             is_user,
                                             is_user
-                                                .then(|| {
-                                                    extract_codex_title_candidate(&text, true)
-                                                })
+                                                .then(|| extract_codex_title_candidate(&text, true))
                                                 .flatten(),
                                         ));
                                     }
@@ -1575,13 +1569,12 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     let stated_is_error = result
         .and_then(|result| result.get("isError"))
         .and_then(serde_json::Value::as_bool);
-    let claimed_failed =
-        stated_is_error == Some(true)
-            || stated_error.is_some()
-            || item
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(is_failed_status);
+    let claimed_failed = stated_is_error == Some(true)
+        || stated_error.is_some()
+        || item
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_failed_status);
     let claimed_ok = stated_is_error == Some(false)
         || item.get("status").and_then(serde_json::Value::as_str) == Some("completed");
     Some(CompletedMcpCall {
@@ -3395,7 +3388,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
-                                agent_message_id: None,
+                                    agent_message_id: None,
                                 });
                             }
                             "agent_message" => {
@@ -3433,7 +3426,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
-                                agent_message_id: None,
+                                    agent_message_id: None,
                                 });
                             }
                             "thread_goal_updated" => {
@@ -3513,7 +3506,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
-                                    agent_message_id: None,
+                                        agent_message_id: None,
                                     });
                                 }
                             }
@@ -3564,10 +3557,7 @@ impl CodexParser {
                                     } else {
                                         continue;
                                     };
-                                    completed_mcp_by_exec
-                                        .entry(exec_id)
-                                        .or_default()
-                                        .push(call);
+                                    completed_mcp_by_exec.entry(exec_id).or_default().push(call);
                                     continue;
                                 }
                                 // Plan mode's finished plan document. This is the
@@ -3617,10 +3607,8 @@ impl CodexParser {
                                 // ONE 思考 card (live parity) instead of one card per
                                 // section, and if no grouped summary arrives
                                 // (interrupted/older rollouts) nothing is lost.
-                                let text = payload
-                                    .get("text")
-                                    .and_then(|t| t.as_str())
-                                    .unwrap_or("");
+                                let text =
+                                    payload.get("text").and_then(|t| t.as_str()).unwrap_or("");
                                 if !text.trim().is_empty() {
                                     pending_reasoning.push(text.to_string());
                                     pending_reasoning_ts = Some(timestamp);
@@ -3673,7 +3661,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
-                                agent_message_id: None,
+                                    agent_message_id: None,
                                 });
                                 if !call_id.is_empty() {
                                     emitted_image_ids.insert(call_id);
@@ -3870,8 +3858,7 @@ impl CodexParser {
                                     codex_inter_agent_final_answer(payload)
                                 {
                                     if let Some(thread_id) = agent_path_to_thread_id.get(author) {
-                                        agent_fallback_results
-                                            .insert(thread_id.clone(), body);
+                                        agent_fallback_results.insert(thread_id.clone(), body);
                                     }
                                 }
                             }
@@ -3900,9 +3887,7 @@ impl CodexParser {
                                     .map(|parts| {
                                         parts
                                             .iter()
-                                            .filter_map(|p| {
-                                                p.get("text").and_then(|t| t.as_str())
-                                            })
+                                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                                             .filter(|t| !t.trim().is_empty())
                                             .collect::<Vec<_>>()
                                             .join("\n\n")
@@ -4022,7 +4007,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                     }
                                     "wait_agent" => {
@@ -4090,7 +4075,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                     }
                                     _ => {
@@ -4164,7 +4149,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                     }
                                 }
@@ -4216,9 +4201,7 @@ impl CodexParser {
                                         note: collected.note,
                                     };
                                     let semantic = (parsed.status == ScriptStatus::Completed)
-                                        .then(|| {
-                                            completed_mcp_by_exec.remove(&deferred.call_id)
-                                        })
+                                        .then(|| completed_mcp_by_exec.remove(&deferred.call_id))
                                         .flatten();
                                     let (uses, results) = semantic
                                         .and_then(|calls| {
@@ -4299,7 +4282,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
-                                    agent_message_id: None,
+                                        agent_message_id: None,
                                     });
                                 } else if is_spawn {
                                     if let Some(output_obj) = parse_codex_json_output(payload) {
@@ -4326,7 +4309,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
-                                    agent_message_id: None,
+                                        agent_message_id: None,
                                     });
                                 } else if is_wait || is_list {
                                     // Emit one `collab_agent` capsule per wait or
@@ -4341,12 +4324,14 @@ impl CodexParser {
                                     // spawn capsule's own result on the strength
                                     // of a `list_agents` the model happened to
                                     // call would lose the report entirely.
-                                    let capsule = parse_codex_json_output(payload).and_then(
-                                        |output_obj| {
+                                    let capsule =
+                                        parse_codex_json_output(payload).and_then(|output_obj| {
                                             if is_list {
                                                 return build_collab_list_input(&output_obj);
                                             }
-                                            match output_obj.get("status").and_then(|s| s.as_object())
+                                            match output_obj
+                                                .get("status")
+                                                .and_then(|s| s.as_object())
                                             {
                                                 Some(status) => {
                                                     // Mark returned agents so the spawn
@@ -4367,8 +4352,7 @@ impl CodexParser {
                                                 }
                                                 None => native_team_wait_input(&output_obj),
                                             }
-                                        },
-                                    );
+                                        });
                                     if let Some((collab_input, is_error)) = capsule {
                                         messages.push(UnifiedMessage {
                                             id: format!("tool-{}", messages.len()),
@@ -4385,7 +4369,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                         messages.push(UnifiedMessage {
                                             id: format!("tool-result-{}", messages.len()),
@@ -4402,7 +4386,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                     }
                                 } else if is_close {
@@ -4416,11 +4400,8 @@ impl CodexParser {
                                             // just `completed`): an errored/notFound
                                             // close with no wait must not lose its
                                             // message or its error state.
-                                            if let Some(prev) =
-                                                output_obj.get("previous_status")
-                                            {
-                                                let (st, msg) =
-                                                    extract_wait_agent_status(prev);
+                                            if let Some(prev) = output_obj.get("previous_status") {
+                                                let (st, msg) = extract_wait_agent_status(prev);
                                                 if let Some(text) = msg {
                                                     agent_fallback_results
                                                         .entry(agent_id.clone())
@@ -4471,21 +4452,21 @@ impl CodexParser {
                                             &mut shell_sessions,
                                         );
                                     }
-                                    let (raw_output, envelope_error) =
-                                        if envelope.status != ScriptStatus::Unknown
-                                            || output_value.is_some_and(|v| v.is_array())
-                                        {
-                                            (
-                                                with_note(
-                                                    Some(envelope.joined()),
-                                                    envelope.note.as_deref(),
-                                                )
-                                                .filter(|s| !s.is_empty()),
-                                                envelope.is_error(),
+                                    let (raw_output, envelope_error) = if envelope.status
+                                        != ScriptStatus::Unknown
+                                        || output_value.is_some_and(|v| v.is_array())
+                                    {
+                                        (
+                                            with_note(
+                                                Some(envelope.joined()),
+                                                envelope.note.as_deref(),
                                             )
-                                        } else {
-                                            (value_to_preview(output_value), false)
-                                        };
+                                            .filter(|s| !s.is_empty()),
+                                            envelope.is_error(),
+                                        )
+                                    } else {
+                                        (value_to_preview(output_value), false)
+                                    };
                                     // A poll about to be folded into the card of
                                     // the command it is collecting for: its
                                     // envelope has to go, and an envelope that
@@ -4524,7 +4505,7 @@ impl CodexParser {
                                         duration_ms: None,
                                         model: None,
                                         completed_at: Some(timestamp),
-                                    agent_message_id: None,
+                                        agent_message_id: None,
                                     });
                                 }
                             }
@@ -4563,7 +4544,7 @@ impl CodexParser {
                                             duration_ms: None,
                                             model: None,
                                             completed_at: Some(timestamp),
-                                        agent_message_id: None,
+                                            agent_message_id: None,
                                         });
                                         continue;
                                     }
@@ -4624,7 +4605,10 @@ impl CodexParser {
                                             Some(existing) => existing.content = blocks,
                                             None => {
                                                 messages.push(UnifiedMessage {
-                                                    id: format!("assistant-plan-{}", messages.len()),
+                                                    id: format!(
+                                                        "assistant-plan-{}",
+                                                        messages.len()
+                                                    ),
                                                     role: MessageRole::Assistant,
                                                     content: blocks,
                                                     timestamp,
@@ -4718,7 +4702,7 @@ impl CodexParser {
                                     duration_ms: None,
                                     model: None,
                                     completed_at: Some(timestamp),
-                                agent_message_id: None,
+                                    agent_message_id: None,
                                 });
                                 if !id.is_empty() {
                                     emitted_image_ids.insert(id);
@@ -4797,7 +4781,8 @@ impl CodexParser {
                                     *is_error = true;
                                 }
                                 if let Some(dir) = session_dir {
-                                    let stats = agent_stats_cache.entry(agent_id.to_string())
+                                    let stats = agent_stats_cache
+                                        .entry(agent_id.to_string())
                                         .or_insert_with(|| {
                                             parse_codex_subagent_stats(dir, agent_id)
                                         });
@@ -4885,7 +4870,7 @@ impl CodexParser {
                     duration_ms: None,
                     model: None,
                     completed_at: Some(pending.timestamp),
-                agent_message_id: None,
+                    agent_message_id: None,
                 })
                 .collect();
             messages.splice(insert_at..insert_at, group);
@@ -4941,7 +4926,7 @@ impl CodexParser {
                         duration_ms: None,
                         model: None,
                         completed_at: first_timestamp,
-                    agent_message_id: None,
+                        agent_message_id: None,
                     },
                 );
             }
@@ -5166,7 +5151,9 @@ fn reconcile_turn_usage(turns: &mut [MessageTurn], recorded: &TurnUsage) {
         .fold(TurnUsage::default(), |acc, u| codex_usage_add(&acc, u));
 
     let missing = TurnUsage {
-        input_tokens: recorded.input_tokens.saturating_sub(attributed.input_tokens),
+        input_tokens: recorded
+            .input_tokens
+            .saturating_sub(attributed.input_tokens),
         output_tokens: recorded
             .output_tokens
             .saturating_sub(attributed.output_tokens),
@@ -5184,10 +5171,11 @@ fn reconcile_turn_usage(turns: &mut [MessageTurn], recorded: &TurnUsage) {
     // Prefer a turn that already reports usage — it is one the transcript
     // itself tied to a model call, so the recovered tokens land beside spend
     // that really happened rather than on an unrelated bubble.
-    let target = turns
-        .iter()
-        .rposition(|t| t.usage.is_some())
-        .or_else(|| turns.iter().rposition(|t| matches!(t.role, TurnRole::Assistant)));
+    let target = turns.iter().rposition(|t| t.usage.is_some()).or_else(|| {
+        turns
+            .iter()
+            .rposition(|t| matches!(t.role, TurnRole::Assistant))
+    });
     if let Some(turn) = target.and_then(|i| turns.get_mut(i)) {
         turn.usage = Some(match turn.usage {
             Some(ref existing) => codex_usage_add(existing, &missing),
@@ -5324,7 +5312,7 @@ fn flush_pending_reasoning(
         duration_ms: None,
         model: None,
         completed_at: Some(timestamp),
-    agent_message_id: None,
+        agent_message_id: None,
     });
 }
 
@@ -5661,7 +5649,10 @@ impl UserTurnFingerprint {
     /// Mirrors the detail parser's `event_msg`/`user_message` arm.
     fn from_event_message(payload: &serde_json::Value) -> Self {
         let text = strip_blocked_resource_mentions(
-            payload.get("message").and_then(|m| m.as_str()).unwrap_or(""),
+            payload
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or(""),
         );
         let images = payload
             .get("images")
@@ -6069,9 +6060,9 @@ fn response_item_user_has_image(payload: &serde_json::Value) -> bool {
         .get("content")
         .and_then(|c| c.as_array())
         .is_some_and(|items| {
-            items.iter().any(|item| {
-                item.get("type").and_then(|v| v.as_str()) == Some("input_image")
-            })
+            items
+                .iter()
+                .any(|item| item.get("type").and_then(|v| v.as_str()) == Some("input_image"))
         })
 }
 
@@ -6160,7 +6151,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else if matches!(msg.role, MessageRole::System) {
@@ -6173,7 +6164,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms: None,
                 model: None,
                 completed_at: msg.completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
             i += 1;
         } else {
@@ -6214,7 +6205,7 @@ fn group_into_turns(messages: Vec<UnifiedMessage>) -> Vec<MessageTurn> {
                 duration_ms,
                 model: turn_model,
                 completed_at,
-            agent_message_id: None,
+                agent_message_id: None,
             });
         }
     }
@@ -6406,34 +6397,34 @@ mod tests {
 
     use std::collections::HashMap;
 
+    use super::codex_parent_thread_id;
+    use super::completed_mcp_call;
     use super::extract_codex_title_candidate;
     use super::extract_context_window_used_tokens_from_token_count_info;
     use super::extract_response_item_user_image_blocks;
     use super::extract_turn_usage_from_codex_usage;
-    use super::codex_parent_thread_id;
-    use super::completed_mcp_call;
-    use super::serialize_preview;
-    use super::truncate_str;
-    use super::BudgetedSink;
-    use super::MCP_RESULT_FALLBACK_CAP;
     use super::is_encrypted_envelope;
     use super::merge_codex_context_window_stats;
-    use super::native_team_wait_input;
     use super::merge_codex_total_usage_stats;
+    use super::native_team_wait_input;
     use super::parse_codex_subagent_stats;
     use super::redact_encrypted_args;
     use super::resolve_codex_home_dir_from;
+    use super::serialize_preview;
+    use super::should_skip_duplicate_user_message;
+    use super::strip_blocked_resource_mentions;
     use super::trim_subagent_replay_prefix;
+    use super::truncate_str;
+    use super::AgentParser;
+    use super::BudgetedSink;
+    use super::CodexParser;
     use super::CODEX_PLAN_APPROVAL_PROMPT;
     use super::CODEX_PLAN_APPROVED_OUTPUT;
+    use super::CODEX_SCRIPT_TOOL_NAME;
     use super::CODEX_SUBAGENT_LAUNCH_KEY;
     use super::CODEX_SUBAGENT_STATE_KEY;
     use super::COLLAB_OP_KEY;
-    use super::should_skip_duplicate_user_message;
-    use super::strip_blocked_resource_mentions;
-    use super::AgentParser;
-    use super::CodexParser;
-    use super::CODEX_SCRIPT_TOOL_NAME;
+    use super::MCP_RESULT_FALLBACK_CAP;
     use crate::models::{
         ContentBlock, MessageRole, MessageTurn, SessionStats, TurnRole, TurnUsage, UnifiedMessage,
     };
@@ -6669,9 +6660,9 @@ mod tests {
                 ),
             ];
             fs::write(
-                temp_dir
-                    .path()
-                    .join(format!("rollout-2026-08-28T10-00-00-{conversation_id}.jsonl")),
+                temp_dir.path().join(format!(
+                    "rollout-2026-08-28T10-00-00-{conversation_id}.jsonl"
+                )),
                 format!("{}\n", lines.join("\n")),
             )
             .expect("write rollout");
@@ -7183,7 +7174,7 @@ mod tests {
             duration_ms: None,
             model: None,
             completed_at: Some(now),
-        agent_message_id: None,
+            agent_message_id: None,
         }];
 
         assert!(should_skip_duplicate_user_message(
@@ -7392,13 +7383,19 @@ mod tests {
             .iter()
             .filter_map(|t| t.usage.as_ref())
             .map(|u| {
-                u.input_tokens + u.output_tokens + u.cache_creation_input_tokens
+                u.input_tokens
+                    + u.output_tokens
+                    + u.cache_creation_input_tokens
                     + u.cache_read_input_tokens
             })
             .sum()
     }
 
-    fn parse_rollout(label: &str, content: &str, session_id: &str) -> crate::models::ConversationDetail {
+    fn parse_rollout(
+        label: &str,
+        content: &str,
+        session_id: &str,
+    ) -> crate::models::ConversationDetail {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
@@ -7518,7 +7515,10 @@ mod tests {
         );
         let detail = parse_rollout("toolonly", content, "toolonly-1");
         assert!(
-            !detail.turns.iter().any(|t| matches!(t.role, TurnRole::Assistant)),
+            !detail
+                .turns
+                .iter()
+                .any(|t| matches!(t.role, TurnRole::Assistant)),
             "precondition: this rollout has no assistant turn"
         );
         let total = detail
@@ -7781,8 +7781,7 @@ mod tests {
 
         // active → create_goal, objective + status carried in the tool_result.
         let create_id = find("create_goal");
-        let create_out: serde_json::Value =
-            serde_json::from_str(&outputs[&create_id]).unwrap();
+        let create_out: serde_json::Value = serde_json::from_str(&outputs[&create_id]).unwrap();
         assert_eq!(create_out["goal"]["status"], "active");
         assert_eq!(create_out["goal"]["objective"], "Refactor the auth module");
         // Distinct goal events get distinct (occurrence-addressed) ids.
@@ -7790,8 +7789,7 @@ mod tests {
 
         // budgetLimited → update_goal with the status normalized to snake_case.
         let update_id = find("update_goal");
-        let update_out: serde_json::Value =
-            serde_json::from_str(&outputs[&update_id]).unwrap();
+        let update_out: serde_json::Value = serde_json::from_str(&outputs[&update_id]).unwrap();
         assert_eq!(update_out["goal"]["status"], "budget_limited");
         assert_eq!(update_out["goal"]["tokensUsed"], 5200);
         let update_in: serde_json::Value = serde_json::from_str(&inputs[&update_id]).unwrap();
@@ -7945,8 +7943,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goaltext-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-goaltext-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gt-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"/goal Analyze the README\"}}\n",
@@ -7964,7 +7961,10 @@ mod tests {
             .iter()
             .filter(|t| matches!(t.role, TurnRole::User))
             .count();
-        assert_eq!(user_turns, 1, "real user_message not duplicated by synthesis");
+        assert_eq!(
+            user_turns, 1,
+            "real user_message not duplicated by synthesis"
+        );
         let user_text = detail
             .turns
             .iter()
@@ -7993,8 +7993,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goaldup-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-goaldup-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gd-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Investigate auth\",\"status\":\"active\"}}}\n",
@@ -8042,8 +8041,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-goalconfirm-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-goalconfirm-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gc-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static page\",\"status\":\"active\"}}}\n",
@@ -8111,8 +8109,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumconfirm-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumconfirm-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sc-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static page\",\"status\":\"active\"}}}\n",
@@ -8147,8 +8144,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumgoal-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumgoal-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sg-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static test page\",\"status\":\"active\"}}}\n",
@@ -8164,10 +8160,7 @@ mod tests {
             .expect("summary present");
 
         // Objective wins as title; the internal-context text never leaks in.
-        assert_eq!(
-            summary.title.as_deref(),
-            Some("Build a static test page")
-        );
+        assert_eq!(summary.title.as_deref(), Some("Build a static test page"));
         // The synthesized user turn (+1) plus the agent_message (+1).
         assert_eq!(summary.message_count, 2);
 
@@ -8182,8 +8175,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumname-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumname-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"sn-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Build a static test page\",\"status\":\"active\"}}}\n",
@@ -8214,8 +8206,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumimg-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumimg-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"si-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Do the thing\",\"status\":\"active\"}}}\n",
@@ -8335,8 +8326,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-sumnull-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-sumnull-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"snl-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":null}}\n",
@@ -8368,8 +8358,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time ok")
             .as_nanos();
-        let path: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-gtxt-{nanos}.jsonl"));
+        let path: PathBuf = env::temp_dir().join(format!("codeg-codex-gtxt-{nanos}.jsonl"));
         let content = concat!(
             "{\"timestamp\":\"2026-03-01T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"gt2-1\",\"cwd\":\"/tmp/demo\"}}\n",
             "{\"timestamp\":\"2026-03-01T10:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_goal_updated\",\"goal\":{\"objective\":\"Do X\",\"status\":\"active\"}}}\n",
@@ -8421,8 +8410,7 @@ mod tests {
             .as_nanos();
 
         // (a) terminal-only goal → no capture, no synthetic count/title.
-        let path_a: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-term-{nanos}.jsonl"));
+        let path_a: PathBuf = env::temp_dir().join(format!("codeg-codex-term-{nanos}.jsonl"));
         fs::write(
             &path_a,
             concat!(
@@ -8438,13 +8426,15 @@ mod tests {
             .expect("ok")
             .expect("present");
         assert_eq!(summary_a.title, None, "terminal goal is not a title");
-        assert_eq!(summary_a.message_count, 1, "no synthetic user for terminal goal");
+        assert_eq!(
+            summary_a.message_count, 1,
+            "no synthetic user for terminal goal"
+        );
         let _ = fs::remove_file(&path_a);
 
         // (b) terminal THEN active → the active objective is captured (not the
         // terminal one), matching the detail parser's first-create_goal capture.
-        let path_b: PathBuf =
-            env::temp_dir().join(format!("codeg-codex-termact-{nanos}.jsonl"));
+        let path_b: PathBuf = env::temp_dir().join(format!("codeg-codex-termact-{nanos}.jsonl"));
         fs::write(
             &path_b,
             concat!(
@@ -9339,7 +9329,11 @@ mod tests {
                 serde_json::json!({"agent_b":{"completed":"B_RESULT_TOKEN"}}),
             ),
             narration("2026-06-27T10:00:09Z", "NARRATION_MID B back waiting A"),
-            wait("2026-06-27T10:00:10Z", "wait_2", serde_json::json!(["agent_a"])),
+            wait(
+                "2026-06-27T10:00:10Z",
+                "wait_2",
+                serde_json::json!(["agent_a"]),
+            ),
             wait_out(
                 "2026-06-27T10:00:11Z",
                 "wait_2",
@@ -9733,8 +9727,7 @@ mod tests {
                 _ => None,
             })
             .expect("spawn Agent capsule present");
-        let parsed: serde_json::Value =
-            serde_json::from_str(input).expect("spawn input is JSON");
+        let parsed: serde_json::Value = serde_json::from_str(input).expect("spawn input is JSON");
         assert_eq!(
             parsed.get("agent_id").and_then(|v| v.as_str()),
             Some("AGENT_UUID_X"),
@@ -9833,7 +9826,9 @@ mod tests {
         // 0.147 emits no wait/close capsule, so this card stands for the LAUNCH
         // only and must say so rather than read as "the sub-agent finished".
         assert_eq!(
-            parsed.get(CODEX_SUBAGENT_LAUNCH_KEY).and_then(|v| v.as_bool()),
+            parsed
+                .get(CODEX_SUBAGENT_LAUNCH_KEY)
+                .and_then(|v| v.as_bool()),
             Some(true)
         );
 
@@ -9949,7 +9944,10 @@ mod tests {
         // stream showed vanished on reload and nothing could resolve the
         // child's own rollout.
         let sealed = format!("gAAAAAB{}", "qgWsi0g7gOInVU3UTzqL".repeat(30));
-        let path = write_temp_rollout("nativeteam0153", &native_team_0153_lines("MESSAGE", &sealed));
+        let path = write_temp_rollout(
+            "nativeteam0153",
+            &native_team_0153_lines("MESSAGE", &sealed),
+        );
         let detail = CodexParser::new()
             .parse_conversation_detail(&path, "parent")
             .expect("parse ok");
@@ -10105,7 +10103,10 @@ mod tests {
             })
             .expect("roster renders as a collab capsule, not a generic tool card");
         let parsed: serde_json::Value = serde_json::from_str(input).expect("collab input is JSON");
-        assert_eq!(parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()), Some("list"));
+        assert_eq!(
+            parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()),
+            Some("list")
+        );
         let states = parsed
             .get("agentsStates")
             .and_then(|v| v.as_object())
@@ -10238,7 +10239,10 @@ mod tests {
             })
             .expect("spawn Agent capsule present");
         let parsed: serde_json::Value = serde_json::from_str(input).expect("JSON");
-        assert_eq!(parsed.get("subagent_type").and_then(|v| v.as_str()), Some("worker"));
+        assert_eq!(
+            parsed.get("subagent_type").and_then(|v| v.as_str()),
+            Some("worker")
+        );
         assert_eq!(parsed.get("prompt").and_then(|v| v.as_str()), Some("do it"));
         assert!(parsed.get(CODEX_SUBAGENT_LAUNCH_KEY).is_none());
 
@@ -10301,7 +10305,10 @@ mod tests {
     fn redaction_leaves_ordinary_arguments_untouched() {
         let mut args = serde_json::json!({"cmd":"pnpm build","timeout_ms":3600000});
         assert!(!redact_encrypted_args(&mut args));
-        assert_eq!(args, serde_json::json!({"cmd":"pnpm build","timeout_ms":3600000}));
+        assert_eq!(
+            args,
+            serde_json::json!({"cmd":"pnpm build","timeout_ms":3600000})
+        );
         // Nested and array positions are reached.
         let sealed = format!("gAAAAAB{}", "0g7gOInVU3UTzqL".repeat(10));
         let mut nested = serde_json::json!({"outer":{"list":[sealed.clone(),"keep me"]}});
@@ -10384,14 +10391,17 @@ mod tests {
             })
             .expect("wait capsule present");
         let parsed: serde_json::Value = serde_json::from_str(input).expect("JSON");
-        assert_eq!(parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()), Some("wait"));
-        assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("completed"));
+        assert_eq!(
+            parsed.get(COLLAB_OP_KEY).and_then(|v| v.as_str()),
+            Some("wait")
+        );
+        assert_eq!(
+            parsed.get("status").and_then(|v| v.as_str()),
+            Some("completed")
+        );
         // No agents and no prompt — the card renders as a bare pill, exactly
         // what the live `collabAgentToolCall` produces for this output.
-        assert_eq!(
-            parsed.get("agentsStates"),
-            Some(&serde_json::json!({}))
-        );
+        assert_eq!(parsed.get("agentsStates"), Some(&serde_json::json!({})));
         let errored = detail
             .turns
             .iter()
@@ -10405,7 +10415,9 @@ mod tests {
     #[test]
     fn native_team_wait_shape_gate_and_timeout() {
         // `timed_out` is the shape gate: only the native-team output has it.
-        assert!(native_team_wait_input(&serde_json::json!({"message":"Wait completed."})).is_none());
+        assert!(
+            native_team_wait_input(&serde_json::json!({"message":"Wait completed."})).is_none()
+        );
         assert!(native_team_wait_input(&serde_json::json!({})).is_none());
         // A timeout is a real outcome — flag the capsule failed.
         let (input, is_error) =
@@ -10413,7 +10425,10 @@ mod tests {
                 .expect("native shape");
         assert!(is_error);
         let parsed: serde_json::Value = serde_json::from_str(&input).expect("JSON");
-        assert_eq!(parsed.get("status").and_then(|v| v.as_str()), Some("failed"));
+        assert_eq!(
+            parsed.get("status").and_then(|v| v.as_str()),
+            Some("failed")
+        );
     }
 
     #[test]
@@ -10741,12 +10756,9 @@ mod tests {
                 {"type":"input_text","text":"{\"a\":{},\"b\":{}}"},
             ]),
         );
-        for (offset, (id, task_id, task)) in [
-            ("exec-b", "task-b", "B"),
-            ("exec-a", "task-a", "A"),
-        ]
-        .into_iter()
-        .enumerate()
+        for (offset, (id, task_id, task)) in [("exec-b", "task-b", "B"), ("exec-a", "task-a", "A")]
+            .into_iter()
+            .enumerate()
         {
             lines.insert(
                 2 + offset,
@@ -10801,8 +10813,14 @@ mod tests {
                 .map(|(id, output, _)| (id, output))
                 .collect::<Vec<_>>(),
             vec![
-                ("exec-b".into(), Some("Delegation successful. task_id=task-b.".into())),
-                ("exec-a".into(), Some("Delegation successful. task_id=task-a.".into())),
+                (
+                    "exec-b".into(),
+                    Some("Delegation successful. task_id=task-b.".into())
+                ),
+                (
+                    "exec-a".into(),
+                    Some("Delegation successful. task_id=task-a.".into())
+                ),
             ]
         );
     }
@@ -11010,7 +11028,9 @@ mod tests {
 
         let (native_input, native_result) = spawn_capsule(&detail);
         assert_eq!(
-            native_input.get("agent_id").and_then(|value| value.as_str()),
+            native_input
+                .get("agent_id")
+                .and_then(|value| value.as_str()),
             Some("01a07fc2-db62-78b3-9762-9cb2540216c2"),
             "native activity must keep its own child session id"
         );
@@ -11187,7 +11207,8 @@ mod tests {
     /// the script card used to show the run.
     #[test]
     fn a_textless_semantic_result_still_says_something() {
-        let script = "const shot=await tools.mcp__shot_srv__capture({url:target});text(\"captured\");";
+        let script =
+            "const shot=await tools.mcp__shot_srv__capture({url:target});text(\"captured\");";
         let mut lines = code_mode_rollout(
             script,
             serde_json::json!([
@@ -11274,7 +11295,11 @@ mod tests {
             }
             let detail = parse_lines(
                 &lines,
-                if item { "mixed-with-item" } else { "mixed-baseline" },
+                if item {
+                    "mixed-with-item"
+                } else {
+                    "mixed-baseline"
+                },
             );
             (tool_uses(&detail), tool_results(&detail))
         };
@@ -11360,7 +11385,10 @@ mod tests {
             buf: Vec::new(),
             budget: 8,
         };
-        assert!(sink.write_all(&[b'x'; 5]).is_ok(), "room for the first write");
+        assert!(
+            sink.write_all(&[b'x'; 5]).is_ok(),
+            "room for the first write"
+        );
         assert!(
             sink.write_all(&[b'x'; 100]).is_err(),
             "a write past the budget must fail so serialization aborts"
@@ -11377,7 +11405,10 @@ mod tests {
     #[test]
     fn a_budgeted_preview_reads_exactly_like_an_unbounded_one() {
         for (name, value) in [
-            ("a small object", serde_json::json!({"a": 1, "b": [true, null]})),
+            (
+                "a small object",
+                serde_json::json!({"a": 1, "b": [true, null]}),
+            ),
             ("empty", serde_json::json!({})),
             ("exactly the cap", serde_json::json!("x".repeat(3998))),
             ("one past the cap", serde_json::json!("x".repeat(3999))),
@@ -12624,11 +12655,11 @@ mod tests {
         let detail = parse_lines(&lines, "deferred-semantic-mcp");
         assert_eq!(
             tool_uses(&detail),
-            vec![ (
+            vec![(
                 "mcp-deferred-status".into(),
                 "mcp__codeg_mcp__get_delegation_status".into(),
                 Some(r#"{"task_ids":["t1"],"wait_ms":60000}"#.into()),
-            ) ],
+            )],
             "the completed semantic item replaces the parked script card"
         );
         assert_eq!(
@@ -12896,20 +12927,35 @@ mod tests {
     fn a_labelled_fanout_splits_a_collapsed_blob_per_command() {
         let detail = code_mode_detail(
             &labelled_fanout(&["query-entry", "formula-service", "factor-full"]),
-            labelled_blob(6, &[
-                ("query-entry", "one"),
-                ("formula-service", "two"),
-                ("factor-full", "three"),
-            ]),
+            labelled_blob(
+                6,
+                &[
+                    ("query-entry", "one"),
+                    ("formula-service", "two"),
+                    ("factor-full", "three"),
+                ],
+            ),
             "code-mode-labelled",
         );
 
         assert_eq!(
             tool_uses(&detail),
             vec![
-                ("call_1#0".into(), "exec_command".into(), Some("echo 0".into())),
-                ("call_1#1".into(), "exec_command".into(), Some("echo 1".into())),
-                ("call_1#2".into(), "exec_command".into(), Some("echo 2".into())),
+                (
+                    "call_1#0".into(),
+                    "exec_command".into(),
+                    Some("echo 0".into())
+                ),
+                (
+                    "call_1#1".into(),
+                    "exec_command".into(),
+                    Some("echo 1".into())
+                ),
+                (
+                    "call_1#2".into(),
+                    "exec_command".into(),
+                    Some("echo 2".into())
+                ),
             ]
         );
         assert_eq!(
@@ -12933,12 +12979,21 @@ mod tests {
     #[test]
     fn a_truncated_separator_leaves_its_command_without_output() {
         let detail = code_mode_detail(
-            &labelled_fanout(&["query-entry", "formula-service", "vo", "formula-splice", "factor-full"]),
-            labelled_blob(20, &[
-                ("query-entry", "first"),
-                ("formula-service", "second\nvo-output\nsplice-output"),
-                ("factor-full", "last"),
+            &labelled_fanout(&[
+                "query-entry",
+                "formula-service",
+                "vo",
+                "formula-splice",
+                "factor-full",
             ]),
+            labelled_blob(
+                20,
+                &[
+                    ("query-entry", "first"),
+                    ("formula-service", "second\nvo-output\nsplice-output"),
+                    ("factor-full", "last"),
+                ],
+            ),
             "code-mode-labelled-partial",
         );
 
@@ -12946,7 +13001,11 @@ mod tests {
             tool_results(&detail),
             vec![
                 ("call_1#0".into(), Some("first".into()), false),
-                ("call_1#1".into(), Some("second\nvo-output\nsplice-output".into()), false),
+                (
+                    "call_1#1".into(),
+                    Some("second\nvo-output\nsplice-output".into()),
+                    false
+                ),
                 ("call_1#2".into(), None, false),
                 ("call_1#3".into(), None, false),
                 ("call_1#4".into(), Some("last".into()), false),
@@ -12954,7 +13013,10 @@ mod tests {
         );
 
         let metas = tool_metas(&detail);
-        assert_eq!(metas[1]["sharedWith"], serde_json::json!(["vo", "formula-splice"]));
+        assert_eq!(
+            metas[1]["sharedWith"],
+            serde_json::json!(["vo", "formula-splice"])
+        );
         assert_eq!(metas[2]["outputMissing"], true);
         assert_eq!(metas[3]["outputMissing"], true);
         assert!(metas[0].get("sharedWith").is_none());
@@ -12968,10 +13030,7 @@ mod tests {
     fn a_repeated_separator_line_keeps_the_script_card() {
         let detail = code_mode_detail(
             &labelled_fanout(&["alpha", "beta"]),
-            labelled_blob(8, &[
-                ("alpha", "one\n===== beta ====="),
-                ("beta", "two"),
-            ]),
+            labelled_blob(8, &[("alpha", "one\n===== beta ====="), ("beta", "two")]),
             "code-mode-labelled-dup",
         );
 
@@ -12987,11 +13046,14 @@ mod tests {
     fn a_repeated_output_line_still_splits() {
         let detail = code_mode_detail(
             &labelled_fanout(&["alpha", "beta", "gamma"]),
-            labelled_blob(8, &[
-                ("alpha", "shared line\none"),
-                ("beta", "shared line\ntwo"),
-                ("gamma", "three"),
-            ]),
+            labelled_blob(
+                8,
+                &[
+                    ("alpha", "shared line\none"),
+                    ("beta", "shared line\ntwo"),
+                    ("gamma", "three"),
+                ],
+            ),
             "code-mode-labelled-repeat",
         );
 
@@ -13076,7 +13138,9 @@ mod tests {
     /// want. Tool-only turns come back with `None`. The role is stringified
     /// because `TurnRole` is not `PartialEq` and a production model should not
     /// grow a derive to serve a test.
-    fn turn_texts(detail: &crate::models::ConversationDetail) -> Vec<(&'static str, Option<String>)> {
+    fn turn_texts(
+        detail: &crate::models::ConversationDetail,
+    ) -> Vec<(&'static str, Option<String>)> {
         detail
             .turns
             .iter()
@@ -13353,7 +13417,8 @@ mod tests {
         // ("如果你希望调整…" is codex's habit). Rendering the announcement and
         // dropping the record would silently lose that prose, so the record
         // takes the announcement's message over rather than adding a second.
-        let record = "<proposed_plan>\n# Plan\n\n- step one\n</proposed_plan>\n\n如果你希望调整，告诉我。";
+        let record =
+            "<proposed_plan>\n# Plan\n\n- step one\n</proposed_plan>\n\n如果你希望调整，告诉我。";
         let content = plan_turn(true, Some(record));
         let detail = parse_rollout("plan-prose", &content, "plan-1");
 

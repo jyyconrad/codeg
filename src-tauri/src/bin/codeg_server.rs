@@ -46,6 +46,15 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if let Some(url) = codeg_lib::agent::code_intel::parse_stdio_bridge_url(args.clone()) {
+        let _log_guard = codeg_lib::logging::init::init_mcp();
+        if let Err(err) = codeg_lib::agent::code_intel::run_stdio_http_bridge(&url) {
+            eprintln!("code-intel MCP stdio connector failed: {err}");
+            return ExitCode::FAILURE;
+        }
+        return ExitCode::SUCCESS;
+    }
+
     // PATH initialisation MUST happen before the tokio runtime is created.
     // std::env::set_var is not thread-safe (unsafe in Rust edition 2024);
     // #[tokio::main] would spawn worker threads before we reach this point.
@@ -213,9 +222,7 @@ async fn async_main() -> ExitCode {
         // bearer credential and must never enter the durable log files or the
         // in-app log viewer. `eprintln!` bypasses the tracing sinks (file +
         // ring buffer); only the local terminal / Docker stderr sees it.
-        eprintln!(
-            "[SERVER] No CODEG_TOKEN set; generated an access token (persisted): {token}"
-        );
+        eprintln!("[SERVER] No CODEG_TOKEN set; generated an access token (persisted): {token}");
         eprintln!("[SERVER] Pin your own by setting the CODEG_TOKEN environment variable.");
     }
 
@@ -269,6 +276,7 @@ async fn async_main() -> ExitCode {
         &connection_manager,
         db.conn.clone(),
         data_dir.clone(),
+        emitter.clone(),
     );
     let state = Arc::new(AppState {
         db,
@@ -351,31 +359,21 @@ async fn async_main() -> ExitCode {
     // through the broker. Path is PID-scoped, so the listener owns it for
     // the lifetime of the process.
     {
+        let injection = state
+            .connection_manager
+            .delegation_snapshot()
+            .expect("delegation injection installed");
         let listener = codeg_lib::acp::delegation::listener::DelegationListener::new(
             delegation_broker,
             delegation_tokens,
             Arc::new(codeg_lib::acp::manager::ConnectionManagerParentLookup {
                 manager: Arc::new(state.connection_manager.clone_ref()),
             }),
-            Arc::new(codeg_lib::acp::manager::ConnectionManagerFeedbackLookup {
-                manager: Arc::new(state.connection_manager.clone_ref()),
-            }),
-            Arc::new(codeg_lib::acp::manager::ConnectionManagerQuestionLookup {
-                manager: Arc::new(state.connection_manager.clone_ref()),
-            }),
-            Arc::new(codeg_lib::commands::session_info::DbSessionInfoLookup::new(
-                Arc::new(codeg_lib::db::AppDatabase {
-                    conn: state.db.conn.clone(),
-                }),
-            )),
-            Arc::new(codeg_lib::work_task::EngineWorkTaskTools),
-            Arc::new(codeg_lib::commands::chat_authoring::DbChatAuthoring::new(
-                Arc::new(codeg_lib::db::AppDatabase {
-                    conn: state.db.conn.clone(),
-                }),
-                state.emitter.clone(),
-                chat_authoring_config.clone(),
-            )),
+            injection.feedback_access,
+            injection.questions,
+            injection.session_info_access,
+            injection.tasks,
+            injection.authoring_access,
         );
         // Bind through the service handle rather than a bare `listener.run`
         // spawn: it keeps the bind error and the accept-loop handle around, so
@@ -391,6 +389,10 @@ async fn async_main() -> ExitCode {
                 tracing::error!("[delegation] listener failed to start: {e}");
             }
         });
+    }
+
+    if let Err(err) = codeg_lib::agent::builtin_skills::ensure_installed() {
+        tracing::warn!("[Codeg Agent] builtin skills install failed: {err}");
     }
 
     // Install bundled expert skills into the central store
@@ -518,6 +520,15 @@ async fn async_main() -> ExitCode {
         tokio::spawn(codeg_lib::work_task::run_task_engine(engine));
     }
 
+    // WikiWorker (mirrors lib.rs setup): ingest summary + compile. Only the
+    // process holding the wiki-state OS lock runs worker/recovery.
+    codeg_lib::wiki::engine::spawn(
+        codeg_lib::db::AppDatabase {
+            conn: state.db.conn.clone(),
+        },
+        state.emitter.clone(),
+    );
+
     // Label worktree folders registered before aliases were seeded at creation
     // with the branch they have checked out (mirrors lib.rs setup). Background;
     // changed folders are broadcast, so a browser that already fetched its
@@ -577,9 +588,11 @@ async fn async_main() -> ExitCode {
     // Publish runtime state so the settings page (served by us) shows
     // the truth — running on `actual_port` with this token — instead of
     // the placeholder "stopped" that triggers the stale-port banner.
-    state
-        .web_server_state
-        .mark_externally_running(advertised_host.clone(), actual_port, token.clone());
+    state.web_server_state.mark_externally_running(
+        advertised_host.clone(),
+        actual_port,
+        token.clone(),
+    );
     let addresses = addresses_for_bind(&advertised_host, actual_port);
 
     // Token on stderr ONLY (bearer credential — keep it out of the log files
@@ -591,7 +604,13 @@ async fn async_main() -> ExitCode {
     }
 
     // Start serving
-    if let Err(e) = axum::serve(listener, router).await {
+    let shutdown_state = state.clone();
+    if let Err(e) = axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            shutdown_native_and_http(shutdown_state).await;
+        })
+        .await
+    {
         tracing::error!("[SERVER] Server error: {}", e);
         return ExitCode::from(1);
     }
@@ -599,6 +618,29 @@ async fn async_main() -> ExitCode {
     // (kill_on_drop is the backstop, but this frees their ports promptly).
     codeg_lib::office_watch::stop_all_office_watches();
     ExitCode::SUCCESS
+}
+
+async fn shutdown_native_and_http(state: Arc<AppState>) {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    let _lock = state.connection_manager.lock_out_new_connections().await;
+    let _ = state.connection_manager.disconnect_all().await;
 }
 
 fn default_data_dir() -> PathBuf {

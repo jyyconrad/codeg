@@ -294,3 +294,34 @@ pub async fn weixin_check_qrcode(
         cc_commands::weixin_check_qrcode_core(&state.db, params.channel_id, &params.qrcode).await?;
     Ok(Json(result))
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderIdParams {
+    pub folder_id: i32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetFolderChatChannelsParams {
+    pub folder_id: i32,
+    pub channel_ids: Vec<i32>,
+}
+
+pub async fn list_folder_chat_channels(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<FolderIdParams>,
+) -> Result<Json<Vec<i32>>, AppCommandError> {
+    let result = cc_commands::list_folder_chat_channels_core(&state.db, params.folder_id).await?;
+    Ok(Json(result))
+}
+
+pub async fn set_folder_chat_channels(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SetFolderChatChannelsParams>,
+) -> Result<Json<Vec<i32>>, AppCommandError> {
+    let result =
+        cc_commands::set_folder_chat_channels_core(&state.db, params.folder_id, params.channel_ids)
+            .await?;
+    Ok(Json(result))
+}

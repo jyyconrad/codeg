@@ -106,10 +106,9 @@ function StepRail({ current }: { current: Step }) {
 
 /**
  * App-wide update indicator in the status bar. Both halves of the flow live in
- * the {@link useAppUpdate} provider — the periodic availability check and the
- * backend-owned download/install lifecycle — so this stays in sync no matter
- * which surface started it, and a new release surfaces here even when the
- * settings page was never opened (the same pattern as VS Code / JetBrains).
+ * the {@link useAppUpdate} provider — a user-initiated availability check and
+ * the backend-owned download/install lifecycle — so this stays in sync no
+ * matter which surface started it.
  *
  * Every state is a popover trigger: the compact pill says what is happening,
  * and clicking it reveals the release details plus the one action that makes

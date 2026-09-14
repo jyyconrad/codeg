@@ -215,7 +215,10 @@ impl AsyncTaskDelta {
     pub fn to_record(&self) -> AsyncTaskRecord {
         AsyncTaskRecord {
             task_id: self.task_id.clone(),
-            name: self.name.clone().unwrap_or_else(|| "Background task".into()),
+            name: self
+                .name
+                .clone()
+                .unwrap_or_else(|| "Background task".into()),
             task_type: self.task_type.clone().unwrap_or_else(|| "task".into()),
             description: self.description.clone().unwrap_or_default(),
             show_in_transcript: self.show_in_transcript.unwrap_or(true),
@@ -270,6 +273,194 @@ impl AsyncTaskDelta {
 /// Whether `state` is one the adapter never revises away from.
 pub fn async_task_state_is_terminal(state: &str) -> bool {
     matches!(state, "completed" | "failed" | "stopped")
+}
+
+/// One phase in a long-running workflow (Grok `workflow_updated`, Claude
+/// `local_workflow`, or any future adapter that projects onto this shape).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPhase {
+    pub title: String,
+    /// Static one-line summary from the workflow script (`meta.phases[].detail`)
+    /// when the adapter published it. Absent on speakers that only send a title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// `pending` | `active` | `done` | `failed`. Plain string so an unmapped
+    /// future value still round-trips.
+    #[serde(default)]
+    pub state: String,
+}
+
+/// One child agent (node) inside a workflow run. Grok publishes the full list
+/// on each `workflow_updated`; AIR workflows typically have none.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowAgent {
+    pub agent_id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// `pending` | `running` | `done` | `failed` | `cancelled`.
+    #[serde(default)]
+    pub state: String,
+    /// Static task/summary line when the speaker sent one (`summary` / `task` /
+    /// `prompt` / `objective` / `description`). `label` is the fallback name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Canonical live projection of a background workflow. Agent-specific wire
+/// frames (Grok `workflow_updated`, AIR `async_task` with `taskType=workflow`)
+/// are adapted into this shape before they hit SessionState / the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowRun {
+    pub run_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    /// Same vocabulary as [`AsyncTaskRecord::state`].
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<WorkflowPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<WorkflowAgent>,
+    #[serde(default)]
+    pub agents_done: u32,
+    #[serde(default)]
+    pub agents_running: u32,
+    #[serde(default)]
+    pub agents_used: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_budget: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_remaining: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    /// Wire event kind (`phase_entered`, `workflow_started`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_detail: Option<String>,
+    #[serde(default)]
+    pub can_stop: bool,
+}
+
+/// Partial revision of a [`WorkflowRun`]. Same merge contract as
+/// [`AsyncTaskDelta`]: only a `spawned` frame may CREATE a row, and absent
+/// fields mean unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDelta {
+    pub run_id: String,
+    pub spawned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phases: Option<Vec<WorkflowPhase>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<WorkflowAgent>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_done: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_running: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_used: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_budget: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_remaining: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_stop: Option<bool>,
+}
+
+impl WorkflowDelta {
+    pub fn to_record(&self) -> WorkflowRun {
+        WorkflowRun {
+            run_id: self.run_id.clone(),
+            name: self.name.clone().unwrap_or_else(|| "Workflow".into()),
+            objective: self.objective.clone(),
+            state: self.state.clone().unwrap_or_else(|| "running".into()),
+            phases: self.phases.clone().unwrap_or_default(),
+            current_phase: self.current_phase.clone(),
+            agents: self.agents.clone().unwrap_or_default(),
+            agents_done: self.agents_done.unwrap_or(0),
+            agents_running: self.agents_running.unwrap_or(0),
+            agents_used: self.agents_used.unwrap_or(0),
+            agent_budget: self.agent_budget,
+            agents_remaining: self.agents_remaining,
+            elapsed_ms: self.elapsed_ms,
+            last_event: self.last_event.clone(),
+            last_event_detail: self.last_event_detail.clone(),
+            can_stop: self.can_stop.unwrap_or(false),
+        }
+    }
+
+    pub fn apply_to(&self, record: &mut WorkflowRun) {
+        if let Some(v) = &self.name {
+            record.name = v.clone();
+        }
+        if let Some(v) = &self.objective {
+            record.objective = Some(v.clone());
+        }
+        if let Some(v) = &self.state {
+            record.state = v.clone();
+        }
+        if let Some(v) = &self.phases {
+            record.phases = v.clone();
+        }
+        if let Some(v) = &self.current_phase {
+            record.current_phase = Some(v.clone());
+        }
+        if let Some(v) = &self.agents {
+            record.agents = v.clone();
+        }
+        if let Some(v) = self.agents_done {
+            record.agents_done = v;
+        }
+        if let Some(v) = self.agents_running {
+            record.agents_running = v;
+        }
+        if let Some(v) = self.agents_used {
+            record.agents_used = v;
+        }
+        if let Some(v) = self.agent_budget {
+            record.agent_budget = Some(v);
+        }
+        if let Some(v) = self.agents_remaining {
+            record.agents_remaining = Some(v);
+        }
+        if let Some(v) = self.elapsed_ms {
+            record.elapsed_ms = Some(v);
+        }
+        if let Some(v) = &self.last_event {
+            record.last_event = Some(v.clone());
+        }
+        if let Some(v) = &self.last_event_detail {
+            record.last_event_detail = Some(v.clone());
+        }
+        if let Some(v) = self.can_stop {
+            record.can_stop = v;
+        }
+    }
+}
+
+pub fn workflow_state_is_terminal(state: &str) -> bool {
+    async_task_state_is_terminal(state)
 }
 
 /// Events pushed from Rust backend to frontend via Tauri event system.
@@ -372,6 +563,10 @@ pub enum AcpEvent {
         session_id: String,
         stop_reason: String,
         agent_type: String,
+        /// Stable wiki run identity allocated when the prompt was accepted.
+        /// Additive: default/skip-none keeps frontend JSON unchanged when unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
     },
     /// Session established with agent-assigned session ID
     SessionStarted { session_id: String },
@@ -552,6 +747,10 @@ pub enum AcpEvent {
     /// advertises `asyncTasks` to: claude-agent-acp (0.73+) and codex-acp
     /// (1.10+).
     AsyncTask { delta: AsyncTaskDelta },
+    /// Canonical workflow progress (see [`WorkflowDelta`]). Agent-specific
+    /// frames are adapted into this shape before they are stored or rendered:
+    /// Grok `workflow_updated`, AIR `async_task` with `taskType=workflow`.
+    Workflow { delta: WorkflowDelta },
     /// `session/load` failed in a way codeg cannot paper over — the agent has
     /// no record of this `session_id`, the session/process died, or it is
     /// archived. Emitted instead of silently falling back to `session/new`, so
@@ -712,10 +911,7 @@ pub enum AcpEvent {
     /// clear its "restart to apply" banner. Carried into `SessionState` so a
     /// snapshot attach (web reconnect, window refresh, new tile) recovers the
     /// staleness the one-shot event won't replay for it.
-    SessionConfigStale {
-        stale: bool,
-        kind: ConfigStaleKind,
-    },
+    SessionConfigStale { stale: bool, kind: ConfigStaleKind },
 }
 
 /// One background task settled by a `<task-notification>` transcript record,

@@ -6,7 +6,7 @@
 //! `axum-test::TestServer` so no TCP socket is involved.
 //!
 //! Scope of this first pass:
-//! - Authentication matrix on a representative protected endpoint
+//! - Authentication matrix on a protected endpoint backed by the test DB
 //! - Public endpoint (`get_system_language_settings`) reachable without token
 //! - DB-backed endpoints (`load_folder_history`, `list_open_folders`) return
 //!   the expected JSON shape. `list_folders` is NOT one of them — it parses
@@ -53,7 +53,7 @@ async fn build_test_server() -> (TestServer, tempfile::TempDir, tempfile::TempDi
 #[tokio::test]
 async fn protected_endpoint_rejects_missing_token() {
     let (server, _data, _static) = build_test_server().await;
-    let resp = server.post("/api/list_folders").json(&json!({})).await;
+    let resp = server.post("/api/list_open_folders").json(&json!({})).await;
     assert_eq!(resp.status_code(), 401);
 }
 
@@ -61,7 +61,7 @@ async fn protected_endpoint_rejects_missing_token() {
 async fn protected_endpoint_rejects_wrong_token() {
     let (server, _data, _static) = build_test_server().await;
     let resp = server
-        .post("/api/list_folders")
+        .post("/api/list_open_folders")
         .add_header("authorization", "Bearer wrong-token")
         .json(&json!({}))
         .await;
@@ -72,7 +72,7 @@ async fn protected_endpoint_rejects_wrong_token() {
 async fn protected_endpoint_accepts_correct_token() {
     let (server, _data, _static) = build_test_server().await;
     let resp = server
-        .post("/api/list_folders")
+        .post("/api/list_open_folders")
         .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
         .json(&json!({}))
         .await;
@@ -505,7 +505,10 @@ async fn deepseek_model_catalog_is_readable_and_shaped_for_the_panel() {
     assert!(body["exists"].is_boolean(), "got {body}");
     assert!(body["configured"].is_boolean(), "got {body}");
     assert!(body["models"].is_array(), "got {body}");
-    assert!(body["error"].is_string() || body["error"].is_null(), "got {body}");
+    assert!(
+        body["error"].is_string() || body["error"].is_null(),
+        "got {body}"
+    );
 }
 
 #[tokio::test]

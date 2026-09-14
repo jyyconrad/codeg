@@ -9,6 +9,7 @@ import {
 } from "react"
 import {
   Bot,
+  BookMarked,
   BookOpenText,
   Boxes,
   FileSpreadsheet,
@@ -23,18 +24,20 @@ import {
   Server,
   Settings,
   SlidersHorizontal,
+  Wrench,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { usePathname } from "next/navigation"
 import { useRouter } from "next/navigation"
+import { AgentIcon } from "@/components/agent-icon"
+import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { Button } from "@/components/ui/button"
+import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { cn } from "@/lib/utils"
 import { detectEnvironment } from "@/lib/transport/detect"
-import { AppTitleBar } from "@/components/layout/app-title-bar"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 
 interface SettingsNavItem {
   href: string
@@ -42,10 +45,13 @@ interface SettingsNavItem {
     | "general"
     | "appearance"
     | "agents"
+    | "codeg_agent"
     | "model_providers"
     | "mcp"
+    | "tools"
     | "skills"
     | "skill_packs"
+    | "wiki"
     | "quick_messages"
     | "shortcuts"
     | "version_control"
@@ -54,6 +60,10 @@ interface SettingsNavItem {
     | "web_service"
     | "logs"
   icon: ComponentType<{ className?: string }>
+}
+
+function CodegAgentNavIcon({ className }: { className?: string }) {
+  return <AgentIcon agentType="codeg_agent" className={className} />
 }
 
 const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
@@ -73,6 +83,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     icon: PlugZap,
   },
   {
+    href: "/settings/code-intelligence",
+    labelKey: "tools",
+    icon: Wrench,
+  },
+  {
     href: "/settings/skills",
     labelKey: "skills",
     icon: BookOpenText,
@@ -83,9 +98,19 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     icon: Boxes,
   },
   {
+    href: "/settings/wiki",
+    labelKey: "wiki",
+    icon: BookMarked,
+  },
+  {
     href: "/settings/agents",
     labelKey: "agents",
     icon: Bot,
+  },
+  {
+    href: "/settings/codeg-agent",
+    labelKey: "codeg_agent",
+    icon: CodegAgentNavIcon,
   },
   {
     href: "/settings/model-providers",

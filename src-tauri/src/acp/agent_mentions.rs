@@ -21,7 +21,7 @@ const ROUTE_FRAME_BODY_PREFIX: &str = "{\"kind\":\"codeg_internal_agent_routes\"
 const ROUTE_FRAME_VERSION: u8 = 3;
 const MAX_ROUTE_FRAME_BYTES: usize = 16 * 1024;
 /// Distinct agents one frame may route, applied AFTER deduplication.
-const MAX_AGENT_ROUTES: usize = 16;
+const MAX_AGENT_ROUTES: usize = 32;
 const MAX_AGENT_REFERENCE_OCCURRENCES: usize = 256;
 
 /// One routed agent inside the frame — nothing but the wire slug.
@@ -191,7 +191,8 @@ fn valid_agent_wire_syntax(agent_type: &str) -> bool {
 }
 
 fn parse_internal_agent_routes(candidate: &str) -> Option<InternalAgentRoutes> {
-    if !candidate.starts_with(ROUTE_FRAME_SEPARATOR) || !candidate.ends_with(ROUTE_FRAME_SEPARATOR) {
+    if !candidate.starts_with(ROUTE_FRAME_SEPARATOR) || !candidate.ends_with(ROUTE_FRAME_SEPARATOR)
+    {
         return None;
     }
     parse_internal_agent_routes_body(
@@ -835,7 +836,8 @@ mod tests {
     #[test]
     fn a_title_is_cut_at_whichever_frame_marker_comes_first() {
         // Separator intact: the cut lands on it, as it always has.
-        let mut separated = String::from("hi \u{001e}{\"kind\":\"codeg_internal_agent_routes\",\"ve");
+        let mut separated =
+            String::from("hi \u{001e}{\"kind\":\"codeg_internal_agent_routes\",\"ve");
         cut_at_route_frame_marker(&mut separated);
         assert_eq!(separated, "hi");
 

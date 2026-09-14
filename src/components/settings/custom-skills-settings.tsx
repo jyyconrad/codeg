@@ -71,6 +71,7 @@ import {
 } from "@/lib/api"
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { isLocalDesktop } from "@/lib/platform"
+import { isAvailableAgent } from "@/lib/available-agents"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import {
   defaultCustomSkillTemplate,
@@ -186,13 +187,17 @@ export function CustomSkillsBody({
         acpListAgents(),
       ])
       setSkills(list)
-      // `skills_capable` is derived backend-side from `skill_storage_spec`:
-      // every built-in today, custom agents only once they declare the shared
-      // `.agents/skills` store. Without the filter an undeclared custom agent
-      // would render a matrix column whose links can only fail.
+      // Available agents with a skill store. `skills_capable` is derived
+      // backend-side from `skill_storage_spec`: every built-in today, custom
+      // agents only once they declare the shared `.agents/skills` store.
+      // Without that filter an undeclared custom agent would render a matrix
+      // column whose links can only fail.
       setAgents(
         agentList.filter(
-          (agent) => agent.skills_capable && !piUsesCustomAgentDir(agent)
+          (agent) =>
+            isAvailableAgent(agent) &&
+            agent.skills_capable &&
+            !piUsesCustomAgentDir(agent)
         )
       )
       setReloadKey((k) => k + 1)

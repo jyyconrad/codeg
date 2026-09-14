@@ -13,6 +13,12 @@ dist-ssr
 *.local
 tsconfig.tsbuildinfo
 
+.iflycode
+.iflycode/
+
+work
+work/
+
 # Next.js
 .next/
 out/
@@ -43,9 +49,10 @@ coverage/
 *.p12
 certificate-base64.txt
 
-# Agent
+# Agent / local tooling (not product)
 .claude
 .docs
+.grok
 docs/superpowers
 
 # Tauri sidecar staging (built per-target by prepare-sidecars.mjs).
@@ -61,3 +68,6 @@ src-tauri/binaries/
 # executable then sits untracked in the repo root — which is enough to fail a
 # work task's "worktree is clean" check at delivery.
 /rust_out
+
+# Git worktrees (local isolated checkouts)
+.worktrees/

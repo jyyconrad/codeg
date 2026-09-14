@@ -62,7 +62,13 @@ password. Create it from the Apple ID account security page.
 
 Find `APPLE_TEAM_ID` in Apple Developer membership details.
 
-## Verify Locally
+## Local install packages
+
+For a machine-local ARM/Intel DMG used only to install and test, do **not**
+follow this file. Use [local-packaging.md](./local-packaging.md): one command
+(`pnpm tauri:dmg`), one output directory (`src-tauri/target/release/bundle/`).
+
+This section is only the notarized variant of that same host path.
 
 After installing the certificate locally, this should show a Developer ID
 Application identity:
@@ -71,7 +77,7 @@ Application identity:
 security find-identity -v -p codesigning | grep "Developer ID Application"
 ```
 
-For a local notarized DMG build:
+For a local **notarized** DMG (still written to `src-tauri/target/release/bundle/dmg/`):
 
 ```bash
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID1234)"
@@ -80,6 +86,9 @@ export APPLE_PASSWORD="xxxx-xxxx-xxxx-xxxx"
 export APPLE_TEAM_ID="TEAMID1234"
 pnpm tauri build --bundles dmg
 ```
+
+Do not pass `--target` on an Apple Silicon Mac; that relocates the bundle to
+`src-tauri/target/aarch64-apple-darwin/release/bundle/`.
 
 Validate the output:
 

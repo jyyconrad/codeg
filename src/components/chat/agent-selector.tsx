@@ -11,6 +11,7 @@ import {
 import { useTranslations } from "next-intl"
 import { MoreHorizontal } from "lucide-react"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
+import { isAvailableAgent } from "@/lib/available-agents"
 import type { AgentType, AcpAgentInfo } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { AgentIcon } from "@/components/agent-icon"
@@ -78,9 +79,18 @@ export function AgentSelector({
 }: AgentSelectorProps) {
   const t = useTranslations("Folder.chat.agentSelector")
   const { agents: rawAgents } = useAcpAgents()
+  // Home-page / composer picker: only enabled+installed agents. The currently
+  // selected type is pinned even when it would otherwise drop out, so a
+  // persisted conversation (or a stale default) still names the agent it is
+  // actually on — the Agents settings page is the catalog of everything else.
   const agents = useMemo<AcpAgentInfo[]>(
-    () => rawAgents.filter((a) => a.enabled),
-    [rawAgents]
+    () =>
+      rawAgents.filter(
+        (a) =>
+          isAvailableAgent(a) ||
+          (a.enabled && a.agent_type === defaultAgentType)
+      ),
+    [rawAgents, defaultAgentType]
   )
   const onSelectRef = useRef(onSelect)
   const onFallbackRef = useRef(onFallback)

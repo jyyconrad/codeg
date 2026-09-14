@@ -25,6 +25,7 @@ pub struct AgentSettingsUpdate {
     pub model_provider_id: Option<i32>,
 }
 
+/// Codeg Agent is omitted on purpose (K14): experimental, default disabled.
 fn default_enabled(agent_type: AgentType) -> bool {
     matches!(
         agent_type,
@@ -230,4 +231,17 @@ pub async fn find_by_model_provider_id(
 fn is_sqlite_full_error(err: &DbError) -> bool {
     let message = err.to_string();
     message.contains("database or disk is full") || message.contains("(code: 13)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::agent::AgentType;
+
+    #[test]
+    fn codeg_agent_defaults_disabled() {
+        assert!(!default_enabled(AgentType::CodegAgent));
+        assert!(default_enabled(AgentType::ClaudeCode));
+        assert!(default_enabled(AgentType::Custom("goose")));
+    }
 }

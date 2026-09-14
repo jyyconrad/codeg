@@ -7,6 +7,8 @@ import { useWorkbenchRoute } from "@/contexts/workbench-route-context"
 
 interface WorkbenchPageTitleProps {
   title: string
+  /** Extra breadcrumb segment after the route title (e.g. the open toolbox item). */
+  current?: string | null
 }
 
 /**
@@ -23,7 +25,10 @@ interface WorkbenchPageTitleProps {
  * No route glyph before the title: it repeated the icon on the sidebar row the
  * user just came from, and the title already names the page.
  */
-export function WorkbenchPageTitle({ title }: WorkbenchPageTitleProps) {
+export function WorkbenchPageTitle({
+  title,
+  current,
+}: WorkbenchPageTitleProps) {
   const tTitleBar = useTranslations("Folder.folderTitleBar")
   const { openConversations } = useWorkbenchRoute()
 
@@ -48,6 +53,17 @@ export function WorkbenchPageTitle({ title }: WorkbenchPageTitleProps) {
       <h1 className="min-w-0 truncate pl-1 text-[0.8125rem] font-semibold leading-none">
         {title}
       </h1>
+      {current ? (
+        <>
+          <ChevronRight
+            className="size-3 shrink-0 text-muted-foreground/50"
+            aria-hidden="true"
+          />
+          <span className="min-w-0 truncate text-[0.8125rem] font-medium leading-none text-muted-foreground">
+            {current}
+          </span>
+        </>
+      ) : null}
     </div>
   )
 }

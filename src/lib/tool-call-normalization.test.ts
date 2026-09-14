@@ -546,6 +546,47 @@ describe("inferLiveToolName codex collab detection", () => {
   })
 })
 
+describe("normalizeToolName codegraph", () => {
+  it("aliases codegraph to search", () => {
+    expect(normalizeToolName("codegraph")).toBe("search")
+  })
+})
+
+describe("inferLiveToolName codegraph", () => {
+  it("classifies a native codegraph call as search, not websearch", () => {
+    // Live ACP title is the tool name; rawInput carries `query`, which
+    // `inferFromInput` would otherwise map to websearch.
+    expect(
+      inferLiveToolName({
+        title: "codegraph",
+        rawInput: JSON.stringify({ operation: "explore", query: "auth" }),
+      })
+    ).toBe("search")
+  })
+})
+
+describe("normalizeToolName lsp", () => {
+  it("keeps native lsp as lsp", () => {
+    expect(normalizeToolName("lsp")).toBe("lsp")
+  })
+})
+
+describe("inferLiveToolName lsp", () => {
+  it("classifies a native lsp call as lsp, not websearch", () => {
+    // Live ACP title is the tool name; workspace_symbol args include `query`,
+    // which `inferFromInput` would otherwise map to websearch.
+    expect(
+      inferLiveToolName({
+        title: "lsp",
+        rawInput: JSON.stringify({
+          operation: "workspace_symbol",
+          query: "Foo",
+        }),
+      })
+    ).toBe("lsp")
+  })
+})
+
 describe("normalizeToolName Grok terminal tool", () => {
   it("aliases Grok's run_terminal_command to bash", () => {
     // Grok Build (xAI) reports its terminal tool as `run_terminal_command`

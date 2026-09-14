@@ -9,6 +9,7 @@
 
 pub mod acp;
 pub mod acp_transcript;
+pub mod agent;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,
 };
@@ -20,6 +21,7 @@ pub mod backgrounds;
 pub mod chat_channel;
 pub mod commands;
 pub mod db;
+pub mod document_extract;
 pub mod folder_links;
 pub mod forge;
 pub mod git_credential;
@@ -43,6 +45,7 @@ mod terminal;
 pub mod turn_timings;
 pub mod update;
 pub mod web;
+pub mod wiki;
 pub mod work_task;
 pub mod workspace_state;
 pub mod workspace_transfer;
@@ -62,25 +65,21 @@ mod tauri_app {
     use crate::acp::manager::ConnectionManager;
     use crate::chat_channel::manager::ChatChannelManager;
     use crate::commands::{
-        acp as acp_commands, app_update as app_update_commands,
-        automation as automation_commands, background as background_commands, backup,
-        canvas as canvas_commands,
+        acp as acp_commands, app_update as app_update_commands, automation as automation_commands,
+        background as background_commands, backup, canvas as canvas_commands,
         chat_authoring as chat_authoring_commands, chat_channel as chat_channel_commands,
-        conversations,
-        custom_skills as custom_skills_commands,
+        code_intel as code_intel_commands, conversations, custom_skills as custom_skills_commands,
         deepseek_settings as deepseek_settings_commands, delegation as delegation_commands,
         experts as experts_commands, feedback as feedback_commands, file_io, folder_commands,
-        folder_links, office_tools as office_tools_commands, open_in,
-        folders, logging as logging_commands, mcp as mcp_commands,
-        model_provider as model_provider_commands, notification, pet as pet_commands, project_boot,
+        folder_links, folders, forge as forge_commands, logging as logging_commands,
+        mcp as mcp_commands, model_provider as model_provider_commands, notification,
+        office_tools as office_tools_commands, open_in, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
-        remote_proxy as remote_proxy_commands,
-        remote_workspace as remote_workspace_commands, science as science_commands,
-        session_info as session_info_commands,
-        system_settings, terminal as terminal_commands,
-        token_usage as token_usage_commands,
-        forge as forge_commands, version_control, windows, work_task as work_task_commands,
-        workspace_state as workspace_state_commands,
+        remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
+        science as science_commands, session_info as session_info_commands, system_settings,
+        terminal as terminal_commands, token_usage as token_usage_commands, toolbox,
+        version_control, wiki as wiki_commands, wiki_engine as wiki_engine_commands, windows,
+        work_task as work_task_commands, workspace_state as workspace_state_commands,
     };
     use crate::terminal::manager::TerminalManager;
     use crate::{db, git_credential, network, paths, process, web};
@@ -587,6 +586,14 @@ mod tauri_app {
                     }
                 });
 
+                std::thread::spawn(|| {
+                    let _ = std::panic::catch_unwind(|| {
+                        if let Err(err) = crate::agent::builtin_skills::ensure_installed() {
+                            tracing::warn!("[Codeg Agent] builtin skills install failed: {err}");
+                        }
+                    });
+                });
+
                 // Reclaim orphaned chat scratch dirs (pre-send drafts that never
                 // bound to a conversation, plus dirs left behind by deleted chat
                 // conversations). Background, non-blocking; failures are logged
@@ -770,6 +777,7 @@ mod tauri_app {
                         &cm_state,
                         db_conn.clone(),
                         effective_data_dir.clone(),
+                        crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
                     );
                     app.manage(broker.clone());
                     app.manage(tokens.clone());
@@ -817,6 +825,9 @@ mod tauri_app {
                         .await;
                     });
 
+                    let injection = cm_state
+                        .delegation_snapshot()
+                        .expect("delegation injection installed");
                     let listener_broker = broker.clone();
                     let listener = crate::acp::delegation::listener::DelegationListener::new(
                         listener_broker,
@@ -826,35 +837,11 @@ mod tauri_app {
                                 manager: std::sync::Arc::new(cm_state.clone_ref()),
                             },
                         ),
-                        std::sync::Arc::new(
-                            crate::acp::manager::ConnectionManagerFeedbackLookup {
-                                manager: std::sync::Arc::new(cm_state.clone_ref()),
-                            },
-                        ),
-                        std::sync::Arc::new(
-                            crate::acp::manager::ConnectionManagerQuestionLookup {
-                                manager: std::sync::Arc::new(cm_state.clone_ref()),
-                            },
-                        ),
-                        std::sync::Arc::new(
-                            crate::commands::session_info::DbSessionInfoLookup::new(
-                                std::sync::Arc::new(db::AppDatabase {
-                                    conn: db_conn.clone(),
-                                }),
-                            ),
-                        ),
-                        std::sync::Arc::new(crate::work_task::EngineWorkTaskTools),
-                        std::sync::Arc::new(
-                            crate::commands::chat_authoring::DbChatAuthoring::new(
-                                std::sync::Arc::new(db::AppDatabase {
-                                    conn: db_conn.clone(),
-                                }),
-                                crate::web::event_bridge::EventEmitter::Tauri(
-                                    app.handle().clone(),
-                                ),
-                                chat_authoring_config.clone(),
-                            ),
-                        ),
+                        injection.feedback_access,
+                        injection.questions,
+                        injection.session_info_access,
+                        injection.tasks,
+                        injection.authoring_access,
                     );
                     // Bind through the service handle rather than a bare
                     // `listener.run` spawn: it keeps the bind error and the
@@ -973,6 +960,15 @@ mod tauri_app {
                 ) {
                     tauri::async_runtime::spawn(crate::work_task::run_task_engine(engine));
                 }
+
+                // WikiWorker: ingest summary + compile. Only the process that
+                // holds the wiki-state OS lock runs worker/recovery.
+                crate::wiki::engine::spawn(
+                    crate::db::AppDatabase {
+                        conn: app.state::<crate::db::AppDatabase>().conn.clone(),
+                    },
+                    crate::web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                );
 
                 // Single-window workspace: ensure the main window exists.
                 // Workspace state (open folders, opened tabs, active tab) is
@@ -1402,6 +1398,9 @@ mod tauri_app {
                 feedback_commands::get_feedback_settings,
                 feedback_commands::set_feedback_settings,
                 feedback_commands::submit_session_feedback,
+                code_intel_commands::get_code_intel_settings,
+                code_intel_commands::set_code_intel_settings,
+                code_intel_commands::get_code_intel_status,
                 question_commands::get_question_settings,
                 question_commands::set_question_settings,
                 session_info_commands::get_session_info_settings,
@@ -1607,6 +1606,27 @@ mod tauri_app {
                 forge_commands::work_task_lookup_by_source,
                 forge_commands::forge_settings_get,
                 forge_commands::forge_settings_set,
+                wiki_commands::get_wiki_settings,
+                wiki_commands::update_wiki_settings,
+                wiki_commands::wiki_list_jobs,
+                wiki_commands::wiki_get_job,
+                wiki_commands::wiki_list_sources,
+                wiki_commands::wiki_list_memory_notes,
+                wiki_commands::wiki_list_project_bindings,
+                wiki_commands::wiki_get_source,
+                wiki_commands::wiki_vault_tree,
+                wiki_commands::wiki_vault_read,
+                wiki_commands::wiki_import_text,
+                wiki_commands::wiki_import_files,
+                wiki_commands::wiki_import_local_sessions,
+                wiki_commands::wiki_import_directory,
+                wiki_commands::wiki_accept_extraction,
+                wiki_commands::wiki_update_source_annotations,
+                wiki_commands::wiki_reextract,
+                wiki_commands::wiki_link_source_version,
+                wiki_engine_commands::wiki_compile_now,
+                wiki_engine_commands::wiki_retry_job,
+                wiki_engine_commands::wiki_cancel_job,
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,
@@ -1626,6 +1646,12 @@ mod tauri_app {
                 notification::open_system_notification_settings,
                 file_io::save_binary_file,
                 file_io::save_text_file,
+                toolbox::toolbox_hash_file,
+                toolbox::toolbox_cipher_file,
+                toolbox::toolbox_cancel_job,
+                toolbox::toolbox_bcrypt_hash,
+                toolbox::toolbox_bcrypt_verify,
+                toolbox::toolbox_parse_cert,
                 backup::backup_create,
                 backup::backup_prepare_source,
                 backup::backup_release_source,
@@ -1658,6 +1684,8 @@ mod tauri_app {
                 chat_channel_commands::set_chat_message_language,
                 chat_channel_commands::weixin_get_qrcode,
                 chat_channel_commands::weixin_check_qrcode,
+                chat_channel_commands::list_folder_chat_channels,
+                chat_channel_commands::set_folder_chat_channels,
                 model_provider_commands::list_model_providers,
                 model_provider_commands::create_model_provider,
                 model_provider_commands::update_model_provider,
@@ -1690,7 +1718,10 @@ mod tauri_app {
                     }
                     crate::office_watch::stop_all_office_watches();
                     if let Some(cm) = app.try_state::<ConnectionManager>() {
-                        tauri::async_runtime::block_on(cm.disconnect_all());
+                        tauri::async_runtime::block_on(async {
+                            let _lock = cm.lock_out_new_connections().await;
+                            cm.disconnect_all().await;
+                        });
                     }
                 }
                 #[cfg(target_os = "macos")]

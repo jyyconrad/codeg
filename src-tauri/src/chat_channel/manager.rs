@@ -26,6 +26,8 @@ struct Inner {
     command_tx: mpsc::Sender<IncomingCommand>,
     command_rx: Mutex<Option<mpsc::Receiver<IncomingCommand>>>,
     broadcaster: Mutex<Option<Arc<WebEventBroadcaster>>>,
+    bridge: Arc<Mutex<SessionBridge>>,
+    conn_mgr: Mutex<Option<ConnectionManager>>,
 }
 
 pub struct ChatChannelManager {
@@ -47,6 +49,8 @@ impl ChatChannelManager {
                 command_tx,
                 command_rx: Mutex::new(Some(command_rx)),
                 broadcaster: Mutex::new(None),
+                bridge: Arc::new(Mutex::new(SessionBridge::new())),
+                conn_mgr: Mutex::new(None),
             }),
         }
     }
@@ -60,6 +64,29 @@ impl ChatChannelManager {
 
     pub fn command_sender(&self) -> mpsc::Sender<IncomingCommand> {
         self.inner.command_tx.clone()
+    }
+
+    /// Live Bridge shared with the session-event subscriber and command
+    /// dispatcher. Created empty in [`Self::new`] so lifecycle/cancel can
+    /// lock it without a `SessionBridge` parameter on `handle_event`.
+    pub fn session_bridge(&self) -> Arc<Mutex<SessionBridge>> {
+        self.inner.bridge.clone()
+    }
+
+    /// ACP connection manager, set by [`Self::start_background`]. The Events
+    /// subscriber uses it to fill last-message / title / files on turn-complete
+    /// cards. Tests can install a stub the same way.
+    pub async fn set_connection_manager(&self, mgr: ConnectionManager) {
+        *self.inner.conn_mgr.lock().await = Some(mgr);
+    }
+
+    pub async fn connection_manager(&self) -> Option<ConnectionManager> {
+        self.inner
+            .conn_mgr
+            .lock()
+            .await
+            .as_ref()
+            .map(|m| m.clone_ref())
     }
 
     /// Take the command receiver (can only be called once, at startup).
@@ -351,8 +378,8 @@ impl ChatChannelManager {
 
         let db_conn2 = db_conn.clone();
 
-        // Create shared session bridge
-        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let bridge = self.inner.bridge.clone();
+        self.set_connection_manager(conn_mgr.clone_ref()).await;
 
         // Spawn event subscriber
         let manager_for_events = self.clone_ref();
@@ -391,7 +418,9 @@ impl ChatChannelManager {
                 bridge,
             );
         } else {
-            tracing::warn!("[ChatChannel] WARNING: command_rx already taken, dispatcher NOT started");
+            tracing::warn!(
+                "[ChatChannel] WARNING: command_rx already taken, dispatcher NOT started"
+            );
         }
 
         // Spawn daily report scheduler
@@ -418,7 +447,9 @@ impl ChatChannelManager {
                     Err(_) => {
                         tracing::warn!(
                             "[ChatChannel] unknown channel type '{}' for '{}' (id={}), skipping",
-                            ch.channel_type, ch.name, ch.id
+                            ch.channel_type,
+                            ch.name,
+                            ch.id
                         );
                         continue;
                     }
@@ -429,7 +460,8 @@ impl ChatChannelManager {
                 Err(e) => {
                     tracing::warn!(
                         "[ChatChannel] invalid config for '{}' (id={}): {e}, skipping",
-                        ch.name, ch.id
+                        ch.name,
+                        ch.id
                     );
                     continue;
                 }
@@ -440,7 +472,8 @@ impl ChatChannelManager {
                 None => {
                     tracing::warn!(
                         "[ChatChannel] no token found for '{}' (id={}), skipping auto-connect",
-                        ch.name, ch.id
+                        ch.name,
+                        ch.id
                     );
                     continue;
                 }
@@ -452,7 +485,8 @@ impl ChatChannelManager {
                 Err(e) => {
                     tracing::error!(
                         "[ChatChannel] failed to create backend for '{}' (id={}): {e}",
-                        ch.name, ch.id
+                        ch.name,
+                        ch.id
                     );
                     continue;
                 }
@@ -464,7 +498,8 @@ impl ChatChannelManager {
             {
                 tracing::error!(
                     "[ChatChannel] failed to auto-connect '{}' (id={}): {e}",
-                    ch.name, ch.id
+                    ch.name,
+                    ch.id
                 );
             } else {
                 tracing::info!("[ChatChannel] auto-connected '{}' (id={})", ch.name, ch.id);
@@ -474,5 +509,8 @@ impl ChatChannelManager {
 }
 
 fn topic_title_for_conversation(conversation_id: i32, title: &str) -> String {
-    format!("#{conversation_id} {title}").chars().take(128).collect()
+    format!("#{conversation_id} {title}")
+        .chars()
+        .take(128)
+        .collect()
 }

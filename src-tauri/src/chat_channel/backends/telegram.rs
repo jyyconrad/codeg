@@ -116,12 +116,9 @@ impl TelegramBackend {
                 ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
             })?;
 
-        let result: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| {
-                ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
-            })?;
+        let result: serde_json::Value = resp.json().await.map_err(|e| {
+            ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
+        })?;
 
         if result.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             let desc = result
@@ -146,21 +143,16 @@ impl TelegramBackend {
         target: Option<&ChannelMessageTarget>,
     ) -> Result<SentMessageId, ChatChannelError> {
         let reply_markup = telegram_inline_keyboard(message);
-        let markdown_text = format_telegram_markdown(&message.base);
+        let html_text = format_telegram_html(&message.base);
         let result = self
-            .send_text_with_reply_markup(
-                &markdown_text,
-                Some("MarkdownV2"),
-                target,
-                reply_markup.clone(),
-            )
+            .send_text_with_reply_markup(&html_text, Some("HTML"), target, reply_markup.clone())
             .await;
 
         match result {
             Ok(id) => Ok(id),
             Err(e) => {
                 tracing::warn!(
-                    "[Telegram] MarkdownV2 interactive send failed: {e}, retrying as plain text"
+                    "[Telegram] HTML interactive send failed: {e}, retrying as plain text"
                 );
                 self.send_text_with_reply_markup(
                     &message.base.to_plain_text(),
@@ -178,16 +170,13 @@ impl TelegramBackend {
         message: &RichMessage,
         target: Option<&ChannelMessageTarget>,
     ) -> Result<SentMessageId, ChatChannelError> {
-        let markdown_text = format_telegram_markdown(message);
-        let result = self
-            .send_text(&markdown_text, Some("MarkdownV2"), target)
-            .await;
+        let html_text = format_telegram_html(message);
+        let result = self.send_text(&html_text, Some("HTML"), target).await;
 
         match result {
             Ok(id) => Ok(id),
             Err(e) => {
-                // MarkdownV2 failed — fall back to plain text, preserving topic target.
-                tracing::warn!("[Telegram] MarkdownV2 send failed: {e}, retrying as plain text");
+                tracing::warn!("[Telegram] HTML send failed: {e}, retrying as plain text");
                 let plain_text = message.to_plain_text();
                 self.send_text(&plain_text, None, target).await
             }
@@ -217,12 +206,9 @@ impl ChatChannelBackend for TelegramBackend {
                 ChatChannelError::ConnectionFailed(redact_token(e.to_string(), &self.bot_token))
             })?;
 
-        let me_body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| {
-                ChatChannelError::ConnectionFailed(redact_token(e.to_string(), &self.bot_token))
-            })?;
+        let me_body: serde_json::Value = resp.json().await.map_err(|e| {
+            ChatChannelError::ConnectionFailed(redact_token(e.to_string(), &self.bot_token))
+        })?;
 
         if me_body.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             *self.status.lock().await = ChannelConnectionStatus::Error;
@@ -514,12 +500,9 @@ impl ChatChannelBackend for TelegramBackend {
             .map_err(|e| {
                 ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
             })?;
-        let result: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| {
-                ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
-            })?;
+        let result: serde_json::Value = resp.json().await.map_err(|e| {
+            ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
+        })?;
         if result.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             let desc = result
                 .get("description")
@@ -572,12 +555,9 @@ impl ChatChannelBackend for TelegramBackend {
             .map_err(|e| {
                 ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
             })?;
-        let result: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| {
-                ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
-            })?;
+        let result: serde_json::Value = resp.json().await.map_err(|e| {
+            ChatChannelError::SendFailed(redact_token(e.to_string(), &self.bot_token))
+        })?;
         if result.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             Ok(())
         } else {
@@ -599,12 +579,9 @@ impl ChatChannelBackend for TelegramBackend {
                 ChatChannelError::ConnectionFailed(redact_token(e.to_string(), &self.bot_token))
             })?;
 
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| {
-                ChatChannelError::ConnectionFailed(redact_token(e.to_string(), &self.bot_token))
-            })?;
+        let body: serde_json::Value = resp.json().await.map_err(|e| {
+            ChatChannelError::ConnectionFailed(redact_token(e.to_string(), &self.bot_token))
+        })?;
 
         if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
             Ok(())
@@ -815,56 +792,157 @@ fn telegram_send_message_body(
     Ok(body)
 }
 
-fn format_telegram_markdown(msg: &RichMessage) -> String {
-    let mut text = String::new();
+fn format_telegram_html(msg: &RichMessage) -> String {
+    markdown_to_telegram_html(&msg.to_markdown())
+}
 
-    let level_emoji = match msg.level {
-        MessageLevel::Info => "ℹ️",
-        MessageLevel::Warning => "⚠️",
-        MessageLevel::Error => "❌",
-    };
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
 
-    if let Some(title) = &msg.title {
-        text.push_str(&format!("{} *{}*\n", level_emoji, escape_markdown(title)));
+fn is_fence_lang_tag(s: &str) -> bool {
+    let t = s.trim();
+    t.len() < 32
+        && t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '_' | '.'))
+}
+
+fn is_safe_href(url: &str) -> bool {
+    let u = url.trim();
+    if u.contains('"') || u.contains('<') || u.contains(' ') {
+        return false;
     }
+    let lower = u.to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
+}
 
-    text.push_str(&escape_markdown(&msg.body));
-
-    if !msg.fields.is_empty() {
-        text.push('\n');
-        for (key, value) in &msg.fields {
-            text.push_str(&format!(
-                "\n*{}*: {}",
-                escape_markdown(key),
-                escape_markdown(value)
-            ));
+fn strip_fence_language(inner: &str) -> &str {
+    if let Some(nl) = inner.find('\n') {
+        if is_fence_lang_tag(&inner[..nl]) {
+            return &inner[nl + 1..];
         }
     }
+    inner
+}
 
+fn heading_text(line: &str) -> Option<&str> {
+    let t = line.trim_end();
+    let hashes = t.chars().take_while(|c| *c == '#').count();
+    if (1..=6).contains(&hashes) {
+        let rest = t.get(hashes..)?;
+        if rest.starts_with(' ') {
+            return Some(rest.trim());
+        }
+    }
+    None
+}
+
+fn convert_inline(s: &str) -> String {
+    let mut codes: Vec<String> = Vec::new();
+    let mut without_code = String::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('`') {
+        without_code.push_str(&rest[..start]);
+        rest = &rest[start + 1..];
+        if let Some(end) = rest.find('`') {
+            let token = format!("\u{0001}{}\u{0002}", codes.len());
+            codes.push(escape_html(&rest[..end]));
+            without_code.push_str(&token);
+            rest = &rest[end + 1..];
+        } else {
+            without_code.push('`');
+            without_code.push_str(rest);
+            rest = "";
+        }
+    }
+    without_code.push_str(rest);
+
+    let mut text = escape_html(&without_code);
+
+    static LINK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let link_re = LINK_RE
+        .get_or_init(|| regex::Regex::new(r"\[([^\]\n]+)\]\(([^)\n]+)\)").expect("link regex"));
+    text = link_re
+        .replace_all(&text, |caps: &regex::Captures| {
+            let label = &caps[1];
+            let href = &caps[2];
+            if is_safe_href(href) {
+                format!("<a href=\"{href}\">{label}</a>")
+            } else {
+                label.to_string()
+            }
+        })
+        .into_owned();
+
+    static BOLD_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let bold_re =
+        BOLD_RE.get_or_init(|| regex::Regex::new(r"\*\*([^\n]+?)\*\*").expect("bold regex"));
+    text = bold_re.replace_all(&text, "<b>$1</b>").into_owned();
+
+    static ITALIC_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let italic_re = ITALIC_RE.get_or_init(|| {
+        regex::Regex::new(r"(^|[\s(])_([^_\n]+)_([\s.,!?:;)]|$)").expect("italic regex")
+    });
+    text = italic_re.replace_all(&text, "$1<i>$2</i>$3").into_owned();
+
+    for (i, code) in codes.iter().enumerate() {
+        let token = format!("\u{0001}{i}\u{0002}");
+        text = text.replace(&token, &format!("<code>{code}</code>"));
+    }
     text
 }
 
-fn escape_markdown(text: &str) -> String {
-    // Backslash must be escaped first to avoid double-escaping
-    text.replace('\\', "\\\\")
-        .replace('_', "\\_")
-        .replace('*', "\\*")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-        .replace('(', "\\(")
-        .replace(')', "\\)")
-        .replace('~', "\\~")
-        .replace('`', "\\`")
-        .replace('>', "\\>")
-        .replace('#', "\\#")
-        .replace('+', "\\+")
-        .replace('-', "\\-")
-        .replace('=', "\\=")
-        .replace('|', "\\|")
-        .replace('{', "\\{")
-        .replace('}', "\\}")
-        .replace('.', "\\.")
-        .replace('!', "\\!")
+fn convert_markdown_segment(s: &str) -> String {
+    let mut out = String::new();
+    for piece in s.split_inclusive('\n') {
+        let (line, nl) = match piece.strip_suffix('\n') {
+            Some(line) => (line, "\n"),
+            None => (piece, ""),
+        };
+        if let Some(heading) = heading_text(line) {
+            out.push_str("<b>");
+            out.push_str(&convert_inline(heading));
+            out.push_str("</b>");
+        } else {
+            out.push_str(&convert_inline(line));
+        }
+        out.push_str(nl);
+    }
+    out
+}
+
+fn markdown_to_telegram_html(input: &str) -> String {
+    let mut out = String::new();
+    let mut rest = input;
+    loop {
+        match rest.find("```") {
+            None => {
+                out.push_str(&convert_markdown_segment(rest));
+                break;
+            }
+            Some(start) => {
+                out.push_str(&convert_markdown_segment(&rest[..start]));
+                let after_open = &rest[start + 3..];
+                match after_open.find("```") {
+                    Some(end) => {
+                        let code = strip_fence_language(&after_open[..end]);
+                        out.push_str("<pre><code>");
+                        out.push_str(&escape_html(code.trim_end_matches('\n')));
+                        out.push_str("</code></pre>");
+                        rest = &after_open[end + 3..];
+                        rest = rest.strip_prefix('\n').unwrap_or(rest);
+                    }
+                    None => {
+                        out.push_str(&convert_markdown_segment(&rest[start..]));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -880,7 +958,10 @@ mod tests {
             "error sending request for url (https://api.telegram.org/bot{token}/createForumTopic)"
         );
         let scrubbed = redact_token(leaked, token);
-        assert!(!scrubbed.contains(token), "token must be scrubbed: {scrubbed}");
+        assert!(
+            !scrubbed.contains(token),
+            "token must be scrubbed: {scrubbed}"
+        );
         assert!(scrubbed.contains("bot***/createForumTopic"), "{scrubbed}");
     }
 
@@ -1006,6 +1087,60 @@ mod tests {
         assert!(err
             .to_string()
             .contains("invalid Telegram message_thread_id target"));
+    }
+
+    #[test]
+    fn html_renders_heading_bold_code_and_link() {
+        let msg = RichMessage::info("see **bold** and `code` and [x](https://e.test)")
+            .with_title("Done Auth Grok");
+        let html = format_telegram_html(&msg);
+        assert!(html.contains("<b>Done Auth Grok</b>"), "got {html}");
+        assert!(html.contains("<b>bold</b>"), "got {html}");
+        assert!(html.contains("<code>code</code>"), "got {html}");
+        assert!(
+            html.contains("<a href=\"https://e.test\">x</a>"),
+            "got {html}"
+        );
+        assert!(
+            !html.contains("## "),
+            "heading markers must not leak: {html}"
+        );
+    }
+
+    #[test]
+    fn html_escapes_raw_tags() {
+        let msg = RichMessage::info("<script>alert(1)</script> & more");
+        let html = format_telegram_html(&msg);
+        assert!(html.contains("&lt;script&gt;"), "got {html}");
+        assert!(html.contains("&amp; more"), "got {html}");
+        assert!(!html.contains("<script>"), "got {html}");
+    }
+
+    #[test]
+    fn html_preserves_fenced_code_escaped() {
+        let msg = RichMessage::info("```\n<tag>\n```");
+        let html = format_telegram_html(&msg);
+        assert!(html.contains("<pre><code>"), "got {html}");
+        assert!(html.contains("&lt;tag&gt;"), "got {html}");
+        assert!(!html.contains("<tag>"), "got {html}");
+    }
+
+    #[test]
+    fn html_drops_javascript_links() {
+        let msg = RichMessage::info("[x](javascript:alert(1))");
+        let html = format_telegram_html(&msg);
+        assert!(
+            !html.to_ascii_lowercase().contains("javascript:"),
+            "got {html}"
+        );
+        assert!(html.contains("x"), "got {html}");
+    }
+
+    #[test]
+    fn html_renders_italic() {
+        let msg = RichMessage::info("hello _world_");
+        let html = format_telegram_html(&msg);
+        assert!(html.contains("<i>world</i>"), "got {html}");
     }
 
     #[test]

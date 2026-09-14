@@ -440,6 +440,93 @@ const AntigravityMonoIcon = memo(function AntigravityMonoIcon({
   )
 })
 
+const CodegAgentColorIcon = memo(function CodegAgentColorIcon({
+  size = "1em",
+}: IconProps) {
+  // Same mark as `public/icon.svg` / `src-tauri/icons/icon.svg`. Gradient
+  // ids are scoped with useId so stacked session rows do not collide.
+  const id = useId()
+  const code = `${id}-code`
+  const bubble1 = `${id}-bubble1`
+  const bubble2 = `${id}-bubble2`
+  const bubble3 = `${id}-bubble3`
+  return (
+    <svg
+      height={size}
+      style={baseSvgStyle}
+      viewBox="0 0 512 512"
+      width={size}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <title>Codeg Agent</title>
+      <defs>
+        <linearGradient id={code} x1="0%" x2="100%" y1="0%" y2="100%">
+          <stop offset="0%" stopColor="#dcdfe9" />
+          <stop offset="100%" stopColor="#cdd1e2" />
+        </linearGradient>
+        <linearGradient id={bubble1} x1="0%" x2="100%" y1="0%" y2="100%">
+          <stop offset="0%" stopColor="#ff4081" />
+          <stop offset="100%" stopColor="#e91e63" />
+        </linearGradient>
+        <linearGradient id={bubble2} x1="0%" x2="100%" y1="0%" y2="100%">
+          <stop offset="0%" stopColor="#ffeb3b" />
+          <stop offset="100%" stopColor="#fdd835" />
+        </linearGradient>
+        <linearGradient id={bubble3} x1="0%" x2="100%" y1="0%" y2="100%">
+          <stop offset="0%" stopColor="#29b6f6" />
+          <stop offset="100%" stopColor="#03a9f4" />
+        </linearGradient>
+      </defs>
+      <rect
+        fill="#1a1a2e"
+        height="512"
+        rx="90"
+        ry="90"
+        width="512"
+        x="0"
+        y="0"
+      />
+      <polyline
+        fill="none"
+        points="180,186 100,256 180,326"
+        stroke={`url(#${code})`}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="32"
+      />
+      <polyline
+        fill="none"
+        points="332,186 412,256 332,326"
+        stroke={`url(#${code})`}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="32"
+      />
+      <circle
+        cx="206"
+        cy="256"
+        fill={`url(#${bubble1})`}
+        opacity="0.95"
+        r="30"
+      />
+      <circle
+        cx="256"
+        cy="256"
+        fill={`url(#${bubble2})`}
+        opacity="0.95"
+        r="36"
+      />
+      <circle
+        cx="306"
+        cy="256"
+        fill={`url(#${bubble3})`}
+        opacity="0.95"
+        r="30"
+      />
+    </svg>
+  )
+})
+
 const CursorMonoIcon = memo(function CursorMonoIcon({
   size = "1em",
 }: IconProps) {
@@ -472,6 +559,7 @@ const COLOR_ICONS: Partial<Record<AgentType, AnyIcon>> = {
   kimi_code: KimiCodeColorIcon,
   pi: PiColorIcon,
   deepseek: DeepSeekColorIcon,
+  codeg_agent: CodegAgentColorIcon,
 }
 
 const MONO_ICONS: Partial<Record<AgentType, AnyIcon>> = {

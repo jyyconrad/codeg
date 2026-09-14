@@ -142,6 +142,8 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   // codeg-mcp ask-user-question companion tool (server prefix varies by host;
   // the suffix rule in `normalizeToolName` covers the other separators)
   "mcp__codeg-mcp__ask_user_question": "question",
+  codegraph: "search",
+  lsp: "lsp",
   lsp_diagnostics: "lsp",
   lsp_document_symbols: "lsp",
   lsp_goto_definition: "lsp",
@@ -576,6 +578,17 @@ export function inferLiveToolName(params: {
   // misclassify any title containing the word "agent" (e.g. "Inspect agent
   // config") as an Agent card before raw_input is even consulted.
   if ((params.title ?? "").trim().toLowerCase() === "agent") return "agent"
+
+  // Native `codegraph` live title is the tool name. Its args include `query`,
+  // which `inferFromInput` classifies as websearch. Match by literal
+  // trimmed/lowercased title — NOT via `normalizeToolName` — same sentinel
+  // pattern as `"agent"` above.
+  if ((params.title ?? "").trim().toLowerCase() === "codegraph") return "search"
+
+  // Native `lsp` live title is the tool name. workspace_symbol args include
+  // `query`, which `inferFromInput` classifies as websearch. Canonical card
+  // name stays `"lsp"` (not `"search"`). Same literal-title sentinel as above.
+  if ((params.title ?? "").trim().toLowerCase() === "lsp") return "lsp"
 
   // Grok plan-mode tools carry their authoritative identity in
   // `_meta["x.ai/tool"].kind` (`enter_plan`/`exit_plan`), while their human

@@ -907,6 +907,105 @@ describe("AcpConnectionsProvider AIR async tasks", () => {
   })
 })
 
+describe("AcpConnectionsProvider workflow runs", () => {
+  async function connectOwner(): Promise<AttachHandlers> {
+    h.acpFindConnectionForConversation.mockResolvedValue(null)
+    await mountProvider()
+    await act(async () => {
+      await h.actions!.connect(TAB, "claude_code", "/tmp/x", "sess-1", 42)
+    })
+    return latestAttachHandlers()
+  }
+
+  it("merges adapted workflow deltas and refuses to create from a progress tick", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "workflow",
+      delta: { run_id: "ghost", spawned: false, state: "running" },
+    })
+    expect(h.store!.getConnection(TAB)?.workflows).toHaveLength(0)
+
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "workflow",
+      delta: {
+        run_id: "wf_1",
+        spawned: true,
+        name: "deep-research",
+        state: "running",
+        phases: [
+          { title: "Plan", state: "done" },
+          { title: "Research", state: "active" },
+        ],
+      },
+    })
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "workflow",
+      delta: {
+        run_id: "wf_1",
+        spawned: false,
+        current_phase: "Research",
+        agents_done: 1,
+        agents_running: 4,
+      },
+    })
+
+    const runs = h.store!.getConnection(TAB)?.workflows ?? []
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toMatchObject({
+      run_id: "wf_1",
+      name: "deep-research",
+      state: "running",
+      current_phase: "Research",
+      agents_done: 1,
+      agents_running: 4,
+    })
+
+    emitAcpEvent(handlers, {
+      seq: 4,
+      connection_id: "spawned-conn",
+      type: "workflow",
+      delta: { run_id: "wf_1", spawned: false, state: "completed" },
+    })
+    const settled = h.store!.getConnection(TAB)?.workflows ?? []
+    expect(settled).toHaveLength(1)
+    expect(settled[0]).toMatchObject({
+      state: "completed",
+      name: "deep-research",
+    })
+  })
+
+  it("drops workflow rows when the session id changes", async () => {
+    const handlers = await connectOwner()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "session_started",
+      session_id: "s1",
+    })
+    emitAcpEvent(handlers, {
+      seq: 2,
+      connection_id: "spawned-conn",
+      type: "workflow",
+      delta: { run_id: "wf_1", spawned: true, name: "deep-research" },
+    })
+    expect(h.store!.getConnection(TAB)?.workflows).toHaveLength(1)
+
+    emitAcpEvent(handlers, {
+      seq: 3,
+      connection_id: "spawned-conn",
+      type: "session_started",
+      session_id: "s2",
+    })
+    expect(h.store!.getConnection(TAB)?.workflows).toHaveLength(0)
+  })
+})
+
 // The composer's connection-status popover. Unlike `reapplyConfig` (live owners
 // only), this has to work from EVERY state the icon can show — including the
 // states where the store holds no entry at all.

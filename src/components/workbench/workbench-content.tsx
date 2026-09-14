@@ -10,6 +10,11 @@ import {
   AutomationsPageTitle,
 } from "@/components/automations/automations-page"
 import { CanvasPage, CanvasPageTitle } from "@/components/canvas/canvas-page"
+import {
+  ToolboxPage,
+  ToolboxPageTitle,
+} from "@/components/toolbox/toolbox-page"
+import { WikiPage, WikiPageTitle } from "@/components/wiki/wiki-page"
 import { ForgeChromeActions } from "@/components/forge/forge-chrome-actions"
 import { ForgePage, ForgePageTitle } from "@/components/forge/forge-page"
 import { TasksChromeActions } from "@/components/tasks/tasks-chrome-actions"
@@ -32,6 +37,8 @@ const WORKBENCH_ROUTES: Partial<Record<WorkbenchRouteId, ComponentType>> = {
   forge: ForgePage,
   tokenUsage: TokenUsagePage,
   canvas: CanvasPage,
+  toolbox: ToolboxPage,
+  wiki: WikiPage,
 }
 
 /** Optional per-route content for the window-chrome strip above the page
@@ -43,6 +50,8 @@ const WORKBENCH_ROUTE_STRIPS: Partial<Record<WorkbenchRouteId, ComponentType>> =
     forge: ForgePageTitle,
     tokenUsage: TokenUsagePageTitle,
     canvas: CanvasPageTitle,
+    toolbox: ToolboxPageTitle,
+    wiki: WikiPageTitle,
   }
 
 /** What a chrome cluster hands its route's buttons: the host's own button

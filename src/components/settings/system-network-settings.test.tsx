@@ -264,6 +264,10 @@ describe("SystemNetworkSettings — update source outage", () => {
 
     renderWithIntl()
 
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Check for updates" })
+    )
+
     // The release-link affordance is shown, not the in-place upgrade button.
     expect(
       await screen.findByRole("button", { name: "View v0.16.0 release" })

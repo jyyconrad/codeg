@@ -1,7 +1,9 @@
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use crate::acp::binary_cache;
+use crate::acp::native_config::{resolve_codeg_agent_config, BoundProvider};
 use crate::acp::registry::{self, AcpAdapterRelation, AcpAgentMeta, AgentDistribution};
 use crate::models::agent::AgentType;
 
@@ -84,7 +86,10 @@ pub fn clear_npm_env_cache() {
     *NPM_ENV_CACHE.lock().unwrap() = None;
 }
 
-pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
+pub async fn run_preflight(
+    agent_type: AgentType,
+    db: &sea_orm::DatabaseConnection,
+) -> PreflightResult {
     let meta = registry::get_agent_meta(agent_type);
     debug_assert_eq!(meta.agent_type, agent_type);
     let checks = match &meta.distribution {
@@ -100,6 +105,10 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
             system_cmd,
             ..
         } => check_uv_environment(*uv_required, *system_cmd).await,
+        AgentDistribution::InProcess { version } => {
+            let (env, provider) = load_codeg_agent_preflight_inputs(db).await;
+            codeg_agent_preflight_checks(version, &env, provider.as_ref())
+        }
     };
 
     let passed = checks
@@ -113,6 +122,150 @@ pub async fn run_preflight(agent_type: AgentType) -> PreflightResult {
         checks,
         adapter: probe_adapter(&meta).await,
     }
+}
+
+fn check_item(
+    check_id: &str,
+    label: &str,
+    status: CheckStatus,
+    message: impl Into<String>,
+) -> CheckItem {
+    CheckItem {
+        check_id: check_id.into(),
+        label: label.into(),
+        status,
+        message: message.into(),
+        fixes: vec![],
+    }
+}
+
+async fn load_codeg_agent_preflight_inputs(
+    db: &sea_orm::DatabaseConnection,
+) -> (BTreeMap<String, String>, Option<BoundProvider>) {
+    let setting =
+        crate::db::service::agent_setting_service::get_by_agent_type(db, AgentType::CodegAgent)
+            .await
+            .ok()
+            .flatten();
+    let env = setting
+        .as_ref()
+        .and_then(|m| m.env_json.as_deref())
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .unwrap_or_default();
+    let provider = match setting.as_ref().and_then(|s| s.model_provider_id) {
+        Some(id) => crate::db::service::model_provider_service::get_by_id(db, id)
+            .await
+            .ok()
+            .flatten()
+            .map(|p| BoundProvider {
+                api_url: p.api_url,
+                api_key: p.api_key,
+                model: p.model,
+            }),
+        None => None,
+    };
+    (env, provider)
+}
+
+/// Preflight checks for the in-process Codeg Agent. FAIL does not hide the
+/// agent from the settings list.
+pub(crate) fn codeg_agent_preflight_checks(
+    version: &str,
+    env: &BTreeMap<String, String>,
+    provider: Option<&BoundProvider>,
+) -> Vec<CheckItem> {
+    let mut checks = vec![check_item(
+        "runtime_present",
+        "Runtime",
+        CheckStatus::Pass,
+        format!("Built-in runtime (Codeg {version})"),
+    )];
+
+    match resolve_codeg_agent_config(env, provider) {
+        Ok(_) => {
+            checks.push(check_item(
+                "model_provider",
+                "Model provider",
+                CheckStatus::Pass,
+                "Bound model provider URL and API key are valid",
+            ));
+            checks.push(check_item(
+                "model_id",
+                "Model",
+                CheckStatus::Pass,
+                "Default model is set",
+            ));
+            checks.push(check_item(
+                "context_window",
+                "Context window",
+                CheckStatus::Pass,
+                "Context window and max output fit after the safety margin",
+            ));
+        }
+        Err(err) => {
+            let fail_id = err.check_id();
+            let fail_msg = err.message();
+            let deferred_provider = "Not checked until the bound model provider is valid";
+            let deferred_model = "Not checked until the default model is set";
+            checks.push(if fail_id == "model_provider" {
+                check_item(
+                    "model_provider",
+                    "Model provider",
+                    CheckStatus::Fail,
+                    fail_msg.clone(),
+                )
+            } else {
+                check_item(
+                    "model_provider",
+                    "Model provider",
+                    CheckStatus::Pass,
+                    "Bound model provider URL and API key are valid",
+                )
+            });
+            checks.push(if fail_id == "model_id" {
+                check_item("model_id", "Model", CheckStatus::Fail, fail_msg.clone())
+            } else if fail_id == "model_provider" {
+                check_item("model_id", "Model", CheckStatus::Warn, deferred_provider)
+            } else {
+                check_item(
+                    "model_id",
+                    "Model",
+                    CheckStatus::Pass,
+                    "Default model is set",
+                )
+            });
+            checks.push(if fail_id == "context_window" {
+                check_item(
+                    "context_window",
+                    "Context window",
+                    CheckStatus::Fail,
+                    fail_msg,
+                )
+            } else if fail_id == "model_id" {
+                check_item(
+                    "context_window",
+                    "Context window",
+                    CheckStatus::Warn,
+                    deferred_model,
+                )
+            } else {
+                check_item(
+                    "context_window",
+                    "Context window",
+                    CheckStatus::Warn,
+                    deferred_provider,
+                )
+            });
+        }
+    }
+
+    checks.push(check_item(
+        "provider_protocol",
+        "Protocol",
+        CheckStatus::Pass,
+        "v1 uses OpenAI Chat Completions only",
+    ));
+    checks
 }
 
 /// Probe the adapter/vendor-CLI split for an adapter agent (`None` otherwise).
@@ -465,12 +618,18 @@ async fn run_uv_version(uvx_path: &std::path::Path) -> Option<String> {
 /// `Warn` (not `Fail`): recent uv releases are backward compatible for the
 /// `uvx --from <pkg>==<ver>` invocation, so an old uv should not hard-block.
 fn build_uv_version_check(current: Option<&str>, required: &str) -> CheckItem {
-    match (current.and_then(parse_node_version), parse_node_version(required)) {
+    match (
+        current.and_then(parse_node_version),
+        parse_node_version(required),
+    ) {
         (Some(cur), Some(req)) if cur >= req => CheckItem {
             check_id: "uv_version".into(),
             label: "uv version".into(),
             status: CheckStatus::Pass,
-            message: format!("uv {} meets the minimum requirement (>={required})", current.unwrap_or("")),
+            message: format!(
+                "uv {} meets the minimum requirement (>={required})",
+                current.unwrap_or("")
+            ),
             fixes: vec![],
         },
         (Some(_), Some(_)) => CheckItem {
@@ -697,6 +856,156 @@ async fn check_binary_environment(
 }
 
 #[cfg(test)]
+mod codeg_agent_tests {
+    use super::*;
+    use crate::acp::native_config::{BoundProvider, CONTEXT_WINDOWS_KEY};
+
+    fn provider(url: &str, key: &str, model: &str) -> BoundProvider {
+        BoundProvider {
+            api_url: url.into(),
+            api_key: key.into(),
+            model: Some(model.into()),
+        }
+    }
+
+    fn ids(checks: &[CheckItem]) -> Vec<&str> {
+        checks.iter().map(|c| c.check_id.as_str()).collect()
+    }
+
+    #[test]
+    fn missing_provider_fails_but_still_emits_every_check() {
+        let checks = codeg_agent_preflight_checks("0.30.6", &BTreeMap::new(), None);
+        assert_eq!(
+            ids(&checks),
+            [
+                "runtime_present",
+                "model_provider",
+                "model_id",
+                "context_window",
+                "provider_protocol",
+            ]
+        );
+        assert!(matches!(checks[0].status, CheckStatus::Pass));
+        assert!(matches!(checks[1].status, CheckStatus::Fail));
+        assert!(
+            matches!(checks[2].status, CheckStatus::Warn),
+            "unbound model_id must Warn, not cascade Fail: {:?}",
+            checks[2]
+        );
+        assert!(
+            matches!(checks[3].status, CheckStatus::Warn),
+            "unbound context_window must Warn, not cascade Fail: {:?}",
+            checks[3]
+        );
+        assert!(matches!(checks[4].status, CheckStatus::Pass));
+        let passed = checks
+            .iter()
+            .all(|c| !matches!(c.status, CheckStatus::Fail));
+        assert!(!passed);
+    }
+
+    #[test]
+    fn empty_api_key_fails_provider_and_warns_the_rest() {
+        let mut env = BTreeMap::new();
+        env.insert(CONTEXT_WINDOWS_KEY.into(), r#"{"m":128000}"#.into());
+        let p = provider("https://gw.example/v1", "", "m");
+        let checks = codeg_agent_preflight_checks("0.30.6", &env, Some(&p));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "model_provider")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Fail)));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "model_id")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Warn)));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "context_window")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Warn)));
+    }
+
+    #[test]
+    fn invalid_api_url_fails_provider_and_warns_the_rest() {
+        let mut env = BTreeMap::new();
+        env.insert(CONTEXT_WINDOWS_KEY.into(), r#"{"m":128000}"#.into());
+        let p = provider("not-a-url", "sk", "m");
+        let checks = codeg_agent_preflight_checks("0.30.6", &env, Some(&p));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "model_provider")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Fail)));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "model_id")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Warn)));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "context_window")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Warn)));
+    }
+
+    #[test]
+    fn missing_model_id_fails_model_and_warns_window() {
+        let mut env = BTreeMap::new();
+        env.insert(CONTEXT_WINDOWS_KEY.into(), r#"{"m":128000}"#.into());
+        let p = BoundProvider {
+            api_url: "https://gw.example/v1".into(),
+            api_key: "sk".into(),
+            model: None,
+        };
+        let checks = codeg_agent_preflight_checks("0.30.6", &env, Some(&p));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "model_provider")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Pass)));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "model_id")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Fail)));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "context_window")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Warn)));
+    }
+
+    #[test]
+    fn valid_config_passes() {
+        let mut env = BTreeMap::new();
+        env.insert(CONTEXT_WINDOWS_KEY.into(), r#"{"m":128000}"#.into());
+        let p = provider("https://gw.example/v1", "sk", "m");
+        let checks = codeg_agent_preflight_checks("0.30.6", &env, Some(&p));
+        assert!(
+            checks
+                .iter()
+                .all(|c| !matches!(c.status, CheckStatus::Fail)),
+            "{checks:?}"
+        );
+        assert!(!checks.iter().any(|c| c.check_id == "runtime_not_wired"));
+    }
+
+    #[test]
+    fn unknown_window_fails_context_window_only() {
+        let mut env = BTreeMap::new();
+        env.insert(CONTEXT_WINDOWS_KEY.into(), r#"{"other":128000}"#.into());
+        let p = provider("https://gw.example/v1", "sk", "gateway-model");
+        let checks = codeg_agent_preflight_checks("0.30.6", &env, Some(&p));
+        let window = checks
+            .iter()
+            .find(|c| c.check_id == "context_window")
+            .unwrap();
+        assert!(matches!(window.status, CheckStatus::Fail));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "model_provider")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Pass)));
+        assert!(checks
+            .iter()
+            .find(|c| c.check_id == "model_id")
+            .is_some_and(|c| matches!(c.status, CheckStatus::Pass)));
+    }
+}
+
+#[cfg(test)]
 mod adapter_tests {
     use super::*;
 
@@ -704,12 +1013,7 @@ mod adapter_tests {
         let meta = registry::get_agent_meta(agent_type);
         let relation = registry::acp_adapter_relation(agent_type)
             .expect("agent under test must be an adapter agent");
-        build_adapter_info(
-            &meta,
-            &relation,
-            installed,
-            native_path.map(str::to_string),
-        )
+        build_adapter_info(&meta, &relation, installed, native_path.map(str::to_string))
     }
 
     // The card's whole argument rests on these four fields being concrete: the
@@ -730,7 +1034,10 @@ mod adapter_tests {
         assert!(!info.adapter_installed);
         assert_eq!(info.native_cmd, "claude");
         assert_eq!(info.native_label, "Claude Code CLI");
-        assert_eq!(info.native_path.as_deref(), Some("/opt/homebrew/bin/claude"));
+        assert_eq!(
+            info.native_path.as_deref(),
+            Some("/opt/homebrew/bin/claude")
+        );
         assert_eq!(info.shared_config_dir, "~/.claude");
         assert!(info.docs_url.ends_with("#acp-adapters"));
     }
@@ -738,7 +1045,10 @@ mod adapter_tests {
     #[test]
     fn codex_adapter_info_uses_codex_home() {
         let info = info_for(AgentType::Codex, None, true);
-        assert_eq!(info.adapter_package, "@agentclientprotocol/codex-acp@1.10.0");
+        assert_eq!(
+            info.adapter_package,
+            "@agentclientprotocol/codex-acp@1.10.0"
+        );
         assert_eq!(info.adapter_cmd, "codex-acp");
         assert!(info.adapter_installed);
         assert_eq!(info.native_cmd, "codex");

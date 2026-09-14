@@ -200,11 +200,13 @@ pub struct AcpPreflightParams {
 }
 
 pub async fn acp_preflight(
+    Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpPreflightParams>,
 ) -> Result<Json<PreflightResult>, AppCommandError> {
-    let result = acp_commands::acp_preflight(params.agent_type, params.force_refresh)
-        .await
-        .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    let result =
+        acp_commands::acp_preflight_core(params.agent_type, params.force_refresh, &state.db)
+            .await
+            .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
     Ok(Json(result))
 }
 
@@ -330,6 +332,9 @@ pub struct AcpForkParams {
     /// tail, the composer's fork-send behaviour.
     #[serde(default)]
     pub fork_from_turn_id: Option<String>,
+    /// Replace the live session with an empty `session/new` (first-round edit).
+    #[serde(default)]
+    pub rewind_to_origin: bool,
 }
 
 #[derive(Deserialize)]
@@ -431,27 +436,36 @@ pub async fn acp_fork(
     Json(params): Json<AcpForkParams>,
 ) -> Result<Json<ForkResultInfo>, AppCommandError> {
     let manager = &state.connection_manager;
-    let result = manager
-        .fork_session(
-            &state.db,
-            &params.connection_id,
-            params.conversation_id,
-            params.folder_id,
-            params.fork_from_turn_id,
-        )
-        .await
-        .map_err(|e| {
-            let message = e.to_string();
-            // A fork requested while a turn is in flight is an expected,
-            // recoverable condition (409) — the frontend re-queues — not a
-            // server fault (500). Mirror `acp_prompt`. Other errors stay 500.
-            match e {
-                AcpError::TurnInProgress => {
-                    AppCommandError::new(AppErrorCode::TurnInProgress, message)
-                }
-                _ => AppCommandError::task_execution_failed(message),
-            }
-        })?;
+    let result = if params.rewind_to_origin {
+        manager
+            .rewind_session_to_origin(
+                &state.db,
+                &params.connection_id,
+                params.conversation_id,
+                params.folder_id,
+            )
+            .await
+    } else {
+        manager
+            .fork_session(
+                &state.db,
+                &params.connection_id,
+                params.conversation_id,
+                params.folder_id,
+                params.fork_from_turn_id,
+            )
+            .await
+    }
+    .map_err(|e| {
+        let message = e.to_string();
+        // A fork requested while a turn is in flight is an expected,
+        // recoverable condition (409) — the frontend re-queues — not a
+        // server fault (500). Mirror `acp_prompt`. Other errors stay 500.
+        match e {
+            AcpError::TurnInProgress => AppCommandError::new(AppErrorCode::TurnInProgress, message),
+            _ => AppCommandError::task_execution_failed(message),
+        }
+    })?;
     Ok(Json(result))
 }
 
@@ -916,8 +930,8 @@ pub async fn acp_update_pi_config(
     Ok(Json(()))
 }
 
-pub async fn acp_load_pi_config(
-) -> Result<Json<acp_commands::PiConfigProjection>, AppCommandError> {
+pub async fn acp_load_pi_config() -> Result<Json<acp_commands::PiConfigProjection>, AppCommandError>
+{
     Ok(Json(acp_commands::load_pi_config_core()))
 }
 

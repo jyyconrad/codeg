@@ -64,7 +64,11 @@ fn validate_model(agent_type: &str, model: Option<&str>) -> Result<(), AppComman
     // Codex stores a structured multi-model catalog whose entries may carry
     // per-model `base_instructions` overrides (a full system prompt), so allow a
     // much larger payload than the plain-string agents.
-    let max_len = if agent_type == "codex" { 262_144 } else { 4096 };
+    let max_len = if agent_type == "codex" || agent_type == "codeg_agent" {
+        262_144
+    } else {
+        4096
+    };
     if raw.len() > max_len {
         return Err(AppCommandError::invalid_input(format!(
             "Model must be {max_len} characters or less"
@@ -280,12 +284,13 @@ pub async fn update_model_provider_and_refresh(
 
     // Every agent bound to this provider may now be on stale config (the cascade
     // rewrote their env_json + native config files). Recompute and notify.
-    let agent_types: Vec<AgentType> = agent_setting_service::find_by_model_provider_id(&db.conn, id)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|setting| serde_json::from_str(&setting.agent_type).ok())
-        .collect();
+    let agent_types: Vec<AgentType> =
+        agent_setting_service::find_by_model_provider_id(&db.conn, id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|setting| serde_json::from_str(&setting.agent_type).ok())
+            .collect();
     let affected_running_sessions = acp::refresh_config_staleness(
         manager,
         db,
@@ -466,6 +471,7 @@ mod tests {
         );
         assert!(validate_model("codex", Some(&big)).is_ok());
         assert!(validate_model("open_code", Some(&"a".repeat(10_000))).is_err());
+        assert!(validate_model("codeg_agent", Some(&"a".repeat(10_000))).is_ok());
     }
 
     /// Regression for the model-provider staleness path: editing a provider must

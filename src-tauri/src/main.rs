@@ -13,5 +13,14 @@ fn main() {
         return;
     }
 
+    if let Some(url) = codeg_lib::agent::code_intel::parse_stdio_bridge_url(std::env::args()) {
+        let _log_guard = codeg_lib::logging::init::init_mcp();
+        if let Err(err) = codeg_lib::agent::code_intel::run_stdio_http_bridge(&url) {
+            eprintln!("code-intel MCP stdio connector failed: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     codeg_lib::run()
 }

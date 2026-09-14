@@ -64,6 +64,8 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "tasks",
   "forge",
   "canvas",
+  "toolbox",
+  "wiki",
 ] as const
 
 export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number]

@@ -50,6 +50,20 @@ cargo insta review
 INSTA_UPDATE=auto cargo test --features test-utils     # 自动写新 .snap
 ```
 
+Rust 工具链以仓库根 `rust-toolchain.toml` 为准：`channel = "stable"`，与 CI `dtolnay/rust-toolchain@stable`、Docker `rust:slim-bookworm` 同一条线。本机用 rustup，不要 `rustup override set homebrew`，也不要把 Homebrew 1.88 当项目编译器。当前 lockfile 的传递依赖要求 rustc ≥ 1.90。
+
+`src-tauri/target` 里过期的 incremental / deps hash 不会自动删，debug 目录会一直涨。换 rustc、改 `Cargo.toml` 的 `[profile.*]`、或 `du -sh src-tauri/target` 已经很大时，先 `cargo clean` 再 check / test / clippy / build。日常增量不必每次 clean。产物只放本仓库 `src-tauri/target`，crate 缓存在全局 `~/.cargo`。
+
+### 本地 macOS DMG
+
+只打本机架构，产物只允许出现在 `src-tauri/target/release/bundle/`。命令与安装见 [docs/releasing/local-packaging.md](docs/releasing/local-packaging.md)。
+
+```bash
+pnpm tauri:dmg
+```
+
+不要加 `--target aarch64-apple-darwin`，也不要把 dmg 拷到桌面或其他目录。
+
 ## 架构
 
 ### 双模式运行

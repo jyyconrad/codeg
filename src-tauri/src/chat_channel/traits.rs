@@ -24,7 +24,7 @@ pub trait ChatChannelBackend: Send + Sync + 'static {
     /// Send a plain text message.
     async fn send_message(&self, text: &str) -> Result<SentMessageId, ChatChannelError>;
 
-    /// Send a rich/structured message (Telegram Markdown / Lark Card).
+    /// Send a rich/structured message (Telegram HTML / Lark post markdown).
     async fn send_rich_message(
         &self,
         message: &RichMessage,
@@ -41,10 +41,7 @@ pub trait ChatChannelBackend: Send + Sync + 'static {
     }
 
     /// Create a provider-specific thread/topic target.
-    async fn create_thread(
-        &self,
-        _title: &str,
-    ) -> Result<ChannelMessageTarget, ChatChannelError> {
+    async fn create_thread(&self, _title: &str) -> Result<ChannelMessageTarget, ChatChannelError> {
         Err(ChatChannelError::Unsupported(
             "thread creation is not supported by this channel".to_string(),
         ))

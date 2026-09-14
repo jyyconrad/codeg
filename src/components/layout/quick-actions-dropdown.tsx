@@ -2,12 +2,14 @@
 
 import { useCallback, useState } from "react"
 import {
+  BookMarked,
   FolderGit2,
   FolderOpenDot,
   GamepadDirectional,
   LayoutTemplate,
   ListTodo,
   Map as MapIcon,
+  Wrench,
   MonitorCloud,
   PawPrint,
   Rocket,
@@ -232,6 +234,14 @@ export function QuickActionsDropdown() {
           <DropdownMenuItem onSelect={() => setRoute("canvas")}>
             <MapIcon />
             {tSidebar("canvas")}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setRoute("toolbox")}>
+            <Wrench />
+            {tSidebar("toolbox")}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setRoute("wiki")}>
+            <BookMarked />
+            {tSidebar("wiki")}
           </DropdownMenuItem>
 
           {desktop && (

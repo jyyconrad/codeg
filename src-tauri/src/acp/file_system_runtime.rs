@@ -89,6 +89,35 @@ impl FsAccessPolicy {
         }
     }
 
+    /// WikiWorker: read converted vault notes/raw; write only this job's staging.
+    /// Empty extra roots still leave the vault as the sole read root (never
+    /// unrestricted).
+    pub fn wiki_worker(vault: &Path, staging: &Path) -> Self {
+        Self::wiki_worker_with_extra_reads(vault, staging, &[])
+    }
+
+    /// WikiWorker with additional project-folder read roots (synthesize only).
+    /// Denied segments such as `.git` are skipped. Extra roots are never writes.
+    pub fn wiki_worker_with_extra_reads(
+        vault: &Path,
+        staging: &Path,
+        extra_read_roots: &[PathBuf],
+    ) -> Self {
+        let mut read_roots = vec![canonical_root(vault)];
+        for root in extra_read_roots {
+            if wiki_denied_extra_root(root) {
+                continue;
+            }
+            read_roots.push(canonical_root(root));
+        }
+        read_roots.sort();
+        read_roots.dedup();
+        Self {
+            read_roots,
+            write_roots: vec![canonical_root(staging)],
+        }
+    }
+
     /// No path gate at all in either direction. `CODEG_ACP_FS_POLICY=unrestricted`.
     pub fn unrestricted() -> Self {
         Self {
@@ -156,6 +185,27 @@ impl FsAccessPolicy {
     /// next to an advertised `terminal`, which an agent simply walks around.
     pub fn confines_reads(&self) -> bool {
         !self.read_roots.is_empty()
+    }
+
+    /// Add a read-only extra root. No-op when reads are already unrestricted
+    /// (empty `read_roots`). Used so native plan/explore artifacts under
+    /// `~/.codeg/codeg-agent/artifacts` stay readable in `strict` policy.
+    pub fn with_extra_read_root(mut self, root: &Path) -> Self {
+        if self.read_roots.is_empty() {
+            return self;
+        }
+        self.read_roots.push(canonical_root(root));
+        self.read_roots.sort();
+        self.read_roots.dedup();
+        self
+    }
+
+    /// Canonical read gate used by ACP `fs/read_text_file` and by native
+    /// glob/grep. Empty read roots are unrestricted (no canonicalize).
+    /// Otherwise the path — including symlink targets — must resolve inside a
+    /// read root.
+    pub fn check_read(&self, path: &Path) -> Result<(), FileSystemRuntimeError> {
+        ensure_path_allowed(path, &self.read_roots, false)
     }
 
     /// One-line summary for the connection log.
@@ -365,7 +415,10 @@ fn resolve_root_slot(slot: &RootSlot, runtime_env: &BTreeMap<String, String>) ->
         // all, which `child_home_dir` has already warned about — treat the slot
         // as unresolvable rather than substituting codeg's answer for it.
         let base = if *expands {
-            expand_home_prefix(&value.to_string_lossy(), child_home_dir(runtime_env).as_ref())
+            expand_home_prefix(
+                &value.to_string_lossy(),
+                child_home_dir(runtime_env).as_ref(),
+            )
         } else {
             PathBuf::from(value)
         };
@@ -599,6 +652,11 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
             trims: false,
             default_rel: &[".gemini"],
         }],
+        AgentType::CodegAgent => &[RootSlot {
+            candidates: &[("CODEG_HOME", "codeg-agent", EXPANDS_TILDE)],
+            trims: false,
+            default_rel: &[".codeg", "codeg-agent"],
+        }],
         AgentType::ClaudeCode => &[RootSlot {
             candidates: &[("CLAUDE_CONFIG_DIR", "", VERBATIM)],
             trims: false,
@@ -628,7 +686,10 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
         // `resolve_cursor_config_from` prefers CURSOR_CONFIG_DIR verbatim and
         // only then `<XDG_CONFIG_HOME>/cursor` — order matters.
         AgentType::Cursor => &[RootSlot {
-            candidates: &[("CURSOR_CONFIG_DIR", "", VERBATIM), ("XDG_CONFIG_HOME", "cursor", VERBATIM)],
+            candidates: &[
+                ("CURSOR_CONFIG_DIR", "", VERBATIM),
+                ("XDG_CONFIG_HOME", "cursor", VERBATIM),
+            ],
             trims: false,
             default_rel: &[".cursor"],
         }],
@@ -704,6 +765,16 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
 /// Absolutize + canonicalize a configured root. Falls back to the absolutized
 /// raw path when the directory does not exist yet (a non-existent root simply
 /// never matches, which is the correct outcome).
+fn wiki_denied_extra_root(path: &Path) -> bool {
+    path.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        matches!(
+            s.as_ref(),
+            ".git" | ".obsidian" | "originals" | ".codeg-wiki.lock" | "session_store"
+        )
+    })
+}
+
 fn canonical_root(root: &Path) -> PathBuf {
     let absolute = if root.is_absolute() {
         root.to_path_buf()
@@ -732,6 +803,15 @@ impl FileSystemRuntime {
             policy: Arc::new(policy),
             io_semaphore: Arc::new(Semaphore::new(FS_MAX_CONCURRENT_OPS)),
         }
+    }
+
+    pub fn access_policy(&self) -> &FsAccessPolicy {
+        self.policy.as_ref()
+    }
+
+    /// Same canonical read gate as [`FsAccessPolicy::check_read`].
+    pub fn check_read(&self, path: &Path) -> Result<(), FileSystemRuntimeError> {
+        self.policy.check_read(path)
     }
 
     pub async fn read_text_file(
@@ -1267,6 +1347,37 @@ mod tests {
         let _ = fs::remove_dir_all(other);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn check_read_rejects_symlink_escape_under_strict() {
+        let workspace = temp_workspace();
+        let outside = temp_workspace();
+        let secret = outside.join("secret.txt");
+        fs::write(&secret, "nope").expect("write secret");
+        let link = workspace.join("escape.txt");
+        std::os::unix::fs::symlink(&secret, &link).expect("symlink");
+
+        let policy = FsAccessPolicy::strict(&workspace);
+        let err = policy
+            .check_read(&link)
+            .expect_err("strict read must follow the symlink target");
+        let message = invalid_params(err);
+        assert!(
+            message.contains("outside the allowed read roots"),
+            "unexpected message: {message}"
+        );
+
+        let runtime = FileSystemRuntime::with_policy(FsAccessPolicy::strict(&workspace));
+        let runtime_err = runtime
+            .check_read(&link)
+            .expect_err("runtime check_read must use the same gate");
+        assert!(invalid_params(runtime_err).contains("outside the allowed read roots"));
+
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_dir_all(workspace);
+        let _ = fs::remove_dir_all(outside);
+    }
+
     /// A symlink inside the workspace pointing out of it must not become a
     /// write tunnel: containment is checked on the canonicalized parent.
     #[cfg(unix)]
@@ -1409,6 +1520,41 @@ mod tests {
 
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(elsewhere_in_temp);
+    }
+
+    #[test]
+    fn wiki_worker_extra_reads_do_not_go_unrestricted_and_skip_git() {
+        let vault = temp_workspace();
+        let staging = temp_workspace();
+        let project = temp_workspace();
+        let git = project.join(".git");
+        fs::create_dir_all(&git).unwrap();
+        fs::write(project.join("src.rs"), "fn main() {}").unwrap();
+        fs::write(vault.join("AGENTS.md"), "prefs").unwrap();
+
+        let turn = FsAccessPolicy::wiki_worker(&vault, &staging);
+        assert!(
+            !turn.read_roots.is_empty(),
+            "empty roots would be unrestricted"
+        );
+        assert!(turn.check_read(&vault.join("AGENTS.md")).is_ok());
+        assert!(turn.check_read(&project.join("src.rs")).is_err());
+
+        let syn = FsAccessPolicy::wiki_worker_with_extra_reads(
+            &vault,
+            &staging,
+            &[project.clone(), git.clone()],
+        );
+        assert!(syn.check_read(&project.join("src.rs")).is_ok());
+        assert!(
+            !syn.read_roots.iter().any(|r| r.ends_with(".git")),
+            ".git must not be added as a read root"
+        );
+        assert_eq!(syn.write_roots, vec![canonical_root(&staging)]);
+
+        for dir in [vault, staging, project] {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
@@ -1636,7 +1782,10 @@ mod tests {
             return; // no real subdirectory to build the alias from
         };
 
-        for value in [format!("~/{subdir}/.."), format!("{}/{subdir}/..", home.display())] {
+        for value in [
+            format!("~/{subdir}/.."),
+            format!("{}/{subdir}/..", home.display()),
+        ] {
             let runtime_env = BTreeMap::from([("GEMINI_HOME".to_string(), value.clone())]);
             let roots = agent_data_roots(AgentType::Antigravity, &runtime_env);
             for root in &roots {
@@ -2244,7 +2393,7 @@ mod tests {
     #[cfg(not(windows))]
     const CHILD_HOME_FIXTURE: (&str, &str) = ("HOME", "/srv/agy");
 
-    const ALL_AGENT_TYPES: [AgentType; 13] = [
+    const ALL_AGENT_TYPES: [AgentType; 16] = [
         AgentType::ClaudeCode,
         AgentType::Codex,
         AgentType::OpenCode,
@@ -2258,6 +2407,9 @@ mod tests {
         AgentType::Grok,
         AgentType::Cursor,
         AgentType::DeepSeek,
+        AgentType::Qoder,
+        AgentType::Antigravity,
+        AgentType::CodegAgent,
     ];
 
     #[test]

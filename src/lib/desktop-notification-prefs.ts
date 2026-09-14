@@ -37,12 +37,35 @@ export const NOTIFY_EVENT_IDS = [
 export type NotifyEventId = (typeof NOTIFY_EVENT_IDS)[number]
 
 /**
+ * Events that must prompt the user even while they are looking at the window.
+ *
+ * Question / permission: the agent is blocked. Turn complete / error: the
+ * conversation finished or failed. An OS banner is the prompt; gating these
+ * on `document.hidden` or focus is what made them never appear.
+ */
+export const ATTENTION_NOTIFY_EVENT_IDS = [
+  "turn_complete",
+  "permission_request",
+  "question_request",
+  "error",
+] as const satisfies readonly NotifyEventId[]
+
+const ATTENTION_NOTIFY_EVENT_ID_SET: ReadonlySet<string> = new Set(
+  ATTENTION_NOTIFY_EVENT_IDS
+)
+
+export function isAttentionNotifyEvent(eventId: NotifyEventId): boolean {
+  return ATTENTION_NOTIFY_EVENT_ID_SET.has(eventId)
+}
+
+/**
  * How much of the window's state gates delivery.
  *
- * `hidden` is what the app did before this preference existed, and stays the
- * default. It is also the strictest: a desktop window sitting visible on a
- * second monitor is NOT hidden, so `hidden` never fires for it — which is
- * exactly the "I never get notifications" report `unfocused` answers.
+ * `hidden` is the strictest: a desktop window sitting visible on a second
+ * monitor is NOT hidden, so `hidden` never fires for it — which is exactly
+ * the "I never get notifications" report `unfocused` (the default) answers.
+ * Attention events (question, turn complete, error, permission) ignore this
+ * gate entirely; see `isAttentionNotifyEvent`.
  */
 export const NOTIFY_WHEN_IDS = ["always", "unfocused", "hidden"] as const
 
@@ -64,17 +87,18 @@ export interface DesktopNotificationPrefs {
 }
 
 /**
- * Everything on, delivering only while the window is hidden.
+ * Everything on, delivering while the window is not focused.
  *
- * This is the pre-existing behaviour spelled out as data, and that is the whole
- * point: desktop notifications already shipped, so an upgrade that introduced
- * this preference file must not be the release that silently stops delivering
- * them. (Contrast `notification-sound-prefs.ts`, which defaults its master
- * switch OFF — audio was new there, and a quiet install must stay quiet.)
+ * `hidden` is the strictest gate and the one that produced "I never get
+ * notifications": a desktop window sitting visible on a second monitor (or
+ * behind another app) is not `document.hidden`. `unfocused` is the setting
+ * the UI already recommends for that report. (Contrast
+ * `notification-sound-prefs.ts`, which defaults its master switch OFF —
+ * audio was new there, and a quiet install must stay quiet.)
  */
 export const DEFAULT_DESKTOP_NOTIFICATION_PREFS: DesktopNotificationPrefs = {
   enabled: true,
-  when: "hidden",
+  when: "unfocused",
   hideBody: false,
   events: {
     turn_complete: true,

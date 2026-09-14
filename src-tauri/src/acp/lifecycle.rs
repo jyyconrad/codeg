@@ -24,6 +24,7 @@ use crate::acp::internal_bus::InternalEventBus;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::session_state::SessionState;
 use crate::acp::types::{AcpEvent, ConnectionStatus, EventEnvelope};
+use crate::chat_channel::terminal_message::TerminalKind;
 use crate::db::entities::conversation::ConversationStatus;
 use crate::db::error::DbError;
 use crate::db::service::conversation_service;
@@ -234,7 +235,11 @@ pub(crate) async fn handle_event(
             }
             Ok(())
         }
-        AcpEvent::TurnComplete { stop_reason, .. } => {
+        AcpEvent::TurnComplete {
+            stop_reason,
+            run_id,
+            ..
+        } => {
             // Centralized status transition: when the agent reports the turn
             // is done, flip the conversation row and re-broadcast the change
             // as `ConversationStatusChanged`. This lives in the lifecycle
@@ -272,14 +277,27 @@ pub(crate) async fn handle_event(
             else {
                 return Ok(());
             };
-            let (conversation_id, last_text) = {
-                let snap = state_arc.read().await;
-                (snap.conversation_id, snap.last_assistant_text.clone())
+            let (conversation_id, last_text, wiki_snapshot) = {
+                let mut snap = state_arc.write().await;
+                let wiki = snap.take_wiki_snapshot(run_id.as_deref());
+                (snap.conversation_id, snap.last_assistant_text.clone(), wiki)
             };
             // No conversation row bound (defensive — should never happen in
             // practice since `send_prompt_linked` runs before TurnComplete can
-            // fire). Nothing to update.
+            // fire). Wiki still consumes the frozen snapshot so filter can
+            // record the skip; do not drop it on this return.
             let Some(cid) = conversation_id else {
+                if stop_reason == "end_turn" {
+                    maybe_publish_run_terminal(
+                        db_conn,
+                        manager,
+                        &state_arc,
+                        TerminalKind::Completed,
+                        None,
+                        wiki_snapshot,
+                    )
+                    .await;
+                }
                 return Ok(());
             };
             if let Some(ts) = target_status.clone() {
@@ -298,6 +316,24 @@ pub(crate) async fn handle_event(
                 .await;
             }
 
+            let publish_kind = match stop_reason.as_str() {
+                "end_turn" => Some(TerminalKind::Completed),
+                // User-cancel owns Stopped; do not double-send here.
+                "cancelled" => None,
+                "refusal" | "max_tokens" | "max_turn_requests" | "unknown" | "empty"
+                | "auth_required" => Some(TerminalKind::Error),
+                _ => None,
+            };
+            if let Some(kind) = publish_kind {
+                let error = (kind == TerminalKind::Error).then_some(stop_reason.as_str());
+                let wiki = if kind == TerminalKind::Completed {
+                    wiki_snapshot
+                } else {
+                    None
+                };
+                maybe_publish_run_terminal(db_conn, manager, &state_arc, kind, error, wiki).await;
+            }
+
             // If this conversation was spawned by a delegation, resolve the
             // pending broker call. The broker maps the outcome onto the
             // parent's `tool_use_id` via the registered `call_id`.
@@ -311,6 +347,31 @@ pub(crate) async fn handle_event(
                 )
                 .await;
             }
+            Ok(())
+        }
+        AcpEvent::Error {
+            message,
+            code,
+            terminal,
+            ..
+        } => {
+            if !*terminal {
+                return Ok(());
+            }
+            let Some((state_arc, _)) = manager.get_state_and_emitter(&envelope.connection_id).await
+            else {
+                return Ok(());
+            };
+            let detail = format_terminal_error(message, code.as_deref());
+            maybe_publish_run_terminal(
+                db_conn,
+                manager,
+                &state_arc,
+                TerminalKind::Error,
+                Some(&detail),
+                None,
+            )
+            .await;
             Ok(())
         }
         AcpEvent::NativeSessionTitle { title } => {
@@ -354,6 +415,26 @@ pub(crate) async fn handle_event(
         // this dispatcher with new arms as the lifecycle scope grows.
         _ => Ok(()),
     }
+}
+
+/// Historical hook. Channel IM is owned by the Events-tab subscriber.
+pub(crate) async fn maybe_publish_run_terminal(
+    db_conn: &DatabaseConnection,
+    manager: &ConnectionManager,
+    state_arc: &Arc<RwLock<SessionState>>,
+    kind: TerminalKind,
+    error: Option<&str>,
+    wiki_snapshot: Option<crate::wiki::snapshot::WikiTurnSnapshot>,
+) {
+    crate::acp::run_settled::dispatch_run_settled(
+        db_conn,
+        manager,
+        state_arc,
+        kind,
+        error,
+        wiki_snapshot,
+    )
+    .await;
 }
 
 /// On TurnComplete for a delegation child, resolve the pending broker call
@@ -532,7 +613,7 @@ async fn forward_disconnect_to_broker(
 /// (so the parent agent sees both the machine-readable bucket and the
 /// human-readable text). Trims trailing whitespace; returns `message`
 /// verbatim when no code is provided.
-fn format_terminal_error(message: &str, code: Option<&str>) -> String {
+pub(crate) fn format_terminal_error(message: &str, code: Option<&str>) -> String {
     let trimmed = message.trim();
     match code {
         Some(c) if !c.trim().is_empty() => format!("[{c}] {trimmed}"),
@@ -1536,6 +1617,21 @@ async fn connection_worker_loop(
                 if terminal_dispatched {
                     continue;
                 }
+                // handle_event while the manager entry is live; CachedConn
+                // covers cleanup already dropping the entry.
+                handle_event_with_retry(&db, &manager, envelope, broker.as_ref()).await;
+                if let Some(entry) = cache.get(&connection_id) {
+                    let detail = format_terminal_error(message, code.as_deref());
+                    maybe_publish_run_terminal(
+                        &db,
+                        &manager,
+                        &entry.state,
+                        TerminalKind::Error,
+                        Some(&detail),
+                        None,
+                    )
+                    .await;
+                }
                 // Genuinely terminal (the `run_connection` failure path at
                 // `connection.rs:493`). Drain the broker NOW with the error
                 // detail instead of waiting for the trailing `Disconnected`.
@@ -1723,10 +1819,12 @@ pub fn lifecycle_subscriber_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acp::session_state::SessionState;
+    use crate::acp::session_state::{LiveContentBlock, LiveMessage, SessionState};
     use crate::db::test_helpers;
     use crate::models::agent::AgentType;
+    use crate::models::message::MessageRole;
     use crate::web::event_bridge::EventEmitter;
+    use chrono::Utc;
     use std::sync::Arc;
     use tokio::sync::{mpsc, RwLock};
 
@@ -1755,6 +1853,7 @@ mod tests {
             config_fingerprint: String::new(),
             last_observed_fingerprint: String::new(),
             child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            native_shutdown: None,
         }
     }
 
@@ -2087,6 +2186,7 @@ mod tests {
                 session_id: "ext-1".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
@@ -2138,6 +2238,7 @@ mod tests {
                     session_id: "ext-1".into(),
                     stop_reason: stop_reason.into(),
                     agent_type: "open_code".into(),
+                    run_id: None,
                 },
             };
             handle_event(&db.conn, &mgr, &env, None).await.unwrap();
@@ -2176,6 +2277,7 @@ mod tests {
                 session_id: "ext-1".into(),
                 stop_reason: "cancelled".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
@@ -2183,6 +2285,532 @@ mod tests {
             read_row_status(&db, conv.id).await,
             ConversationStatus::InProgress,
             "TurnComplete{{cancelled}} must not overwrite the row — user-cancel path owns it"
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Recorder {
+        msgs: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    struct RecordingBackend {
+        rec: Recorder,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::chat_channel::traits::ChatChannelBackend for RecordingBackend {
+        fn channel_type(&self) -> crate::chat_channel::types::ChannelType {
+            crate::chat_channel::types::ChannelType::Telegram
+        }
+        async fn start(
+            &self,
+            _command_tx: mpsc::Sender<crate::chat_channel::types::IncomingCommand>,
+        ) -> Result<(), crate::chat_channel::error::ChatChannelError> {
+            Ok(())
+        }
+        async fn stop(&self) -> Result<(), crate::chat_channel::error::ChatChannelError> {
+            Ok(())
+        }
+        async fn status(&self) -> crate::chat_channel::types::ChannelConnectionStatus {
+            crate::chat_channel::types::ChannelConnectionStatus::Connected
+        }
+        async fn send_message(
+            &self,
+            text: &str,
+        ) -> Result<
+            crate::chat_channel::types::SentMessageId,
+            crate::chat_channel::error::ChatChannelError,
+        > {
+            self.rec.msgs.lock().await.push(text.to_string());
+            Ok(crate::chat_channel::types::SentMessageId("1".into()))
+        }
+        async fn send_rich_message(
+            &self,
+            message: &crate::chat_channel::types::RichMessage,
+        ) -> Result<
+            crate::chat_channel::types::SentMessageId,
+            crate::chat_channel::error::ChatChannelError,
+        > {
+            self.rec.msgs.lock().await.push(message.to_plain_text());
+            Ok(crate::chat_channel::types::SentMessageId("1".into()))
+        }
+        async fn test_connection(
+            &self,
+        ) -> Result<(), crate::chat_channel::error::ChatChannelError> {
+            Ok(())
+        }
+    }
+
+    async fn bind_folder_channel_with_recorder(
+        db: &crate::db::AppDatabase,
+        folder_id: i32,
+    ) -> (crate::chat_channel::manager::ChatChannelManager, Recorder) {
+        let channel = crate::db::service::chat_channel_service::create(
+            &db.conn,
+            "tg test".into(),
+            "telegram".into(),
+            "{}".into(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .expect("seed chat channel");
+        crate::db::service::folder_chat_channel_service::set_channel_ids(
+            &db.conn,
+            folder_id,
+            &[channel.id],
+        )
+        .await
+        .expect("bind folder channel");
+        let chat = crate::chat_channel::manager::ChatChannelManager::new();
+        let rec = Recorder::default();
+        chat.add_channel(
+            channel.id,
+            "test".into(),
+            crate::chat_channel::types::ChannelType::Telegram,
+            Box::new(RecordingBackend { rec: rec.clone() }),
+        )
+        .await
+        .unwrap();
+        (chat, rec)
+    }
+
+    fn turn_complete_env(connection_id: &str, stop_reason: &str) -> EventEnvelope {
+        EventEnvelope {
+            seq: 1,
+            connection_id: connection_id.to_string(),
+            payload: AcpEvent::TurnComplete {
+                session_id: "ext-1".into(),
+                stop_reason: stop_reason.into(),
+                agent_type: "claude_code".into(),
+                run_id: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_event_end_turn_does_not_publish_channel_card() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-end").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+        mgr.get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .last_assistant_text = Some("answer".into());
+
+        handle_event(&db.conn, &mgr, &turn_complete_env("c1", "end_turn"), None)
+            .await
+            .unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a second channel card; Events-tab owns it, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_end_turn_skips_when_turn_complete_event_disabled() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        crate::commands::chat_channel::set_chat_event_filter_core(
+            &db,
+            Some(vec!["error".to_string()]),
+        )
+        .await
+        .unwrap();
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-filter-off").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+        mgr.get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .last_assistant_text = Some("answer".into());
+
+        handle_event(&db.conn, &mgr, &turn_complete_env("c1", "end_turn"), None)
+            .await
+            .unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "Events-tab turn_complete off must suppress last_message fan-out, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_second_turn_complete_does_not_republish() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-once").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+        mgr.get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .last_assistant_text = Some("answer".into());
+
+        let env = turn_complete_env("c1", "end_turn");
+        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_refusal_publishes_stop_reason_as_error() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-refusal").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+        mgr.get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .last_assistant_text = Some("partial".into());
+
+        handle_event(&db.conn, &mgr, &turn_complete_env("c1", "refusal"), None)
+            .await
+            .unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_empty_stop_reason_without_assistant_sends_reason() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-empty").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+
+        handle_event(&db.conn, &mgr, &turn_complete_env("c1", "empty"), None)
+            .await
+            .unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_publishes_stopped_when_no_assistant_text() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-cancel").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        let _rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        mgr.get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(conv.id);
+
+        mgr.cancel(&db.conn, "c1").await.unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_during_follow_up_uses_in_flight_text_not_previous_turn() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-cancel-live").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        let _rx = mgr
+            .insert_test_connection_live("c1", AgentType::ClaudeCode, None, EventEmitter::Noop)
+            .await;
+        {
+            let state_arc = mgr.get_state("c1").await.unwrap();
+            let mut state = state_arc.write().await;
+            state.conversation_id = Some(conv.id);
+            state.last_assistant_text = Some("previous answer".into());
+            state.live_message = Some(LiveMessage {
+                id: "live-1".into(),
+                role: MessageRole::Assistant,
+                content: vec![LiveContentBlock::Text {
+                    text: "partial now".into(),
+                    parent_tool_use_id: None,
+                }],
+                started_at: Utc::now(),
+            });
+        }
+
+        mgr.cancel(&db.conn, "c1").await.unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_end_turn_does_not_publish_delegate_conversation() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-delegate").await;
+        let parent =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let child = conversation_service::create_with_delegation(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            None,
+            None,
+            Some(crate::acp::delegation::spawner::DelegationLink {
+                parent_conversation_id: parent.id,
+                parent_tool_use_id: "tu-1".into(),
+                delegation_call_id: "call-1".into(),
+            }),
+        )
+        .await
+        .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(child.id)),
+            );
+        }
+        mgr.get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .last_assistant_text = Some("child answer".into());
+
+        handle_event(&db.conn, &mgr, &turn_complete_env("c1", "end_turn"), None)
+            .await
+            .unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "delegate conversations must not fan out to folder channels, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_event_end_turn_does_not_publish_files_card() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-files").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let (chat, rec) = bind_folder_channel_with_recorder(&db, folder_id).await;
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+        {
+            let state = mgr.get_state("c1").await.unwrap();
+            let mut snap = state.write().await;
+            snap.last_assistant_text = Some("answer".into());
+            snap.last_file_changes = vec![crate::acp::run_settled::FileChange {
+                path: "src/secret.rs".into(),
+                operation: crate::acp::run_settled::FileChangeOp::Edit,
+            }];
+        }
+
+        handle_event(&db.conn, &mgr, &turn_complete_env("c1", "end_turn"), None)
+            .await
+            .unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_error_does_not_publish_channel_card() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/term-pub-bridge-only").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let channel = crate::db::service::chat_channel_service::create(
+            &db.conn,
+            "tg test".into(),
+            "telegram".into(),
+            "{}".into(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let chat = crate::chat_channel::manager::ChatChannelManager::new();
+        let rec = Recorder::default();
+        chat.add_channel(
+            channel.id,
+            "test".into(),
+            crate::chat_channel::types::ChannelType::Telegram,
+            Box::new(RecordingBackend { rec: rec.clone() }),
+        )
+        .await
+        .unwrap();
+        chat.session_bridge().lock().await.register(
+            "c1".into(),
+            crate::chat_channel::session_bridge::ActiveSession {
+                channel_id: channel.id,
+                sender_id: "u".into(),
+                target: crate::chat_channel::types::ChannelMessageTarget::channel(channel.id),
+                conversation_id: conv.id,
+                connection_id: "c1".into(),
+                agent_type: AgentType::ClaudeCode,
+                content_buffer: String::new(),
+                tool_calls: Vec::new(),
+                tool_call_inputs: Default::default(),
+                delegation_rendered: Default::default(),
+                last_flushed: std::time::Instant::now(),
+                pending_prompt: None,
+                permission_pending: None,
+            },
+        );
+
+        let mgr = ConnectionManager::new();
+        mgr.install_chat_channel(chat.clone_ref());
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+
+        let env = EventEnvelope {
+            seq: 1,
+            connection_id: "c1".to_string(),
+            payload: AcpEvent::Error {
+                message: "transport closed".into(),
+                agent_type: "claude_code".into(),
+                code: None,
+                details: None,
+                terminal: true,
+            },
+        };
+        handle_event(&db.conn, &mgr, &env, None).await.unwrap();
+
+        let msgs = rec.msgs.lock().await.clone();
+        assert!(
+            msgs.is_empty(),
+            "lifecycle must not send a channel card, got {msgs:?}"
         );
     }
 
@@ -2210,6 +2838,7 @@ mod tests {
                 session_id: "ext-1".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         };
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
@@ -2455,7 +3084,10 @@ mod tests {
         let env = EventEnvelope {
             seq: 1,
             connection_id: "c1".to_string(),
-            payload: AcpEvent::ContentDelta { text: "hi".into(), parent_tool_use_id: None },
+            payload: AcpEvent::ContentDelta {
+                text: "hi".into(),
+                parent_tool_use_id: None,
+            },
         };
         handle_event(&db.conn, &mgr, &env, None).await.unwrap();
 
@@ -2490,6 +3122,7 @@ mod tests {
             session_id: "s".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         }));
         assert!(is_lifecycle_relevant(&AcpEvent::ConversationLinked {
             conversation_id: 1,
@@ -2599,6 +3232,7 @@ mod tests {
             session_id: "s".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         }));
     }
 
@@ -2751,6 +3385,7 @@ mod tests {
                 session_id: "ext-final".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         }));
 
@@ -2831,6 +3466,7 @@ mod tests {
                 session_id: "ext-200".into(),
                 stop_reason: "end_turn".into(),
                 agent_type: "claude_code".into(),
+                run_id: None,
             },
         }));
 

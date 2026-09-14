@@ -40,7 +40,9 @@
       "general": "عام",
       "appearance": "المظهر",
       "agents": "الوكلاء",
+      "codeg_agent": "الوكيل المدمج",
       "mcp": "MCP",
+      "tools": "Tools",
       "skills": "Skills",
       "shortcuts": "الاختصارات",
       "version_control": "التحكم بالإصدارات",
@@ -53,8 +55,35 @@
       "office_tools": "أدوات المكتب",
       "skill_packs": "حزم المهارات",
       "quick_messages": "رسائل سريعة",
-      "logs": "سجلات التشغيل"
+      "logs": "سجلات التشغيل",
+      "wiki": "ويكي شخصي"
     }
+  },
+  "CodeIntelligenceSettings": {
+    "sectionTitle": "Tools",
+    "sectionDescription": "Project-hosted MCP tools for LSP and CodeGraph. Agents connect over MCP; language servers stay in the Codeg process. Off by default.",
+    "masterTitle": "Enable project tools",
+    "masterDescription": "When off, sessions do not receive LSP or CodeGraph MCP tools.",
+    "codegraphTitle": "CodeGraph MCP",
+    "codegraphDescription": "Official CodeGraph tools hosted by the project process. Codeg never runs codegraph install.",
+    "codegraphOnPath": "Binary: {path}",
+    "codegraphMissing": "codegraph is not on PATH",
+    "codegraphIndexed": "This folder has a .codegraph index",
+    "codegraphNotIndexed": "No .codegraph index yet (created in the background when enabled)",
+    "codegraphInstall": "Install: npm i -g @colbymchenry/codegraph",
+    "binaryPath": "Binary path (optional)",
+    "lspTitle": "LSP MCP tools",
+    "lspAutoAttach": "Advertise LSP MCP tools",
+    "lspAutoAttachDescription": "These MCP tools map to language-server operations. Language servers are started on demand by the project process, not listed here.",
+    "maxConcurrent": "Host language-server limit",
+    "maxConcurrentHint": "Maximum language servers the project process may run at once.",
+    "mcpAdvertised": "advertised",
+    "mcpHidden": "not advertised",
+    "saveFailed": "Could not save: {message}",
+    "loadFailed": "Could not load: {message}",
+    "save": "Save",
+    "saving": "Saving...",
+    "loading": "Loading..."
   },
   "AppearanceSettings": {
     "sectionTitle": "مظهر السمة",
@@ -1434,7 +1463,8 @@
       "upgradeAvailable": "{versionText}. تتوفر ترقية.",
       "remoteUnavailable": "{versionText}. الإصدار البعيد غير متاح حاليًا.",
       "latest": "{versionText}. أنت على أحدث إصدار.",
-      "latestChannel": "{versionText}. قناة الأحدث مفعّلة؛ الترقية تثبّت أحدث إصدار."
+      "latestChannel": "{versionText}. قناة الأحدث مفعّلة؛ الترقية تثبّت أحدث إصدار.",
+      "inProcess": "بيئة تشغيل مدمجة {version}. لا حاجة لتثبيت CLI."
     },
     "adapter": {
       "label": "محوّل ACP",
@@ -1584,11 +1614,116 @@
     "customAgentRemoveWithData": "حذف سجل المحادثات المسجل أيضًا",
     "customAgentRemoved": "تمت إزالة {name}",
     "customAgentBadge": "مخصص",
-    "customAgentNotLaunchable": "لا يمكن تشغيل هذا الوكيل هنا: {reason}"
+    "customAgentNotLaunchable": "لا يمكن تشغيل هذا الوكيل هنا: {reason}",
+    "codegAgent": {
+      "inProcess": "بيئة تشغيل مدمجة داخل العملية. اربط مزوّد نماذج واحفظ؛ يمكن تعديل النافذة في هذه البطاقة. لا حاجة لتثبيت CLI.",
+      "experimental": "تجريبي. معطّل افتراضيًا.",
+      "noSandbox": "لا توجد بيئة عزل على مستوى نظام التشغيل. تُنفَّذ كتابة الملفات وbash فقط بعد إذن لكل استدعاء. سياسة نظام الملفات لمساحة العمل ليست عزلًا للقشرة.",
+      "recovery": "لا تعيد الاستعادة بعد الانهيار تشغيل الأدوات تلقائيًا. الاستدعاءات التي بدأت دون نهاية مؤكدة تُستأنف كـ unknown.",
+      "contextWindowsHint": "ربط قناة نموذج يكتب CODEG_AGENT_CONTEXT_WINDOWS قابلاً للتحرير (128000 ما لم يكن للمزوّد نافذة). نموذج بلا نافذة لا يبدأ.",
+      "protocol": "الإصدار الأول يستخدم OpenAI Chat Completions فقط ولا يستخدم Responses API.",
+      "modelSelectorHint": "يعرض منتقي نموذج الجلسة فقط المعرّفات الموجودة في CODEG_AGENT_CONTEXT_WINDOWS. تُرفض المعرّفات المجهولة.",
+      "usageLastRequest": "حلقة السياق تعرض إشغال آخر طلب للنموذج من النافذة المضبوطة، وليس مجموع رموز التشغيل. إذا أغفل البوابة استخدام الإدخال تُقدَّر القيمة.",
+      "envWindowsHint": "متغيرات البيئة إسقاط للمزوّد المرتبط ولحقلي النافذة وأقصى إخراج في هذه البطاقة. CODEG_AGENT_MAX_OUTPUT_TOKENS اختياري وقيمته الافتراضية 4096 ويجب أن يبقى أقل من النافذة بعد طرح هامش الأمان.",
+      "configCardTitle": "إعداد Codeg Agent",
+      "bindProvider": "مزوّد النماذج",
+      "addModelProvider": "إضافة مزوّد نماذج",
+      "bindProviderFix": "ربط مزوّد نماذج",
+      "addProviderFix": "إضافة مزوّد نماذج",
+      "editWindowFix": "تحرير نافذة السياق",
+      "modelReadOnly": "النموذج",
+      "contextWindow": "نافذة السياق",
+      "maxOutput": "أقصى رموز إخراج",
+      "systemPrompt": "موجه النظام",
+      "systemPromptHint": "الفراغ يستخدم القيمة المدمجة. ما زال يُضاف دليل العمل وفهرس المهارات.",
+      "compactPrompt": "موجه ضغط السياق (L2)",
+      "compactPromptHint": "يُستخدم فقط عند الضغط الثاني في الجلسة. الفراغ يستخدم القالب المدمج.",
+      "save": "حفظ",
+      "envAdvanced": "متغيرات البيئة (إسقاط / متقدم)",
+      "envAdvancedHint": "عنوان URL والمفتاح والنموذج للمزوّد المرتبط إسقاط. حرّر النافذة والموجهات في البطاقة أعلاه.",
+      "boundCredentials": "بيانات اعتماد المزوّد المرتبط (للقراءة فقط)",
+      "emptyUsesBuiltin": "فارغ = القيمة المدمجة",
+      "openDedicatedSettings": "فتح إعدادات الوكيل المدمج",
+      "compactSoftPercent": "عتبة الضغط المرنة (%)",
+      "compactRecentTurns": "الإبقاء على الجولات الأخيرة",
+      "maxTurns": "الحد الأقصى لجولات النموذج"
+    }
   },
   "SettingsPages": {
     "agentsLoading": "جارٍ تحميل إعدادات الوكلاء...",
-    "skillPacksLoading": "جارٍ تحميل حزم المهارات…"
+    "skillPacksLoading": "جارٍ تحميل حزم المهارات…",
+    "codegAgentLoading": "جارٍ تحميل إعدادات الوكيل المدمج...",
+    "wikiLoading": "جارٍ تحميل إعدادات الويكي..."
+  },
+  "CodegAgentSettings": {
+    "sectionTitle": "الوكيل المدمج",
+    "sectionDescription": "اضبط Codeg Agent: مزوّد نماذج متوافق مع OpenAI، والمطالبات، وضغط السياق، وحدود التشغيل.",
+    "loading": "جارٍ التحميل...",
+    "loadFailed": "تعذّر تحميل إعدادات Codeg Agent: {message}",
+    "missingAgent": "Codeg Agent غير متوفر في هذا الإصدار.",
+    "providerTitle": "مزوّد النماذج",
+    "providerDescription": "يعيد استخدام الإعدادات ← مزوّدو النماذج. أي نقطة نهاية OpenAI Chat Completions /v1 تعمل: سحابية أو محلية أو بوابة مخصصة.",
+    "presetHint": "السحابة والمحلي والمخصص تُربط بالطريقة نفسها. خوادم الاسترجاع المحلي قد تستغني عن مفتاح API.",
+    "promptsTitle": "المطالبات",
+    "promptsDescription": "تجاوزات اختيارية. الحقول الفارغة تبقي القيم المدمجة.",
+    "compressionTitle": "ضغط السياق",
+    "compressionDescription": "عند تجاوز الإشغال العتبة المرنة تُلخَّص الجولات الأقدم، وتبقى الأحدث كما هي.",
+    "compactSoftPercent": "عتبة الضغط المرنة (%)",
+    "compactSoftPercentHint": "نسبة من ميزانية الإدخال. الافتراضي 80. النطاق 1–100.",
+    "compactRecentTurns": "الإبقاء على الجولات الأخيرة",
+    "compactRecentTurnsHint": "أدنى عدد من الجولات الحية قبل الضغط. الافتراضي 6.",
+    "runtimeTitle": "التشغيل",
+    "runtimeDescription": "ميزانية استدعاء النموذج لكل مطالبة وما إذا كان الوكيل مفعّلاً للمحادثات الجديدة.",
+    "maxTurns": "الحد الأقصى لجولات النموذج",
+    "maxTurnsHint": "الاستدعاء الأول مع إعادة محاولات الأدوات لمطالبة واحدة. الافتراضي 40.",
+    "enabled": "تفعيل Codeg Agent",
+    "enabledHint": "لا يمكن تشغيل الوكلاء المعطّلين. يسري من الجلسة التالية.",
+    "preflightFailed": "فشل الفحص المسبق",
+    "manageProviders": "إدارة المزوّدين",
+    "searchProviders": "Search providers…",
+    "noProviders": "No providers yet. Add one to bind a model.",
+    "addProvider": "Add provider",
+    "providerOn": "ON",
+    "apiKey": "API key",
+    "apiKeyPlaceholder": "Leave blank to keep the current key",
+    "apiUrl": "API URL",
+    "apiUrlHint": "OpenAI-compatible /v1 root. A trailing /v1 is kept; the client appends /chat/completions.",
+    "detect": "Detect",
+    "detecting": "Detecting…",
+    "detectSuccess": "Found {count} models",
+    "detectFailed": "Could not list models: {message}",
+    "modelsTitle": "Models",
+    "addModel": "Add",
+    "modelIdPlaceholder": "Model id",
+    "emptyModels": "No models yet. Detect from the endpoint or add an id.",
+    "setDefault": "Default for new sessions",
+    "removeModel": "Remove",
+    "providerName": "Name",
+    "saveProvider": "Save channel",
+    "deleteProvider": "Delete",
+    "deleteConfirmTitle": "Delete this provider?",
+    "deleteConfirmDescription": "This removes the channel. Bind another provider before saving if this one is in use.",
+    "compactModel": "Compact model",
+    "compactModelHint": "Used for L2 conversation compression. Choose from models on the bound provider.",
+    "compactModelFollowSession": "Same as session model",
+    "restoreDefault": "Restore default",
+    "foreignProviderHint": "This channel belongs to another agent. Bind it as-is, or add a Codeg provider to manage multiple models.",
+    "loopbackKeyOptional": "Loopback URL — API key optional",
+    "addFirstModel": "First model (optional)",
+    "modelWindow": "Context window",
+    "defaultModel": "Default",
+    "providerSaved": "Provider saved",
+    "providerCreated": "Provider created",
+    "providerDeleted": "Provider deleted",
+    "bindThisProvider": "Use this provider",
+    "selectProvider": "Select a provider",
+    "preset": "Platform",
+    "creating": "Creating…",
+    "requestProtocol": "Request protocol",
+    "requestProtocolHint": "One session uses one protocol. Auto probes Chat Completions first and falls back to Responses only if that path 404s.",
+    "protocolChatCompletions": "Chat Completions",
+    "protocolResponses": "Responses",
+    "protocolAuto": "Auto"
   },
   "GeneralSettings": {
     "loading": "جارٍ التحميل...",
@@ -1754,6 +1889,14 @@
       "noConversationsFound": "لم يتم العثور على محادثات.",
       "importLocalSessions": "استيراد الجلسات المحلية",
       "importing": "جارٍ الاستيراد...",
+      "notifyChannels": "قنوات الإشعار…",
+      "notifyChannelsDialog": {
+        "title": "قنوات الإشعار",
+        "description": "عند انتهاء تشغيل في هذا المجلد، أرسل الرسالة النهائية إلى كل قناة محددة.",
+        "empty": "لا توجد قنوات دردشة بعد. أضف واحدة من الإعدادات.",
+        "loadFailed": "تعذر تحميل القنوات: {message}",
+        "saveFailed": "تعذر حفظ ربط القنوات: {message}"
+      },
       "error": "خطأ: {message}",
       "completeAllSessions": "إكمال جميع الجلسات",
       "completeAllReviewTitle": "إكمال جميع جلسات المراجعة؟",
@@ -1865,6 +2008,8 @@
       "loadingSubsessions": "جارٍ تحميل المحادثات الفرعية…",
       "forge": "لوحة المستودع",
       "canvas": "محادثات لا نهائية",
+      "toolbox": "صندوق الأدوات",
+      "wiki": "ويكي شخصي",
       "folderGroup": {
         "newGroup": "مجموعة جديدة",
         "newGroupTitle": "مجموعة مجلدات جديدة",
@@ -3270,6 +3415,9 @@
         "emptyConversation": "لا توجد رسائل في هذه المحادثة.",
         "systemMessage": "رسالة النظام",
         "copyMessage": "نسخ",
+        "editLastRound": "تعديل آخر رسالة",
+        "editingLastRound": "الإرسال سيستبدل هذه الجولة",
+        "cancelEditLastRound": "إلغاء",
         "forkFromHere": "تفريع من هنا",
         "forkBusy": "لا يمكن التفريع أثناء تنفيذ دور",
         "forkNotReady": "لا يمكن التفريع من هذا الرد بعد، أعد المحاولة بعد قليل",
@@ -3741,6 +3889,33 @@
         "stopDeclined": "تعذّر إيقاف هذه المهمة، ربما تكون قد انتهت بالفعل.",
         "stopFailed": "فشل إيقاف المهمة: {error}"
       },
+      "workflows": {
+        "title": "سير العمل",
+        "collapseAria": "طي سير العمل",
+        "expandAria": "توسيع سير العمل",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "تثبيت فوق حقل الإدخال",
+        "dockToOverlayAria": "تثبيت بجانب الخطة",
+        "starting": "جارٍ البدء",
+        "phase": "{name} ({current}/{total})",
+        "agents": "{done} مكتمل · {running} قيد التشغيل",
+        "budget": "{used}/{total}",
+        "paused": "متوقف",
+        "phaseState": {
+          "pending": "معلق",
+          "active": "نشط",
+          "done": "مكتمل",
+          "failed": "فشل"
+        },
+        "nodeState": {
+          "pending": "معلق",
+          "running": "قيد التشغيل",
+          "done": "مكتمل",
+          "failed": "فشل",
+          "cancelled": "أُلغي"
+        }
+      },
       "proposedPlan": {
         "title": "الخطة المقترحة",
         "planning": "جارٍ التخطيط…"
@@ -4077,7 +4252,22 @@
     "apiUrlPlaceholder": "https://api.openai.com/v1",
     "apiKey": "مفتاح API",
     "apiKeyPlaceholder": "sk-...",
+    "apiKeyOptionalLocal": "اختياري للخوادم المحلية",
+    "apiKeyOptionalLocalHint": "Ollama وLM Studio وغيرهما من خوادم /v1 على الاسترجاع المحلي تتجاهل Authorization عادة. اتركه فارغاً لاستخدام مفتاح محلي وهمي عند التشغيل.",
     "apiKeyKeepCurrent": "اتركه فارغاً للإبقاء على الحالي",
+    "modelPlaceholderCodeg": "gpt-4.1 / llama3.2 / deepseek-chat",
+    "presets": {
+      "label": "إعداد مسبق لنقطة النهاية",
+      "hint": "يملأ عنوان Chat Completions /v1 شائعاً ومعرّف نموذج. يمكن تعديلهما لاحقاً.",
+      "openai": "OpenAI",
+      "deepseek": "DeepSeek",
+      "groq": "Groq",
+      "together": "Together",
+      "openrouter": "OpenRouter",
+      "ollama": "Ollama (محلي)",
+      "lmstudio": "LM Studio (محلي)",
+      "custom": "مخصص /v1"
+    },
     "agentTypes": "أنواع الوكلاء",
     "agentTypesRequired": "يجب اختيار نوع وكيل واحد على الأقل.",
     "agentType": "نوع الوكيل",
@@ -5840,5 +6030,454 @@
     "terminalNoDirectory": "لا يوجد دليل عمل لهذه البطاقة",
     "confirmDeleteTerminals": "سيتم إغلاق {count} من الطرفيات قيد التشغيل وإنهاء عملياتها.",
     "confirmDeleteNotesAndTerminals": "سيتم حذف {notes} من الملاحظات التي كتبتها نهائيًا، وإنهاء {terminals} من الطرفيات قيد التشغيل."
+  },
+  "Toolbox": {
+    "title": "صندوق الأدوات",
+    "searchPlaceholder": "Search tools",
+    "favorites": "Favorites",
+    "recent": "Recent",
+    "favorite": "Favorite",
+    "noResults": "No matching tools",
+    "emptyHint": "Pick a tool from the list",
+    "input": "Input",
+    "output": "Result",
+    "params": "Options",
+    "example": "Example",
+    "clear": "Clear",
+    "copy": "Copy",
+    "copied": "Copied",
+    "download": "Download",
+    "sendTo": "Send result to",
+    "sendToPlaceholder": "Choose a tool",
+    "error": "Error",
+    "encodingNotice": "This is encoding, not encryption.",
+    "cryptoFooter": "Runs on this device. For debugging and conversion only — not a substitute for a key management system.",
+    "categories": {
+      "text": "Text",
+      "dev": "Develop",
+      "encoding": "Encode / Decode",
+      "crypto": "Encrypt / Decrypt",
+      "image": "Image",
+      "general": "General"
+    },
+    "tools": {
+      "text-stats": {
+        "title": "Word & character count",
+        "description": "Count characters, CJK characters, words, lines, and bytes.",
+        "aliases": "word count"
+      },
+      "text-clean": {
+        "title": "Text cleaner",
+        "description": "Trim, drop blank lines, normalize newlines, full/half width, punctuation.",
+        "aliases": "trim"
+      },
+      "line-dedupe-sort": {
+        "title": "Dedupe & sort lines",
+        "description": "Split by line, dedupe with case/whitespace rules, sort or keep order.",
+        "aliases": "unique"
+      },
+      "case-naming": {
+        "title": "Naming style",
+        "description": "Convert camelCase, snake_case, PascalCase, kebab-case, CONSTANT_CASE.",
+        "aliases": "camelCase"
+      },
+      "text-diff": {
+        "title": "Text diff",
+        "description": "Line-level diff of two texts, then mark inline inserts and deletes.",
+        "aliases": "diff"
+      },
+      "find-replace": {
+        "title": "Find & replace",
+        "description": "Literal or regex replace with a preview of matches.",
+        "aliases": "replace"
+      },
+      "markdown-preview": {
+        "title": "Markdown preview",
+        "description": "Render Markdown to sanitized HTML. Copy or export the result.",
+        "aliases": "md"
+      },
+      "zh-convert": {
+        "title": "Simplified / Traditional Chinese",
+        "description": "Convert between simplified and traditional Chinese at phrase level.",
+        "aliases": "opencc"
+      },
+      "json-format": {
+        "title": "JSON format & validate",
+        "description": "Pretty-print or minify. Locate parse errors by line. Optional big-int strings.",
+        "aliases": "pretty json"
+      },
+      "timestamp": {
+        "title": "Timestamp converter",
+        "description": "Unix seconds/milliseconds ↔ date with an explicit time zone.",
+        "aliases": "unix epoch"
+      },
+      "uuid": {
+        "title": "UUID generator",
+        "description": "Cryptographically random UUID v4, batch copy. Optional v7.",
+        "aliases": "guid"
+      },
+      "json-yaml": {
+        "title": "JSON ↔ YAML",
+        "description": "Convert both ways and report the failing path.",
+        "aliases": "yml"
+      },
+      "json-csv": {
+        "title": "JSON ↔ CSV",
+        "description": "Map object arrays to headers; choose field types on the way back.",
+        "aliases": "csv"
+      },
+      "regex-tester": {
+        "title": "Regex tester",
+        "description": "Live match groups and replace. Runs in a worker with a timeout.",
+        "aliases": "regexp"
+      },
+      "cron": {
+        "title": "Cron explain",
+        "description": "5- or 6-field expressions plus time zone; list upcoming runs.",
+        "aliases": "crontab"
+      },
+      "sql-format": {
+        "title": "SQL formatter",
+        "description": "Pretty-print or compact. Never executes the statement.",
+        "aliases": "sql"
+      },
+      "code-format": {
+        "title": "XML / YAML viewer",
+        "description": "Indent, fold, and show syntax error location.",
+        "aliases": "xml yaml"
+      },
+      "base64": {
+        "title": "Base64 encode / decode",
+        "description": "UTF-8 text or files. Rejects illegal characters.",
+        "aliases": "base64加密"
+      },
+      "url-codec": {
+        "title": "URL encode / decode",
+        "description": "Full URL vs component encoding; show protocol, host, path, query.",
+        "aliases": "urlencode"
+      },
+      "hex-string": {
+        "title": "Hex ↔ string",
+        "description": "UTF-8 or Latin-1. Tolerates spaces and 0x prefixes.",
+        "aliases": "hex"
+      },
+      "html-entities": {
+        "title": "HTML entities",
+        "description": "Escape and unescape HTML entities.",
+        "aliases": "html escape"
+      },
+      "unicode-escape": {
+        "title": "Unicode escape",
+        "description": "\\uXXXX ↔ text, JSON-style escapes.",
+        "aliases": "unicode"
+      },
+      "radix": {
+        "title": "Radix converter",
+        "description": "Integers in bases 2–36. Big integers as strings.",
+        "aliases": "binary"
+      },
+      "symmetric-cipher": {
+        "title": "AES / SM4 encrypt",
+        "description": "AES-128/192/256 and SM4. CBC/GCM/ECB, PKCS7. Key/IV as UTF-8, Hex, or Base64.",
+        "aliases": "aes sm4 国密"
+      },
+      "hash": {
+        "title": "Hash & checksum",
+        "description": "MD5, SHA-1/2/3, SM3 for text or small files.",
+        "aliases": "md5加密 sha256 sm3"
+      },
+      "hmac": {
+        "title": "HMAC sign",
+        "description": "Keyed SHA-256/512 or SM3. Hex or Base64 output.",
+        "aliases": "hmac sign"
+      },
+      "password-gen": {
+        "title": "Password generator",
+        "description": "Secure random from a chosen alphabet. Results are not stored.",
+        "aliases": "password"
+      },
+      "asymmetric-cipher": {
+        "title": "RSA / SM2",
+        "description": "Keygen, encrypt/decrypt, sign/verify. PEM import/export.",
+        "aliases": "rsa sm2"
+      },
+      "jwt": {
+        "title": "JWT inspect",
+        "description": "Split header/payload. Optional HMAC/RSA verify, shown separately from decode.",
+        "aliases": "json web token"
+      },
+      "password-strength": {
+        "title": "Password strength",
+        "description": "Length, character classes, estimated entropy. Nothing is stored.",
+        "aliases": "entropy"
+      },
+      "totp": {
+        "title": "TOTP one-time code",
+        "description": "Local code from a Base32 secret with a countdown. Secret stays in memory.",
+        "aliases": "otp 2fa"
+      },
+      "image-compress": {
+        "title": "Image compress",
+        "description": "Resize or requality locally and compare size vs preview.",
+        "aliases": "compress"
+      },
+      "color-convert": {
+        "title": "Color convert",
+        "description": "HEX, RGB, HSL with a swatch and alpha.",
+        "aliases": "rgb hsl"
+      },
+      "image-crop": {
+        "title": "Crop & scale",
+        "description": "Map a selection to source pixels and resample. Optional aspect lock.",
+        "aliases": "crop"
+      },
+      "image-watermark": {
+        "title": "Watermark",
+        "description": "Overlay text or an image with opacity, angle, and spacing.",
+        "aliases": "watermark"
+      },
+      "image-stitch": {
+        "title": "Stitch images",
+        "description": "Horizontal, vertical, or grid layout onto one canvas.",
+        "aliases": "concat"
+      },
+      "qr-generate": {
+        "title": "QR code",
+        "description": "Encode text or a URL. Error-correction level. PNG or SVG.",
+        "aliases": "qrcode"
+      },
+      "qr-decode": {
+        "title": "QR decode",
+        "description": "Read a local image. Does not open links in the payload.",
+        "aliases": "scan"
+      },
+      "unit-convert": {
+        "title": "Unit converter",
+        "description": "Convert via a canonical unit. Temperature handles offset.",
+        "aliases": "unit"
+      },
+      "date-diff": {
+        "title": "Date interval",
+        "description": "Calendar days vs exact duration. Inclusive start/end option.",
+        "aliases": "datediff"
+      },
+      "bcrypt": {
+        "title": "bcrypt password hash",
+        "description": "Hash and verify passwords with bcrypt. Cost 4–14. Runs in Rust; password is not stored.",
+        "aliases": "bcrypt password hash"
+      },
+      "cert-pem": {
+        "title": "Certificate / PEM",
+        "description": "Parse a PEM certificate: subject, SAN, validity, SHA-256 fingerprint. No CRL/OCSP.",
+        "aliases": "x509 pem certificate"
+      }
+    }
+  },
+  "WikiSettings": {
+    "sectionTitle": "ويكي شخصي",
+    "sectionDescription": "يحفظ جلسات العمل المكتملة والمستندات المستوردة في خزنة Markdown محلية. تُكتب ذكريات الدورة والجلسة أولاً؛ ثم ينظّم المجدول أو اليدوي ملاحظات المشروع والقدرة.",
+    "loading": "جارٍ التحميل...",
+    "loadFailed": "تعذر تحميل إعدادات الويكي: {message}",
+    "retry": "إعادة المحاولة",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ...",
+    "saved": "تم حفظ إعدادات الويكي",
+    "saveFailed": "تعذر حفظ إعدادات الويكي: {message}",
+    "enabled": "تفعيل الويكي الشخصي",
+    "enabledHint": "عند التشغيل تُخزَّن نصوص الجلسات والاستيراد في خزنة محلية. قد يُرسل النص المستخرج لاحقًا إلى النموذج المرتبط لكتابة الذكريات أو تنظيم الملاحظات.",
+    "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
+    "statusTitle": "Schedule",
+    "statusDescription": "موعد التنظيم التالي والمصادر التي ما زالت تنتظر المعالجة.",
+    "nextCompileAt": "التجميع التالي",
+    "pendingSources": "مصادر معلّقة",
+    "notScheduled": "غير مجدول",
+    "vaultTitle": "Vault",
+    "vaultDescription": "One vault for work notes, capability notes, shared knowledge, and sources. Changing the path does not move files.",
+    "vaultPath": "Vault path",
+    "vaultPathHint": "Optional override. Leave empty to use the default Codeg wiki directory. Pause in-flight jobs before switching paths.",
+    "vaultPathPlaceholder": "Leave empty for the default path",
+    "timezone": "المنطقة الزمنية",
+    "timezoneHint": "IANA timezone for the compile schedule. First use follows the system timezone, then stays as saved.",
+    "compileCron": "Compile schedule (cron)",
+    "compileCronHint": "Five-field cron. Default is 0 3 * * * (03:00 every day).",
+    "captureTitle": "التقاط",
+    "captureDescription": "Successful ACP turns can be saved as sources. Delegate and Loop sub-sessions are skipped.",
+    "acpEnabled": "التقاط جلسات ACP المكتملة",
+    "acpEnabledHint": "Freeze successful ACP turns into the vault as sources.",
+    "excludeAgentTypes": "استبعاد أنواع الوكلاء",
+    "excludeAgentTypesHint": "Checked agents are not captured.",
+    "excludeFolders": "استبعاد المجلدات",
+    "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
+    "excludeFoldersPlaceholder": "e.g. 12, 34",
+    "unknownFolder": "المجلد {id}",
+    "restoreBuiltinPrompt": "Restore built-in",
+    "turnSummaryTitle": "ملخص الدورة",
+    "turnSummaryDescription": "بعد كل دورة ACP ناجحة تُكتب ذكرى مقروءة عما تغيّر وما نُفِّذ. معرّف النموذج الفارغ يستخدم الافتراضي المرتبط.",
+    "turnSummaryModel": "معرّف نموذج ملخص الدورة",
+    "turnSummaryModelHint": "يستبدل النموذج الافتراضي لوكيل Codeg المرتبط. اتركه فارغًا لاستخدام القناة المرتبطة.",
+    "turnSummaryModelPlaceholder": "الافتراضي المرتبط",
+    "turnSummaryPrompt": "موجّه ملخص الدورة",
+    "turnSummaryPromptPlaceholder": "مهارة ملخص الدورة كاملة. المضيف ما زال يتحقق من هوية الصفحة ولا يمكنه توسيع نطاق القراءة.",
+    "turnSummaryPromptBuiltinHint": "هذه مهارة ملخص الدورة كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا.",
+    "sessionRollupTitle": "تجميع المحادثة",
+    "sessionRollupDescription": "عندما تُعلَّم محادثة كمكتملة تُكتب صفحة جلسة من ذكريات الدورات. المحادثات غير المكتملة لا تحصل على صفحة جلسة.",
+    "sessionRollupModel": "معرّف نموذج تجميع المحادثة",
+    "sessionRollupModelHint": "يستبدل النموذج الافتراضي لوكيل Codeg المرتبط. اتركه فارغًا لاستخدام القناة المرتبطة.",
+    "sessionRollupModelPlaceholder": "الافتراضي المرتبط",
+    "sessionRollupPrompt": "موجّه تجميع المحادثة",
+    "sessionRollupPromptPlaceholder": "مهارة تجميع المحادثة كاملة. المضيف ما زال يتحقق من هوية الصفحة ولا يمكنه توسيع نطاق القراءة.",
+    "sessionRollupPromptBuiltinHint": "هذه مهارة تجميع المحادثة كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا.",
+    "synthesizeTitle": "تنظيم العمل",
+    "synthesizeDescription": "التنظيم المجدول أو اليدوي يحدّث ملاحظات المشروع والمسؤولية والقرار والنتيجة والقدرة من صفحات الذاكرة. المصادر المستوردة لا تُنظَّم تلقائيًا.",
+    "synthesizeEnabled": "تفعيل التنظيم",
+    "synthesizeEnabledHint": "عند الإيقاف يمكن استمرار كتابة صفحات الذاكرة. تتوقف مهام التنظيم الجديدة ويصبح «نظّم الآن» غير متاح.",
+    "synthesizeNowUnavailable": "«نظّم الآن» في طاولة العمل غير متاح أثناء تعطيل التنظيم.",
+    "synthesizeModel": "معرّف نموذج التنظيم",
+    "synthesizeModelHint": "يستبدل النموذج الافتراضي لوكيل Codeg المرتبط للتنظيم. اتركه فارغًا لاستخدام القناة المرتبطة.",
+    "synthesizeModelPlaceholder": "الافتراضي المرتبط",
+    "synthesizePrompt": "موجّه التنظيم",
+    "synthesizePromptPlaceholder": "مهارة التنظيم كاملة. المضيف ما زال يتحقق من المراجع ولا يمكنه اختراع ادّعاءات.",
+    "synthesizePromptBuiltinHint": "هذه مهارة التنظيم كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا."
+  },
+  "Wiki": {
+    "title": "ويكي شخصي",
+    "views": {
+      "all": "الكل",
+      "work": "العمل",
+      "capabilities": "القدرات",
+      "sources": "المصادر",
+      "jobs": "المهام"
+    },
+    "openInObsidian": "فتح في Obsidian",
+    "openInObsidianSoon": "Desktop local opener in a later slice",
+    "loading": "جارٍ التحميل...",
+    "loadFailed": "تعذر التحميل: {message}",
+    "retry": "إعادة المحاولة",
+    "refresh": "تحديث",
+    "loadMore": "تحميل المزيد",
+    "empty": "لا يوجد شيء بعد",
+    "treeTitle": "Vault · {path}",
+    "showRaw": "إظهار الأدلة الأصلية (raw/)",
+    "all": {
+      "emptyTitle": "كل الملاحظات",
+      "emptyDescription": "كل نصوص المعرفة في هذا المخزن: index.md وwork/ وcapabilities/ وknowledge/ وsources/ وjournal/ وlog.md وAGENTS.md. افتح ملف Markdown لقراءة النص كاملاً. تبقى روابط [[wikilink]] داخل المخزن."
+    },
+    "work": {
+      "emptyTitle": "لا توجد ذاكرة عمل بعد",
+      "emptyDescription": "دورات ACP الناجحة والمحادثات المكتملة تصبح ملاحظات ذاكرة عما أُنجز في هذه الدورة أو الجلسة. لاحقًا ينظّم الجدول أو الأمر اليدوي تلك الذكريات إلى ملاحظات مشروع ومسؤولية وقرار ونتيجة وقدرة. مصادر تبويب المصادر لا تظهر هنا.",
+      "compileFailed": "فشل آخر تنظيم: {message}",
+      "memoryCount": "{count, plural, one {ذاكرة واحدة} other {# ذكريات}}",
+      "ungrouped": "غير مجموعة",
+      "pageType": {
+        "turn-summary": "دورة",
+        "session-summary": "جلسة"
+      }
+    },
+    "capabilities": {
+      "emptyTitle": "لا توجد ملاحظات قدرات بعد",
+      "emptyDescription": "Capability pages are named after reusable work, not projects or models. Each page covers scope, methods, practice evidence, current boundaries, and a next practice suggestion. There are no mastery scores or proficiency ranks.",
+      "evidenceReference": "Reference — a method that can be learned; not proof you practiced it.",
+      "evidenceApplication": "Application — the method was used in work; the actor and role stay explicit.",
+      "evidenceResult": "Result — a test, review, or delivery in a stated context; one case is not universal proof.",
+      "evidenceReflection": "Reflection — a write-up of tradeoffs or failures; self-report is not external verification."
+    },
+    "sources": {
+      "emptyTitle": "لا توجد مصادر بعد",
+      "emptyDescription": "Successful ACP sessions and imported documents land here. Import files or paste text below. Default material role is reference; authorship is never inferred.",
+      "importFiles": "استيراد ملفات",
+      "importPaste": "استيراد النص الملصق",
+      "pastePlaceholder": "الصق Markdown أو نصًا عاديًا للاستيراد…",
+      "importHint": "Markdown وTXT وPDF وDOCX. حتى 20 ملفًا، 20 ميبي بايت لكل ملف. نفس البايتات تعيد المصدر الحالي.",
+      "disabledHint": "فعّل Wiki من الإعدادات قبل الاستيراد.",
+      "privacyHint": "تبقى الملفات الثنائية الأصلية على هذا الجهاز. قد يُرسل النص المستخرج لاحقًا إلى النموذج المرتبط. لا تُجلب روابط المستند ولا تُنفَّذ الماكروات.",
+      "warningsTitle": "تحذيرات الاستخراج",
+      "partialBanner": "استخراج النص جزئي (صفحات ناقصة أو مناطق غير قابلة للقراءة). اقبل هذا النطاق للسماح بالتجميع.",
+      "acceptExtraction": "قبول الاستخراج الحالي",
+      "accepting": "جارٍ القبول…",
+      "importing": "جارٍ الاستيراد…",
+      "importFailed": "فشل الاستيراد: {message}",
+      "duplicateNotice": "تم استيراد هذا الملف مسبقًا؛ يتم عرض المصدر الحالي.",
+      "fileTooLarge": "{name} يتجاوز حد 20 ميبي بايت وتم تخطيه.",
+      "titlePlaceholder": "العنوان (اختياري)",
+      "sourceUrlPlaceholder": "رابط المصدر (اختياري، لا يُجلب)",
+      "authorPlaceholder": "المؤلف (اختياري)",
+      "personalRolePlaceholder": "دورك (اختياري)",
+      "materialRoleLabel": "دور المادة",
+      "saveAnnotations": "حفظ التعليقات",
+      "materialRole": {
+        "reference": "مرجع",
+        "own-work": "عمل شخصي",
+        "team-work": "عمل الفريق",
+        "unspecified": "غير محدد"
+      },
+      "listTitle": "{count, plural, one {مصدر واحد} other {# مصادر}}",
+      "previewTitle": "معاينة",
+      "untitled": "مصدر بلا عنوان",
+      "kind": {
+        "acp-turn": "ACP session",
+        "document": "Document",
+        "pasted-text": "Pasted text",
+        "unknown": "Source"
+      },
+      "eligibility": {
+        "processing": "Processing",
+        "awaiting-acceptance": "Awaiting acceptance",
+        "ready": "Ready",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "withdrawn": "Withdrawn",
+        "unknown": "Unknown"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "لا توجد مهام بعد",
+      "emptyDescription": "ملخصات الدورة وتجميع المحادثة ومهام تنظيم العمل تعرض هنا التقدم والإخفاقات والتعارضات.",
+      "readOnlyHint": "«نظّم الآن» يضع مهمة تنظيم في قائمة الانتظار. أعد محاولة مهمة فاشلة؛ وألغِ مهمة لم تُعتمد بعد.",
+      "compileNow": "نظّم الآن",
+      "compiling": "جارٍ بدء التنظيم…",
+      "retryJob": "Retry job",
+      "cancelJob": "Cancel job",
+      "compileDisabled": "التنظيم متوقف في الإعدادات.",
+      "allStatuses": "كل الحالات",
+      "detailPlaceholder": "Select a job to see details.",
+      "kind": {
+        "ingest": "تحليل",
+        "compile": "تجميع",
+        "unknown": "مهمة",
+        "turn_summary": "ملخص الدورة",
+        "session_rollup": "تجميع المحادثة",
+        "wiki_synthesize": "تنظيم العمل"
+      },
+      "status": {
+        "queued": "في الانتظار",
+        "running": "قيد التشغيل",
+        "succeeded": "نجح",
+        "failed": "فشل",
+        "cancelled": "أُلغي",
+        "unknown": "غير معروف"
+      },
+      "error": "Error",
+      "attempt": "Attempt {n}",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "startedAt": "Started",
+      "finishedAt": "Finished"
+    },
+    "note": {
+      "untitled": "بلا عنوان",
+      "preview": "اختر ملاحظة للمعاينة."
+    },
+    "import": "Import",
+    "importTitle": "Import into wiki",
+    "importSessions": "Local agent conversations",
+    "importSessionsHint": "استورد نصوص الوكلاء المحليين (Claude وCodex وGrok وغيرها) كمصدر ويكي. الاستيراد لا يلخّص ولا ينظّم تلقائيًا.",
+    "importSessionsCount": "{count, plural, one {# local conversation ready} other {# local conversations ready}}",
+    "importSessionsAction": "Import all local conversations",
+    "importDirectory": "Specified directory",
+    "importDirectoryHint": "Import Markdown, TXT, PDF, and DOCX in a folder. Local agent sessions whose working directory is inside that folder are imported too.",
+    "importDirectoryAction": "Choose directory",
+    "importing": "Importing…",
+    "importResult": "Imported {imported}, duplicates {duplicates}, failed {failed}.",
+    "importFailed": "Import failed: {message}"
   }
 }

@@ -105,4 +105,13 @@ describe("AsyncTaskStrip", () => {
       screen.queryByRole("button", { name: t.openOutput })
     ).not.toBeInTheDocument()
   })
+
+  it("does not render workflow-typed tasks — those belong on the workflow strip", () => {
+    const { container } = renderStrip(
+      <AsyncTaskStrip
+        tasks={[task({ name: "deep-research", task_type: "workflow" })]}
+      />
+    )
+    expect(container).toBeEmptyDOMElement()
+  })
 })

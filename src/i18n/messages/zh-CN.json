@@ -40,7 +40,9 @@
       "general": "常规",
       "appearance": "外观",
       "agents": "智能体",
+      "codeg_agent": "内置智能体",
       "mcp": "MCP",
+      "tools": "Tools 配置",
       "skills": "Skills",
       "shortcuts": "快捷键",
       "version_control": "版本控制",
@@ -53,8 +55,35 @@
       "office_tools": "办公工具",
       "skill_packs": "技能包",
       "quick_messages": "快捷消息",
-      "logs": "运行日志"
+      "logs": "运行日志",
+      "wiki": "个人 Wiki"
     }
+  },
+  "CodeIntelligenceSettings": {
+    "sectionTitle": "Tools 配置",
+    "sectionDescription": "由项目进程托管的 LSP 与 CodeGraph MCP 工具。智能体会话只建立 MCP 连接；语言服务器留在 Codeg 进程内。默认关闭。",
+    "masterTitle": "启用项目工具",
+    "masterDescription": "关闭后，会话不会获得 LSP 或 CodeGraph MCP 工具。",
+    "codegraphTitle": "CodeGraph MCP",
+    "codegraphDescription": "由项目进程托管的官方 CodeGraph 工具。Codeg 从不执行 codegraph install。",
+    "codegraphOnPath": "二进制：{path}",
+    "codegraphMissing": "PATH 上没有 codegraph",
+    "codegraphIndexed": "此文件夹已有 .codegraph 索引",
+    "codegraphNotIndexed": "尚无 .codegraph 索引（启用后会在后台创建）",
+    "codegraphInstall": "安装：npm i -g @colbymchenry/codegraph",
+    "binaryPath": "二进制路径（可选）",
+    "lspTitle": "LSP MCP 工具",
+    "lspAutoAttach": "对外提供 LSP MCP 工具",
+    "lspAutoAttachDescription": "这些 MCP 工具对应语言服务器操作。语言服务器由项目进程按需启动，不在此列出。",
+    "maxConcurrent": "宿主语言服务器上限",
+    "maxConcurrentHint": "项目进程同时可运行的语言服务器数量。",
+    "mcpAdvertised": "已提供",
+    "mcpHidden": "未提供",
+    "saveFailed": "保存失败：{message}",
+    "loadFailed": "加载失败：{message}",
+    "save": "保存",
+    "saving": "保存中...",
+    "loading": "加载中..."
   },
   "AppearanceSettings": {
     "sectionTitle": "主题外观",
@@ -1434,7 +1463,8 @@
       "upgradeAvailable": "{versionText}。发现可升级版本。",
       "remoteUnavailable": "{versionText}。远程版本暂不可用。",
       "latest": "{versionText}。已是最新版本。",
-      "latestChannel": "{versionText}。已启用最新版通道；升级会安装最新版本。"
+      "latestChannel": "{versionText}。已启用最新版通道；升级会安装最新版本。",
+      "inProcess": "内置运行时 {version}。无需安装 CLI。"
     },
     "adapter": {
       "label": "ACP 适配器",
@@ -1584,11 +1614,116 @@
     "customAgentRemoveWithData": "同时删除已记录的会话历史",
     "customAgentRemoved": "已移除 {name}",
     "customAgentBadge": "自定义",
-    "customAgentNotLaunchable": "该智能体在此环境无法启动：{reason}"
+    "customAgentNotLaunchable": "该智能体在此环境无法启动：{reason}",
+    "codegAgent": {
+      "inProcess": "内置进程内运行时。绑定模型渠道并保存；窗口可在配置卡修改。无需安装 CLI。",
+      "experimental": "实验功能，默认关闭。",
+      "noSandbox": "没有操作系统级沙箱。写文件和 bash 仅在每次调用获准后执行。工作区文件系统策略不是 shell 隔离。",
+      "recovery": "崩溃恢复不会自动重放工具。已开始但未确认结束的调用会恢复为 unknown。",
+      "contextWindowsHint": "绑定模型渠道时会写入可编辑窗口（默认 128000；若渠道已有窗口则沿用）。未写入窗口的模型无法启动。",
+      "protocol": "v1 默认使用 OpenAI Chat Completions。Responses 在会话开始时按绑定供应商选择。",
+      "modelSelectorHint": "会话模型选择器只列出窗口映射中的 id。未知 id 会被拒绝。",
+      "usageLastRequest": "上下文圆环显示的是最后一次模型请求占用的已配置窗口，不是整轮累计 token。若网关未报告输入用量，则显示估算值。",
+      "envWindowsHint": "环境变量是绑定渠道与配置卡窗口、最大输出的投影。可选的 CODEG_AGENT_MAX_OUTPUT_TOKENS 默认 4096，且必须小于窗口减去安全余量后的值。",
+      "configCardTitle": "Codeg Agent 配置",
+      "bindProvider": "模型渠道",
+      "addModelProvider": "去添加模型供应商",
+      "bindProviderFix": "绑定模型渠道",
+      "addProviderFix": "添加模型供应商",
+      "editWindowFix": "编辑上下文窗口",
+      "modelReadOnly": "模型",
+      "contextWindow": "上下文窗口",
+      "maxOutput": "最大输出 token",
+      "systemPrompt": "系统提示词",
+      "systemPromptHint": "留空使用内置默认。仍会追加工作目录与技能目录。",
+      "compactPrompt": "上下文压缩提示词（L2）",
+      "compactPromptHint": "仅用于同一会话的第二次压缩。留空使用内置模板。",
+      "save": "保存",
+      "envAdvanced": "环境变量（投影 / 高级）",
+      "envAdvancedHint": "绑定渠道的 URL、Key、模型是投影。请在上方配置卡修改窗口和提示词，不必手写 JSON。",
+      "boundCredentials": "已绑定渠道凭据（只读）",
+      "emptyUsesBuiltin": "留空 = 内置默认",
+      "openDedicatedSettings": "打开内置智能体设置",
+      "compactSoftPercent": "软压缩阈值（%）",
+      "compactRecentTurns": "保留最近轮次",
+      "maxTurns": "最大模型轮次"
+    }
   },
   "SettingsPages": {
     "agentsLoading": "加载 Agent 设置中...",
-    "skillPacksLoading": "正在加载技能包…"
+    "skillPacksLoading": "正在加载技能包…",
+    "codegAgentLoading": "正在加载内置智能体设置...",
+    "wikiLoading": "正在加载知识库设置..."
+  },
+  "CodegAgentSettings": {
+    "sectionTitle": "内置智能体",
+    "sectionDescription": "进程内运行的 Codeg Agent，无需安装 CLI。在此配置可用的模型供应商与模型，并编辑实际使用的提示词。",
+    "loading": "加载中...",
+    "loadFailed": "加载 Codeg Agent 设置失败：{message}",
+    "missingAgent": "当前构建未包含 Codeg Agent。",
+    "providerTitle": "模型供应商",
+    "providerDescription": "在此新增和管理渠道。绑定后，该渠道下的模型即可供 Codeg Agent 使用。",
+    "presetHint": "云端、本地与自定义渠道的绑定方式相同。本地回环服务可以不填 API Key。",
+    "promptsTitle": "提示词",
+    "promptsDescription": "以下是内置智能体实际使用的提示词。可编辑；点恢复默认即可回到内置正文。",
+    "compressionTitle": "上下文压缩",
+    "compressionDescription": "占用超过软阈值时会摘要较早轮次，最近若干轮保持原样。",
+    "compactSoftPercent": "软压缩阈值（%）",
+    "compactSoftPercentHint": "占输入预算的百分比。默认 80。范围 1–100。",
+    "compactRecentTurns": "保留最近轮次",
+    "compactRecentTurnsHint": "压缩前至少保留的存活轮次数。默认 6。",
+    "runtimeTitle": "运行配置",
+    "runtimeDescription": "单次 Prompt 的模型调用上限，以及是否对新建会话启用该智能体。",
+    "maxTurns": "最大模型轮次",
+    "maxTurnsHint": "一次 Prompt 的首次调用加工具重试上限。默认 40。",
+    "enabled": "启用 Codeg Agent",
+    "enabledHint": "关闭后无法启动。下次会话生效。",
+    "preflightFailed": "预检未通过",
+    "manageProviders": "管理供应商",
+    "searchProviders": "搜索供应商…",
+    "noProviders": "还没有供应商。添加一个以绑定模型。",
+    "addProvider": "添加供应商",
+    "providerOn": "ON",
+    "apiKey": "API 密钥",
+    "apiKeyPlaceholder": "留空则保留当前密钥",
+    "apiUrl": "API 地址",
+    "apiUrlHint": "OpenAI 兼容的 /v1 根地址。保留末尾 /v1，客户端会再拼接 /chat/completions。",
+    "detect": "检测",
+    "detecting": "检测中…",
+    "detectSuccess": "发现 {count} 个模型",
+    "detectFailed": "无法列出模型：{message}",
+    "modelsTitle": "模型",
+    "addModel": "添加",
+    "modelIdPlaceholder": "模型 id",
+    "emptyModels": "还没有模型。可从接口检测，或手动填写 id。",
+    "setDefault": "新会话默认模型",
+    "removeModel": "移除",
+    "providerName": "名称",
+    "saveProvider": "保存渠道",
+    "deleteProvider": "删除",
+    "deleteConfirmTitle": "删除此供应商？",
+    "deleteConfirmDescription": "将移除该渠道。若当前正在使用，请先绑定其他供应商再保存。",
+    "compactModel": "压缩模型",
+    "compactModelHint": "用于 L2 会话压缩。从已绑定供应商的模型列表中选择。",
+    "compactModelFollowSession": "与会话模型相同",
+    "restoreDefault": "恢复默认",
+    "foreignProviderHint": "此渠道属于其他智能体。可以原样绑定，或新增一个内置智能体渠道来管理多模型。",
+    "loopbackKeyOptional": "本地回环地址 — API 密钥可选",
+    "addFirstModel": "首个模型（可选）",
+    "modelWindow": "上下文窗口",
+    "defaultModel": "默认",
+    "providerSaved": "供应商已保存",
+    "providerCreated": "供应商已创建",
+    "providerDeleted": "供应商已删除",
+    "bindThisProvider": "使用此供应商",
+    "selectProvider": "请选择一个供应商",
+    "preset": "平台",
+    "creating": "创建中…",
+    "requestProtocol": "请求协议",
+    "requestProtocolHint": "一场会话只用一种协议。自动探测先走 Chat Completions，仅在该路径 404 时改用 Responses。",
+    "protocolChatCompletions": "Chat Completions",
+    "protocolResponses": "Responses",
+    "protocolAuto": "自动"
   },
   "GeneralSettings": {
     "loading": "加载中...",
@@ -1754,6 +1889,14 @@
       "noConversationsFound": "未找到会话。",
       "importLocalSessions": "导入本地会话",
       "importing": "导入中...",
+      "notifyChannels": "通知渠道…",
+      "notifyChannelsDialog": {
+        "title": "通知渠道",
+        "description": "该文件夹中的对话结束时，将最终消息发送到所选渠道。",
+        "empty": "还没有聊天渠道。请先在设置中添加。",
+        "loadFailed": "加载渠道失败：{message}",
+        "saveFailed": "保存渠道绑定失败：{message}"
+      },
       "error": "错误：{message}",
       "completeAllSessions": "完成全部会话",
       "completeAllReviewTitle": "完成全部复查会话？",
@@ -1865,6 +2008,8 @@
       "loadingSubsessions": "正在加载子会话…",
       "forge": "仓库面板",
       "canvas": "无限会话",
+      "toolbox": "万能小工具",
+      "wiki": "个人 Wiki",
       "folderGroup": {
         "newGroup": "新建分组",
         "newGroupTitle": "新建文件夹分组",
@@ -3270,6 +3415,9 @@
         "emptyConversation": "当前会话暂无消息。",
         "systemMessage": "系统消息",
         "copyMessage": "复制",
+        "editLastRound": "修改上一轮",
+        "editingLastRound": "发送后将覆盖这一轮对话",
+        "cancelEditLastRound": "取消修改",
         "forkFromHere": "从此处分叉",
         "forkBusy": "当前有回合正在进行，暂不可分叉",
         "forkNotReady": "这条回复暂时还不能作为分叉点，请稍后再试",
@@ -3741,6 +3889,33 @@
         "stopDeclined": "无法停止该任务，它可能已经结束。",
         "stopFailed": "停止任务失败：{error}"
       },
+      "workflows": {
+        "title": "工作流",
+        "collapseAria": "折叠工作流",
+        "expandAria": "展开工作流",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "停靠到输入框上方",
+        "dockToOverlayAria": "停靠到计划栏下方",
+        "starting": "启动中",
+        "phase": "{name}（{current}/{total}）",
+        "agents": "{done} 已完成 · {running} 运行中",
+        "budget": "{used}/{total}",
+        "paused": "已暂停",
+        "phaseState": {
+          "pending": "待处理",
+          "active": "进行中",
+          "done": "已完成",
+          "failed": "失败"
+        },
+        "nodeState": {
+          "pending": "待处理",
+          "running": "运行中",
+          "done": "已完成",
+          "failed": "失败",
+          "cancelled": "已取消"
+        }
+      },
       "proposedPlan": {
         "title": "计划提案",
         "planning": "规划中…"
@@ -4089,7 +4264,22 @@
     "apiUrlPlaceholder": "https://api.openai.com/v1",
     "apiKey": "API 密钥",
     "apiKeyPlaceholder": "sk-...",
+    "apiKeyOptionalLocal": "本地服务可选",
+    "apiKeyOptionalLocalHint": "Ollama、LM Studio 等回环 /v1 服务通常忽略 Authorization。留空时启动会使用占位本地密钥。",
     "apiKeyKeepCurrent": "留空则保持不变",
+    "modelPlaceholderCodeg": "gpt-4.1 / llama3.2 / deepseek-chat",
+    "presets": {
+      "label": "端点预设",
+      "hint": "填入常见的 Chat Completions /v1 地址和模型 id，之后仍可修改。",
+      "openai": "OpenAI",
+      "deepseek": "DeepSeek",
+      "groq": "Groq",
+      "together": "Together",
+      "openrouter": "OpenRouter",
+      "ollama": "Ollama（本地）",
+      "lmstudio": "LM Studio（本地）",
+      "custom": "自定义 /v1"
+    },
     "agentTypes": "代理类型",
     "agentTypesRequired": "至少选择一个代理类型。",
     "agentType": "智能体类型",
@@ -5840,5 +6030,454 @@
     "terminalNoDirectory": "这张卡片没有工作目录",
     "confirmDeleteTerminals": "{count} 个正在运行的终端会被关闭，其中的进程也会一并结束。",
     "confirmDeleteNotesAndTerminals": "你写下的 {notes} 条便签将被永久删除，另有 {terminals} 个正在运行的终端会被结束。"
+  },
+  "Toolbox": {
+    "title": "万能小工具",
+    "searchPlaceholder": "搜索工具",
+    "favorites": "收藏",
+    "recent": "最近",
+    "favorite": "收藏",
+    "noResults": "没有匹配的工具",
+    "emptyHint": "从左侧选择一个工具",
+    "input": "输入",
+    "output": "结果",
+    "params": "参数",
+    "example": "示例",
+    "clear": "清空",
+    "copy": "复制",
+    "copied": "已复制",
+    "download": "下载",
+    "sendTo": "结果传到",
+    "sendToPlaceholder": "选择工具",
+    "error": "错误",
+    "encodingNotice": "这是编码，不是加密。",
+    "cryptoFooter": "仅在本机计算，用于联调与格式转换，不能替代密钥管理系统。",
+    "categories": {
+      "text": "文本",
+      "dev": "开发",
+      "encoding": "编解码",
+      "crypto": "加解密",
+      "image": "图片",
+      "general": "通用"
+    },
+    "tools": {
+      "text-stats": {
+        "title": "字数与文本统计",
+        "description": "统计字符、中文字符、词、行、字节；空白是否计入可切换。",
+        "aliases": "字数统计"
+      },
+      "text-clean": {
+        "title": "文本清洗",
+        "description": "去首尾空格、去空行、统一换行、全半角、中英文标点。",
+        "aliases": "清洗"
+      },
+      "line-dedupe-sort": {
+        "title": "行去重与排序",
+        "description": "按行切分，按大小写等规则去重，再排序或保持原序。",
+        "aliases": "去重 排序"
+      },
+      "case-naming": {
+        "title": "命名风格转换",
+        "description": "camelCase / snake_case / PascalCase / kebab-case / CONSTANT_CASE。",
+        "aliases": "驼峰 下划线"
+      },
+      "text-diff": {
+        "title": "文本差异对比",
+        "description": "两段文本按行 diff，再标出行内增删。",
+        "aliases": "对比"
+      },
+      "find-replace": {
+        "title": "批量查找替换",
+        "description": "普通字符串与正则；先展示命中和替换预览。",
+        "aliases": "替换"
+      },
+      "markdown-preview": {
+        "title": "Markdown 预览",
+        "description": "解析为 HTML，清理危险内容，再渲染、复制或导出。",
+        "aliases": "md"
+      },
+      "zh-convert": {
+        "title": "简繁转换",
+        "description": "简体 ↔ 繁体（词库级，不只单字）。",
+        "aliases": "简繁"
+      },
+      "json-format": {
+        "title": "JSON 格式化与校验",
+        "description": "缩进或压缩；失败时定位行列；大整数可按字符串保留。",
+        "aliases": "json"
+      },
+      "timestamp": {
+        "title": "时间戳转换",
+        "description": "秒/毫秒 ↔ 日期；显式时区；范围检查。",
+        "aliases": "unix 时间戳"
+      },
+      "uuid": {
+        "title": "UUID 生成",
+        "description": "安全随机 UUID v4；批量生成和复制；可选 v7。",
+        "aliases": "guid"
+      },
+      "json-yaml": {
+        "title": "JSON ↔ YAML",
+        "description": "双向转换，失败时指出路径。",
+        "aliases": "yml"
+      },
+      "json-csv": {
+        "title": "JSON ↔ CSV",
+        "description": "对象数组映射表头；反向时显式选择字段类型。",
+        "aliases": "csv"
+      },
+      "regex-tester": {
+        "title": "正则表达式测试",
+        "description": "实时匹配组与替换；Worker 执行，支持超时终止。",
+        "aliases": "正则"
+      },
+      "cron": {
+        "title": "Cron 解释",
+        "description": "五段/六段语法 + 时区；列出未来若干次执行时间。",
+        "aliases": "crontab 定时"
+      },
+      "sql-format": {
+        "title": "SQL 格式化",
+        "description": "美化 / 压缩；不执行语句。",
+        "aliases": "sql"
+      },
+      "code-format": {
+        "title": "XML / YAML 查看",
+        "description": "缩进、折叠、语法错误位置。",
+        "aliases": "xml yaml"
+      },
+      "base64": {
+        "title": "Base64 编解码",
+        "description": "文本按 UTF-8 转字节再编码；支持文件；校验非法字符。",
+        "aliases": "base64加密"
+      },
+      "url-codec": {
+        "title": "URL 编解码与拆解",
+        "description": "区分完整 URL 与参数值；展示协议、域名、路径、查询参数。",
+        "aliases": "urlencode"
+      },
+      "hex-string": {
+        "title": "Hex ↔ 字符串",
+        "description": "UTF-8 / Latin-1；容忍空格与 0x 前缀。",
+        "aliases": "十六进制"
+      },
+      "html-entities": {
+        "title": "HTML 实体",
+        "description": "转义 / 反转义。",
+        "aliases": "html"
+      },
+      "unicode-escape": {
+        "title": "Unicode 转义",
+        "description": "\\uXXXX ↔ 中文；JSON 风格转义。",
+        "aliases": "unicode"
+      },
+      "radix": {
+        "title": "进制转换",
+        "description": "2–36 进制整数；大整数用字符串。",
+        "aliases": "二进制"
+      },
+      "symmetric-cipher": {
+        "title": "AES / SM4 加解密",
+        "description": "AES-128/192/256 与 SM4；CBC/GCM/ECB；PKCS7；密钥和 IV 支持 UTF-8 / Hex / Base64。",
+        "aliases": "aes sm4 国密"
+      },
+      "hash": {
+        "title": "哈希与校验和",
+        "description": "MD5、SHA-1/2/3、SM3；文本或小文件。",
+        "aliases": "md5加密 sha256 sm3"
+      },
+      "hmac": {
+        "title": "HMAC 签名",
+        "description": "密钥 + 消息；SHA-256/512 或 SM3；输出 Hex / Base64。",
+        "aliases": "签名"
+      },
+      "password-gen": {
+        "title": "随机密码生成",
+        "description": "安全随机，指定字符集与长度；不保存结果。",
+        "aliases": "密码生成"
+      },
+      "asymmetric-cipher": {
+        "title": "RSA / SM2",
+        "description": "密钥生成、加解密、签名验签；PEM 导入导出。",
+        "aliases": "rsa sm2 公钥"
+      },
+      "jwt": {
+        "title": "JWT 查看与验签",
+        "description": "拆解 Header / Payload；可选 HMAC/RSA 验签，与解码分开显示。",
+        "aliases": "json web token"
+      },
+      "password-strength": {
+        "title": "密码强度",
+        "description": "长度、字符类、估算熵；不上传、不保存。",
+        "aliases": "密码强度"
+      },
+      "totp": {
+        "title": "TOTP 一次性口令",
+        "description": "根据 Base32 密钥生成本地当前码；倒计时；密钥只留在内存。",
+        "aliases": "otp 2fa"
+      },
+      "image-compress": {
+        "title": "图片压缩与格式转换",
+        "description": "调整尺寸或质量，导出并对比大小和观感。",
+        "aliases": "压缩"
+      },
+      "color-convert": {
+        "title": "颜色转换",
+        "description": "HEX、RGB、HSL 互转；展示色块和透明度。",
+        "aliases": "rgb hsl"
+      },
+      "image-crop": {
+        "title": "图片裁剪与缩放",
+        "description": "选框映射原图坐标，重采样导出；可锁定比例。",
+        "aliases": "裁剪"
+      },
+      "image-watermark": {
+        "title": "图片水印",
+        "description": "文字或图片按透明度、角度、间距叠加。",
+        "aliases": "水印"
+      },
+      "image-stitch": {
+        "title": "图片拼接",
+        "description": "横向、纵向或网格绘制到一张画布。",
+        "aliases": "拼接"
+      },
+      "qr-generate": {
+        "title": "二维码生成",
+        "description": "文本或链接；纠错级别；导出 PNG / SVG。",
+        "aliases": "二维码"
+      },
+      "qr-decode": {
+        "title": "二维码识别",
+        "description": "本地读图解码；不自动打开结果里的链接。",
+        "aliases": "扫码"
+      },
+      "unit-convert": {
+        "title": "单位换算",
+        "description": "同类单位先换成基准再转换；温度单独处理偏移。",
+        "aliases": "单位"
+      },
+      "date-diff": {
+        "title": "日期间隔",
+        "description": "自然日差与精确时长；是否包含起止日。",
+        "aliases": "日期间隔"
+      },
+      "bcrypt": {
+        "title": "bcrypt 口令哈希",
+        "description": "bcrypt 哈希与校验；cost 4–14；走 Rust；明文不落盘。",
+        "aliases": "bcrypt 口令哈希"
+      },
+      "cert-pem": {
+        "title": "证书 / PEM 查看",
+        "description": "解析 PEM 证书：主题、SAN、有效期、SHA-256 指纹；不校 CRL/OCSP。",
+        "aliases": "x509 pem 证书"
+      }
+    }
+  },
+  "WikiSettings": {
+    "sectionTitle": "个人知识库",
+    "sectionDescription": "把已完成的工作会话和导入文档沉淀到本地 Markdown vault。回合结束后写成记忆页；定时或立即整理再归纳项目与能力。",
+    "loading": "加载中...",
+    "loadFailed": "加载知识库设置失败：{message}",
+    "retry": "重试",
+    "save": "保存",
+    "saving": "保存中...",
+    "saved": "知识库设置已保存",
+    "saveFailed": "保存知识库设置失败：{message}",
+    "enabled": "启用个人知识库",
+    "enabledHint": "开启后会将会话和导入正文持久化到本地 vault。提取后的文本稍后可能发送给已绑定模型写记忆或归纳。",
+    "enabledOffHint": "关闭后停止新采集、导入和任务领取。已有资料仍可浏览。已进入提交阶段的操作会完成或恢复到一致边界。",
+    "statusTitle": "日程",
+    "statusDescription": "下一次归纳时刻和仍待处理的来源数量。",
+    "nextCompileAt": "下一次整理",
+    "pendingSources": "待分析来源",
+    "notScheduled": "未安排",
+    "vaultTitle": "Vault",
+    "vaultDescription": "工作笔记、能力笔记、共享知识和来源共用一份 vault。更换路径不会搬移文件。",
+    "vaultPath": "Vault 路径",
+    "vaultPathHint": "可选覆盖。留空则使用默认 Codeg wiki 目录。切换路径前请先暂停在飞任务。",
+    "vaultPathPlaceholder": "留空使用默认路径",
+    "timezone": "时区",
+    "timezoneHint": "用于整理日程的 IANA 时区。首次使用跟随系统时区，保存后保持稳定。",
+    "compileCron": "整理日程（cron）",
+    "compileCronHint": "五段 cron。默认 0 3 * * *（每天 03:00）。",
+    "captureTitle": "采集",
+    "captureDescription": "成功的 ACP 轮次可以保存为来源。Delegate / Loop 子会话默认跳过。",
+    "acpEnabled": "采集已完成的 ACP 会话",
+    "acpEnabledHint": "将成功的 ACP 轮次冻结为 vault 来源。",
+    "excludeAgentTypes": "排除智能体类型",
+    "excludeAgentTypesHint": "勾选的智能体不会被采集。",
+    "excludeFolders": "排除文件夹",
+    "excludeFoldersHint": "跳过这些项目目录。可用列表或逗号分隔的 id。",
+    "excludeFoldersPlaceholder": "例如 12, 34",
+    "unknownFolder": "文件夹 {id}",
+    "restoreBuiltinPrompt": "恢复内置",
+    "turnSummaryTitle": "回合摘要",
+    "turnSummaryDescription": "每一轮成功的 ACP 结束后写成可读记忆：改了什么、实现了什么。模型 id 为空时使用绑定的默认模型。",
+    "turnSummaryModel": "回合摘要模型 id",
+    "turnSummaryModelHint": "覆盖已绑定的 Codeg Agent 默认模型。留空则使用绑定通道。",
+    "turnSummaryModelPlaceholder": "绑定默认",
+    "turnSummaryPrompt": "回合摘要提示词",
+    "turnSummaryPromptPlaceholder": "完整回合摘要技能。宿主仍校验页面身份，且不能扩大读取范围。",
+    "turnSummaryPromptBuiltinHint": "这里是完整的回合摘要技能，可以直接修改。恢复内置后会跟随后续技能更新。",
+    "sessionRollupTitle": "对话汇总",
+    "sessionRollupDescription": "对话标为完成后，根据已有回合记忆写成一篇对话页。未完成的对话不会生成汇总。",
+    "sessionRollupModel": "对话汇总模型 id",
+    "sessionRollupModelHint": "覆盖已绑定的 Codeg Agent 默认模型。留空则使用绑定通道。",
+    "sessionRollupModelPlaceholder": "绑定默认",
+    "sessionRollupPrompt": "对话汇总提示词",
+    "sessionRollupPromptPlaceholder": "完整对话汇总技能。宿主仍校验页面身份，且不能扩大读取范围。",
+    "sessionRollupPromptBuiltinHint": "这里是完整的对话汇总技能，可以直接修改。恢复内置后会跟随后续技能更新。",
+    "synthesizeTitle": "工作归纳",
+    "synthesizeDescription": "定时或立即整理会根据记忆页更新项目、职责、决策、成果和能力笔记。导入资料不会自动进入归纳。",
+    "synthesizeEnabled": "启用整理",
+    "synthesizeEnabledHint": "关闭后仍可写记忆页，但会停止新的归纳任务；工作台上的「立即整理」不可用。",
+    "synthesizeNowUnavailable": "关闭整理后，工作台上的「立即整理」不可用。",
+    "synthesizeModel": "归纳模型 id",
+    "synthesizeModelHint": "覆盖已绑定的 Codeg Agent 默认模型。留空则使用绑定通道。",
+    "synthesizeModelPlaceholder": "绑定默认",
+    "synthesizePrompt": "归纳提示词",
+    "synthesizePromptPlaceholder": "完整工作归纳技能。宿主仍校验出处，且不能编造主张。",
+    "synthesizePromptBuiltinHint": "这里是完整的工作归纳技能，可以直接修改。恢复内置后会跟随后续技能更新。"
+  },
+  "Wiki": {
+    "title": "个人 Wiki",
+    "views": {
+      "all": "全部",
+      "work": "工作",
+      "capabilities": "能力",
+      "sources": "资料",
+      "jobs": "任务"
+    },
+    "openInObsidian": "用 Obsidian 打开",
+    "openInObsidianSoon": "桌面本地打开将在后续切片提供",
+    "import": "导入",
+    "importTitle": "导入到个人 Wiki",
+    "importSessions": "本地智能体对话",
+    "importSessionsHint": "把本机 Claude、Codex、Grok 等智能体的历史对话导入为 Wiki 来源。导入不会自动分析或整理。",
+    "importSessionsCount": "{count, plural, other {# 条本地对话可导入}}",
+    "importSessionsAction": "导入全部本地对话",
+    "importDirectory": "指定目录",
+    "importDirectoryHint": "导入文件夹中的 Markdown、TXT、PDF、DOCX。工作目录落在该文件夹下的本地智能体对话也会一并导入。",
+    "importDirectoryAction": "选择目录",
+    "importing": "正在导入…",
+    "importResult": "已导入 {imported}，重复 {duplicates}，失败 {failed}。",
+    "importFailed": "导入失败：{message}",
+    "loading": "加载中...",
+    "loadFailed": "加载失败：{message}",
+    "retry": "重试",
+    "refresh": "刷新",
+    "loadMore": "加载更多",
+    "empty": "还没有内容",
+    "treeTitle": "Vault · {path}",
+    "showRaw": "显示原始证据 raw/",
+    "all": {
+      "emptyTitle": "全部笔记",
+      "emptyDescription": "这里可以浏览知识库中的全部文本：index.md、work/、capabilities/、knowledge/、sources/、journal/、log.md 和 AGENTS.md。点击 Markdown 文件阅读全文。[[wikilink]] 会在库内打开对应笔记。"
+    },
+    "work": {
+      "emptyTitle": "还没有工作记忆",
+      "emptyDescription": "成功完成的 ACP 回合和已结束的对话会写成记忆页，说明这一轮或这次对话做了什么。定时或「立即整理」再把这些记忆归纳成项目、职责、决策、成果和能力笔记。资料 Tab 里的来源不会出现在这里。",
+      "compileFailed": "最近一次工作归纳失败：{message}",
+      "memoryCount": "{count, plural, other {# 条记忆}}",
+      "ungrouped": "未分组",
+      "pageType": {
+        "turn-summary": "回合",
+        "session-summary": "对话"
+      }
+    },
+    "capabilities": {
+      "emptyTitle": "还没有能力笔记",
+      "emptyDescription": "能力页按可复用的工作任务命名，不用项目名或模型名。每页包含范围、方法、实践证据、当前边界和下一次实践建议。不会显示虚构的熟练度分数。",
+      "evidenceReference": "参考资料 — 有可学习的方法；不能证明你已经实践过。",
+      "evidenceApplication": "应用记录 — 某项工作使用过相关方法；执行者和角色保持明确。",
+      "evidenceResult": "结果记录 — 在明确环境下有测试、评审或交付；单个案例不能证明所有场景。",
+      "evidenceReflection": "复盘 — 写清取舍或失败原因；自述不能替代外部核验。"
+    },
+    "sources": {
+      "emptyTitle": "还没有资料",
+      "emptyDescription": "成功的 ACP 会话和导入文档会出现在这里。可在下方导入文件或粘贴正文。默认材料性质为参考资料，不会推断作者身份。",
+      "importFiles": "导入文件",
+      "importPaste": "导入粘贴正文",
+      "pastePlaceholder": "粘贴要导入的 Markdown 或纯文本…",
+      "importHint": "支持 Markdown、TXT、PDF、DOCX。最多 20 个文件，每个不超过 20 MiB。相同字节返回已有来源。",
+      "disabledHint": "请先在设置中启用 Wiki 再导入。",
+      "privacyHint": "原始二进制只保留在本机。提取后的文本在后续整理时可能发送到已绑定模型。不会抓取文档内链接，也不会执行宏。",
+      "warningsTitle": "提取警告",
+      "partialBanner": "文本提取不完整（缺页或无法读取的区域）。接受当前范围后才会进入整理，否则来源保持等待。",
+      "acceptExtraction": "接受当前提取",
+      "accepting": "正在接受…",
+      "importing": "正在导入…",
+      "importFailed": "导入失败：{message}",
+      "duplicateNotice": "该文件已经导入过，正在显示已有来源。",
+      "fileTooLarge": "{name} 超过 20 MiB 限制，已跳过。",
+      "titlePlaceholder": "标题（可选）",
+      "sourceUrlPlaceholder": "来源链接（可选，不会抓取）",
+      "authorPlaceholder": "作者（可选）",
+      "personalRolePlaceholder": "本人角色（可选）",
+      "materialRoleLabel": "材料性质",
+      "saveAnnotations": "保存标注",
+      "materialRole": {
+        "reference": "参考资料",
+        "own-work": "本人作品",
+        "team-work": "团队材料",
+        "unspecified": "未指定"
+      },
+      "listTitle": "{count, plural, other {# 条来源}}",
+      "previewTitle": "预览",
+      "untitled": "未命名来源",
+      "kind": {
+        "acp-turn": "ACP 会话",
+        "document": "文档",
+        "pasted-text": "粘贴正文",
+        "unknown": "来源"
+      },
+      "eligibility": {
+        "processing": "处理中",
+        "awaiting-acceptance": "待接受",
+        "ready": "就绪",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "withdrawn": "已撤回",
+        "unknown": "未知"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "还没有任务",
+      "emptyDescription": "回合摘要、对话汇总和工作归纳任务的进度、失败和冲突会显示在这里。",
+      "readOnlyHint": "「立即整理」会排队一次工作归纳。失败可重试；尚未提交的任务可取消。",
+      "compileNow": "立即整理",
+      "compiling": "正在开始整理…",
+      "retryJob": "重试任务",
+      "cancelJob": "取消任务",
+      "compileDisabled": "设置里已关闭整理。",
+      "allStatuses": "全部状态",
+      "detailPlaceholder": "选择一项任务查看详情。",
+      "kind": {
+        "ingest": "分析",
+        "compile": "整理",
+        "unknown": "任务",
+        "turn_summary": "回合摘要",
+        "session_rollup": "对话汇总",
+        "wiki_synthesize": "工作归纳"
+      },
+      "status": {
+        "queued": "排队中",
+        "running": "进行中",
+        "succeeded": "已成功",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "unknown": "未知"
+      },
+      "error": "错误",
+      "attempt": "第 {n} 次尝试",
+      "createdAt": "创建时间",
+      "updatedAt": "更新时间",
+      "startedAt": "开始时间",
+      "finishedAt": "结束时间"
+    },
+    "note": {
+      "untitled": "未命名",
+      "preview": "选择一篇笔记进行预览。"
+    }
   }
 }

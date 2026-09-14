@@ -46,18 +46,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 const IDLE_STATE: AppUpdateState = { seq: 0, status: "idle" }
 
-/** How long a completed check stays fresh. Also the polling period for a
- * long-lived window — codeg workspaces are commonly left open for days, so a
- * check-on-boot alone would never surface a release. */
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
-/** Delay before the first automatic check, so the manifest fetch doesn't
- * compete with workspace boot (folder scan, session load, agent connect). */
-const FIRST_CHECK_DELAY_MS = 8000
-/** Minimum gap between automatic attempts, independent of whether they
- * succeeded. Only completions are persisted, so without this an offline window
- * would re-fetch on every tab focus. */
-const AUTO_RETRY_FLOOR_MS = 10 * 60 * 1000
-
 const LIFECYCLES = new Set([
   "idle",
   "downloading",
@@ -395,8 +383,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  // The in-flight check, so a manual click and the scheduler share one fetch
-  // instead of racing two manifest requests.
+  // The in-flight check, so overlapping "Check for updates" clicks share one
+  // fetch instead of racing two manifest requests.
   const inFlightCheckRef = useRef<Promise<void> | null>(null)
   // Same, for the local-status round-trip (mount, lifecycle error, reconnect).
   const inFlightRefreshRef = useRef<Promise<void> | null>(null)
@@ -467,21 +455,13 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     [runCheck]
   )
 
-  // Mirrored into a ref so the scheduler below can mount once — re-arming it on
-  // every lifecycle transition would keep resetting the interval and the
-  // first-check delay.
-  const checkNowRef = useRef(checkNow)
-  useEffect(() => {
-    checkNowRef.current = checkNow
-  }, [checkNow])
-
   /**
    * Drop an availability answer that was computed against a different running
    * version than the one actually running now.
    *
    * The case that matters is an update landing: the answer says "0.21.9 is
-   * available" while the app is now *running* 0.21.9, and the 6h freshness
-   * guard would keep re-offering the release the user just installed. Two
+   * available" while the app is now *running* 0.21.9, and a leftover cache
+   * entry would keep re-offering the release the user just installed. Two
    * shapes of it:
    *   * the window relaunched/reloaded and re-seeded from the shared cache;
    *   * a *sibling* window that never reloaded (its backend restarted under it)
@@ -490,6 +470,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
    *
    * Comparing baselines rather than release versions also covers rollbacks and
    * sideways installs, with no need for a semver comparator.
+   *
+   * Does not contact the release source: background GitHub fetches are
+   * disabled; a manual "Check for updates" is what talks to the manifest.
    */
   const discardStaleAvailability = useCallback((running: string) => {
     const cached = readLastCheck()
@@ -504,9 +487,6 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     appliedBaselineRef.current = null
     setAvailable(null)
     setLastCheckedAt(null)
-    // Ask again now: waiting for the next scheduled tick could leave the UI
-    // blank for 6h if this landed after the startup timer had already run.
-    void checkNowRef.current({ silent: true })
   }, [])
 
   /**
@@ -570,8 +550,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
    * addressed to a process that may no longer exist. Its answer — a stale
    * version, or an outright failure — says nothing about the new one. Folding
    * the reconnect into it would leave `currentVersion` and the rollback/self-
-   * update capabilities pinned to the old process until the next reconnect, a
-   * manual check, or the six-hour poll.
+   * update capabilities pinned to the old process until the next reconnect or
+   * a manual check.
    */
   const refreshLocalStatus = useCallback((): Promise<void> => {
     if (!inFlightRefreshRef.current) return startRefresh()
@@ -619,52 +599,24 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     if (state.status === "error") void refreshLocalStatus()
   }, [state.status, refreshLocalStatus])
 
-  // Floor between automatic attempts, so a failing check (which deliberately
-  // does NOT record a completion time, so recovery isn't blocked for 6h) can't
-  // be re-fired on every tab focus.
-  const lastAttemptRef = useRef(0)
-
   const dismissAvailable = useCallback(() => {
     if (!available) return
     writeDismissedVersion(available.version)
     setDismissedVersion(available.version)
   }, [available])
 
+  // Adopt a sibling window's cached availability answer. No manifest fetch:
+  // background GitHub checks are disabled; only a user-initiated
+  // "Check for updates" talks to the release source.
   useEffect(() => {
-    let cancelled = false
-
-    const maybeCheck = () => {
-      if (cancelled) return
-      // Storage is the cross-window source of truth. Adopt a sibling window's
-      // newer answer BEFORE deciding whether to fetch: it is what suppresses
-      // our own request, so skipping without taking it would leave this window
-      // badge-less for the rest of the interval even though an update is out.
+    const adoptSibling = () => {
       const last = readLastCheck()
       if (last) adoptCached(last)
-      // Background tab: skip. `visibilitychange` re-runs this when it returns.
-      if (typeof document !== "undefined" && document.hidden) return
-      // Nothing to discover while an update is already downloading, staged or
-      // restarting — the lifecycle UI owns the status bar then.
-      const status = stateRef.current.status
-      if (status !== "idle" && status !== "error") return
-      if (last && Date.now() - last.at < CHECK_INTERVAL_MS) return
-      if (Date.now() - lastAttemptRef.current < AUTO_RETRY_FLOOR_MS) return
-      lastAttemptRef.current = Date.now()
-      void checkNowRef.current({ silent: true })
     }
-
-    const first = setTimeout(maybeCheck, FIRST_CHECK_DELAY_MS)
-    const interval = setInterval(maybeCheck, CHECK_INTERVAL_MS)
-    const onVisibility = () => maybeCheck()
-    document.addEventListener("visibilitychange", onVisibility)
-
+    document.addEventListener("visibilitychange", adoptSibling)
     return () => {
-      cancelled = true
-      clearTimeout(first)
-      clearInterval(interval)
-      document.removeEventListener("visibilitychange", onVisibility)
+      document.removeEventListener("visibilitychange", adoptSibling)
     }
-    // `adoptCached` is stable, so this still arms exactly once.
   }, [adoptCached])
 
   // ─── Actions ────────────────────────────────────────────────────────────

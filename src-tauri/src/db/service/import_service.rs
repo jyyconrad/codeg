@@ -10,7 +10,7 @@ use crate::models::{AgentType, ConversationSummary, ImportResult};
 use crate::parsers::{build_agent_parser, path_eq_for_matching, AgentParser};
 
 /// Every locally-parsable agent, in the canonical parser order.
-const ALL_PARSER_AGENTS: [AgentType; 15] = [
+const ALL_PARSER_AGENTS: [AgentType; 16] = [
     AgentType::ClaudeCode,
     AgentType::Codex,
     AgentType::OpenCode,
@@ -26,18 +26,19 @@ const ALL_PARSER_AGENTS: [AgentType; 15] = [
     AgentType::DeepSeek,
     AgentType::Qoder,
     AgentType::Antigravity,
+    AgentType::CodegAgent,
 ];
 
 fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
     build_agent_parser(agent_type)
 }
 
-/// List every local agent's sessions — one `spawn_blocking` per parser so the
-/// filesystem walks run concurrently (each closure captures only the Copy
+/// List the given agents' local sessions — one `spawn_blocking` per parser so
+/// the filesystem walks run concurrently (each closure captures only the Copy
 /// `AgentType` and constructs its parser inside, since `dyn AgentParser` is
 /// not `Send`). `on_agent_done(agent, done, total, session_count)` fires once
-/// per parser (in fixed parser order) so callers can surface scan progress. A
-/// parser error is logged and contributes zero sessions; the scan still
+/// per parser (in the order of `agents`) so callers can surface scan progress.
+/// A parser error is logged and contributes zero sessions; the scan still
 /// completes.
 ///
 /// Delegation children (`parent_id.is_some()`) are filtered out here: they are
@@ -46,39 +47,36 @@ fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
 /// parser listing would surface a sub-session as a root conversation.
 /// Duplicates are dropped by `(agent_type, id)`, matching
 /// `list_conversations_sync`.
-pub(crate) async fn collect_local_summaries<F>(
+pub(crate) async fn collect_summaries_for_agents<F>(
+    agents: &[AgentType],
     mut on_agent_done: F,
 ) -> Vec<(AgentType, ConversationSummary)>
 where
     F: FnMut(AgentType, u32, u32, u32),
 {
-    let total = ALL_PARSER_AGENTS.len() as u32;
-
-    let tasks: Vec<(AgentType, tokio::task::JoinHandle<Vec<ConversationSummary>>)> =
-        ALL_PARSER_AGENTS
-            .into_iter()
-            .map(|at| {
-                (
-                    at,
-                    tokio::task::spawn_blocking(move || {
-                        match build_parser(at).list_conversations() {
-                            Ok(convs) => convs,
-                            Err(e) => {
-                                tracing::error!("Error listing {} conversations: {}", at, e);
-                                Vec::new()
-                            }
-                        }
-                    }),
-                )
-            })
-            .collect();
+    let owned: Vec<AgentType> = agents.to_vec();
+    let total = owned.len() as u32;
+    let tasks: Vec<(AgentType, tokio::task::JoinHandle<Vec<ConversationSummary>>)> = owned
+        .into_iter()
+        .map(|at| {
+            (
+                at,
+                tokio::task::spawn_blocking(move || match build_parser(at).list_conversations() {
+                    Ok(convs) => convs,
+                    Err(e) => {
+                        tracing::error!("Error listing {} conversations: {}", at, e);
+                        Vec::new()
+                    }
+                }),
+            )
+        })
+        .collect();
 
     let mut all: Vec<(AgentType, ConversationSummary)> = Vec::new();
     let mut seen: std::collections::HashSet<(AgentType, String)> = std::collections::HashSet::new();
     let mut done = 0u32;
-
-    // Awaiting in parser order only affects callback ordering — all twelve
-    // walks already run concurrently on the blocking pool.
+    // Awaiting in agent order only affects callback ordering — all walks
+    // already run concurrently on the blocking pool.
     for (at, task) in tasks {
         let mut count = 0u32;
         match task.await {
@@ -93,15 +91,22 @@ where
                     }
                 }
             }
-            Err(e) => {
-                tracing::error!("Session listing task for {} panicked: {}", at, e);
-            }
+            Err(e) => tracing::error!("Session listing task for {} panicked: {}", at, e),
         }
         done += 1;
         on_agent_done(at, done, total, count);
     }
-
     all
+}
+
+/// List every local agent's sessions — see [`collect_summaries_for_agents`].
+pub(crate) async fn collect_local_summaries<F>(
+    on_agent_done: F,
+) -> Vec<(AgentType, ConversationSummary)>
+where
+    F: FnMut(AgentType, u32, u32, u32),
+{
+    collect_summaries_for_agents(&ALL_PARSER_AGENTS, on_agent_done).await
 }
 
 /// What an import does when a parsed session already has a SOFT-DELETED row.
@@ -155,7 +160,15 @@ pub(crate) async fn import_summaries(
         }
     }
 
-    Ok((ImportResult { imported, updated, skipped, restored }, updated_ids))
+    Ok((
+        ImportResult {
+            imported,
+            updated,
+            skipped,
+            restored,
+        },
+        updated_ids,
+    ))
 }
 
 /// Like [`import_summaries`] but resilient — a single row's DB error is logged
@@ -200,7 +213,12 @@ pub(crate) async fn import_summaries_resilient(
     }
 
     (
-        ImportResult { imported, updated, skipped, restored },
+        ImportResult {
+            imported,
+            updated,
+            skipped,
+            restored,
+        },
         updated_ids,
         failed,
     )
@@ -592,9 +610,14 @@ mod tests {
         let folder = seed_folder(&db, "/tmp/codeg-import").await;
         let at = AgentType::ClaudeCode;
 
-        let first = import_one_skip(&db.conn, folder, &at, &summary("ext-1", Some("first prompt")))
-            .await
-            .expect("import");
+        let first = import_one_skip(
+            &db.conn,
+            folder,
+            &at,
+            &summary("ext-1", Some("first prompt")),
+        )
+        .await
+        .expect("import");
         assert_eq!(first, ImportOutcome::Imported);
 
         let id = find_id(&db.conn, "ext-1").await;
@@ -677,9 +700,14 @@ mod tests {
         let at = AgentType::ClaudeCode;
 
         assert_eq!(
-            import_one_skip(&db.conn, folder, &at, &summary("ext-1", Some("first prompt")))
-                .await
-                .expect("import"),
+            import_one_skip(
+                &db.conn,
+                folder,
+                &at,
+                &summary("ext-1", Some("first prompt"))
+            )
+            .await
+            .expect("import"),
             ImportOutcome::Imported
         );
 
@@ -702,7 +730,9 @@ mod tests {
         let s = summary("ext-1", Some("same title"));
 
         assert_eq!(
-            import_one_skip(&db.conn, folder, &at, &s).await.expect("import"),
+            import_one_skip(&db.conn, folder, &at, &s)
+                .await
+                .expect("import"),
             ImportOutcome::Imported
         );
         assert_eq!(
@@ -719,9 +749,14 @@ mod tests {
         let folder = seed_folder(&db, "/tmp/codeg-import-lock").await;
         let at = AgentType::ClaudeCode;
 
-        import_one_skip(&db.conn, folder, &at, &summary("ext-1", Some("first prompt")))
-            .await
-            .expect("import");
+        import_one_skip(
+            &db.conn,
+            folder,
+            &at,
+            &summary("ext-1", Some("first prompt")),
+        )
+        .await
+        .expect("import");
         let id = find_id(&db.conn, "ext-1").await;
         conversation_service::update_title(&db.conn, id, "User Pick".into())
             .await
@@ -874,17 +909,29 @@ mod tests {
             .expect("soft delete");
 
         assert_eq!(
-            import_one(&db.conn, folder, &at, &summary("ext-1", Some("kept")), DeletedPolicy::Restore)
-                .await
-                .expect("restore"),
+            import_one(
+                &db.conn,
+                folder,
+                &at,
+                &summary("ext-1", Some("kept")),
+                DeletedPolicy::Restore
+            )
+            .await
+            .expect("restore"),
             ImportOutcome::Restored
         );
         // A second pass has nothing left to restore: the row is live, so it is
         // an ordinary already-imported row and must not be counted again.
         assert_eq!(
-            import_one(&db.conn, folder, &at, &summary("ext-1", Some("kept")), DeletedPolicy::Restore)
-                .await
-                .expect("re-run"),
+            import_one(
+                &db.conn,
+                folder,
+                &at,
+                &summary("ext-1", Some("kept")),
+                DeletedPolicy::Restore
+            )
+            .await
+            .expect("re-run"),
             ImportOutcome::Skipped
         );
     }
@@ -904,9 +951,15 @@ mod tests {
             .await
             .expect("soft delete");
 
-        import_one(&db.conn, target, &at, &summary("ext-1", Some("t")), DeletedPolicy::Restore)
-            .await
-            .expect("restore");
+        import_one(
+            &db.conn,
+            target,
+            &at,
+            &summary("ext-1", Some("t")),
+            DeletedPolicy::Restore,
+        )
+        .await
+        .expect("restore");
 
         // The picker's group folder is the one `add_folder` just made live AND
         // open; the row's own folder may have been removed or closed since,
@@ -955,9 +1008,15 @@ mod tests {
         // A delegation child is not a sidebar row, so "restore" has no meaning
         // for it — it would surface a sub-session as a root conversation.
         assert_eq!(
-            import_one(&db.conn, folder, &at, &summary("child-ext", Some("x")), DeletedPolicy::Restore)
-                .await
-                .expect("restore child"),
+            import_one(
+                &db.conn,
+                folder,
+                &at,
+                &summary("child-ext", Some("x")),
+                DeletedPolicy::Restore
+            )
+            .await
+            .expect("restore child"),
             ImportOutcome::Skipped
         );
         let child = find_row(&db.conn, "child-ext").await;
@@ -1206,9 +1265,14 @@ mod tests {
             .to_string();
 
         // A root conversation to parent the child.
-        import_one_skip(&db.conn, folder, &at, &summary("parent-ext", Some("parent")))
-            .await
-            .expect("import parent");
+        import_one_skip(
+            &db.conn,
+            folder,
+            &at,
+            &summary("parent-ext", Some("parent")),
+        )
+        .await
+        .expect("import parent");
         let parent_id = find_id(&db.conn, "parent-ext").await;
 
         // A delegation child carrying its own external_id, as a parser would
@@ -1239,9 +1303,14 @@ mod tests {
         .await
         .expect("insert child");
 
-        let outcome = import_one_skip(&db.conn, folder, &at, &summary("child-ext", Some("AI Summary")))
-            .await
-            .expect("re-import child");
+        let outcome = import_one_skip(
+            &db.conn,
+            folder,
+            &at,
+            &summary("child-ext", Some("AI Summary")),
+        )
+        .await
+        .expect("re-import child");
         assert_eq!(
             outcome,
             ImportOutcome::Skipped,

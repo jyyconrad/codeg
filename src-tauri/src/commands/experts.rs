@@ -806,6 +806,7 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::DeepSeek,
         AgentType::Qoder,
         AgentType::Antigravity,
+        AgentType::CodegAgent,
     ];
     // Custom agents that declared the shared skills store join the built-in
     // set — the same `skill_storage_spec` gate every skills surface uses, so
@@ -1014,8 +1015,7 @@ pub async fn experts_list_all_install_statuses() -> Result<Vec<ExpertInstallStat
                 Err(_) => continue,
             };
             let state = classify_link(&link_path, &expected);
-            let target_path =
-                read_link_target(&link_path).map(|p| p.to_string_lossy().to_string());
+            let target_path = read_link_target(&link_path).map(|p| p.to_string_lossy().to_string());
             out.push(ExpertInstallStatus {
                 expert_id: meta.id.clone(),
                 agent_type: agent,

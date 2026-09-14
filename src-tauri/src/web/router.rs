@@ -90,6 +90,18 @@ pub fn build_router(
             post(handlers::feedback::submit_session_feedback),
         )
         .route(
+            "/get_code_intel_settings",
+            post(handlers::code_intel::get_code_intel_settings),
+        )
+        .route(
+            "/set_code_intel_settings",
+            post(handlers::code_intel::set_code_intel_settings),
+        )
+        .route(
+            "/get_code_intel_status",
+            post(handlers::code_intel::get_code_intel_status),
+        )
+        .route(
             "/get_question_settings",
             post(handlers::question::get_question_settings),
         )
@@ -462,10 +474,7 @@ pub fn build_router(
         .route("/git_pull", post(handlers::git::git_pull))
         .route("/git_push", post(handlers::git::git_push))
         .route("/git_fetch", post(handlers::git::git_fetch))
-        .route(
-            "/git_update_branch",
-            post(handlers::git::git_update_branch),
-        )
+        .route("/git_update_branch", post(handlers::git::git_update_branch))
         .route("/git_commit", post(handlers::git::git_commit))
         .route("/git_fetch_remote", post(handlers::git::git_fetch_remote))
         .route("/git_delete_branch", post(handlers::git::git_delete_branch))
@@ -759,10 +768,7 @@ pub fn build_router(
             "/acp_set_config_option",
             post(handlers::acp::acp_set_config_option),
         )
-        .route(
-            "/acp_goal_control",
-            post(handlers::acp::acp_goal_control),
-        )
+        .route("/acp_goal_control", post(handlers::acp::acp_goal_control))
         .route(
             "/acp_describe_agent_options",
             post(handlers::acp::acp_describe_agent_options),
@@ -1305,6 +1311,14 @@ pub fn build_router(
             "/weixin_check_qrcode",
             post(handlers::chat_channel::weixin_check_qrcode),
         )
+        .route(
+            "/list_folder_chat_channels",
+            post(handlers::chat_channel::list_folder_chat_channels),
+        )
+        .route(
+            "/set_folder_chat_channels",
+            post(handlers::chat_channel::set_folder_chat_channels),
+        )
         // ─── Model Providers ───
         .route(
             "/list_model_providers",
@@ -1348,7 +1362,10 @@ pub fn build_router(
             "/automation_list",
             post(handlers::automation::automation_list),
         )
-        .route("/automation_get", post(handlers::automation::automation_get))
+        .route(
+            "/automation_get",
+            post(handlers::automation::automation_get),
+        )
         .route(
             "/automation_runs",
             post(handlers::automation::automation_runs),
@@ -1461,10 +1478,7 @@ pub fn build_router(
             "/forge_list_issues",
             post(handlers::forge::forge_list_issues),
         )
-        .route(
-            "/forge_tab_count",
-            post(handlers::forge::forge_tab_count),
-        )
+        .route("/forge_tab_count", post(handlers::forge::forge_tab_count))
         .route(
             "/forge_list_labels",
             post(handlers::forge::forge_list_labels),
@@ -1583,6 +1597,65 @@ pub fn build_router(
             "/work_task_template_delete",
             post(handlers::work_task::work_task_template_delete),
         )
+        // ─── Personal wiki ───
+        .route(
+            "/get_wiki_settings",
+            post(handlers::wiki::get_wiki_settings),
+        )
+        .route(
+            "/update_wiki_settings",
+            post(handlers::wiki::update_wiki_settings),
+        )
+        .route("/wiki_list_jobs", post(handlers::wiki::wiki_list_jobs))
+        .route("/wiki_get_job", post(handlers::wiki::wiki_get_job))
+        .route(
+            "/wiki_list_sources",
+            post(handlers::wiki::wiki_list_sources),
+        )
+        .route(
+            "/wiki_list_memory_notes",
+            post(handlers::wiki::wiki_list_memory_notes),
+        )
+        .route(
+            "/wiki_list_project_bindings",
+            post(handlers::wiki::wiki_list_project_bindings),
+        )
+        .route("/wiki_get_source", post(handlers::wiki::wiki_get_source))
+        .route("/wiki_vault_tree", post(handlers::wiki::wiki_vault_tree))
+        .route("/wiki_vault_read", post(handlers::wiki::wiki_vault_read))
+        .route(
+            "/wiki_import_text",
+            post(handlers::wiki::wiki_import_text).layer(DefaultBodyLimit::max(8 * 1024 * 1024)),
+        )
+        .route(
+            "/wiki_import_files",
+            // One file per request. 20 MiB decoded ≈ 27 MiB base64 + JSON envelope.
+            post(handlers::wiki::wiki_import_files).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/wiki_import_local_sessions",
+            post(handlers::wiki::wiki_import_local_sessions),
+        )
+        .route(
+            "/wiki_import_directory",
+            post(handlers::wiki::wiki_import_directory),
+        )
+        .route(
+            "/wiki_accept_extraction",
+            post(handlers::wiki::wiki_accept_extraction),
+        )
+        .route(
+            "/wiki_update_source_annotations",
+            post(handlers::wiki::wiki_update_source_annotations),
+        )
+        .route("/wiki_reextract", post(handlers::wiki::wiki_reextract))
+        .route(
+            "/wiki_link_source_version",
+            post(handlers::wiki::wiki_link_source_version),
+        )
+        .route("/wiki_compile_now", post(handlers::wiki::wiki_compile_now))
+        .route("/wiki_retry_job", post(handlers::wiki::wiki_retry_job))
+        .route("/wiki_cancel_job", post(handlers::wiki::wiki_cancel_job))
         // ─── Workspace background ───
         .route(
             "/background_read",

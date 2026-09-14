@@ -56,7 +56,7 @@ beforeEach(() => {
   deliver.mockClear()
   deliver.mockResolvedValue(undefined)
   permission.mockReturnValue("managed_by_os")
-  // The default gate is `hidden`, so every test that doesn't care about the
+  // The default gate is `unfocused`, so every test that doesn't care about the
   // window starts in a state that passes it.
   setWindowState({ hidden: true, focused: false })
   vi.useFakeTimers()
@@ -95,31 +95,63 @@ describe("window-state gate", () => {
   it("`hidden` stays silent for a visible but unfocused window", async () => {
     // The reported failure this option exists for: a second-monitor window is
     // not hidden, so the old hard-coded `document.hidden` check never fired.
+    // Gated against a non-attention event so the window-state rule is what
+    // is under test (question / turn-complete / error skip this gate).
     setWindowState({ hidden: false, focused: false })
     withPrefs({ when: "hidden" })
 
-    await expect(notifyDesktop("turn_complete", PAYLOAD)).resolves.toBe(false)
+    await expect(notifyDesktop("background_task", PAYLOAD)).resolves.toBe(false)
   })
 
   it("`unfocused` fires for that same window", async () => {
     setWindowState({ hidden: false, focused: false })
     withPrefs({ when: "unfocused" })
 
-    await expect(notifyDesktop("turn_complete", PAYLOAD)).resolves.toBe(true)
+    await expect(notifyDesktop("background_task", PAYLOAD)).resolves.toBe(true)
   })
 
   it("`unfocused` stays silent while the user is looking at it", async () => {
     setWindowState({ hidden: false, focused: true })
     withPrefs({ when: "unfocused" })
 
-    await expect(notifyDesktop("turn_complete", PAYLOAD)).resolves.toBe(false)
+    await expect(notifyDesktop("background_task", PAYLOAD)).resolves.toBe(false)
   })
 
   it("`always` fires even for a focused, visible window", async () => {
     setWindowState({ hidden: false, focused: true })
     withPrefs({ when: "always" })
 
+    await expect(notifyDesktop("background_task", PAYLOAD)).resolves.toBe(true)
+  })
+
+  it("still delivers question, turn complete and error while the window is focused", async () => {
+    // These three are the "come look" prompts. The default `unfocused` gate
+    // (and the old `hidden` gate) dropped them whenever the user was already
+    // looking at Codeg — including a second-monitor window that is never
+    // `document.hidden`. The agent is blocked or the turn has ended; the OS
+    // banner is the prompt regardless of window state.
+    setWindowState({ hidden: false, focused: true })
+    withPrefs({ when: "hidden" })
+
+    await expect(notifyDesktop("question_request", PAYLOAD)).resolves.toBe(true)
+    vi.setSystemTime(Date.now() + 3100)
     await expect(notifyDesktop("turn_complete", PAYLOAD)).resolves.toBe(true)
+    vi.setSystemTime(Date.now() + 3100)
+    await expect(notifyDesktop("error", PAYLOAD)).resolves.toBe(true)
+    vi.setSystemTime(Date.now() + 3100)
+    await expect(notifyDesktop("permission_request", PAYLOAD)).resolves.toBe(
+      true
+    )
+    expect(deliver).toHaveBeenCalledTimes(4)
+  })
+
+  it("still gates non-attention events on window state", async () => {
+    setWindowState({ hidden: false, focused: true })
+    withPrefs({ when: "unfocused" })
+
+    await expect(notifyDesktop("background_task", PAYLOAD)).resolves.toBe(false)
+    await expect(notifyDesktop("work_task", PAYLOAD)).resolves.toBe(false)
+    expect(deliver).not.toHaveBeenCalled()
   })
 })
 

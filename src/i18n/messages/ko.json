@@ -40,7 +40,9 @@
       "general": "일반",
       "appearance": "외관",
       "agents": "에이전트",
+      "codeg_agent": "내장 에이전트",
       "mcp": "MCP",
+      "tools": "Tools",
       "skills": "Skills",
       "shortcuts": "단축키",
       "version_control": "버전 관리",
@@ -53,8 +55,35 @@
       "office_tools": "오피스 도구",
       "skill_packs": "스킬 팩",
       "quick_messages": "빠른 메시지",
-      "logs": "실행 로그"
+      "logs": "실행 로그",
+      "wiki": "개인 위키"
     }
+  },
+  "CodeIntelligenceSettings": {
+    "sectionTitle": "Tools",
+    "sectionDescription": "Project-hosted MCP tools for LSP and CodeGraph. Agents connect over MCP; language servers stay in the Codeg process. Off by default.",
+    "masterTitle": "Enable project tools",
+    "masterDescription": "When off, sessions do not receive LSP or CodeGraph MCP tools.",
+    "codegraphTitle": "CodeGraph MCP",
+    "codegraphDescription": "Official CodeGraph tools hosted by the project process. Codeg never runs codegraph install.",
+    "codegraphOnPath": "Binary: {path}",
+    "codegraphMissing": "codegraph is not on PATH",
+    "codegraphIndexed": "This folder has a .codegraph index",
+    "codegraphNotIndexed": "No .codegraph index yet (created in the background when enabled)",
+    "codegraphInstall": "Install: npm i -g @colbymchenry/codegraph",
+    "binaryPath": "Binary path (optional)",
+    "lspTitle": "LSP MCP tools",
+    "lspAutoAttach": "Advertise LSP MCP tools",
+    "lspAutoAttachDescription": "These MCP tools map to language-server operations. Language servers are started on demand by the project process, not listed here.",
+    "maxConcurrent": "Host language-server limit",
+    "maxConcurrentHint": "Maximum language servers the project process may run at once.",
+    "mcpAdvertised": "advertised",
+    "mcpHidden": "not advertised",
+    "saveFailed": "Could not save: {message}",
+    "loadFailed": "Could not load: {message}",
+    "save": "Save",
+    "saving": "Saving...",
+    "loading": "Loading..."
   },
   "AppearanceSettings": {
     "sectionTitle": "테마 모양",
@@ -1434,7 +1463,8 @@
       "upgradeAvailable": "{versionText}. 업그레이드가 가능합니다.",
       "remoteUnavailable": "{versionText}. 현재 원격 버전을 사용할 수 없습니다.",
       "latest": "{versionText}. 이미 최신입니다.",
-      "latestChannel": "{versionText}. 최신 버전 채널이 켜져 있습니다. 업그레이드하면 최신 릴리스를 설치합니다."
+      "latestChannel": "{versionText}. 최신 버전 채널이 켜져 있습니다. 업그레이드하면 최신 릴리스를 설치합니다.",
+      "inProcess": "내장 런타임 {version}. CLI 설치가 필요 없습니다."
     },
     "adapter": {
       "label": "ACP 어댑터",
@@ -1584,11 +1614,116 @@
     "customAgentRemoveWithData": "기록된 대화 기록도 삭제",
     "customAgentRemoved": "{name} 제거됨",
     "customAgentBadge": "사용자 지정",
-    "customAgentNotLaunchable": "이 환경에서는 실행할 수 없습니다: {reason}"
+    "customAgentNotLaunchable": "이 환경에서는 실행할 수 없습니다: {reason}",
+    "codegAgent": {
+      "inProcess": "내장 인프로세스 런타임입니다. 모델 공급자를 바인딩하고 저장하세요. 창은 이 카드에서 수정할 수 있습니다. CLI 설치는 필요 없습니다.",
+      "experimental": "실험 기능이며 기본값은 꺼짐입니다.",
+      "noSandbox": "OS 샌드박스가 없습니다. 파일 쓰기와 bash는 호출마다 허용된 뒤에만 실행됩니다. 워크스페이스 FS 정책은 셸 격리가 아닙니다.",
+      "recovery": "충돌 복구는 도구를 자동으로 다시 실행하지 않습니다. 시작됐지만 완료가 확인되지 않은 호출은 unknown으로 복원됩니다.",
+      "contextWindowsHint": "모델 채널을 바인딩하면 편집 가능한 CODEG_AGENT_CONTEXT_WINDOWS가 기록됩니다(기본 128000, 공급자에 창이 있으면 그 값을 씁니다). 창이 없는 모델은 시작할 수 없습니다.",
+      "protocol": "v1은 OpenAI Chat Completions만 사용하며 Responses API는 사용하지 않습니다.",
+      "modelSelectorHint": "세션 모델 선택기에는 CODEG_AGENT_CONTEXT_WINDOWS에 있는 id만 나옵니다. 알 수 없는 id는 거부됩니다.",
+      "usageLastRequest": "컨텍스트 링은 설정된 창에 대한 마지막 모델 요청 점유량이며, 런 전체 누적 토큰이 아닙니다. 게이트웨이가 입력 사용량을 생략하면 추정값을 표시합니다.",
+      "envWindowsHint": "환경 변수는 바인딩된 공급자와 카드의 창·최대 출력 투영입니다. 선택 항목 CODEG_AGENT_MAX_OUTPUT_TOKENS 기본값은 4096이며 창에서 안전 여유를 뺀 값보다 작아야 합니다.",
+      "configCardTitle": "Codeg Agent 구성",
+      "bindProvider": "모델 공급자",
+      "addModelProvider": "모델 공급자 추가",
+      "bindProviderFix": "모델 공급자 바인딩",
+      "addProviderFix": "모델 공급자 추가",
+      "editWindowFix": "컨텍스트 창 편집",
+      "modelReadOnly": "모델",
+      "contextWindow": "컨텍스트 창",
+      "maxOutput": "최대 출력 토큰",
+      "systemPrompt": "시스템 프롬프트",
+      "systemPromptHint": "비우면 내장 기본값을 씁니다. 작업 디렉터리와 스킬 목록은 계속 추가됩니다.",
+      "compactPrompt": "컨텍스트 압축 프롬프트 (L2)",
+      "compactPromptHint": "같은 세션의 두 번째 압축에만 사용됩니다. 비우면 내장 템플릿입니다.",
+      "save": "저장",
+      "envAdvanced": "환경 변수 (투영 / 고급)",
+      "envAdvancedHint": "바인딩된 URL, 키, 모델은 투영입니다. 창과 프롬프트는 위 카드에서 수정하세요.",
+      "boundCredentials": "바인딩된 자격 증명 (읽기 전용)",
+      "emptyUsesBuiltin": "비움 = 내장 기본값",
+      "openDedicatedSettings": "내장 에이전트 설정 열기",
+      "compactSoftPercent": "소프트 압축 임계값(%)",
+      "compactRecentTurns": "최근 턴 유지",
+      "maxTurns": "최대 모델 턴"
+    }
   },
   "SettingsPages": {
     "agentsLoading": "에이전트 설정을 불러오는 중...",
-    "skillPacksLoading": "스킬 팩 로딩 중…"
+    "skillPacksLoading": "스킬 팩 로딩 중…",
+    "codegAgentLoading": "내장 에이전트 설정을 불러오는 중...",
+    "wikiLoading": "위키 설정을 불러오는 중..."
+  },
+  "CodegAgentSettings": {
+    "sectionTitle": "내장 에이전트",
+    "sectionDescription": "Codeg Agent를 설정합니다. OpenAI 호환 모델 공급자, 프롬프트, 컨텍스트 압축, 실행 한도를 지정합니다.",
+    "loading": "로딩 중...",
+    "loadFailed": "Codeg Agent 설정을 불러오지 못했습니다: {message}",
+    "missingAgent": "이 빌드에는 Codeg Agent가 없습니다.",
+    "providerTitle": "모델 공급자",
+    "providerDescription": "설정 → 모델 공급자를 재사용합니다. OpenAI Chat Completions /v1 엔드포인트라면 클라우드, 로컬, 사용자 지정 게이트웨이 모두 사용할 수 있습니다.",
+    "presetHint": "클라우드, 로컬, 사용자 지정 채널은 같은 방식으로 바인딩합니다. 로컬 루프백 서버는 API 키를 생략할 수 있습니다.",
+    "promptsTitle": "프롬프트",
+    "promptsDescription": "선택적 재정의입니다. 비우면 내장 기본값을 사용합니다.",
+    "compressionTitle": "컨텍스트 압축",
+    "compressionDescription": "사용량이 소프트 임계값을 넘으면 이전 턴을 요약하고, 최근 턴은 그대로 둡니다.",
+    "compactSoftPercent": "소프트 압축 임계값(%)",
+    "compactSoftPercentHint": "입력 예산 대비 비율입니다. 기본값 80. 범위 1–100.",
+    "compactRecentTurns": "최근 턴 유지",
+    "compactRecentTurnsHint": "압축 전에 남길 최소 턴 수입니다. 기본값 6.",
+    "runtimeTitle": "실행 설정",
+    "runtimeDescription": "프롬프트당 모델 호출 한도와 새 대화에서 이 에이전트를 켤지 여부입니다.",
+    "maxTurns": "최대 모델 턴",
+    "maxTurnsHint": "최초 호출과 도구 재시도를 포함한 한도입니다. 기본값 40.",
+    "enabled": "Codeg Agent 사용",
+    "enabledHint": "끄면 시작할 수 없습니다. 다음 세션부터 적용됩니다.",
+    "preflightFailed": "사전 검사 실패",
+    "manageProviders": "공급자 관리",
+    "searchProviders": "Search providers…",
+    "noProviders": "No providers yet. Add one to bind a model.",
+    "addProvider": "Add provider",
+    "providerOn": "ON",
+    "apiKey": "API key",
+    "apiKeyPlaceholder": "Leave blank to keep the current key",
+    "apiUrl": "API URL",
+    "apiUrlHint": "OpenAI-compatible /v1 root. A trailing /v1 is kept; the client appends /chat/completions.",
+    "detect": "Detect",
+    "detecting": "Detecting…",
+    "detectSuccess": "Found {count} models",
+    "detectFailed": "Could not list models: {message}",
+    "modelsTitle": "Models",
+    "addModel": "Add",
+    "modelIdPlaceholder": "Model id",
+    "emptyModels": "No models yet. Detect from the endpoint or add an id.",
+    "setDefault": "Default for new sessions",
+    "removeModel": "Remove",
+    "providerName": "Name",
+    "saveProvider": "Save channel",
+    "deleteProvider": "Delete",
+    "deleteConfirmTitle": "Delete this provider?",
+    "deleteConfirmDescription": "This removes the channel. Bind another provider before saving if this one is in use.",
+    "compactModel": "Compact model",
+    "compactModelHint": "Used for L2 conversation compression. Choose from models on the bound provider.",
+    "compactModelFollowSession": "Same as session model",
+    "restoreDefault": "Restore default",
+    "foreignProviderHint": "This channel belongs to another agent. Bind it as-is, or add a Codeg provider to manage multiple models.",
+    "loopbackKeyOptional": "Loopback URL — API key optional",
+    "addFirstModel": "First model (optional)",
+    "modelWindow": "Context window",
+    "defaultModel": "Default",
+    "providerSaved": "Provider saved",
+    "providerCreated": "Provider created",
+    "providerDeleted": "Provider deleted",
+    "bindThisProvider": "Use this provider",
+    "selectProvider": "Select a provider",
+    "preset": "Platform",
+    "creating": "Creating…",
+    "requestProtocol": "Request protocol",
+    "requestProtocolHint": "One session uses one protocol. Auto probes Chat Completions first and falls back to Responses only if that path 404s.",
+    "protocolChatCompletions": "Chat Completions",
+    "protocolResponses": "Responses",
+    "protocolAuto": "Auto"
   },
   "GeneralSettings": {
     "loading": "로딩 중...",
@@ -1754,6 +1889,14 @@
       "noConversationsFound": "대화를 찾을 수 없습니다.",
       "importLocalSessions": "로컬 세션 가져오기",
       "importing": "가져오는 중...",
+      "notifyChannels": "알림 채널…",
+      "notifyChannelsDialog": {
+        "title": "알림 채널",
+        "description": "이 폴더의 실행이 끝나면 최종 메시지를 선택한 채널로 보냅니다.",
+        "empty": "채팅 채널이 없습니다. 설정에서 추가하세요.",
+        "loadFailed": "채널을 불러오지 못했습니다: {message}",
+        "saveFailed": "채널 바인딩을 저장하지 못했습니다: {message}"
+      },
       "error": "오류: {message}",
       "completeAllSessions": "모든 세션 완료 처리",
       "completeAllReviewTitle": "모든 검토 세션을 완료 처리할까요?",
@@ -1865,6 +2008,8 @@
       "loadingSubsessions": "하위 대화 로드 중…",
       "forge": "리포지토리 패널",
       "canvas": "무한 대화",
+      "toolbox": "도구 상자",
+      "wiki": "개인 위키",
       "folderGroup": {
         "newGroup": "새 그룹",
         "newGroupTitle": "새 폴더 그룹",
@@ -3270,6 +3415,9 @@
         "emptyConversation": "이 대화에는 메시지가 없습니다.",
         "systemMessage": "시스템 메시지",
         "copyMessage": "복사",
+        "editLastRound": "마지막 메시지 수정",
+        "editingLastRound": "보내면 이 라운드가 대체됩니다",
+        "cancelEditLastRound": "취소",
         "forkFromHere": "여기서 분기",
         "forkBusy": "턴이 실행 중일 때는 분기할 수 없습니다",
         "forkNotReady": "아직 이 응답에서 분기할 수 없습니다. 잠시 후 다시 시도하세요",
@@ -3741,6 +3889,33 @@
         "stopDeclined": "해당 작업을 중지할 수 없습니다. 이미 완료되었을 수 있습니다.",
         "stopFailed": "작업 중지에 실패했습니다: {error}"
       },
+      "workflows": {
+        "title": "워크플로",
+        "collapseAria": "워크플로 접기",
+        "expandAria": "워크플로 펼치기",
+        "collapsedSummary": "{name} {current}/{total}",
+        "collapsedSummaryNamed": "{name}",
+        "dockToComposerAria": "입력창 위에 고정",
+        "dockToOverlayAria": "계획 아래에 고정",
+        "starting": "시작 중",
+        "phase": "{name} ({current}/{total})",
+        "agents": "{done} 완료 · {running} 실행 중",
+        "budget": "{used}/{total}",
+        "paused": "일시 중지",
+        "phaseState": {
+          "pending": "대기",
+          "active": "진행 중",
+          "done": "완료",
+          "failed": "실패"
+        },
+        "nodeState": {
+          "pending": "대기",
+          "running": "실행 중",
+          "done": "완료",
+          "failed": "실패",
+          "cancelled": "취소됨"
+        }
+      },
       "proposedPlan": {
         "title": "제안된 계획",
         "planning": "계획 중…"
@@ -4077,7 +4252,22 @@
     "apiUrlPlaceholder": "https://api.openai.com/v1",
     "apiKey": "API 키",
     "apiKeyPlaceholder": "sk-...",
+    "apiKeyOptionalLocal": "로컬 서버에서는 선택",
+    "apiKeyOptionalLocalHint": "Ollama, LM Studio 같은 루프백 /v1 서버는 보통 Authorization을 무시합니다. 비워 두면 시작 시 더미 로컬 키를 사용합니다.",
     "apiKeyKeepCurrent": "현재 값을 유지하려면 비워두세요",
+    "modelPlaceholderCodeg": "gpt-4.1 / llama3.2 / deepseek-chat",
+    "presets": {
+      "label": "엔드포인트 프리셋",
+      "hint": "일반적인 Chat Completions /v1 URL과 모델 id를 채웁니다. 나중에 수정할 수 있습니다.",
+      "openai": "OpenAI",
+      "deepseek": "DeepSeek",
+      "groq": "Groq",
+      "together": "Together",
+      "openrouter": "OpenRouter",
+      "ollama": "Ollama (로컬)",
+      "lmstudio": "LM Studio (로컬)",
+      "custom": "사용자 지정 /v1"
+    },
     "agentTypes": "에이전트 유형",
     "agentTypesRequired": "최소 하나의 에이전트 유형을 선택하세요.",
     "agentType": "에이전트 유형",
@@ -5840,5 +6030,454 @@
     "terminalNoDirectory": "이 카드에는 작업 디렉터리가 없습니다",
     "confirmDeleteTerminals": "실행 중인 터미널 {count}개가 닫히고 해당 프로세스도 종료됩니다.",
     "confirmDeleteNotesAndTerminals": "직접 작성한 메모 {notes}개가 영구 삭제되고, 실행 중인 터미널 {terminals}개도 종료됩니다."
+  },
+  "Toolbox": {
+    "title": "도구 상자",
+    "searchPlaceholder": "Search tools",
+    "favorites": "Favorites",
+    "recent": "Recent",
+    "favorite": "Favorite",
+    "noResults": "No matching tools",
+    "emptyHint": "Pick a tool from the list",
+    "input": "Input",
+    "output": "Result",
+    "params": "Options",
+    "example": "Example",
+    "clear": "Clear",
+    "copy": "Copy",
+    "copied": "Copied",
+    "download": "Download",
+    "sendTo": "Send result to",
+    "sendToPlaceholder": "Choose a tool",
+    "error": "Error",
+    "encodingNotice": "This is encoding, not encryption.",
+    "cryptoFooter": "Runs on this device. For debugging and conversion only — not a substitute for a key management system.",
+    "categories": {
+      "text": "Text",
+      "dev": "Develop",
+      "encoding": "Encode / Decode",
+      "crypto": "Encrypt / Decrypt",
+      "image": "Image",
+      "general": "General"
+    },
+    "tools": {
+      "text-stats": {
+        "title": "Word & character count",
+        "description": "Count characters, CJK characters, words, lines, and bytes.",
+        "aliases": "word count"
+      },
+      "text-clean": {
+        "title": "Text cleaner",
+        "description": "Trim, drop blank lines, normalize newlines, full/half width, punctuation.",
+        "aliases": "trim"
+      },
+      "line-dedupe-sort": {
+        "title": "Dedupe & sort lines",
+        "description": "Split by line, dedupe with case/whitespace rules, sort or keep order.",
+        "aliases": "unique"
+      },
+      "case-naming": {
+        "title": "Naming style",
+        "description": "Convert camelCase, snake_case, PascalCase, kebab-case, CONSTANT_CASE.",
+        "aliases": "camelCase"
+      },
+      "text-diff": {
+        "title": "Text diff",
+        "description": "Line-level diff of two texts, then mark inline inserts and deletes.",
+        "aliases": "diff"
+      },
+      "find-replace": {
+        "title": "Find & replace",
+        "description": "Literal or regex replace with a preview of matches.",
+        "aliases": "replace"
+      },
+      "markdown-preview": {
+        "title": "Markdown preview",
+        "description": "Render Markdown to sanitized HTML. Copy or export the result.",
+        "aliases": "md"
+      },
+      "zh-convert": {
+        "title": "Simplified / Traditional Chinese",
+        "description": "Convert between simplified and traditional Chinese at phrase level.",
+        "aliases": "opencc"
+      },
+      "json-format": {
+        "title": "JSON format & validate",
+        "description": "Pretty-print or minify. Locate parse errors by line. Optional big-int strings.",
+        "aliases": "pretty json"
+      },
+      "timestamp": {
+        "title": "Timestamp converter",
+        "description": "Unix seconds/milliseconds ↔ date with an explicit time zone.",
+        "aliases": "unix epoch"
+      },
+      "uuid": {
+        "title": "UUID generator",
+        "description": "Cryptographically random UUID v4, batch copy. Optional v7.",
+        "aliases": "guid"
+      },
+      "json-yaml": {
+        "title": "JSON ↔ YAML",
+        "description": "Convert both ways and report the failing path.",
+        "aliases": "yml"
+      },
+      "json-csv": {
+        "title": "JSON ↔ CSV",
+        "description": "Map object arrays to headers; choose field types on the way back.",
+        "aliases": "csv"
+      },
+      "regex-tester": {
+        "title": "Regex tester",
+        "description": "Live match groups and replace. Runs in a worker with a timeout.",
+        "aliases": "regexp"
+      },
+      "cron": {
+        "title": "Cron explain",
+        "description": "5- or 6-field expressions plus time zone; list upcoming runs.",
+        "aliases": "crontab"
+      },
+      "sql-format": {
+        "title": "SQL formatter",
+        "description": "Pretty-print or compact. Never executes the statement.",
+        "aliases": "sql"
+      },
+      "code-format": {
+        "title": "XML / YAML viewer",
+        "description": "Indent, fold, and show syntax error location.",
+        "aliases": "xml yaml"
+      },
+      "base64": {
+        "title": "Base64 encode / decode",
+        "description": "UTF-8 text or files. Rejects illegal characters.",
+        "aliases": "base64加密"
+      },
+      "url-codec": {
+        "title": "URL encode / decode",
+        "description": "Full URL vs component encoding; show protocol, host, path, query.",
+        "aliases": "urlencode"
+      },
+      "hex-string": {
+        "title": "Hex ↔ string",
+        "description": "UTF-8 or Latin-1. Tolerates spaces and 0x prefixes.",
+        "aliases": "hex"
+      },
+      "html-entities": {
+        "title": "HTML entities",
+        "description": "Escape and unescape HTML entities.",
+        "aliases": "html escape"
+      },
+      "unicode-escape": {
+        "title": "Unicode escape",
+        "description": "\\uXXXX ↔ text, JSON-style escapes.",
+        "aliases": "unicode"
+      },
+      "radix": {
+        "title": "Radix converter",
+        "description": "Integers in bases 2–36. Big integers as strings.",
+        "aliases": "binary"
+      },
+      "symmetric-cipher": {
+        "title": "AES / SM4 encrypt",
+        "description": "AES-128/192/256 and SM4. CBC/GCM/ECB, PKCS7. Key/IV as UTF-8, Hex, or Base64.",
+        "aliases": "aes sm4 国密"
+      },
+      "hash": {
+        "title": "Hash & checksum",
+        "description": "MD5, SHA-1/2/3, SM3 for text or small files.",
+        "aliases": "md5加密 sha256 sm3"
+      },
+      "hmac": {
+        "title": "HMAC sign",
+        "description": "Keyed SHA-256/512 or SM3. Hex or Base64 output.",
+        "aliases": "hmac sign"
+      },
+      "password-gen": {
+        "title": "Password generator",
+        "description": "Secure random from a chosen alphabet. Results are not stored.",
+        "aliases": "password"
+      },
+      "asymmetric-cipher": {
+        "title": "RSA / SM2",
+        "description": "Keygen, encrypt/decrypt, sign/verify. PEM import/export.",
+        "aliases": "rsa sm2"
+      },
+      "jwt": {
+        "title": "JWT inspect",
+        "description": "Split header/payload. Optional HMAC/RSA verify, shown separately from decode.",
+        "aliases": "json web token"
+      },
+      "password-strength": {
+        "title": "Password strength",
+        "description": "Length, character classes, estimated entropy. Nothing is stored.",
+        "aliases": "entropy"
+      },
+      "totp": {
+        "title": "TOTP one-time code",
+        "description": "Local code from a Base32 secret with a countdown. Secret stays in memory.",
+        "aliases": "otp 2fa"
+      },
+      "image-compress": {
+        "title": "Image compress",
+        "description": "Resize or requality locally and compare size vs preview.",
+        "aliases": "compress"
+      },
+      "color-convert": {
+        "title": "Color convert",
+        "description": "HEX, RGB, HSL with a swatch and alpha.",
+        "aliases": "rgb hsl"
+      },
+      "image-crop": {
+        "title": "Crop & scale",
+        "description": "Map a selection to source pixels and resample. Optional aspect lock.",
+        "aliases": "crop"
+      },
+      "image-watermark": {
+        "title": "Watermark",
+        "description": "Overlay text or an image with opacity, angle, and spacing.",
+        "aliases": "watermark"
+      },
+      "image-stitch": {
+        "title": "Stitch images",
+        "description": "Horizontal, vertical, or grid layout onto one canvas.",
+        "aliases": "concat"
+      },
+      "qr-generate": {
+        "title": "QR code",
+        "description": "Encode text or a URL. Error-correction level. PNG or SVG.",
+        "aliases": "qrcode"
+      },
+      "qr-decode": {
+        "title": "QR decode",
+        "description": "Read a local image. Does not open links in the payload.",
+        "aliases": "scan"
+      },
+      "unit-convert": {
+        "title": "Unit converter",
+        "description": "Convert via a canonical unit. Temperature handles offset.",
+        "aliases": "unit"
+      },
+      "date-diff": {
+        "title": "Date interval",
+        "description": "Calendar days vs exact duration. Inclusive start/end option.",
+        "aliases": "datediff"
+      },
+      "bcrypt": {
+        "title": "bcrypt password hash",
+        "description": "Hash and verify passwords with bcrypt. Cost 4–14. Runs in Rust; password is not stored.",
+        "aliases": "bcrypt password hash"
+      },
+      "cert-pem": {
+        "title": "Certificate / PEM",
+        "description": "Parse a PEM certificate: subject, SAN, validity, SHA-256 fingerprint. No CRL/OCSP.",
+        "aliases": "x509 pem certificate"
+      }
+    }
+  },
+  "WikiSettings": {
+    "sectionTitle": "개인 위키",
+    "sectionDescription": "완료된 작업 세션과 가져온 문서를 로컬 Markdown vault에 남깁니다. 턴/세션 기억을 먼저 쓰고, 예약 또는 즉시 정리로 프로젝트와 역량 노트를 합성합니다.",
+    "loading": "불러오는 중...",
+    "loadFailed": "위키 설정을 불러오지 못했습니다: {message}",
+    "retry": "다시 시도",
+    "save": "저장",
+    "saving": "저장 중...",
+    "saved": "위키 설정을 저장했습니다",
+    "saveFailed": "위키 설정을 저장하지 못했습니다: {message}",
+    "enabled": "개인 위키 사용",
+    "enabledHint": "켜면 세션과 가져온 본문이 로컬 vault에 저장됩니다. 추출된 텍스트는 나중에 바인딩된 모델로 보내져 기억을 쓰거나 정리하는 데 쓰일 수 있습니다.",
+    "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
+    "statusTitle": "Schedule",
+    "statusDescription": "다음 정리 시각과 아직 처리할 소스 수.",
+    "nextCompileAt": "다음 정리",
+    "pendingSources": "대기 중인 소스",
+    "notScheduled": "예약 없음",
+    "vaultTitle": "Vault",
+    "vaultDescription": "One vault for work notes, capability notes, shared knowledge, and sources. Changing the path does not move files.",
+    "vaultPath": "Vault 경로",
+    "vaultPathHint": "Optional override. Leave empty to use the default Codeg wiki directory. Pause in-flight jobs before switching paths.",
+    "vaultPathPlaceholder": "Leave empty for the default path",
+    "timezone": "시간대",
+    "timezoneHint": "IANA timezone for the compile schedule. First use follows the system timezone, then stays as saved.",
+    "compileCron": "정리 일정(cron)",
+    "compileCronHint": "Five-field cron. Default is 0 3 * * * (03:00 every day).",
+    "captureTitle": "수집",
+    "captureDescription": "Successful ACP turns can be saved as sources. Delegate and Loop sub-sessions are skipped.",
+    "acpEnabled": "완료된 ACP 세션 수집",
+    "acpEnabledHint": "Freeze successful ACP turns into the vault as sources.",
+    "excludeAgentTypes": "제외할 에이전트 유형",
+    "excludeAgentTypesHint": "Checked agents are not captured.",
+    "excludeFolders": "제외할 폴더",
+    "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
+    "excludeFoldersPlaceholder": "e.g. 12, 34",
+    "unknownFolder": "폴더 {id}",
+    "restoreBuiltinPrompt": "Restore built-in",
+    "turnSummaryTitle": "턴 요약",
+    "turnSummaryDescription": "성공한 ACP 턴마다 무엇을 바꾸고 구현했는지 읽을 수 있는 기억을 씁니다. 모델 id가 비어 있으면 바인딩된 기본 모델을 사용합니다.",
+    "turnSummaryModel": "턴 요약 모델 id",
+    "turnSummaryModelHint": "바인딩된 Codeg Agent 기본 모델을 덮어씁니다. 비워 두면 바인딩된 채널을 사용합니다.",
+    "turnSummaryModelPlaceholder": "바인딩 기본값",
+    "turnSummaryPrompt": "턴 요약 프롬프트",
+    "turnSummaryPromptPlaceholder": "전체 턴 요약 스킬. 호스트는 페이지 신원을 검증하며 읽기 범위를 넓힐 수 없습니다.",
+    "turnSummaryPromptBuiltinHint": "전체 턴 요약 스킬입니다. 여기서 수정하세요. 내장으로 되돌리면 이후 스킬 업데이트를 따릅니다.",
+    "sessionRollupTitle": "대화 요약",
+    "sessionRollupDescription": "대화가 완료로 표시되면 기존 턴 기억으로 대화 페이지를 하나 씁니다. 미완료 대화에는 세션 페이지가 없습니다.",
+    "sessionRollupModel": "대화 요약 모델 id",
+    "sessionRollupModelHint": "바인딩된 Codeg Agent 기본 모델을 덮어씁니다. 비워 두면 바인딩된 채널을 사용합니다.",
+    "sessionRollupModelPlaceholder": "바인딩 기본값",
+    "sessionRollupPrompt": "대화 요약 프롬프트",
+    "sessionRollupPromptPlaceholder": "전체 대화 요약 스킬. 호스트는 페이지 신원을 검증하며 읽기 범위를 넓힐 수 없습니다.",
+    "sessionRollupPromptBuiltinHint": "전체 대화 요약 스킬입니다. 여기서 수정하세요. 내장으로 되돌리면 이후 스킬 업데이트를 따릅니다.",
+    "synthesizeTitle": "작업 정리",
+    "synthesizeDescription": "예약 또는 즉시 정리는 기억 페이지로 프로젝트, 역할, 결정, 성과, 역량 노트를 갱신합니다. 가져온 자료는 자동으로 정리되지 않습니다.",
+    "synthesizeEnabled": "정리 사용",
+    "synthesizeEnabledHint": "꺼져 있어도 기억 페이지는 쓸 수 있습니다. 새 정리 작업은 멈추고 작업대의 ‘지금 정리’는 사용할 수 없습니다.",
+    "synthesizeNowUnavailable": "정리가 꺼져 있으면 작업대의 ‘지금 정리’를 사용할 수 없습니다.",
+    "synthesizeModel": "정리 모델 id",
+    "synthesizeModelHint": "정리용으로 바인딩된 Codeg Agent 기본 모델을 덮어씁니다. 비워 두면 바인딩된 채널을 사용합니다.",
+    "synthesizeModelPlaceholder": "바인딩 기본값",
+    "synthesizePrompt": "정리 프롬프트",
+    "synthesizePromptPlaceholder": "전체 작업 정리 스킬. 호스트는 근거를 검증하며 주장을 지어낼 수 없습니다.",
+    "synthesizePromptBuiltinHint": "전체 작업 정리 스킬입니다. 여기서 수정하세요. 내장으로 되돌리면 이후 스킬 업데이트를 따릅니다."
+  },
+  "Wiki": {
+    "title": "개인 위키",
+    "views": {
+      "all": "전체",
+      "work": "작업",
+      "capabilities": "역량",
+      "sources": "자료",
+      "jobs": "작업 큐"
+    },
+    "openInObsidian": "Obsidian에서 열기",
+    "openInObsidianSoon": "Desktop local opener in a later slice",
+    "loading": "불러오는 중...",
+    "loadFailed": "불러오지 못했습니다: {message}",
+    "retry": "다시 시도",
+    "refresh": "새로고침",
+    "loadMore": "더 보기",
+    "empty": "아직 없습니다",
+    "treeTitle": "Vault · {path}",
+    "showRaw": "원본 증거 raw/ 표시",
+    "all": {
+      "emptyTitle": "모든 노트",
+      "emptyDescription": "볼트의 모든 지식 텍스트를 볼 수 있습니다. index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md, AGENTS.md. Markdown 파일을 클릭하면 전문이 열립니다. [[wikilink]]는 볼트 안의 노트로 이동합니다."
+    },
+    "work": {
+      "emptyTitle": "작업 기억이 아직 없습니다",
+      "emptyDescription": "성공한 ACP 턴과 완료된 대화는 이번 턴이나 세션에서 한 일을 기억 노트로 남깁니다. 이후 예약 또는 즉시 정리가 그 기억을 프로젝트, 역할, 결정, 성과, 역량 노트로 합성합니다. 자료 탭의 소스는 여기에 나타나지 않습니다.",
+      "compileFailed": "최근 작업 정리 실패: {message}",
+      "memoryCount": "{count, plural, other {기억 #개}}",
+      "ungrouped": "미분류",
+      "pageType": {
+        "turn-summary": "턴",
+        "session-summary": "세션"
+      }
+    },
+    "capabilities": {
+      "emptyTitle": "역량 노트가 아직 없습니다",
+      "emptyDescription": "Capability pages are named after reusable work, not projects or models. Each page covers scope, methods, practice evidence, current boundaries, and a next practice suggestion. There are no mastery scores or proficiency ranks.",
+      "evidenceReference": "Reference — a method that can be learned; not proof you practiced it.",
+      "evidenceApplication": "Application — the method was used in work; the actor and role stay explicit.",
+      "evidenceResult": "Result — a test, review, or delivery in a stated context; one case is not universal proof.",
+      "evidenceReflection": "Reflection — a write-up of tradeoffs or failures; self-report is not external verification."
+    },
+    "sources": {
+      "emptyTitle": "자료가 아직 없습니다",
+      "emptyDescription": "Successful ACP sessions and imported documents land here. Import files or paste text below. Default material role is reference; authorship is never inferred.",
+      "importFiles": "파일 가져오기",
+      "importPaste": "붙여넣은 텍스트 가져오기",
+      "pastePlaceholder": "가져올 Markdown 또는 일반 텍스트를 붙여넣으세요…",
+      "importHint": "Markdown, TXT, PDF, DOCX. 최대 20개 파일, 각 20 MiB. 같은 바이트는 기존 소스를 반환합니다.",
+      "disabledHint": "가져오기 전에 설정에서 Wiki를 켜세요.",
+      "privacyHint": "원본 바이너리는 이 기기에만 남습니다. 추출된 텍스트는 이후 정리 시 바인딩된 모델로 전송될 수 있습니다. 문서 링크는 가져오지 않으며 매크로도 실행하지 않습니다.",
+      "warningsTitle": "추출 경고",
+      "partialBanner": "텍스트 추출이 부분적입니다(누락된 페이지 또는 읽을 수 없는 영역). 이 범위를 수락해야 컴파일이 가능합니다.",
+      "acceptExtraction": "현재 추출 수락",
+      "accepting": "수락 중…",
+      "importing": "가져오는 중…",
+      "importFailed": "가져오기 실패: {message}",
+      "duplicateNotice": "이 파일은 이미 가져왔습니다. 기존 소스를 표시합니다.",
+      "fileTooLarge": "{name}이(가) 20 MiB 제한을 초과하여 건너뛰었습니다.",
+      "titlePlaceholder": "제목(선택)",
+      "sourceUrlPlaceholder": "소스 URL(선택, 가져오지 않음)",
+      "authorPlaceholder": "저자(선택)",
+      "personalRolePlaceholder": "내 역할(선택)",
+      "materialRoleLabel": "자료 역할",
+      "saveAnnotations": "주석 저장",
+      "materialRole": {
+        "reference": "참고 자료",
+        "own-work": "내 작업",
+        "team-work": "팀 작업",
+        "unspecified": "미지정"
+      },
+      "listTitle": "{count, plural, other {소스 #개}}",
+      "previewTitle": "미리보기",
+      "untitled": "제목 없는 소스",
+      "kind": {
+        "acp-turn": "ACP session",
+        "document": "Document",
+        "pasted-text": "Pasted text",
+        "unknown": "Source"
+      },
+      "eligibility": {
+        "processing": "Processing",
+        "awaiting-acceptance": "Awaiting acceptance",
+        "ready": "Ready",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "withdrawn": "Withdrawn",
+        "unknown": "Unknown"
+      }
+    },
+    "jobs": {
+      "emptyTitle": "작업이 아직 없습니다",
+      "emptyDescription": "턴 요약, 대화 요약, 작업 정리 작업의 진행, 실패, 충돌이 여기에 표시됩니다.",
+      "readOnlyHint": "‘지금 정리’는 작업 정리 작업을 대기열에 넣습니다. 실패한 작업은 재시도하고, 아직 커밋되지 않은 작업은 취소할 수 있습니다.",
+      "compileNow": "지금 정리",
+      "compiling": "정리를 시작하는 중…",
+      "retryJob": "Retry job",
+      "cancelJob": "Cancel job",
+      "compileDisabled": "설정에서 정리가 꺼져 있습니다.",
+      "allStatuses": "모든 상태",
+      "detailPlaceholder": "Select a job to see details.",
+      "kind": {
+        "ingest": "수집 분석",
+        "compile": "정리",
+        "unknown": "작업",
+        "turn_summary": "턴 요약",
+        "session_rollup": "대화 요약",
+        "wiki_synthesize": "작업 정리"
+      },
+      "status": {
+        "queued": "대기",
+        "running": "실행 중",
+        "succeeded": "성공",
+        "failed": "실패",
+        "cancelled": "취소됨",
+        "unknown": "알 수 없음"
+      },
+      "error": "Error",
+      "attempt": "Attempt {n}",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
+      "startedAt": "Started",
+      "finishedAt": "Finished"
+    },
+    "note": {
+      "untitled": "제목 없음",
+      "preview": "노트를 선택해 미리보세요."
+    },
+    "import": "Import",
+    "importTitle": "Import into wiki",
+    "importSessions": "Local agent conversations",
+    "importSessionsHint": "이 기기의 Claude, Codex, Grok 등 에이전트 대화를 위키 소스로 가져옵니다. 가져오기는 자동으로 요약하거나 정리하지 않습니다.",
+    "importSessionsCount": "{count, plural, one {# local conversation ready} other {# local conversations ready}}",
+    "importSessionsAction": "Import all local conversations",
+    "importDirectory": "Specified directory",
+    "importDirectoryHint": "Import Markdown, TXT, PDF, and DOCX in a folder. Local agent sessions whose working directory is inside that folder are imported too.",
+    "importDirectoryAction": "Choose directory",
+    "importing": "Importing…",
+    "importResult": "Imported {imported}, duplicates {duplicates}, failed {failed}.",
+    "importFailed": "Import failed: {message}"
   }
 }
