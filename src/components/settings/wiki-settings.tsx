@@ -23,6 +23,7 @@ import {
   SettingsSaveBar,
   SettingsSection,
 } from "@/components/shared/settings-section"
+import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -41,12 +42,77 @@ import {
   type FolderDetail,
 } from "@/lib/types"
 import {
+  effectiveWikiPrompt,
   normalizeWikiSettings,
   wikiSettingsPayload,
   type WikiSettingsView,
 } from "@/lib/wiki-types"
 
 const BUILTIN_AGENT_TYPES = Object.keys(AGENT_LABELS) as BuiltinAgentType[]
+
+function PromptSlotCard({
+  modelId,
+  promptId,
+  modelTitle,
+  modelHint,
+  modelPlaceholder,
+  promptTitle,
+  promptHint,
+  promptPlaceholder,
+  restoreLabel,
+  modelValue,
+  promptValue,
+  onModelChange,
+  onPromptChange,
+  onRestore,
+}: {
+  modelId: string
+  promptId: string
+  modelTitle: string
+  modelHint: string
+  modelPlaceholder: string
+  promptTitle: string
+  promptHint: string
+  promptPlaceholder: string
+  restoreLabel: string
+  modelValue: string | null
+  promptValue: string
+  onModelChange: (value: string) => void
+  onPromptChange: (value: string) => void
+  onRestore: () => void
+}) {
+  return (
+    <SettingCard>
+      <SettingRow title={modelTitle} description={modelHint} htmlFor={modelId}>
+        <Input
+          id={modelId}
+          value={modelValue ?? ""}
+          placeholder={modelPlaceholder}
+          onChange={(event) => onModelChange(event.target.value)}
+        />
+      </SettingRow>
+      <SettingRow title={promptTitle} htmlFor={promptId}>
+        <p className="mb-2 text-xs text-muted-foreground">{promptHint}</p>
+        <Textarea
+          id={promptId}
+          value={promptValue}
+          placeholder={promptPlaceholder}
+          className="min-h-64 font-mono text-xs"
+          onChange={(event) => onPromptChange(event.target.value)}
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-2"
+          onClick={onRestore}
+        >
+          {restoreLabel}
+        </Button>
+      </SettingRow>
+    </SettingCard>
+  )
+}
 
 function parseFolderIds(value: string): number[] {
   const ids: number[] = []
@@ -438,94 +504,127 @@ export function WikiSettings() {
         </SettingsSection>
 
         <SettingsSection
-          icon={WandSparkles}
-          title={t("ingestTitle")}
-          description={t("ingestDescription")}
+          icon={Sparkles}
+          title={t("turnSummaryTitle")}
+          description={t("turnSummaryDescription")}
         >
-          <SettingCard>
-            <SettingRow
-              title={t("ingestModel")}
-              description={t("ingestModelHint")}
-              htmlFor="wiki-ingest-model"
-            >
-              <Input
-                id="wiki-ingest-model"
-                value={draft.ingest.model_id ?? ""}
-                placeholder={t("ingestModelPlaceholder")}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    ingest: {
-                      ...current.ingest,
-                      model_id: event.target.value,
-                    },
-                  }))
-                }
-              />
-            </SettingRow>
-            <SettingRow title={t("ingestPrompt")} htmlFor="wiki-ingest-prompt">
-              <p className="mb-2 text-xs text-muted-foreground">
-                {t("ingestPromptBuiltinHint")}
-              </p>
-              <Textarea
-                id="wiki-ingest-prompt"
-                value={draft.ingest.prompt ?? ""}
-                placeholder={t("ingestPromptPlaceholder")}
-                className="min-h-24"
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    ingest: {
-                      ...current.ingest,
-                      prompt: event.target.value,
-                    },
-                  }))
-                }
-              />
-            </SettingRow>
-          </SettingCard>
+          <PromptSlotCard
+            modelId="wiki-turn-summary-model"
+            promptId="wiki-turn-summary-prompt"
+            modelTitle={t("turnSummaryModel")}
+            modelHint={t("turnSummaryModelHint")}
+            modelPlaceholder={t("turnSummaryModelPlaceholder")}
+            promptTitle={t("turnSummaryPrompt")}
+            promptHint={t("turnSummaryPromptBuiltinHint")}
+            promptPlaceholder={t("turnSummaryPromptPlaceholder")}
+            restoreLabel={t("restoreBuiltinPrompt")}
+            modelValue={draft.turn_summary.model_id}
+            promptValue={effectiveWikiPrompt(
+              draft.turn_summary.prompt,
+              draft.turn_summary_builtin_prompt
+            )}
+            onModelChange={(model_id) =>
+              setDraft((current) => ({
+                ...current,
+                turn_summary: { ...current.turn_summary, model_id },
+              }))
+            }
+            onPromptChange={(prompt) =>
+              setDraft((current) => ({
+                ...current,
+                turn_summary: { ...current.turn_summary, prompt },
+              }))
+            }
+            onRestore={() =>
+              setDraft((current) => ({
+                ...current,
+                turn_summary: { ...current.turn_summary, prompt: null },
+              }))
+            }
+          />
         </SettingsSection>
 
         <SettingsSection
           icon={Save}
-          title={t("compileTitle")}
-          description={t("compileDescription")}
+          title={t("sessionRollupTitle")}
+          description={t("sessionRollupDescription")}
+        >
+          <PromptSlotCard
+            modelId="wiki-session-rollup-model"
+            promptId="wiki-session-rollup-prompt"
+            modelTitle={t("sessionRollupModel")}
+            modelHint={t("sessionRollupModelHint")}
+            modelPlaceholder={t("sessionRollupModelPlaceholder")}
+            promptTitle={t("sessionRollupPrompt")}
+            promptHint={t("sessionRollupPromptBuiltinHint")}
+            promptPlaceholder={t("sessionRollupPromptPlaceholder")}
+            restoreLabel={t("restoreBuiltinPrompt")}
+            modelValue={draft.session_rollup.model_id}
+            promptValue={effectiveWikiPrompt(
+              draft.session_rollup.prompt,
+              draft.session_rollup_builtin_prompt
+            )}
+            onModelChange={(model_id) =>
+              setDraft((current) => ({
+                ...current,
+                session_rollup: { ...current.session_rollup, model_id },
+              }))
+            }
+            onPromptChange={(prompt) =>
+              setDraft((current) => ({
+                ...current,
+                session_rollup: { ...current.session_rollup, prompt },
+              }))
+            }
+            onRestore={() =>
+              setDraft((current) => ({
+                ...current,
+                session_rollup: { ...current.session_rollup, prompt: null },
+              }))
+            }
+          />
+        </SettingsSection>
+
+        <SettingsSection
+          icon={WandSparkles}
+          title={t("synthesizeTitle")}
+          description={t("synthesizeDescription")}
         >
           <SettingCard>
             <SettingRow
-              title={t("compileEnabled")}
-              description={t("compileEnabledHint")}
-              htmlFor="wiki-compile-enabled"
+              title={t("synthesizeEnabled")}
+              description={t("synthesizeEnabledHint")}
+              htmlFor="wiki-synthesize-enabled"
               control={
                 <Switch
-                  id="wiki-compile-enabled"
-                  checked={draft.compile.enabled}
+                  id="wiki-synthesize-enabled"
+                  checked={draft.synthesize.enabled}
                   onCheckedChange={(enabled) =>
                     setDraft((current) => ({
                       ...current,
-                      compile: { ...current.compile, enabled },
+                      synthesize: { ...current.synthesize, enabled },
                     }))
                   }
                 />
               }
             />
-            {!draft.compile.enabled ? (
-              <SettingRow title={t("compileNowUnavailable")} />
+            {!draft.synthesize.enabled ? (
+              <SettingRow title={t("synthesizeNowUnavailable")} />
             ) : null}
             <SettingRow
-              title={t("compileModel")}
-              description={t("compileModelHint")}
-              htmlFor="wiki-compile-model"
+              title={t("synthesizeModel")}
+              description={t("synthesizeModelHint")}
+              htmlFor="wiki-synthesize-model"
             >
               <Input
-                id="wiki-compile-model"
-                value={draft.compile.model_id ?? ""}
-                placeholder={t("compileModelPlaceholder")}
+                id="wiki-synthesize-model"
+                value={draft.synthesize.model_id ?? ""}
+                placeholder={t("synthesizeModelPlaceholder")}
                 onChange={(event) =>
                   setDraft((current) => ({
                     ...current,
-                    compile: {
-                      ...current.compile,
+                    synthesize: {
+                      ...current.synthesize,
                       model_id: event.target.value,
                     },
                   }))
@@ -533,27 +632,44 @@ export function WikiSettings() {
               />
             </SettingRow>
             <SettingRow
-              title={t("compilePrompt")}
-              htmlFor="wiki-compile-prompt"
+              title={t("synthesizePrompt")}
+              htmlFor="wiki-synthesize-prompt"
             >
               <p className="mb-2 text-xs text-muted-foreground">
-                {t("compilePromptBuiltinHint")}
+                {t("synthesizePromptBuiltinHint")}
               </p>
               <Textarea
-                id="wiki-compile-prompt"
-                value={draft.compile.prompt ?? ""}
-                placeholder={t("compilePromptPlaceholder")}
-                className="min-h-24"
+                id="wiki-synthesize-prompt"
+                value={effectiveWikiPrompt(
+                  draft.synthesize.prompt,
+                  draft.synthesize_builtin_prompt
+                )}
+                placeholder={t("synthesizePromptPlaceholder")}
+                className="min-h-64 font-mono text-xs"
                 onChange={(event) =>
                   setDraft((current) => ({
                     ...current,
-                    compile: {
-                      ...current.compile,
+                    synthesize: {
+                      ...current.synthesize,
                       prompt: event.target.value,
                     },
                   }))
                 }
               />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="mt-2"
+                onClick={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    synthesize: { ...current.synthesize, prompt: null },
+                  }))
+                }
+              >
+                {t("restoreBuiltinPrompt")}
+              </Button>
             </SettingRow>
           </SettingCard>
         </SettingsSection>

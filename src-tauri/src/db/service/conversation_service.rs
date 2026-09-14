@@ -134,9 +134,13 @@ pub async fn update_status(
         .await?
         .ok_or_else(|| DbError::Migration(format!("Conversation not found: {conversation_id}")))?;
     let mut active: conversation::ActiveModel = conv.into();
+    let completed = status == conversation::ConversationStatus::Completed;
     active.status = Set(status);
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
+    if completed {
+        crate::wiki::session_rollup::enqueue_on_completed(conn, conversation_id).await;
+    }
     Ok(())
 }
 
@@ -152,6 +156,7 @@ pub async fn update_status_if(
     new_status: conversation::ConversationStatus,
 ) -> Result<bool, DbError> {
     use sea_orm::sea_query::Expr;
+    let completed = new_status == conversation::ConversationStatus::Completed;
     let result = conversation::Entity::update_many()
         .col_expr(conversation::Column::Status, Expr::value(new_status))
         .col_expr(conversation::Column::UpdatedAt, Expr::value(Utc::now()))
@@ -159,7 +164,11 @@ pub async fn update_status_if(
         .filter(conversation::Column::Status.eq(expected))
         .exec(conn)
         .await?;
-    Ok(result.rows_affected > 0)
+    let updated = result.rows_affected > 0;
+    if updated && completed {
+        crate::wiki::session_rollup::enqueue_on_completed(conn, conversation_id).await;
+    }
+    Ok(updated)
 }
 
 /// Manual rename: set the title AND lock it. Once locked, the per-turn

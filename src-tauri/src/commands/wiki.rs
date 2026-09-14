@@ -18,6 +18,9 @@ use crate::wiki::import::{
     UpdateAnnotationsParams,
 };
 use crate::wiki::paths::{self, join_vault_relative, resolve_vault_path};
+use crate::wiki::session_import::{
+    self, ImportDirectoryParams, ImportLocalSessionsParams, WikiBulkImportResult,
+};
 use crate::wiki::settings::{self, WikiSettings, WikiSettingsView};
 use crate::wiki::tree::{self, VaultTreeError};
 use crate::wiki::vault;
@@ -37,6 +40,9 @@ pub async fn get_wiki_settings_core(
         settings,
         next_compile_at,
         pending_source_count,
+        turn_summary_builtin_prompt: settings::WIKI_TURN_SUMMARY_BUILTIN.to_string(),
+        session_rollup_builtin_prompt: settings::WIKI_SESSION_ROLLUP_BUILTIN.to_string(),
+        synthesize_builtin_prompt: settings::WIKI_SYNTHESIZE_BUILTIN.to_string(),
     })
 }
 
@@ -111,6 +117,89 @@ pub async fn wiki_get_source_core(
     wiki_service::get_source(conn, &id).await
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikiMemoryNote {
+    pub rel: String,
+    pub page_type: String,
+    pub title: String,
+    pub summary: String,
+    pub occurred_at: Option<String>,
+    pub conversation_id: Option<i32>,
+    pub source_id: Option<String>,
+    pub project_binding_ids: Vec<String>,
+    pub codeg_note_id: String,
+}
+
+pub async fn wiki_list_memory_notes_core(
+    conn: &DatabaseConnection,
+) -> Result<Vec<WikiMemoryNote>, AppCommandError> {
+    let settings = settings::load_settings(conn)
+        .await
+        .map_err(AppCommandError::from)?;
+    let vault = resolve_vault_path(settings.vault_path.as_deref());
+    let mut notes = Vec::new();
+    for dir_rel in ["work/turns", "work/sessions"] {
+        let dir = vault.join(dir_rel);
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let rel = path
+                .strip_prefix(&vault)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let page_type = crate::wiki::compile::yaml_string(&text, "type").unwrap_or_default();
+            let title = crate::wiki::compile::yaml_string(&text, "title").unwrap_or_default();
+            let note_id =
+                crate::wiki::compile::yaml_string(&text, "codeg_note_id").unwrap_or_default();
+            let occurred_at = crate::wiki::compile::yaml_string(&text, "occurred_at");
+            let conversation_id = crate::wiki::compile::yaml_string(&text, "codeg_conversation_id")
+                .and_then(|s| s.parse().ok());
+            let source_id = crate::wiki::compile::yaml_string(&text, "codeg_source_id");
+            let mut project_binding_ids =
+                crate::wiki::compile::yaml_list(&text, "codeg_project_binding_id");
+            if project_binding_ids.is_empty() {
+                if let Some(id) =
+                    crate::wiki::compile::yaml_string(&text, "codeg_project_binding_id")
+                {
+                    project_binding_ids.push(id);
+                }
+            }
+            if project_binding_ids.is_empty() {
+                if let Some(sid) = source_id.as_deref() {
+                    if let Ok(src) = wiki_service::get_source_model(conn, sid).await {
+                        if let Some(raw) = src.project_ids.as_deref() {
+                            if let Ok(ids) = serde_json::from_str::<Vec<String>>(raw) {
+                                project_binding_ids = ids;
+                            }
+                        }
+                    }
+                }
+            }
+            notes.push(WikiMemoryNote {
+                rel,
+                page_type,
+                title,
+                summary: crate::wiki::turn_summary::first_body_paragraph(&text),
+                occurred_at,
+                conversation_id,
+                source_id,
+                project_binding_ids,
+                codeg_note_id: note_id,
+            });
+        }
+    }
+    notes.sort_by(|a, b| b.occurred_at.cmp(&a.occurred_at).then(b.rel.cmp(&a.rel)));
+    Ok(notes)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WikiVaultTreeParams {
     #[serde(default)]
@@ -182,6 +271,20 @@ pub async fn wiki_import_files_core(
     params: ImportFilesParams,
 ) -> Result<ImportFilesResult, AppCommandError> {
     import::import_files_with_result(conn, params).await
+}
+
+pub async fn wiki_import_local_sessions_core(
+    conn: &DatabaseConnection,
+    params: ImportLocalSessionsParams,
+) -> Result<WikiBulkImportResult, AppCommandError> {
+    session_import::import_local_sessions(conn, params).await
+}
+
+pub async fn wiki_import_directory_core(
+    conn: &DatabaseConnection,
+    params: ImportDirectoryParams,
+) -> Result<WikiBulkImportResult, AppCommandError> {
+    session_import::import_directory(conn, params).await
 }
 
 pub async fn wiki_accept_extraction_core(
@@ -315,6 +418,14 @@ pub async fn wiki_list_sources(
     wiki_list_sources_core(&db.conn, limit, offset, source_kind, project_id)
         .await
         .map_err(AppCommandError::from)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_list_memory_notes(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<Vec<WikiMemoryNote>, AppCommandError> {
+    wiki_list_memory_notes_core(&db.conn).await
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -489,6 +600,35 @@ pub async fn wiki_link_source_version(
     .await
 }
 
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_import_local_sessions(
+    db: tauri::State<'_, AppDatabase>,
+    request_id: String,
+    selections: Option<Vec<crate::models::SelectedSessionKey>>,
+    all: Option<bool>,
+) -> Result<WikiBulkImportResult, AppCommandError> {
+    wiki_import_local_sessions_core(
+        &db.conn,
+        ImportLocalSessionsParams {
+            request_id,
+            selections: selections.unwrap_or_default(),
+            all: all.unwrap_or(false),
+        },
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn wiki_import_directory(
+    db: tauri::State<'_, AppDatabase>,
+    request_id: String,
+    path: String,
+) -> Result<WikiBulkImportResult, AppCommandError> {
+    wiki_import_directory_core(&db.conn, ImportDirectoryParams { request_id, path }).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +697,34 @@ mod tests {
         assert!(!contains(&entries, ".obsidian/app.json"));
         assert!(!contains(&entries, "raw"));
         assert!(!contains(&entries, "raw/sessions/turn.md"));
+    }
+
+    #[tokio::test]
+    async fn list_memory_notes_parses_turn_and_session() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        crate::wiki::vault::initialize_vault(&vault).unwrap();
+        fs::write(
+            vault.join("work/turns/src-1.md"),
+            "---\ntitle: Fixed pagination\ntype: turn-summary\ncodeg_note_id: n1\ncodeg_source_id: src-1\ncodeg_conversation_id: 3\n---\n\n<!-- codeg-content:start -->\nEdited list.rs.\n<!-- codeg-content:end -->\n",
+        )
+        .unwrap();
+        fs::write(
+            vault.join("work/sessions/c3.md"),
+            "---\ntitle: Shipped pagination\ntype: session-summary\ncodeg_note_id: n2\ncodeg_conversation_id: 3\n---\n\n<!-- codeg-content:start -->\nImplemented cursor pagination.\n<!-- codeg-content:end -->\n",
+        )
+        .unwrap();
+        let mut settings = WikiSettings::default();
+        settings.vault_path = Some(vault.to_string_lossy().into_owned());
+        settings::save_settings(&db.conn, &settings).await.unwrap();
+        let notes = wiki_list_memory_notes_core(&db.conn).await.unwrap();
+        assert_eq!(notes.len(), 2);
+        assert!(notes
+            .iter()
+            .any(|n| n.page_type == "turn-summary" && n.source_id.as_deref() == Some("src-1")));
+        assert!(notes
+            .iter()
+            .any(|n| n.page_type == "session-summary" && n.conversation_id == Some(3)));
     }
 }

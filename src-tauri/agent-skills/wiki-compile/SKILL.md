@@ -10,6 +10,8 @@ You compile **personal work notes** and **capability notes** from frozen wiki so
 
 WikiWorker loads this skill on purpose. You do not scan all user skills. You do not finalize the vault. **Step 4 finalize is HOST**: you return staged page proposals plus an explicit processed-input manifest. The host validates and commits files, indexes, logs, and progress.
 
+The host converted originals (PDF/DOCX/TXT/session dump) to Markdown under `raw/`. Use `read_file` / `grep` / `glob` on the `raw_path` in the host payload. Do **not** wait for an embedded excerpt. Page through long files with `offset` and `limit`. You may read index paths the host listed. Do not read `originals/`, `.git/`, `.obsidian/`, or paths outside the host payload.
+
 ## Hard never
 
 - Never read or invent sources outside the host manifest.
@@ -24,7 +26,8 @@ WikiWorker loads this skill on purpose. You do not scan all user skills. You do 
 - Never mark a decision `adopted` because the model suggested it.
 - Never create a project named `chat` for unattributed material.
 - Never mint `codeg_note_id` / `source_id`; echo host ids. You may suggest titles and slugs only.
-- Max **5** durable knowledge candidates per segment. “Nothing to persist” is valid.
+- Extract **every durable claim** in the converted source file. Do not drop a real decision, outcome, method, or capability evidence just to stay under a small count. “Nothing to persist” is still valid when the source has no durable content.
+- Each compiled leaf page (project / area / work-record / decision / outcome / capability / method / concept / entity) should be long enough to keep locators and evidence, and no longer. You decide the length. Do not pad. The host warns on very long pages and rejects only runaway dumps.
 
 ## Grounding (WeKnora)
 
@@ -51,7 +54,7 @@ Do not skip to page prose before candidates have locators. Do not call a related
 
 ### Step 1 — candidates
 
-From each manifest segment, extract at most **5** durable candidates. Kinds:
+Read the converted markdown at `raw_path`. Extract **all durable candidates** in that file. Do not collapse distinct claims into one row, and do not omit a locator-backed claim because the list is already long. Skip trivia, repeated restatements, and empty chat. Cite `segment_ids` the host listed when they match the passage. Kinds:
 
 - `work_context` — project/area background, role, constraints
 - `decision` — options, choice, rationale (often still `proposed`)
@@ -268,9 +271,10 @@ Return **only** JSON. Proposal bodies are strings (markdown with YAML frontmatte
 
 ## Budget
 
-- Only manifest segments. Default ≤8000 characters of segment text per batch unless the host sent less.
-- ≤5 durable candidates per segment.
-- Do not silently drop a segment and mark the source complete. If a segment yields nothing, record it in `processed_inputs` with no candidates.
+- Read the converted source file yourself. The host does not embed a truncated body.
+- Cover every durable claim in that file. The host may drop only a runaway dump (dozens of near-duplicate rows), not a normal dense extract.
+- Leaf page body length is your decision. Keep evidence and locators; do not pad. Host verification warns on very long pages and rejects only runaway dumps.
+- Do not silently drop a source and mark it complete. If it yields nothing, record it in `processed_inputs` with no candidates.
 
 ## Failure
 

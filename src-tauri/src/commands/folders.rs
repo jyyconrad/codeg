@@ -7795,7 +7795,9 @@ mod tests {
             .await
             .expect_err("git refuses a branch held by a worktree");
         assert!(
-            format!("{refused:?}").contains("used by worktree"),
+            refused.detail.as_deref().is_some_and(|detail| {
+                detail.contains("used by worktree") || detail.contains("checked out at")
+            }),
             "expected git's worktree refusal, got: {refused:?}"
         );
 

@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 You produce a **one-line source summary** and optional **topic suggestions** for a frozen wiki source. The host already wrote immutable `raw/` evidence (ACP snapshot or extracted document). Your output is analysis cache only. It is never copied into raw. The host validates it against the **host schema** below.
 
-WikiWorker loads this skill on purpose. It is not a general coding skill. Do not scan the user skill catalog, vault files, session store, or the open workspace looking for more material.
+WikiWorker loads this skill on purpose. It is not a general coding skill. Do not scan the user skill catalog, session store, or the open workspace. Read **only** the converted markdown at the host `raw_path` with `read_file` (page with `offset`/`limit` if long).
 
 Raw is immutable. Compiled pages are a later compile job. `log.md` is an operations log, not a queue — ingest does not append it and does not infer job state from it.
 
@@ -18,13 +18,13 @@ The host called WikiWorker with a frozen source. Process **this** payload. Setti
 
 ## Inputs you may use
 
-Use **only** the supplied source snapshot or extracted text, plus host metadata in this call:
+Use **only** the converted markdown at `raw_path` plus host metadata in this call:
 
 | Field | Use as |
 | --- | --- |
 | `source_id`, `source_group_id`, `source_kind` | Identity only. Echo; never mint. |
 | `source_kind` | `acp-turn` / `document` / `pasted-text` |
-| Frozen snapshot or extracted segments | Evidence to summarize, never to rewrite |
+| `raw_path` | Converted markdown of the original (PDF/DOCX/TXT/session). Read it. Never rewrite it. |
 | Locators (heading path, paragraph index, PDF physical page) | Citation pointers you may echo |
 | Coverage / truncation / redaction flags | Warnings; do not fill gaps |
 | Host annotations | `material_role`, `personal_role`, linked projects/areas if present |
@@ -46,13 +46,11 @@ If a field is missing, omit it. Do not invent ids, page numbers, authors, roles,
 
 ## Context budget
 
-A source summary is **one line**. Long documents are segmented by the host.
+A source summary is **one line**. The converted file may be long; you decide how much to read.
 
 1. Prefer host titles, heading paths, page ranges, and coverage metadata.
-2. Read only the excerpt or segments included in this call.
-3. If the host sent section summaries to merge, merge those summaries. Do not demand the 500-page original.
-4. Empty, fully redacted, or off-topic snapshots are valid: set `nothing_to_summarize: true`.
-5. If the snapshot is huge and unsegmented, summarize from the host-provided title + the first/last allowed excerpts + coverage flags. Refuse to paste the body back.
+2. Read `raw_path` with `read_file`. Page through it; do not paste the body into `source_summary`.
+3. Empty, fully redacted, or off-topic snapshots are valid: set `nothing_to_summarize: true`.
 
 Bad: quoting three pages of the spec into `source_summary`.
 Good: `HTTP API spec covering idempotent retries, error envelopes, and pagination.`
@@ -61,7 +59,7 @@ Do **not** invent a topic from a filename, scanner model, or path when the extra
 
 ## Return value (host schema)
 
-Return **only** JSON matching the host schema. No markdown wrapper, no reconstructed transcript. The host validates this schema. Schema failure drops the summary; raw still stays. There is no file tool in ingest.
+Return **only** JSON matching the host schema. No markdown wrapper, no reconstructed transcript. The host validates this schema. Schema failure drops the summary; raw still stays. The host validates this schema. Schema failure drops the summary; raw still stays. Use `read_file` only on `raw_path`.
 
 ```json
 {

@@ -186,6 +186,7 @@ import type {
   WikiImportBatchResult,
   WikiJob,
   WikiJobStatus,
+  WikiBulkImportResult,
   WikiSettings,
   WikiSettingsView,
   WikiSource,
@@ -6007,6 +6008,27 @@ export async function wikiListSources(params?: {
   })
 }
 
+export async function wikiListMemoryNotes(): Promise<unknown> {
+  return getTransport().call("wiki_list_memory_notes")
+}
+
+export const WIKI_JOB_CHANGED_EVENT = "wiki://job-changed"
+
+export type WikiJobChangedEvent = {
+  id?: string
+  status?: string
+  version?: number
+}
+
+export async function subscribeWikiJobChanged(
+  handler: (event: WikiJobChangedEvent) => void
+): Promise<() => void> {
+  return getTransport().subscribe<WikiJobChangedEvent>(
+    WIKI_JOB_CHANGED_EVENT,
+    handler
+  )
+}
+
 export async function wikiListProjectBindings(params?: {
   vault_id?: string | null
 }): Promise<WikiProjectBinding[]> {
@@ -6131,6 +6153,36 @@ export async function wikiLinkSourceVersion(
     source_id: sourceId,
     previous_source_id: previousSourceId,
   })
+}
+
+export async function wikiImportLocalSessions(params: {
+  request_id: string
+  selections?: SelectedSessionKey[]
+  all?: boolean
+}): Promise<WikiBulkImportResult> {
+  return getTransport().call(
+    "wiki_import_local_sessions",
+    {
+      request_id: params.request_id,
+      selections: params.selections ?? [],
+      all: params.all ?? false,
+    },
+    { timeoutMs: 300_000 }
+  )
+}
+
+export async function wikiImportDirectory(params: {
+  request_id: string
+  path: string
+}): Promise<WikiBulkImportResult> {
+  return getTransport().call(
+    "wiki_import_directory",
+    {
+      request_id: params.request_id,
+      path: params.path,
+    },
+    { timeoutMs: 300_000 }
+  )
 }
 
 export async function wikiCompileNow(requestId: string): Promise<WikiJob> {

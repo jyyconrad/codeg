@@ -5112,6 +5112,8 @@ export type {
   WikiImportResult,
   WikiImportBatchResult,
   WikiImportFileResult,
+  WikiBulkImportResult,
+  WikiMemoryNote,
   WikiProjectBinding,
   WikiJob,
   WikiJobKind,
@@ -5124,5 +5126,6 @@ export type {
   WikiSource,
   WikiSourceEligibility,
   WikiSourceKind,
+  WikiSynthesizeSettings,
   WikiVaultTreeNode,
 } from "./wiki-types"

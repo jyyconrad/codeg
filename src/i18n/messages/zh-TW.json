@@ -6275,7 +6275,7 @@
   },
   "WikiSettings": {
     "sectionTitle": "個人知識庫",
-    "sectionDescription": "把已完成的工作工作階段和匯入文件沉澱到本機 Markdown vault。整理會把這些來源編譯成帶來源引用的工作筆記和能力筆記。",
+    "sectionDescription": "把已完成的工作階段和匯入文件沉澱到本機 Markdown vault。回合結束後寫成記憶頁；定時或立即整理再歸納專案與能力。",
     "loading": "載入中...",
     "loadFailed": "載入知識庫設定失敗：{message}",
     "retry": "重試",
@@ -6284,10 +6284,10 @@
     "saved": "知識庫設定已儲存",
     "saveFailed": "儲存知識庫設定失敗：{message}",
     "enabled": "啟用個人知識庫",
-    "enabledHint": "開啟後會將工作階段和匯入正文持久化到本機 vault，擷取後的文字稍後可能傳送給已綁定模型做分析與整理。",
+    "enabledHint": "開啟後會將工作階段和匯入正文持久化到本機 vault。擷取後的文字稍後可能傳送給已綁定模型寫記憶或歸納。",
     "enabledOffHint": "關閉後停止新採集、匯入和任務領取。既有資料仍可瀏覽。已進入提交階段的操作會完成或恢復到一致邊界。",
     "statusTitle": "行程",
-    "statusDescription": "下一次整理時刻和仍待分析的來源數量。",
+    "statusDescription": "下一次歸納時刻和仍待處理的來源數量。",
     "nextCompileAt": "下一次整理",
     "pendingSources": "待分析來源",
     "notScheduled": "未安排",
@@ -6310,25 +6310,34 @@
     "excludeFoldersHint": "略過這些專案目錄。可用清單或逗號分隔的 id。",
     "excludeFoldersPlaceholder": "例如 12, 34",
     "unknownFolder": "資料夾 {id}",
-    "ingestTitle": "分析",
-    "ingestDescription": "分析用於儲存來源。模型 id 為空時使用綁定的預設模型。",
-    "ingestModel": "分析模型 id",
-    "ingestModelHint": "Override the bound Codeg Agent default model. Leave empty to use the bound channel.",
-    "ingestModelPlaceholder": "綁定預設",
-    "ingestPrompt": "Ingest extra prompt",
-    "ingestPromptPlaceholder": "Optional overlay. Cannot expand read scope. Empty content must not invent a topic from the filename.",
-    "compileTitle": "整理",
-    "compileDescription": "整理會根據已就緒來源更新工作筆記和能力筆記。",
-    "compileEnabled": "啟用整理",
-    "compileEnabledHint": "關閉後仍可儲存來源，但會停止新的整理任務；工作台上的「立即整理」不可用。",
-    "compileNowUnavailable": "關閉整理後，工作台上的「立即整理」不可用。",
-    "compileModel": "整理模型 id",
-    "compileModelHint": "Override the bound Codeg Agent default model for compile. Leave empty to use the bound channel.",
-    "compileModelPlaceholder": "綁定預設",
-    "compilePrompt": "Compile extra prompt",
-    "compilePromptPlaceholder": "Optional overlay on the built-in WeKnora-style four-step compile skill. Cannot raise permissions or invent claims.",
-    "ingestPromptBuiltinHint": "Built-in ingest skill always applies: one-line source summary, no rewriting of raw evidence.",
-    "compilePromptBuiltinHint": "Built-in compile always uses WeKnora discipline: candidates → match (related ≠ same) → staged merge → host finalize. Extra text cannot skip grounding."
+    "restoreBuiltinPrompt": "Restore built-in",
+    "turnSummaryTitle": "回合摘要",
+    "turnSummaryDescription": "每一輪成功的 ACP 結束後寫成可讀記憶：改了什麼、實作了什麼。模型 id 為空時使用綁定的預設模型。",
+    "turnSummaryModel": "回合摘要模型 id",
+    "turnSummaryModelHint": "覆寫已綁定的 Codeg Agent 預設模型。留空則使用綁定通道。",
+    "turnSummaryModelPlaceholder": "綁定預設",
+    "turnSummaryPrompt": "回合摘要提示詞",
+    "turnSummaryPromptPlaceholder": "完整回合摘要技能。宿主仍校驗頁面身分，且不能擴大讀取範圍。",
+    "turnSummaryPromptBuiltinHint": "這裡是完整的回合摘要技能，可以直接修改。恢復內建後會後續技能更新。",
+    "sessionRollupTitle": "對話彙總",
+    "sessionRollupDescription": "對話標為完成後，根據已有回合記憶寫成一篇對話頁。未完成的對話不會產生彙總。",
+    "sessionRollupModel": "對話彙總模型 id",
+    "sessionRollupModelHint": "覆寫已綁定的 Codeg Agent 預設模型。留空則使用綁定通道。",
+    "sessionRollupModelPlaceholder": "綁定預設",
+    "sessionRollupPrompt": "對話彙總提示詞",
+    "sessionRollupPromptPlaceholder": "完整對話彙總技能。宿主仍校驗頁面身分，且不能擴大讀取範圍。",
+    "sessionRollupPromptBuiltinHint": "這裡是完整的對話彙總技能，可以直接修改。恢復內建後會跟隨後續技能更新。",
+    "synthesizeTitle": "工作歸納",
+    "synthesizeDescription": "定時或立即整理會根據記憶頁更新專案、職責、決策、成果和能力筆記。匯入資料不會自動進入歸納。",
+    "synthesizeEnabled": "啟用整理",
+    "synthesizeEnabledHint": "關閉後仍可寫記憶頁，但會停止新的歸納任務；工作台上的「立即整理」不可用。",
+    "synthesizeNowUnavailable": "關閉整理後，工作台上的「立即整理」不可用。",
+    "synthesizeModel": "歸納模型 id",
+    "synthesizeModelHint": "覆寫已綁定的 Codeg Agent 預設模型。留空則使用綁定通道。",
+    "synthesizeModelPlaceholder": "綁定預設",
+    "synthesizePrompt": "歸納提示詞",
+    "synthesizePromptPlaceholder": "完整工作歸納技能。宿主仍校驗出處，且不能編造主張。",
+    "synthesizePromptBuiltinHint": "這裡是完整的工作歸納技能，可以直接修改。恢復內建後會跟隨後續技能更新。"
   },
   "Wiki": {
     "title": "個人 Wiki",
@@ -6354,8 +6363,15 @@
       "emptyDescription": "這裡可以瀏覽知識庫中的全部文字：index.md、work/、capabilities/、knowledge/、sources/、journal/、log.md 和 AGENTS.md。點擊 Markdown 檔即可閱讀全文。[[wikilink]] 會在庫內開啟對應筆記。"
     },
     "work": {
-      "emptyTitle": "還沒有工作筆記",
-      "emptyDescription": "來源整理完成後，這裡會出現專案、長期職責、工作紀錄、決策和成果。專案頁回答背景、本人角色、進展、決策、成果和關聯能力。職責是持續承擔的工作。工作紀錄寫清問題、行動和結果。決策保留約束、選項和理由。成果保留交付物和證據，不編造數字。"
+      "emptyTitle": "還沒有工作記憶",
+      "emptyDescription": "成功完成的 ACP 回合和已結束的對話會寫成記憶頁，說明這一輪或這次對話做了什麼。定時或「立即整理」再把這些記憶歸納成專案、職責、決策、成果和能力筆記。資料 Tab 裡的來源不會出現在這裡。",
+      "compileFailed": "最近一次工作歸納失敗：{message}",
+      "memoryCount": "{count, plural, other {# 條記憶}}",
+      "ungrouped": "未分組",
+      "pageType": {
+        "turn-summary": "回合",
+        "session-summary": "對話"
+      }
     },
     "capabilities": {
       "emptyTitle": "還沒有能力筆記",
@@ -6415,8 +6431,8 @@
     },
     "jobs": {
       "emptyTitle": "還沒有任務",
-      "emptyDescription": "分析和整理任務的進度、失敗和衝突會顯示在這裡。重試和取消將在對應命令就緒後提供。",
-      "readOnlyHint": "本切片只讀顯示任務狀態。重試和取消需要後續後端命令。",
+      "emptyDescription": "回合摘要、對話彙總和工作歸納任務的進度、失敗和衝突會顯示在這裡。",
+      "readOnlyHint": "「立即整理」會排隊一次工作歸納。失敗可重試；尚未提交的任務可取消。",
       "compileNow": "立即整理",
       "compiling": "正在開始整理…",
       "retryJob": "重試任務",
@@ -6427,7 +6443,10 @@
       "kind": {
         "ingest": "分析",
         "compile": "整理",
-        "unknown": "任務"
+        "unknown": "任務",
+        "turn_summary": "回合摘要",
+        "session_rollup": "對話彙總",
+        "wiki_synthesize": "工作歸納"
       },
       "status": {
         "queued": "排隊中",
@@ -6447,6 +6466,18 @@
     "note": {
       "untitled": "未命名",
       "preview": "選擇一篇筆記進行預覽。"
-    }
+    },
+    "import": "Import",
+    "importTitle": "Import into wiki",
+    "importSessions": "Local agent conversations",
+    "importSessionsHint": "把本機 Claude、Codex、Grok 等智能體的歷史對話匯入為 Wiki 來源。匯入不會自動分析或整理。",
+    "importSessionsCount": "{count, plural, one {# local conversation ready} other {# local conversations ready}}",
+    "importSessionsAction": "Import all local conversations",
+    "importDirectory": "Specified directory",
+    "importDirectoryHint": "Import Markdown, TXT, PDF, and DOCX in a folder. Local agent sessions whose working directory is inside that folder are imported too.",
+    "importDirectoryAction": "Choose directory",
+    "importing": "Importing…",
+    "importResult": "Imported {imported}, duplicates {duplicates}, failed {failed}.",
+    "importFailed": "Import failed: {message}"
   }
 }

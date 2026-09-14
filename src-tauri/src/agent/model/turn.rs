@@ -43,6 +43,8 @@ pub struct NativeTurnTools {
     pub dynamic: Vec<DynamicTool>,
 }
 
+pub const WIKI_COMPILE_MAX_TURNS: usize = 24;
+
 impl NativeTurnTools {
     /// Wiki compile assembly: staging write/edit, no bash/subagent/plan/MCP.
     /// `ctx.fs` must already be confined to the job allowlist (not `from_env`).

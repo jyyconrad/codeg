@@ -13,9 +13,12 @@ export interface WikiModelPromptSettings {
   prompt: string | null
 }
 
-export interface WikiCompileSettings extends WikiModelPromptSettings {
+export interface WikiSynthesizeSettings extends WikiModelPromptSettings {
   enabled: boolean
 }
+
+/** Same shape as synthesize; kept for existing re-exports. */
+export type WikiCompileSettings = WikiSynthesizeSettings
 
 /** Persisted settings JSON from the spec. Do not add extra keys. */
 export interface WikiSettings {
@@ -24,17 +27,41 @@ export interface WikiSettings {
   timezone: string
   compile_cron: string
   capture: WikiCaptureSettings
-  ingest: WikiModelPromptSettings
-  compile: WikiCompileSettings
+  turn_summary: WikiModelPromptSettings
+  session_rollup: WikiModelPromptSettings
+  synthesize: WikiSynthesizeSettings
 }
 
 /** GET may also return schedule status that is not written back. */
 export interface WikiSettingsView extends WikiSettings {
   next_compile_at?: string | null
   pending_source_count?: number
+  turn_summary_builtin_prompt?: string | null
+  session_rollup_builtin_prompt?: string | null
+  synthesize_builtin_prompt?: string | null
 }
 
-export type WikiJobKind = "ingest" | "compile" | (string & {})
+/** Incoming GET/PATCH may still carry retired ingest/compile slots. */
+export type WikiSettingsIncoming = Partial<WikiSettingsView> & {
+  ingest?: Partial<WikiModelPromptSettings> | null
+  compile?: Partial<WikiSynthesizeSettings> | null
+}
+
+export type WikiJobKind =
+  | "turn_summary"
+  | "session_rollup"
+  | "wiki_synthesize"
+  | "ingest"
+  | "compile"
+  | (string & {})
+
+export type WikiJobKindKey =
+  | "turn_summary"
+  | "session_rollup"
+  | "wiki_synthesize"
+  | "ingest"
+  | "compile"
+  | "unknown"
 
 export type WikiJobStatus =
   | "queued"
@@ -89,6 +116,7 @@ export interface WikiSource {
   source_kind?: WikiSourceKind | null
   title?: string | null
   source_title?: string | null
+  source_summary?: string | null
   eligibility?: WikiSourceEligibility | null
   captured_at?: string | null
   occurred_at?: string | null
@@ -115,8 +143,32 @@ export interface WikiProjectBinding {
   db_instance_id: string
   root_folder_id: number
   project_note_id?: string | null
+  root_folder_name?: string | null
+  root_folder_path?: string | null
   created_at?: string | null
   updated_at?: string | null
+}
+
+export type WikiMemoryPageType =
+  | "turn-summary"
+  | "session-summary"
+  | (string & {})
+
+export interface WikiMemoryNote {
+  rel: string
+  page_type: WikiMemoryPageType
+  title?: string | null
+  summary?: string | null
+  occurred_at?: string | null
+  conversation_id?: string | null
+  source_id?: string | null
+  project_binding_ids?: string[] | null
+  codeg_note_id?: string | null
+}
+
+export interface WikiMemoryNoteGroup {
+  project: WikiProjectBinding
+  notes: WikiMemoryNote[]
 }
 
 export interface WikiImportFile {
@@ -152,6 +204,15 @@ export interface WikiImportBatchResult {
   succeeded: number
   failed: number
   duplicates: number
+}
+
+export interface WikiBulkImportResult {
+  imported: number
+  duplicates: number
+  failed: number
+  skipped: number
+  compile_job_id?: string | null
+  errors?: string[]
 }
 
 export interface WikiListPage<T> {
@@ -198,13 +259,28 @@ function asNumberArray(value: unknown): number[] {
   return out
 }
 
+function asModelPrompt(
+  raw: Partial<WikiModelPromptSettings> | null | undefined
+): WikiModelPromptSettings {
+  return {
+    model_id: emptyToNull(raw?.model_id),
+    prompt: emptyToNull(raw?.prompt),
+  }
+}
+
+export function wikiSynthesizeEnabled(
+  raw: WikiSettingsIncoming | null | undefined
+): boolean {
+  if (raw?.synthesize?.enabled != null) return raw.synthesize.enabled !== false
+  if (raw?.compile?.enabled != null) return raw.compile.enabled !== false
+  return true
+}
+
 export function normalizeWikiSettings(
-  raw: Partial<WikiSettingsView> | null | undefined,
+  raw: WikiSettingsIncoming | null | undefined,
   fallbackTimezone = systemTimeZone()
 ): WikiSettingsView {
   const capture = raw?.capture
-  const ingest = raw?.ingest
-  const compile = raw?.compile
   return {
     enabled: raw?.enabled === true,
     vault_path: emptyToNull(raw?.vault_path),
@@ -215,21 +291,40 @@ export function normalizeWikiSettings(
       exclude_agent_types: asStringArray(capture?.exclude_agent_types),
       exclude_folder_ids: asNumberArray(capture?.exclude_folder_ids),
     },
-    ingest: {
-      model_id: emptyToNull(ingest?.model_id),
-      prompt: emptyToNull(ingest?.prompt),
-    },
-    compile: {
-      enabled: compile?.enabled !== false,
-      model_id: emptyToNull(compile?.model_id),
-      prompt: emptyToNull(compile?.prompt),
+    turn_summary: asModelPrompt(raw?.turn_summary),
+    session_rollup: asModelPrompt(raw?.session_rollup),
+    synthesize: {
+      enabled: wikiSynthesizeEnabled(raw),
+      model_id: emptyToNull(raw?.synthesize?.model_id),
+      prompt: emptyToNull(raw?.synthesize?.prompt),
     },
     next_compile_at: raw?.next_compile_at ?? null,
     pending_source_count:
       typeof raw?.pending_source_count === "number"
         ? raw.pending_source_count
         : undefined,
+    turn_summary_builtin_prompt: raw?.turn_summary_builtin_prompt ?? "",
+    session_rollup_builtin_prompt: raw?.session_rollup_builtin_prompt ?? "",
+    synthesize_builtin_prompt: raw?.synthesize_builtin_prompt ?? "",
   }
+}
+
+export function effectiveWikiPrompt(
+  stored: string | null | undefined,
+  builtin: string | null | undefined
+): string {
+  return emptyToNull(stored) ?? builtin ?? ""
+}
+
+function promptOrNullIfBuiltin(
+  stored: string | null | undefined,
+  builtin: string | null | undefined
+): string | null {
+  const value = emptyToNull(stored)
+  if (!value) return null
+  const built = builtin?.trim() ?? ""
+  if (built && value === built) return null
+  return value
 }
 
 export function wikiSettingsPayload(view: WikiSettingsView): WikiSettings {
@@ -243,27 +338,205 @@ export function wikiSettingsPayload(view: WikiSettingsView): WikiSettings {
       exclude_agent_types: view.capture.exclude_agent_types,
       exclude_folder_ids: view.capture.exclude_folder_ids,
     },
-    ingest: {
-      model_id: emptyToNull(view.ingest.model_id),
-      prompt: emptyToNull(view.ingest.prompt),
+    turn_summary: {
+      model_id: emptyToNull(view.turn_summary.model_id),
+      prompt: promptOrNullIfBuiltin(
+        view.turn_summary.prompt,
+        view.turn_summary_builtin_prompt
+      ),
     },
-    compile: {
-      enabled: view.compile.enabled,
-      model_id: emptyToNull(view.compile.model_id),
-      prompt: emptyToNull(view.compile.prompt),
+    session_rollup: {
+      model_id: emptyToNull(view.session_rollup.model_id),
+      prompt: promptOrNullIfBuiltin(
+        view.session_rollup.prompt,
+        view.session_rollup_builtin_prompt
+      ),
+    },
+    synthesize: {
+      enabled: view.synthesize.enabled,
+      model_id: emptyToNull(view.synthesize.model_id),
+      prompt: promptOrNullIfBuiltin(
+        view.synthesize.prompt,
+        view.synthesize_builtin_prompt
+      ),
     },
   }
 }
 
-export function normalizeWikiList<T extends { id?: string }>(
-  payload: unknown
-): WikiListPage<T> {
+export function wikiProjectDisplayTitle(project: WikiProjectBinding): string {
+  return (
+    emptyToNull(project.root_folder_name) ??
+    emptyToNull(project.root_folder_path)
+      ?.split(/[/\\]/)
+      .filter(Boolean)
+      .pop() ??
+    `Project ${project.root_folder_id}`
+  )
+}
+
+export function wikiJobKindKey(
+  kind: string | null | undefined
+): WikiJobKindKey {
+  switch (kind) {
+    case "turn_summary":
+    case "session_rollup":
+    case "wiki_synthesize":
+    case "ingest":
+    case "compile":
+      return kind
+    default:
+      return "unknown"
+  }
+}
+
+export function wikiJobErrorMessage(
+  job: WikiJob | null | undefined
+): string | null {
+  if (!job) return null
+  return (
+    emptyToNull(job.error_message) ??
+    emptyToNull(job.error) ??
+    emptyToNull(job.message)
+  )
+}
+
+function jobTimestampMs(job: WikiJob): number {
+  for (const value of [
+    job.finished_at,
+    job.updated_at,
+    job.started_at,
+    job.created_at,
+  ]) {
+    const trimmed = emptyToNull(value)
+    if (!trimmed) continue
+    const ms = Date.parse(trimmed)
+    if (!Number.isNaN(ms)) return ms
+  }
+  return 0
+}
+
+/** Latest failed organize job. Ignores retired `compile` / `ingest` failures. */
+export function latestFailedWikiSynthesizeJob(jobs: WikiJob[]): WikiJob | null {
+  const failed = jobs.filter(
+    (job) =>
+      job.kind === "wiki_synthesize" &&
+      (job.status == null || job.status === "failed")
+  )
+  if (failed.length === 0) return null
+  return failed.reduce((latest, job) =>
+    jobTimestampMs(job) >= jobTimestampMs(latest) ? job : latest
+  )
+}
+
+export function isWikiMemoryNote(
+  note: Pick<WikiMemoryNote, "page_type">
+): boolean {
+  const type = note.page_type
+  return (
+    type === "turn-summary" ||
+    type === "session-summary" ||
+    type === "turn_summary" ||
+    type === "session_rollup"
+  )
+}
+
+export function wikiMemoryPageTypeKey(
+  pageType: string | null | undefined
+): "turn-summary" | "session-summary" | "unknown" {
+  if (pageType === "turn-summary" || pageType === "turn_summary") {
+    return "turn-summary"
+  }
+  if (pageType === "session-summary" || pageType === "session_rollup") {
+    return "session-summary"
+  }
+  return "unknown"
+}
+
+export function wikiMemoryNoteTitle(note: WikiMemoryNote): string {
+  return (
+    emptyToNull(note.title) ?? emptyToNull(note.rel) ?? note.source_id ?? ""
+  )
+}
+
+export function wikiMemoryNoteKey(note: WikiMemoryNote): string {
+  return (
+    emptyToNull(note.rel) ??
+    emptyToNull(note.codeg_note_id) ??
+    emptyToNull(note.source_id) ??
+    `${note.page_type}:${note.conversation_id ?? ""}`
+  )
+}
+
+function compareMemoryNotes(a: WikiMemoryNote, b: WikiMemoryNote): number {
+  const ta = a.occurred_at ? Date.parse(a.occurred_at) : Number.NaN
+  const tb = b.occurred_at ? Date.parse(b.occurred_at) : Number.NaN
+  const aOk = !Number.isNaN(ta)
+  const bOk = !Number.isNaN(tb)
+  if (aOk && bOk && tb !== ta) return tb - ta
+  if (aOk !== bOk) return aOk ? -1 : 1
+  return wikiMemoryNoteTitle(a).localeCompare(wikiMemoryNoteTitle(b))
+}
+
+export function groupWikiMemoryNotesByProject(
+  notes: WikiMemoryNote[],
+  projects: WikiProjectBinding[]
+): { groups: WikiMemoryNoteGroup[]; ungrouped: WikiMemoryNote[] } {
+  const memory = notes.filter(isWikiMemoryNote)
+  const known = new Map(projects.map((project) => [project.id, project]))
+  const byProject = new Map<string, WikiMemoryNote[]>()
+  const ungrouped: WikiMemoryNote[] = []
+
+  for (const note of memory) {
+    const ids = (note.project_binding_ids ?? []).filter(
+      (id) => typeof id === "string" && id.length > 0 && known.has(id)
+    )
+    if (ids.length === 0) {
+      ungrouped.push(note)
+      continue
+    }
+    const seen = new Set<string>()
+    for (const id of ids) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      const list = byProject.get(id) ?? []
+      list.push(note)
+      byProject.set(id, list)
+    }
+  }
+
+  const groups: WikiMemoryNoteGroup[] = []
+  for (const project of projects) {
+    const list = byProject.get(project.id)
+    if (!list?.length) continue
+    groups.push({ project, notes: [...list].sort(compareMemoryNotes) })
+  }
+
+  return {
+    groups,
+    ungrouped: [...ungrouped].sort(compareMemoryNotes),
+  }
+}
+
+export function wikiSourceCardTitle(source: WikiSource): string {
+  return (
+    wikiSourceTitle(source) ?? emptyToNull(source.source_summary) ?? source.id
+  )
+}
+
+export function normalizeWikiList<T>(payload: unknown): WikiListPage<T> {
   if (Array.isArray(payload)) {
     return { items: payload as T[], total: payload.length }
   }
   if (payload && typeof payload === "object") {
     const obj = payload as Record<string, unknown>
-    for (const key of ["items", "jobs", "sources", "rows", "entries"]) {
+    for (const key of [
+      "items",
+      "notes",
+      "jobs",
+      "sources",
+      "rows",
+      "entries",
+    ]) {
       if (Array.isArray(obj[key])) {
         const items = obj[key] as T[]
         const total =

@@ -6275,7 +6275,7 @@
   },
   "WikiSettings": {
     "sectionTitle": "パーソナル Wiki",
-    "sectionDescription": "完了した作業セッションと取り込んだ文書をローカル Markdown vault に残します。コンパイルは出典付きの作業ノートと能力ノートにします。",
+    "sectionDescription": "完了した作業セッションと取り込んだ文書をローカル Markdown vault に残します。ターンとセッションの記憶を先に書き、定期または手動の整理でプロジェクトと能力ノートをまとめます。",
     "loading": "読み込み中...",
     "loadFailed": "Wiki 設定の読み込みに失敗しました: {message}",
     "retry": "再試行",
@@ -6284,10 +6284,10 @@
     "saved": "Wiki 設定を保存しました",
     "saveFailed": "Wiki 設定の保存に失敗しました: {message}",
     "enabled": "パーソナル Wiki を有効化",
-    "enabledHint": "オンにするとセッションと取り込み本文がローカル vault に保存されます。抽出テキストは後でバインド済みモデルへ送られることがあります。",
+    "enabledHint": "オンにするとセッションと取り込み本文がローカル vault に保存されます。抽出テキストは後でバインド済みモデルへ送られ、記憶や整理に使われることがあります。",
     "enabledOffHint": "オフの間は新規キャプチャ、取り込み、ジョブ受け取りを停止します。既存ノートは閲覧できます。",
     "statusTitle": "スケジュール",
-    "statusDescription": "次回コンパイル時刻と未分析のソース数。",
+    "statusDescription": "次回の整理時刻と未処理のソース数。",
     "nextCompileAt": "次回コンパイル",
     "pendingSources": "未処理ソース",
     "notScheduled": "未設定",
@@ -6310,25 +6310,34 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "フォルダー {id}",
-    "ingestTitle": "取り込み分析",
-    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
-    "ingestModel": "取り込みモデル id",
-    "ingestModelHint": "Override the bound Codeg Agent default model. Leave empty to use the bound channel.",
-    "ingestModelPlaceholder": "Bound default",
-    "ingestPrompt": "Ingest extra prompt",
-    "ingestPromptPlaceholder": "Optional overlay. Cannot expand read scope. Empty content must not invent a topic from the filename.",
-    "compileTitle": "コンパイル",
-    "compileDescription": "Compile updates work and capability notes from ready sources.",
-    "compileEnabled": "コンパイルを有効化",
-    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
-    "compileNowUnavailable": "コンパイルが無効のとき、ワークベンチの「今すぐ整理」は使えません。",
-    "compileModel": "コンパイルモデル id",
-    "compileModelHint": "Override the bound Codeg Agent default model for compile. Leave empty to use the bound channel.",
-    "compileModelPlaceholder": "Bound default",
-    "compilePrompt": "Compile extra prompt",
-    "compilePromptPlaceholder": "Optional overlay on the built-in WeKnora-style four-step compile skill. Cannot raise permissions or invent claims.",
-    "ingestPromptBuiltinHint": "Built-in ingest skill always applies: one-line source summary, no rewriting of raw evidence.",
-    "compilePromptBuiltinHint": "Built-in compile always uses WeKnora discipline: candidates → match (related ≠ same) → staged merge → host finalize. Extra text cannot skip grounding."
+    "restoreBuiltinPrompt": "Restore built-in",
+    "turnSummaryTitle": "ターン要約",
+    "turnSummaryDescription": "成功した ACP ターンのたびに、何を変え何を実装したかの読みやすい記憶を書きます。モデル id が空ならバインド済みの既定モデルを使います。",
+    "turnSummaryModel": "ターン要約モデル id",
+    "turnSummaryModelHint": "バインド済み Codeg Agent の既定モデルを上書きします。空欄ならバインド済みチャネルを使います。",
+    "turnSummaryModelPlaceholder": "バインド済み既定",
+    "turnSummaryPrompt": "ターン要約プロンプト",
+    "turnSummaryPromptPlaceholder": "ターン要約スキル全文。ホストはページ識別を検証し、読み取り範囲は広げられません。",
+    "turnSummaryPromptBuiltinHint": "これはターン要約スキル全文です。その場で編集できます。組み込みに戻すと今後のスキル更新に追従します。",
+    "sessionRollupTitle": "セッション集約",
+    "sessionRollupDescription": "会話が完了になると、既存のターン記憶から 1 件のセッションページを書きます。未完了の会話にはセッションページはありません。",
+    "sessionRollupModel": "セッション集約モデル id",
+    "sessionRollupModelHint": "バインド済み Codeg Agent の既定モデルを上書きします。空欄ならバインド済みチャネルを使います。",
+    "sessionRollupModelPlaceholder": "バインド済み既定",
+    "sessionRollupPrompt": "セッション集約プロンプト",
+    "sessionRollupPromptPlaceholder": "セッション集約スキル全文。ホストはページ識別を検証し、読み取り範囲は広げられません。",
+    "sessionRollupPromptBuiltinHint": "これはセッション集約スキル全文です。その場で編集できます。組み込みに戻すと今後のスキル更新に追従します。",
+    "synthesizeTitle": "作業整理",
+    "synthesizeDescription": "定期または手動の整理は記憶ページからプロジェクト・責務・意思決定・成果・能力ノートを更新します。取り込み資料は自動では整理されません。",
+    "synthesizeEnabled": "整理を有効化",
+    "synthesizeEnabledHint": "オフでも記憶ページは書けます。新しい整理ジョブは止まり、ワークベンチの「今すぐ整理」は使えません。",
+    "synthesizeNowUnavailable": "整理が無効のとき、ワークベンチの「今すぐ整理」は使えません。",
+    "synthesizeModel": "整理モデル id",
+    "synthesizeModelHint": "整理用にバインド済み Codeg Agent の既定モデルを上書きします。空欄ならバインド済みチャネルを使います。",
+    "synthesizeModelPlaceholder": "バインド済み既定",
+    "synthesizePrompt": "整理プロンプト",
+    "synthesizePromptPlaceholder": "作業整理スキル全文。ホストは根拠を検証し、主張を捏造できません。",
+    "synthesizePromptBuiltinHint": "これは作業整理スキル全文です。その場で編集できます。組み込みに戻すと今後のスキル更新に追従します。"
   },
   "Wiki": {
     "title": "個人 Wiki",
@@ -6354,8 +6363,15 @@
       "emptyDescription": "この Vault の知識テキストをすべて閲覧できます。index.md、work/、capabilities/、knowledge/、sources/、journal/、log.md、AGENTS.md。Markdown ファイルをクリックして全文を読みます。[[wikilink]] は Vault 内のノートを開きます。"
     },
     "work": {
-      "emptyTitle": "作業ノートはまだありません",
-      "emptyDescription": "ソースがコンパイルされると、プロジェクト、継続職責、作業記録、意思決定、成果がここに現れます。成果の数字は捏造しません。"
+      "emptyTitle": "作業記憶はまだありません",
+      "emptyDescription": "成功した ACP ターンと完了した会話は、そのターンやセッションで何をしたかの記憶ノートになります。あとから定期または手動の整理が、それらをプロジェクト・責務・意思決定・成果・能力ノートにまとめます。ソースタブの資料はここには出ません。",
+      "compileFailed": "直近の作業整理が失敗しました: {message}",
+      "memoryCount": "{count, plural, other {# 件の記憶}}",
+      "ungrouped": "未分類",
+      "pageType": {
+        "turn-summary": "ターン",
+        "session-summary": "セッション"
+      }
     },
     "capabilities": {
       "emptyTitle": "能力ノートはまだありません",
@@ -6415,19 +6431,22 @@
     },
     "jobs": {
       "emptyTitle": "ジョブはまだありません",
-      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
-      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
-      "compileNow": "Compile now",
-      "compiling": "Starting compile…",
+      "emptyDescription": "ターン要約、セッション集約、作業整理ジョブの進行、失敗、競合がここに表示されます。",
+      "readOnlyHint": "「今すぐ整理」は作業整理ジョブをキューします。失敗は再試行、未コミットはキャンセルできます。",
+      "compileNow": "今すぐ整理",
+      "compiling": "整理を開始しています…",
       "retryJob": "Retry job",
       "cancelJob": "Cancel job",
-      "compileDisabled": "Compile is turned off in Settings.",
+      "compileDisabled": "設定で整理がオフです。",
       "allStatuses": "すべての状態",
       "detailPlaceholder": "ジョブを選んで詳細を表示します。",
       "kind": {
-        "ingest": "取り込み",
+        "ingest": "取り込み分析",
         "compile": "コンパイル",
-        "unknown": "ジョブ"
+        "unknown": "ジョブ",
+        "turn_summary": "ターン要約",
+        "session_rollup": "セッション集約",
+        "wiki_synthesize": "作業整理"
       },
       "status": {
         "queued": "待機中",
@@ -6447,6 +6466,18 @@
     "note": {
       "untitled": "無題",
       "preview": "ノートを選んでプレビューします。"
-    }
+    },
+    "import": "Import",
+    "importTitle": "Import into wiki",
+    "importSessions": "Local agent conversations",
+    "importSessionsHint": "本機の Claude、Codex、Grok などのエージェント履歴を Wiki ソースとして取り込みます。取り込み後に自動で要約や整理はしません。",
+    "importSessionsCount": "{count, plural, one {# local conversation ready} other {# local conversations ready}}",
+    "importSessionsAction": "Import all local conversations",
+    "importDirectory": "Specified directory",
+    "importDirectoryHint": "Import Markdown, TXT, PDF, and DOCX in a folder. Local agent sessions whose working directory is inside that folder are imported too.",
+    "importDirectoryAction": "Choose directory",
+    "importing": "Importing…",
+    "importResult": "Imported {imported}, duplicates {duplicates}, failed {failed}.",
+    "importFailed": "Import failed: {message}"
   }
 }

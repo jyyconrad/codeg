@@ -6275,7 +6275,7 @@
   },
   "WikiSettings": {
     "sectionTitle": "ويكي شخصي",
-    "sectionDescription": "Capture completed work sessions and imported documents into a local Markdown vault. Compile turns those sources into work notes and capability notes with citations.",
+    "sectionDescription": "يحفظ جلسات العمل المكتملة والمستندات المستوردة في خزنة Markdown محلية. تُكتب ذكريات الدورة والجلسة أولاً؛ ثم ينظّم المجدول أو اليدوي ملاحظات المشروع والقدرة.",
     "loading": "جارٍ التحميل...",
     "loadFailed": "تعذر تحميل إعدادات الويكي: {message}",
     "retry": "إعادة المحاولة",
@@ -6284,10 +6284,10 @@
     "saved": "تم حفظ إعدادات الويكي",
     "saveFailed": "تعذر حفظ إعدادات الويكي: {message}",
     "enabled": "تفعيل الويكي الشخصي",
-    "enabledHint": "Turning this on stores session and imported text in a local vault. Extracted text may later be sent to the bound model for ingest and compile.",
+    "enabledHint": "عند التشغيل تُخزَّن نصوص الجلسات والاستيراد في خزنة محلية. قد يُرسل النص المستخرج لاحقًا إلى النموذج المرتبط لكتابة الذكريات أو تنظيم الملاحظات.",
     "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
     "statusTitle": "Schedule",
-    "statusDescription": "Next compile time and sources still waiting to be analyzed.",
+    "statusDescription": "موعد التنظيم التالي والمصادر التي ما زالت تنتظر المعالجة.",
     "nextCompileAt": "التجميع التالي",
     "pendingSources": "مصادر معلّقة",
     "notScheduled": "غير مجدول",
@@ -6310,25 +6310,34 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "المجلد {id}",
-    "ingestTitle": "الاستيعاب",
-    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
-    "ingestModel": "Ingest model id",
-    "ingestModelHint": "Override the bound Codeg Agent default model. Leave empty to use the bound channel.",
-    "ingestModelPlaceholder": "Bound default",
-    "ingestPrompt": "Ingest extra prompt",
-    "ingestPromptPlaceholder": "Optional overlay. Cannot expand read scope. Empty content must not invent a topic from the filename.",
-    "compileTitle": "التجميع",
-    "compileDescription": "Compile updates work and capability notes from ready sources.",
-    "compileEnabled": "تفعيل التجميع",
-    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
-    "compileNowUnavailable": "«تجميع الآن» في منضدة العمل غير متاح عندما يكون التجميع معطّلًا.",
-    "compileModel": "Compile model id",
-    "compileModelHint": "Override the bound Codeg Agent default model for compile. Leave empty to use the bound channel.",
-    "compileModelPlaceholder": "Bound default",
-    "compilePrompt": "Compile extra prompt",
-    "compilePromptPlaceholder": "Optional overlay on the built-in WeKnora-style four-step compile skill. Cannot raise permissions or invent claims.",
-    "ingestPromptBuiltinHint": "Built-in ingest skill always applies: one-line source summary, no rewriting of raw evidence.",
-    "compilePromptBuiltinHint": "Built-in compile always uses WeKnora discipline: candidates → match (related ≠ same) → staged merge → host finalize. Extra text cannot skip grounding."
+    "restoreBuiltinPrompt": "Restore built-in",
+    "turnSummaryTitle": "ملخص الدورة",
+    "turnSummaryDescription": "بعد كل دورة ACP ناجحة تُكتب ذكرى مقروءة عما تغيّر وما نُفِّذ. معرّف النموذج الفارغ يستخدم الافتراضي المرتبط.",
+    "turnSummaryModel": "معرّف نموذج ملخص الدورة",
+    "turnSummaryModelHint": "يستبدل النموذج الافتراضي لوكيل Codeg المرتبط. اتركه فارغًا لاستخدام القناة المرتبطة.",
+    "turnSummaryModelPlaceholder": "الافتراضي المرتبط",
+    "turnSummaryPrompt": "موجّه ملخص الدورة",
+    "turnSummaryPromptPlaceholder": "مهارة ملخص الدورة كاملة. المضيف ما زال يتحقق من هوية الصفحة ولا يمكنه توسيع نطاق القراءة.",
+    "turnSummaryPromptBuiltinHint": "هذه مهارة ملخص الدورة كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا.",
+    "sessionRollupTitle": "تجميع المحادثة",
+    "sessionRollupDescription": "عندما تُعلَّم محادثة كمكتملة تُكتب صفحة جلسة من ذكريات الدورات. المحادثات غير المكتملة لا تحصل على صفحة جلسة.",
+    "sessionRollupModel": "معرّف نموذج تجميع المحادثة",
+    "sessionRollupModelHint": "يستبدل النموذج الافتراضي لوكيل Codeg المرتبط. اتركه فارغًا لاستخدام القناة المرتبطة.",
+    "sessionRollupModelPlaceholder": "الافتراضي المرتبط",
+    "sessionRollupPrompt": "موجّه تجميع المحادثة",
+    "sessionRollupPromptPlaceholder": "مهارة تجميع المحادثة كاملة. المضيف ما زال يتحقق من هوية الصفحة ولا يمكنه توسيع نطاق القراءة.",
+    "sessionRollupPromptBuiltinHint": "هذه مهارة تجميع المحادثة كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا.",
+    "synthesizeTitle": "تنظيم العمل",
+    "synthesizeDescription": "التنظيم المجدول أو اليدوي يحدّث ملاحظات المشروع والمسؤولية والقرار والنتيجة والقدرة من صفحات الذاكرة. المصادر المستوردة لا تُنظَّم تلقائيًا.",
+    "synthesizeEnabled": "تفعيل التنظيم",
+    "synthesizeEnabledHint": "عند الإيقاف يمكن استمرار كتابة صفحات الذاكرة. تتوقف مهام التنظيم الجديدة ويصبح «نظّم الآن» غير متاح.",
+    "synthesizeNowUnavailable": "«نظّم الآن» في طاولة العمل غير متاح أثناء تعطيل التنظيم.",
+    "synthesizeModel": "معرّف نموذج التنظيم",
+    "synthesizeModelHint": "يستبدل النموذج الافتراضي لوكيل Codeg المرتبط للتنظيم. اتركه فارغًا لاستخدام القناة المرتبطة.",
+    "synthesizeModelPlaceholder": "الافتراضي المرتبط",
+    "synthesizePrompt": "موجّه التنظيم",
+    "synthesizePromptPlaceholder": "مهارة التنظيم كاملة. المضيف ما زال يتحقق من المراجع ولا يمكنه اختراع ادّعاءات.",
+    "synthesizePromptBuiltinHint": "هذه مهارة التنظيم كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا."
   },
   "Wiki": {
     "title": "ويكي شخصي",
@@ -6354,8 +6363,15 @@
       "emptyDescription": "كل نصوص المعرفة في هذا المخزن: index.md وwork/ وcapabilities/ وknowledge/ وsources/ وjournal/ وlog.md وAGENTS.md. افتح ملف Markdown لقراءة النص كاملاً. تبقى روابط [[wikilink]] داخل المخزن."
     },
     "work": {
-      "emptyTitle": "لا توجد ملاحظات عمل بعد",
-      "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."
+      "emptyTitle": "لا توجد ذاكرة عمل بعد",
+      "emptyDescription": "دورات ACP الناجحة والمحادثات المكتملة تصبح ملاحظات ذاكرة عما أُنجز في هذه الدورة أو الجلسة. لاحقًا ينظّم الجدول أو الأمر اليدوي تلك الذكريات إلى ملاحظات مشروع ومسؤولية وقرار ونتيجة وقدرة. مصادر تبويب المصادر لا تظهر هنا.",
+      "compileFailed": "فشل آخر تنظيم: {message}",
+      "memoryCount": "{count, plural, one {ذاكرة واحدة} other {# ذكريات}}",
+      "ungrouped": "غير مجموعة",
+      "pageType": {
+        "turn-summary": "دورة",
+        "session-summary": "جلسة"
+      }
     },
     "capabilities": {
       "emptyTitle": "لا توجد ملاحظات قدرات بعد",
@@ -6415,19 +6431,22 @@
     },
     "jobs": {
       "emptyTitle": "لا توجد مهام بعد",
-      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
-      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
-      "compileNow": "Compile now",
-      "compiling": "Starting compile…",
+      "emptyDescription": "ملخصات الدورة وتجميع المحادثة ومهام تنظيم العمل تعرض هنا التقدم والإخفاقات والتعارضات.",
+      "readOnlyHint": "«نظّم الآن» يضع مهمة تنظيم في قائمة الانتظار. أعد محاولة مهمة فاشلة؛ وألغِ مهمة لم تُعتمد بعد.",
+      "compileNow": "نظّم الآن",
+      "compiling": "جارٍ بدء التنظيم…",
       "retryJob": "Retry job",
       "cancelJob": "Cancel job",
-      "compileDisabled": "Compile is turned off in Settings.",
+      "compileDisabled": "التنظيم متوقف في الإعدادات.",
       "allStatuses": "كل الحالات",
       "detailPlaceholder": "Select a job to see details.",
       "kind": {
-        "ingest": "استيعاب",
+        "ingest": "تحليل",
         "compile": "تجميع",
-        "unknown": "مهمة"
+        "unknown": "مهمة",
+        "turn_summary": "ملخص الدورة",
+        "session_rollup": "تجميع المحادثة",
+        "wiki_synthesize": "تنظيم العمل"
       },
       "status": {
         "queued": "في الانتظار",
@@ -6447,6 +6466,18 @@
     "note": {
       "untitled": "بلا عنوان",
       "preview": "اختر ملاحظة للمعاينة."
-    }
+    },
+    "import": "Import",
+    "importTitle": "Import into wiki",
+    "importSessions": "Local agent conversations",
+    "importSessionsHint": "استورد نصوص الوكلاء المحليين (Claude وCodex وGrok وغيرها) كمصدر ويكي. الاستيراد لا يلخّص ولا ينظّم تلقائيًا.",
+    "importSessionsCount": "{count, plural, one {# local conversation ready} other {# local conversations ready}}",
+    "importSessionsAction": "Import all local conversations",
+    "importDirectory": "Specified directory",
+    "importDirectoryHint": "Import Markdown, TXT, PDF, and DOCX in a folder. Local agent sessions whose working directory is inside that folder are imported too.",
+    "importDirectoryAction": "Choose directory",
+    "importing": "Importing…",
+    "importResult": "Imported {imported}, duplicates {duplicates}, failed {failed}.",
+    "importFailed": "Import failed: {message}"
   }
 }

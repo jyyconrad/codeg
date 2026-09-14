@@ -13,6 +13,8 @@ const VAULT_DIRS: &[&str] = &[
     "work/records",
     "work/decisions",
     "work/outcomes",
+    "work/turns",
+    "work/sessions",
     "capabilities",
     "knowledge/concepts",
     "knowledge/methods",
@@ -116,6 +118,8 @@ mod tests {
             "{\"x\":1}"
         );
         assert!(vault.join("work/projects").is_dir());
+        assert!(vault.join("work/turns").is_dir());
+        assert!(vault.join("work/sessions").is_dir());
         assert!(vault.join("raw/sessions").is_dir());
         assert!(vault.join("AGENTS.md").is_file());
         let log = fs::read_to_string(vault.join("log.md")).unwrap();

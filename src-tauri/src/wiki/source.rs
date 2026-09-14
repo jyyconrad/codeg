@@ -29,7 +29,7 @@ pub async fn persist_acp_turn(
     mut snap: WikiTurnSnapshot,
 ) -> Result<PersistOutcome, DbError> {
     let settings = settings::load_settings(conn).await?;
-    let (kind, folder_id, root_folder_id, folder_path, git_branch, conv_model) =
+    let (kind, folder_id, root_folder_id, folder_path, git_branch, conv_model, conv_title) =
         enrich_from_db(conn, &snap).await?;
 
     let ctx = FilterContext {
@@ -88,6 +88,11 @@ pub async fn persist_acp_turn(
             occurred_at: Some(snap.occurred_at),
             truncated,
             redacted,
+            source_title: conv_title
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
         },
     )
     .await?;
@@ -103,7 +108,11 @@ pub async fn persist_acp_turn(
     if !needs_raw {
         return Ok(PersistOutcome {
             source_id: inserted.source.id,
-            job_id: inserted.job.id,
+            job_id: inserted
+                .job
+                .as_ref()
+                .map(|j| j.id.clone())
+                .unwrap_or_default(),
             created: false,
             skipped: None,
         });
@@ -122,21 +131,21 @@ pub async fn persist_acp_turn(
     };
     if let Err(e) = freeze_raw_and_log(conn, &vault_path, &snap, &inserted, meta).await {
         let msg = e.to_string();
-        let _ = wiki_service::mark_job(
-            conn,
-            &inserted.job.id,
-            "failed",
-            Some("raw_write"),
-            Some(&msg),
-        )
-        .await;
+        if let Some(job) = inserted.job.as_ref() {
+            let _ = wiki_service::mark_job(conn, &job.id, "failed", Some("raw_write"), Some(&msg))
+                .await;
+        }
         let _ = wiki_service::mark_source_raw(conn, &inserted.source.id, "", "", "failed").await;
         return Err(e);
     }
 
     Ok(PersistOutcome {
         source_id: inserted.source.id,
-        job_id: inserted.job.id,
+        job_id: inserted
+            .job
+            .as_ref()
+            .map(|j| j.id.clone())
+            .unwrap_or_default(),
         created: true,
         skipped: None,
     })
@@ -165,8 +174,18 @@ async fn freeze_raw_and_log(
     }
     let rel = format!("raw/sessions/{}.md", inserted.source.id);
     wiki_service::mark_source_raw(conn, &inserted.source.id, &rel, &hash, "ready").await?;
-    // Leave the ingest job queued so WikiWorker can add an optional model
-    // summary. Raw is frozen and must not be rewritten.
+    if let Some(job) = inserted.job.as_ref() {
+        let key = crate::wiki::turn_summary::dedupe_key(&inserted.source.id, &hash);
+        let manifest = serde_json::json!({
+            "source_id": inserted.source.id,
+            "raw_hash": hash,
+            "raw_path": rel,
+            "conversation_id": snap.conversation_id,
+            "rel": crate::wiki::turn_summary::page_rel(&inserted.source.id),
+        })
+        .to_string();
+        let _ = wiki_service::set_job_dedupe_and_manifest(conn, &job.id, &key, &manifest).await;
+    }
     crate::wiki::engine::notify_jobs();
     Ok(())
 }
@@ -182,11 +201,12 @@ async fn enrich_from_db(
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
     ),
     DbError,
 > {
     let Some(cid) = snap.conversation_id else {
-        return Ok((None, snap.folder_id, None, None, None, None));
+        return Ok((None, snap.folder_id, None, None, None, None, None));
     };
     let conv = conversation_service::get_by_id(conn, cid).await?;
     let folder_id = snap.folder_id.or(Some(conv.folder_id));
@@ -205,6 +225,7 @@ async fn enrich_from_db(
         folder_path,
         conv.git_branch,
         conv.model,
+        conv.title,
     ))
 }
 
@@ -327,6 +348,7 @@ pub async fn recover_pending_at(
 mod tests {
     use super::*;
     use crate::db::entities::conversation::{self, ConversationKind};
+    use crate::db::service::conversation_service;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
     use crate::models::AgentType;
     use crate::wiki::settings::WikiSettings;
@@ -446,6 +468,40 @@ mod tests {
             .await
             .unwrap();
         assert!(sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn persist_copies_conversation_title_to_source_title() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/wiki-title").await;
+        let cid = conversation_service::create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("方案 C 样本流".into()),
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+        let dir = tempdir().unwrap();
+        enable_wiki(&db.conn, dir.path()).await;
+        let out = persist_acp_turn(&db.conn, snap_for("run-title", cid, folder))
+            .await
+            .unwrap();
+        assert!(out.created);
+        let src = wiki_service::get_source(&db.conn, &out.source_id)
+            .await
+            .unwrap();
+        assert_eq!(src.source_title.as_deref(), Some("方案 C 样本流"));
+        assert_eq!(src.title.as_deref(), Some("方案 C 样本流"));
+        let jobs = wiki_service::list_jobs(&db.conn, 10, 0, None)
+            .await
+            .unwrap();
+        assert!(jobs.iter().any(|j| j.kind == "turn_summary"));
+        assert!(jobs
+            .iter()
+            .all(|j| j.kind != "ingest" && j.kind != "compile"));
     }
 
     #[tokio::test]

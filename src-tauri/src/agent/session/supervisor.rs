@@ -1,7 +1,6 @@
 //! Command ring: `cmd_rx` + runner stream + shutdown select.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -818,6 +817,7 @@ async fn emit_prompt_start_error(
         },
     )
     .await;
+    let run_id = state.read().await.wiki_run_id.clone();
     emit_with_state(
         state,
         emitter,
@@ -825,7 +825,7 @@ async fn emit_prompt_start_error(
             session_id: session_id.to_string(),
             stop_reason: "error".into(),
             agent_type,
-            run_id: state.read().await.wiki_run_id.clone(),
+            run_id,
         },
     )
     .await;
@@ -1300,6 +1300,7 @@ async fn finish_turn(
     if !coordinator.try_finish(turn_id) {
         return;
     }
+    let run_id = state.read().await.wiki_run_id.clone();
     emit_with_state(
         state,
         emitter,
@@ -1307,7 +1308,7 @@ async fn finish_turn(
             session_id: session_id.to_string(),
             stop_reason: stop_reason.to_string(),
             agent_type,
-            run_id: state.read().await.wiki_run_id.clone(),
+            run_id,
         },
     )
     .await;
