@@ -1,23 +1,26 @@
-//! Wiki settings, source/job listing, and vault browse. Dual-mode `_core` fns.
-
-use std::fs;
-use std::path::Path;
+//! 个人 Wiki 的桌面适配与共享设置/浏览用例。
+//! 设置修改协调目录、模型建议和运行任务；导入直接交给 wiki/import 与 session_import。
+//! 分页阅读由 wiki_read 适配读模型，任务控制由 wiki_engine 处理，避免多套查询逻辑。
 
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppCommandError;
 use crate::db::error::DbError;
+use crate::db::service::wiki_service;
+#[cfg(feature = "tauri-runtime")]
 use crate::db::service::wiki_service::{
-    self, WikiImportResult, WikiJobInfo, WikiProjectBindingInfo, WikiSourceInfo,
+    WikiImportResult, WikiJobInfo, WikiProjectBindingInfo, WikiSourceInfo,
 };
 #[cfg(feature = "tauri-runtime")]
 use crate::wiki::import::ImportFilePart;
+#[cfg(feature = "tauri-runtime")]
 use crate::wiki::import::{
-    self, ImportFilesParams, ImportFilesResult, ImportTextParams, LinkVersionParams,
+    self, ImportBatchResult, ImportFilesParams, ImportTextParams, LinkVersionParams,
     UpdateAnnotationsParams,
 };
-use crate::wiki::paths::{self, join_vault_relative, resolve_vault_path};
+use crate::wiki::paths::resolve_vault_path;
+#[cfg(feature = "tauri-runtime")]
 use crate::wiki::session_import::{
     self, ImportDirectoryParams, ImportLocalSessionsParams, WikiBulkImportResult,
 };
@@ -25,6 +28,8 @@ use crate::wiki::settings::{self, WikiSettings, WikiSettingsView};
 use crate::wiki::tree::{self, VaultTreeError};
 use crate::wiki::vault;
 
+#[cfg(feature = "tauri-runtime")]
+use crate::wiki::read_model::WikiVaultFile;
 pub use crate::wiki::tree::WikiVaultTreeEntry;
 
 #[cfg(feature = "tauri-runtime")]
@@ -33,9 +38,19 @@ use crate::db::AppDatabase;
 pub async fn get_wiki_settings_core(
     conn: &DatabaseConnection,
 ) -> Result<WikiSettingsView, DbError> {
-    let settings = settings::load_settings(conn).await?;
+    let mut settings = settings::load_settings(conn).await?;
+    // Suggestions are only offered before the first save. A missing slot in
+    // saved configuration must remain visible instead of tracking chat changes.
+    if crate::db::service::app_metadata_service::get_value(conn, settings::WIKI_SETTINGS_KEY)
+        .await?
+        .is_none()
+    {
+        hydrate_default_bindings(conn, &mut settings).await;
+    }
     let next_compile_at = settings::next_compile_at(&settings);
-    let pending_source_count = wiki_service::pending_source_count(conn).await?;
+    let pending_source_count = crate::wiki::read_model::get_overview(conn)
+        .await?
+        .pending_memory_count as u64;
     Ok(WikiSettingsView {
         settings,
         next_compile_at,
@@ -46,158 +61,73 @@ pub async fn get_wiki_settings_core(
     })
 }
 
+async fn hydrate_default_bindings(conn: &DatabaseConnection, settings: &mut WikiSettings) {
+    let Some(agent) = crate::db::service::agent_setting_service::get_by_agent_type(
+        conn,
+        crate::models::AgentType::CodegAgent,
+    )
+    .await
+    .ok()
+    .flatten() else {
+        return;
+    };
+    let Some(provider_id) = agent.model_provider_id else {
+        return;
+    };
+    let Some(provider) = crate::db::service::model_provider_service::get_by_id(conn, provider_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let model_id = crate::acp::native_config::completions_model_id(provider.model.as_deref());
+    for slot in [&mut settings.turn_summary, &mut settings.session_rollup] {
+        if slot.provider_id.is_none() {
+            slot.provider_id = Some(provider_id);
+            slot.model_id = model_id.clone();
+        }
+    }
+    if settings.synthesize.provider_id.is_none() {
+        settings.synthesize.provider_id = Some(provider_id);
+        settings.synthesize.model_id = model_id;
+    }
+}
+
 pub async fn update_wiki_settings_core(
     conn: &DatabaseConnection,
     settings: WikiSettings,
 ) -> Result<WikiSettingsView, DbError> {
-    settings::save_settings(conn, &settings).await?;
-    if settings.enabled {
-        let vault_path = resolve_vault_path(settings.vault_path.as_deref());
+    let transition = crate::wiki::lifecycle::lock().await;
+    settings::validate_settings(&settings)?;
+    let previous = settings::load_settings(conn).await?;
+    let vault_path = resolve_vault_path(settings.vault_path.as_deref());
+    let previous_path = resolve_vault_path(previous.vault_path.as_deref());
+    if vault_path != previous_path {
+        let running = wiki_service::list_jobs_by_status(conn, "running").await?;
+        if !running.is_empty() {
+            return Err(DbError::Conflict(
+                "wait for current Wiki processing before changing its location".into(),
+            ));
+        }
+    }
+    if settings.enabled || vault_path != previous_path {
+        vault::validate_new_location(&vault_path)?;
         vault::initialize_vault(&vault_path)?;
-        vault::initialize_state_root(&crate::wiki::paths::resolve_state_root(
-            settings.vault_path.as_deref(),
-        ))?;
-        let canonical = vault_path.to_string_lossy().to_string();
+        vault::initialize_state_root(&crate::wiki::paths::resolve_state_root())?;
+        let canonical = vault_path.canonicalize()?.to_string_lossy().to_string();
         wiki_service::ensure_active_vault(conn, &canonical).await?;
         let _ = settings::ensure_db_instance_id(conn).await?;
     }
-    get_wiki_settings_core(conn).await
-}
-
-pub async fn wiki_list_jobs_core(
-    conn: &DatabaseConnection,
-    limit: Option<u64>,
-    offset: Option<u64>,
-    status: Option<String>,
-) -> Result<Vec<WikiJobInfo>, DbError> {
-    wiki_service::list_jobs(
-        conn,
-        limit.unwrap_or(50),
-        offset.unwrap_or(0),
-        status.as_deref(),
-    )
-    .await
-}
-
-pub async fn wiki_get_job_core(
-    conn: &DatabaseConnection,
-    id: String,
-) -> Result<WikiJobInfo, DbError> {
-    wiki_service::get_job(conn, &id).await
-}
-
-pub async fn wiki_list_sources_core(
-    conn: &DatabaseConnection,
-    limit: Option<u64>,
-    offset: Option<u64>,
-    source_kind: Option<String>,
-    project_id: Option<String>,
-) -> Result<Vec<WikiSourceInfo>, DbError> {
-    wiki_service::list_sources(
-        conn,
-        limit.unwrap_or(50),
-        offset.unwrap_or(0),
-        source_kind.as_deref(),
-        project_id.as_deref(),
-    )
-    .await
-}
-
-pub async fn wiki_list_project_bindings_core(
-    conn: &DatabaseConnection,
-    vault_id: Option<String>,
-) -> Result<Vec<WikiProjectBindingInfo>, DbError> {
-    wiki_service::list_project_bindings(conn, vault_id.as_deref()).await
-}
-
-pub async fn wiki_get_source_core(
-    conn: &DatabaseConnection,
-    id: String,
-) -> Result<WikiSourceInfo, DbError> {
-    wiki_service::get_source(conn, &id).await
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WikiMemoryNote {
-    pub rel: String,
-    pub page_type: String,
-    pub title: String,
-    pub summary: String,
-    pub occurred_at: Option<String>,
-    pub conversation_id: Option<i32>,
-    pub source_id: Option<String>,
-    pub project_binding_ids: Vec<String>,
-    pub codeg_note_id: String,
-}
-
-pub async fn wiki_list_memory_notes_core(
-    conn: &DatabaseConnection,
-) -> Result<Vec<WikiMemoryNote>, AppCommandError> {
-    let settings = settings::load_settings(conn)
-        .await
-        .map_err(AppCommandError::from)?;
-    let vault = resolve_vault_path(settings.vault_path.as_deref());
-    let mut notes = Vec::new();
-    for dir_rel in ["work/turns", "work/sessions"] {
-        let dir = vault.join(dir_rel);
-        let Ok(rd) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for ent in rd.flatten() {
-            let path = ent.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let Ok(text) = fs::read_to_string(&path) else {
-                continue;
-            };
-            let rel = path
-                .strip_prefix(&vault)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-            let page_type = crate::wiki::compile::yaml_string(&text, "type").unwrap_or_default();
-            let title = crate::wiki::compile::yaml_string(&text, "title").unwrap_or_default();
-            let note_id =
-                crate::wiki::compile::yaml_string(&text, "codeg_note_id").unwrap_or_default();
-            let occurred_at = crate::wiki::compile::yaml_string(&text, "occurred_at");
-            let conversation_id = crate::wiki::compile::yaml_string(&text, "codeg_conversation_id")
-                .and_then(|s| s.parse().ok());
-            let source_id = crate::wiki::compile::yaml_string(&text, "codeg_source_id");
-            let mut project_binding_ids =
-                crate::wiki::compile::yaml_list(&text, "codeg_project_binding_id");
-            if project_binding_ids.is_empty() {
-                if let Some(id) =
-                    crate::wiki::compile::yaml_string(&text, "codeg_project_binding_id")
-                {
-                    project_binding_ids.push(id);
-                }
-            }
-            if project_binding_ids.is_empty() {
-                if let Some(sid) = source_id.as_deref() {
-                    if let Ok(src) = wiki_service::get_source_model(conn, sid).await {
-                        if let Some(raw) = src.project_ids.as_deref() {
-                            if let Ok(ids) = serde_json::from_str::<Vec<String>>(raw) {
-                                project_binding_ids = ids;
-                            }
-                        }
-                    }
-                }
-            }
-            notes.push(WikiMemoryNote {
-                rel,
-                page_type,
-                title,
-                summary: crate::wiki::turn_summary::first_body_paragraph(&text),
-                occurred_at,
-                conversation_id,
-                source_id,
-                project_binding_ids,
-                codeg_note_id: note_id,
-            });
+    settings::save_settings(conn, &settings).await?;
+    if previous.enabled && !settings.enabled {
+        for job in wiki_service::list_jobs_by_status(conn, "running").await? {
+            crate::wiki::engine::request_cancel(&job.id);
         }
     }
-    notes.sort_by(|a, b| b.occurred_at.cmp(&a.occurred_at).then(b.rel.cmp(&a.rel)));
-    Ok(notes)
+    crate::wiki::engine::notify_jobs();
+    drop(transition);
+    get_wiki_settings_core(conn).await
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -210,27 +140,6 @@ pub struct WikiVaultTreeParams {
     pub include_raw: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WikiVaultFile {
-    pub path: String,
-    pub content: String,
-}
-
-fn vault_root_from_settings(
-    settings: &WikiSettings,
-) -> Result<std::path::PathBuf, AppCommandError> {
-    Ok(resolve_vault_path(settings.vault_path.as_deref()))
-}
-
-fn reject_unsafe_path(rel: &str) -> Result<(), AppCommandError> {
-    if !paths::is_safe_vault_relative(rel) {
-        return Err(AppCommandError::invalid_input(
-            "path must be vault-relative without '..' or absolute segments",
-        ));
-    }
-    Ok(())
-}
-
 pub async fn wiki_vault_tree_core(
     conn: &DatabaseConnection,
     params: WikiVaultTreeParams,
@@ -238,9 +147,8 @@ pub async fn wiki_vault_tree_core(
     let settings = settings::load_settings(conn)
         .await
         .map_err(AppCommandError::from)?;
-    let vault = vault_root_from_settings(&settings)?;
+    let vault = resolve_vault_path(settings.vault_path.as_deref());
     let rel = params.path.unwrap_or_default();
-    reject_unsafe_path(&rel)?;
     let recursive = params.recursive.unwrap_or(false);
     let include_raw = params.include_raw.unwrap_or(false);
     match tree::list_vault_tree(&vault, &rel, recursive, include_raw) {
@@ -259,106 +167,6 @@ pub async fn wiki_vault_tree_core(
     }
 }
 
-pub async fn wiki_import_text_core(
-    conn: &DatabaseConnection,
-    params: ImportTextParams,
-) -> Result<WikiImportResult, AppCommandError> {
-    import::import_text(conn, params).await
-}
-
-pub async fn wiki_import_files_core(
-    conn: &DatabaseConnection,
-    params: ImportFilesParams,
-) -> Result<ImportFilesResult, AppCommandError> {
-    import::import_files_with_result(conn, params).await
-}
-
-pub async fn wiki_import_local_sessions_core(
-    conn: &DatabaseConnection,
-    params: ImportLocalSessionsParams,
-) -> Result<WikiBulkImportResult, AppCommandError> {
-    session_import::import_local_sessions(conn, params).await
-}
-
-pub async fn wiki_import_directory_core(
-    conn: &DatabaseConnection,
-    params: ImportDirectoryParams,
-) -> Result<WikiBulkImportResult, AppCommandError> {
-    session_import::import_directory(conn, params).await
-}
-
-pub async fn wiki_accept_extraction_core(
-    conn: &DatabaseConnection,
-    source_id: String,
-) -> Result<WikiSourceInfo, AppCommandError> {
-    import::accept_extraction(conn, source_id).await
-}
-
-pub async fn wiki_update_source_annotations_core(
-    conn: &DatabaseConnection,
-    params: UpdateAnnotationsParams,
-) -> Result<WikiSourceInfo, AppCommandError> {
-    import::update_source_annotations(conn, params).await
-}
-
-pub async fn wiki_reextract_core(
-    conn: &DatabaseConnection,
-    source_id: String,
-) -> Result<WikiImportResult, AppCommandError> {
-    import::reextract(conn, source_id).await
-}
-
-pub async fn wiki_link_source_version_core(
-    conn: &DatabaseConnection,
-    params: LinkVersionParams,
-) -> Result<WikiSourceInfo, AppCommandError> {
-    import::link_source_version(conn, params).await
-}
-
-pub async fn wiki_vault_read_core(
-    conn: &DatabaseConnection,
-    path: String,
-) -> Result<WikiVaultFile, AppCommandError> {
-    reject_unsafe_path(&path)?;
-    let ext = Path::new(&path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    if !ext.eq_ignore_ascii_case("md") {
-        return Err(AppCommandError::invalid_input(
-            "only markdown files can be read",
-        ));
-    }
-    let settings = settings::load_settings(conn)
-        .await
-        .map_err(AppCommandError::from)?;
-    let vault = vault_root_from_settings(&settings)?;
-    let file = join_vault_relative(&vault, &path).map_err(AppCommandError::invalid_input)?;
-    let vault_canon = vault
-        .canonicalize()
-        .map_err(|e| AppCommandError::io_error(e.to_string()))?;
-    let file_canon = file.canonicalize().map_err(|_| {
-        AppCommandError::new(crate::app_error::AppErrorCode::NotFound, "file not found")
-    })?;
-    if !file_canon.starts_with(&vault_canon) {
-        return Err(AppCommandError::invalid_input(
-            "path must stay inside the wiki vault",
-        ));
-    }
-    if !file_canon.is_file() {
-        return Err(AppCommandError::new(
-            crate::app_error::AppErrorCode::NotFound,
-            "file not found",
-        ));
-    }
-    let content =
-        fs::read_to_string(&file_canon).map_err(|e| AppCommandError::io_error(e.to_string()))?;
-    Ok(WikiVaultFile {
-        path: path.replace('\\', "/"),
-        content,
-    })
-}
-
 // ── Tauri wrappers ──────────────────────────────────────────────────────────
 
 #[cfg(feature = "tauri-runtime")]
@@ -374,25 +182,24 @@ pub async fn get_wiki_settings(
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn update_wiki_settings(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     settings: WikiSettings,
 ) -> Result<WikiSettingsView, AppCommandError> {
-    update_wiki_settings_core(&db.conn, settings)
-        .await
-        .map_err(AppCommandError::from)
-}
-
-#[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn wiki_list_jobs(
-    db: tauri::State<'_, AppDatabase>,
-    limit: Option<u64>,
-    offset: Option<u64>,
-    status: Option<String>,
-) -> Result<Vec<WikiJobInfo>, AppCommandError> {
-    wiki_list_jobs_core(&db.conn, limit, offset, status)
-        .await
-        .map_err(AppCommandError::from)
+    let result = async {
+        update_wiki_settings_core(&db.conn, settings)
+            .await
+            .map_err(AppCommandError::from)
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -401,57 +208,24 @@ pub async fn wiki_get_job(
     db: tauri::State<'_, AppDatabase>,
     id: String,
 ) -> Result<WikiJobInfo, AppCommandError> {
-    wiki_get_job_core(&db.conn, id)
+    crate::wiki::read_model::read_job(&db.conn, &id)
         .await
         .map_err(AppCommandError::from)
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn wiki_list_sources(
-    db: tauri::State<'_, AppDatabase>,
-    limit: Option<u64>,
-    offset: Option<u64>,
-    source_kind: Option<String>,
-    project_id: Option<String>,
-) -> Result<Vec<WikiSourceInfo>, AppCommandError> {
-    wiki_list_sources_core(&db.conn, limit, offset, source_kind, project_id)
-        .await
-        .map_err(AppCommandError::from)
-}
-
-#[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn wiki_list_memory_notes(
-    db: tauri::State<'_, AppDatabase>,
-) -> Result<Vec<WikiMemoryNote>, AppCommandError> {
-    wiki_list_memory_notes_core(&db.conn).await
-}
-
-#[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_list_project_bindings(
     db: tauri::State<'_, AppDatabase>,
     vault_id: Option<String>,
 ) -> Result<Vec<WikiProjectBindingInfo>, AppCommandError> {
-    wiki_list_project_bindings_core(&db.conn, vault_id)
+    wiki_service::list_project_bindings(&db.conn, vault_id.as_deref())
         .await
         .map_err(AppCommandError::from)
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn wiki_get_source(
-    db: tauri::State<'_, AppDatabase>,
-    id: String,
-) -> Result<WikiSourceInfo, AppCommandError> {
-    wiki_get_source_core(&db.conn, id)
-        .await
-        .map_err(AppCommandError::from)
-}
-
-#[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_vault_tree(
     db: tauri::State<'_, AppDatabase>,
     path: Option<String>,
@@ -475,12 +249,16 @@ pub async fn wiki_vault_read(
     db: tauri::State<'_, AppDatabase>,
     path: String,
 ) -> Result<WikiVaultFile, AppCommandError> {
-    wiki_vault_read_core(&db.conn, path).await
+    crate::wiki::read_model::read_vault_file(&db.conn, path)
+        .await
+        .map_err(super::wiki_read::map_error)
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
+#[allow(clippy::too_many_arguments)] // Tauri exposes the existing scalar import arguments.
 pub async fn wiki_import_text(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     request_id: String,
     text: String,
@@ -492,26 +270,39 @@ pub async fn wiki_import_text(
     project_ids: Option<Vec<String>>,
     area_ids: Option<Vec<String>>,
 ) -> Result<WikiImportResult, AppCommandError> {
-    wiki_import_text_core(
-        &db.conn,
-        ImportTextParams {
-            request_id,
-            text,
-            title,
-            source_url,
-            author,
-            material_role,
-            personal_role,
-            project_ids,
-            area_ids,
-        },
-    )
-    .await
+    let result = async {
+        import::import_text(
+            &db.conn,
+            ImportTextParams {
+                request_id,
+                text,
+                title,
+                source_url,
+                author,
+                material_role,
+                personal_role,
+                project_ids,
+                area_ids,
+            },
+        )
+        .await
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
+#[allow(clippy::too_many_arguments)] // Tauri exposes the existing scalar import arguments.
 pub async fn wiki_import_files(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     request_id: String,
     files: Vec<ImportFilePart>,
@@ -523,37 +314,58 @@ pub async fn wiki_import_files(
     batch_id: Option<String>,
     project_ids: Option<Vec<String>>,
     area_ids: Option<Vec<String>>,
-) -> Result<ImportFilesResult, AppCommandError> {
-    wiki_import_files_core(
-        &db.conn,
-        ImportFilesParams {
-            request_id,
-            files,
-            material_role,
-            personal_role,
-            title,
-            source_url,
-            author,
-            batch_id,
-            project_ids,
-            area_ids,
-        },
-    )
-    .await
+) -> Result<ImportBatchResult, AppCommandError> {
+    let result = async {
+        import::import_files_with_result(
+            &db.conn,
+            ImportFilesParams {
+                request_id,
+                files,
+                material_role,
+                personal_role,
+                title,
+                source_url,
+                author,
+                batch_id,
+                project_ids,
+                area_ids,
+            },
+        )
+        .await
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_accept_extraction(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     source_id: String,
 ) -> Result<WikiSourceInfo, AppCommandError> {
-    wiki_accept_extraction_core(&db.conn, source_id).await
+    let result = async { import::accept_extraction(&db.conn, source_id).await }.await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_update_source_annotations(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     source_id: String,
     material_role: Option<String>,
@@ -561,72 +373,128 @@ pub async fn wiki_update_source_annotations(
     project_ids: Option<Vec<String>>,
     area_ids: Option<Vec<String>>,
 ) -> Result<WikiSourceInfo, AppCommandError> {
-    wiki_update_source_annotations_core(
-        &db.conn,
-        UpdateAnnotationsParams {
-            source_id,
-            material_role,
-            personal_role,
-            project_ids,
-            area_ids,
-        },
-    )
-    .await
+    let result = async {
+        import::update_source_annotations(
+            &db.conn,
+            UpdateAnnotationsParams {
+                source_id,
+                material_role,
+                personal_role,
+                project_ids,
+                area_ids,
+            },
+        )
+        .await
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_reextract(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     source_id: String,
 ) -> Result<WikiImportResult, AppCommandError> {
-    wiki_reextract_core(&db.conn, source_id).await
+    let result = async { import::reextract(&db.conn, source_id).await }.await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_link_source_version(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     source_id: String,
     previous_source_id: String,
 ) -> Result<WikiSourceInfo, AppCommandError> {
-    wiki_link_source_version_core(
-        &db.conn,
-        LinkVersionParams {
-            source_id,
-            previous_source_id,
-        },
-    )
-    .await
+    let result = async {
+        import::link_source_version(
+            &db.conn,
+            LinkVersionParams {
+                source_id,
+                previous_source_id,
+            },
+        )
+        .await
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_import_local_sessions(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     request_id: String,
     selections: Option<Vec<crate::models::SelectedSessionKey>>,
     all: Option<bool>,
 ) -> Result<WikiBulkImportResult, AppCommandError> {
-    wiki_import_local_sessions_core(
-        &db.conn,
-        ImportLocalSessionsParams {
-            request_id,
-            selections: selections.unwrap_or_default(),
-            all: all.unwrap_or(false),
-        },
-    )
-    .await
+    let result = async {
+        session_import::import_local_sessions(
+            &db.conn,
+            ImportLocalSessionsParams {
+                request_id,
+                selections: selections.unwrap_or_default(),
+                all: all.unwrap_or(false),
+            },
+        )
+        .await
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_import_directory(
+    app: tauri::AppHandle,
     db: tauri::State<'_, AppDatabase>,
     request_id: String,
     path: String,
 ) -> Result<WikiBulkImportResult, AppCommandError> {
-    wiki_import_directory_core(&db.conn, ImportDirectoryParams { request_id, path }).await
+    let result = async {
+        session_import::import_directory(&db.conn, ImportDirectoryParams { request_id, path }).await
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(
+            &db.conn,
+            &crate::web::event_bridge::EventEmitter::Tauri(app),
+        )
+        .await;
+    }
+    result
 }
 
 #[cfg(test)]
@@ -665,8 +533,10 @@ mod tests {
         std::fs::create_dir_all(vault.join("raw/sessions")).unwrap();
         std::fs::write(vault.join("raw/sessions/turn.md"), "raw").unwrap();
 
-        let mut settings = WikiSettings::default();
-        settings.vault_path = Some(vault.to_string_lossy().into_owned());
+        let settings = WikiSettings {
+            vault_path: Some(vault.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
         settings::save_settings(&db.conn, &settings)
             .await
             .expect("save settings");
@@ -700,31 +570,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_memory_notes_parses_turn_and_session() {
+    async fn enabling_personal_wiki_accepts_existing_file_wiki_directory() {
         let db = fresh_in_memory_db().await;
         let dir = tempfile::tempdir().unwrap();
-        let vault = dir.path().join("vault");
-        crate::wiki::vault::initialize_vault(&vault).unwrap();
-        fs::write(
-            vault.join("work/turns/src-1.md"),
-            "---\ntitle: Fixed pagination\ntype: turn-summary\ncodeg_note_id: n1\ncodeg_source_id: src-1\ncodeg_conversation_id: 3\n---\n\n<!-- codeg-content:start -->\nEdited list.rs.\n<!-- codeg-content:end -->\n",
+        let vault = dir.path().join("wiki");
+        std::fs::create_dir_all(vault.join("work/records")).unwrap();
+        std::fs::write(vault.join("index.md"), "home").unwrap();
+        std::fs::write(vault.join("work/records/kept.md"), "keep me").unwrap();
+        let home = dir.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars(
+            [
+                ("CODEG_HOME", Some(home.as_str())),
+                ("CODEG_DATA_DIR", None::<&str>),
+            ],
+            async {
+                let view = update_wiki_settings_core(
+                    &db.conn,
+                    WikiSettings {
+                        enabled: true,
+                        vault_path: Some(vault.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("enable existing file wiki");
+                assert!(view.settings.enabled);
+                assert_eq!(
+                    std::fs::read_to_string(vault.join("work/records/kept.md")).unwrap(),
+                    "keep me"
+                );
+                assert!(vault.join(crate::wiki::vault::FORMAT_MARKER).is_file());
+            },
         )
-        .unwrap();
-        fs::write(
-            vault.join("work/sessions/c3.md"),
-            "---\ntitle: Shipped pagination\ntype: session-summary\ncodeg_note_id: n2\ncodeg_conversation_id: 3\n---\n\n<!-- codeg-content:start -->\nImplemented cursor pagination.\n<!-- codeg-content:end -->\n",
-        )
-        .unwrap();
-        let mut settings = WikiSettings::default();
-        settings.vault_path = Some(vault.to_string_lossy().into_owned());
-        settings::save_settings(&db.conn, &settings).await.unwrap();
-        let notes = wiki_list_memory_notes_core(&db.conn).await.unwrap();
-        assert_eq!(notes.len(), 2);
-        assert!(notes
-            .iter()
-            .any(|n| n.page_type == "turn-summary" && n.source_id.as_deref() == Some("src-1")));
-        assert!(notes
-            .iter()
-            .any(|n| n.page_type == "session-summary" && n.conversation_id == Some(3)));
+        .await;
     }
 }

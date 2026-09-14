@@ -39,6 +39,7 @@ mod upload_jail;
 pub mod version_control;
 pub mod web_server;
 pub mod wiki;
+pub mod wiki_read;
 pub mod work_task;
 pub mod workspace_files;
 pub mod workspace_state;

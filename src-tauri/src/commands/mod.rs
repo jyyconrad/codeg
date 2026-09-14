@@ -47,6 +47,7 @@ pub mod turn_window;
 pub mod version_control;
 pub mod wiki;
 pub mod wiki_engine;
+pub mod wiki_read;
 #[cfg(feature = "tauri-runtime")]
 pub mod windows;
 pub mod work_task;

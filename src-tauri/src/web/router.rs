@@ -1606,21 +1606,36 @@ pub fn build_router(
             "/update_wiki_settings",
             post(handlers::wiki::update_wiki_settings),
         )
-        .route("/wiki_list_jobs", post(handlers::wiki::wiki_list_jobs))
+        .route(
+            "/wiki_get_overview",
+            post(handlers::wiki_read::wiki_get_overview),
+        )
+        .route(
+            "/wiki_list_notes",
+            post(handlers::wiki_read::wiki_list_notes),
+        )
+        .route("/wiki_read_note", post(handlers::wiki_read::wiki_read_note))
+        .route(
+            "/wiki_read_source_document",
+            post(handlers::wiki_read::wiki_read_source_document),
+        )
+        .route(
+            "/wiki_list_jobs_page",
+            post(handlers::wiki_read::wiki_list_jobs_page),
+        )
+        .route(
+            "/wiki_list_sources_page",
+            post(handlers::wiki_read::wiki_list_sources_page),
+        )
         .route("/wiki_get_job", post(handlers::wiki::wiki_get_job))
-        .route(
-            "/wiki_list_sources",
-            post(handlers::wiki::wiki_list_sources),
-        )
-        .route(
-            "/wiki_list_memory_notes",
-            post(handlers::wiki::wiki_list_memory_notes),
-        )
         .route(
             "/wiki_list_project_bindings",
             post(handlers::wiki::wiki_list_project_bindings),
         )
-        .route("/wiki_get_source", post(handlers::wiki::wiki_get_source))
+        .route(
+            "/wiki_refresh_library",
+            post(handlers::wiki_read::wiki_refresh_library),
+        )
         .route("/wiki_vault_tree", post(handlers::wiki::wiki_vault_tree))
         .route("/wiki_vault_read", post(handlers::wiki::wiki_vault_read))
         .route(

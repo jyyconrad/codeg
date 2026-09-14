@@ -1,3 +1,7 @@
+//! 个人 Wiki 设置、导入、文件浏览与任务操作的 HTTP 适配层。
+//! 与桌面调用同一 settings/commands/import 用例，仅负责 JSON 参数、响应和刷新事件。
+//! 分页笔记/来源/任务阅读集中在相邻 wiki_read，避免保留旧重复列表接口。
+
 use std::sync::Arc;
 
 use axum::{extract::Extension, Json};
@@ -6,13 +10,12 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::wiki as core;
-use crate::commands::wiki::WikiMemoryNote;
 use crate::commands::wiki_engine as engine_core;
 use crate::db::service::wiki_service::{
     WikiImportResult, WikiJobInfo, WikiProjectBindingInfo, WikiSourceInfo,
 };
 use crate::wiki::import::{
-    ImportFilesParams, ImportFilesResult, ImportTextParams, LinkVersionParams,
+    ImportBatchResult, ImportFilesParams, ImportTextParams, LinkVersionParams,
     UpdateAnnotationsParams,
 };
 use crate::wiki::session_import::{
@@ -26,30 +29,8 @@ pub struct UpdateWikiSettingsParams {
 }
 
 #[derive(Deserialize)]
-pub struct ListJobsParams {
-    #[serde(default)]
-    pub limit: Option<u64>,
-    #[serde(default)]
-    pub offset: Option<u64>,
-    #[serde(default)]
-    pub status: Option<String>,
-}
-
-#[derive(Deserialize)]
 pub struct IdParams {
     pub id: String,
-}
-
-#[derive(Deserialize)]
-pub struct ListSourcesParams {
-    #[serde(default)]
-    pub limit: Option<u64>,
-    #[serde(default)]
-    pub offset: Option<u64>,
-    #[serde(default)]
-    pub source_kind: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -71,22 +52,18 @@ pub async fn update_wiki_settings(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<UpdateWikiSettingsParams>,
 ) -> Result<Json<WikiSettingsView>, AppCommandError> {
-    Ok(Json(
-        core::update_wiki_settings_core(&state.db.conn, params.settings)
-            .await
-            .map_err(AppCommandError::from)?,
-    ))
-}
-
-pub async fn wiki_list_jobs(
-    Extension(state): Extension<Arc<AppState>>,
-    Json(params): Json<ListJobsParams>,
-) -> Result<Json<Vec<WikiJobInfo>>, AppCommandError> {
-    Ok(Json(
-        core::wiki_list_jobs_core(&state.db.conn, params.limit, params.offset, params.status)
-            .await
-            .map_err(AppCommandError::from)?,
-    ))
+    let result = async {
+        Ok(Json(
+            core::update_wiki_settings_core(&state.db.conn, params.settings)
+                .await
+                .map_err(AppCommandError::from)?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 pub async fn wiki_get_job(
@@ -94,26 +71,9 @@ pub async fn wiki_get_job(
     Json(params): Json<IdParams>,
 ) -> Result<Json<WikiJobInfo>, AppCommandError> {
     Ok(Json(
-        core::wiki_get_job_core(&state.db.conn, params.id)
+        crate::wiki::read_model::read_job(&state.db.conn, &params.id)
             .await
             .map_err(AppCommandError::from)?,
-    ))
-}
-
-pub async fn wiki_list_sources(
-    Extension(state): Extension<Arc<AppState>>,
-    Json(params): Json<ListSourcesParams>,
-) -> Result<Json<Vec<WikiSourceInfo>>, AppCommandError> {
-    Ok(Json(
-        core::wiki_list_sources_core(
-            &state.db.conn,
-            params.limit,
-            params.offset,
-            params.source_kind,
-            params.project_id,
-        )
-        .await
-        .map_err(AppCommandError::from)?,
     ))
 }
 
@@ -123,31 +83,16 @@ pub struct ListProjectBindingsParams {
     pub vault_id: Option<String>,
 }
 
-pub async fn wiki_list_memory_notes(
-    Extension(state): Extension<Arc<AppState>>,
-) -> Result<Json<Vec<WikiMemoryNote>>, AppCommandError> {
-    Ok(Json(
-        core::wiki_list_memory_notes_core(&state.db.conn).await?,
-    ))
-}
-
 pub async fn wiki_list_project_bindings(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ListProjectBindingsParams>,
 ) -> Result<Json<Vec<WikiProjectBindingInfo>>, AppCommandError> {
     Ok(Json(
-        core::wiki_list_project_bindings_core(&state.db.conn, params.vault_id).await?,
-    ))
-}
-
-pub async fn wiki_get_source(
-    Extension(state): Extension<Arc<AppState>>,
-    Json(params): Json<IdParams>,
-) -> Result<Json<WikiSourceInfo>, AppCommandError> {
-    Ok(Json(
-        core::wiki_get_source_core(&state.db.conn, params.id)
-            .await
-            .map_err(AppCommandError::from)?,
+        crate::db::service::wiki_service::list_project_bindings(
+            &state.db.conn,
+            params.vault_id.as_deref(),
+        )
+        .await?,
     ))
 }
 
@@ -163,9 +108,9 @@ pub async fn wiki_vault_tree(
 pub async fn wiki_vault_read(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<VaultReadParams>,
-) -> Result<Json<core::WikiVaultFile>, AppCommandError> {
+) -> Result<Json<crate::wiki::read_model::WikiVaultFile>, AppCommandError> {
     Ok(Json(
-        core::wiki_vault_read_core(&state.db.conn, params.path).await?,
+        crate::wiki::read_model::read_vault_file(&state.db.conn, params.path).await?,
     ))
 }
 
@@ -173,36 +118,64 @@ pub async fn wiki_import_text(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ImportTextParams>,
 ) -> Result<Json<WikiImportResult>, AppCommandError> {
-    Ok(Json(
-        core::wiki_import_text_core(&state.db.conn, params).await?,
-    ))
+    let result = async {
+        Ok(Json(
+            crate::wiki::import::import_text(&state.db.conn, params).await?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 pub async fn wiki_import_files(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ImportFilesParams>,
-) -> Result<Json<ImportFilesResult>, AppCommandError> {
-    Ok(Json(
-        core::wiki_import_files_core(&state.db.conn, params).await?,
-    ))
+) -> Result<Json<ImportBatchResult>, AppCommandError> {
+    let result = async {
+        Ok(Json(
+            crate::wiki::import::import_files_with_result(&state.db.conn, params).await?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 pub async fn wiki_import_local_sessions(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ImportLocalSessionsParams>,
 ) -> Result<Json<WikiBulkImportResult>, AppCommandError> {
-    Ok(Json(
-        core::wiki_import_local_sessions_core(&state.db.conn, params).await?,
-    ))
+    let result = async {
+        Ok(Json(
+            crate::wiki::session_import::import_local_sessions(&state.db.conn, params).await?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 pub async fn wiki_import_directory(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ImportDirectoryParams>,
 ) -> Result<Json<WikiBulkImportResult>, AppCommandError> {
-    Ok(Json(
-        core::wiki_import_directory_core(&state.db.conn, params).await?,
-    ))
+    let result = async {
+        Ok(Json(
+            crate::wiki::session_import::import_directory(&state.db.conn, params).await?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 #[derive(Deserialize)]
@@ -214,36 +187,64 @@ pub async fn wiki_accept_extraction(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<SourceIdParams>,
 ) -> Result<Json<WikiSourceInfo>, AppCommandError> {
-    Ok(Json(
-        core::wiki_accept_extraction_core(&state.db.conn, params.source_id).await?,
-    ))
+    let result = async {
+        Ok(Json(
+            crate::wiki::import::accept_extraction(&state.db.conn, params.source_id).await?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 pub async fn wiki_update_source_annotations(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<UpdateAnnotationsParams>,
 ) -> Result<Json<WikiSourceInfo>, AppCommandError> {
-    Ok(Json(
-        core::wiki_update_source_annotations_core(&state.db.conn, params).await?,
-    ))
+    let result = async {
+        Ok(Json(
+            crate::wiki::import::update_source_annotations(&state.db.conn, params).await?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 pub async fn wiki_reextract(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<SourceIdParams>,
 ) -> Result<Json<WikiImportResult>, AppCommandError> {
-    Ok(Json(
-        core::wiki_reextract_core(&state.db.conn, params.source_id).await?,
-    ))
+    let result = async {
+        Ok(Json(
+            crate::wiki::import::reextract(&state.db.conn, params.source_id).await?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 pub async fn wiki_link_source_version(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<LinkVersionParams>,
 ) -> Result<Json<WikiSourceInfo>, AppCommandError> {
-    Ok(Json(
-        core::wiki_link_source_version_core(&state.db.conn, params).await?,
-    ))
+    let result = async {
+        Ok(Json(
+            crate::wiki::import::link_source_version(&state.db.conn, params).await?,
+        ))
+    }
+    .await;
+    if result.is_ok() {
+        crate::wiki::events::content_changed(&state.db.conn, &state.emitter).await;
+    }
+    result
 }
 
 #[derive(Deserialize)]

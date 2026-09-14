@@ -1,4 +1,6 @@
-//! compile-now / job retry / cancel. Separate from `commands/wiki.rs`.
+//! 把立即整理、重试和取消操作连接到 Wiki 后台调度器。
+//! 共享 core 用例由桌面与 HTTP 调用，负责请求去重、任务状态变更及唤醒 engine。
+//! 本层不运行模型；返回任务详情时由读模型补充当前产物状态。
 
 use sea_orm::DatabaseConnection;
 
@@ -18,6 +20,7 @@ pub async fn wiki_compile_now_core(
     conn: &DatabaseConnection,
     request_id: String,
 ) -> Result<WikiJobInfo, AppCommandError> {
+    let _transition = crate::wiki::lifecycle::lock().await;
     let request_id = request_id.trim().to_string();
     if request_id.is_empty() {
         return Err(AppCommandError::invalid_input("request_id is required"));
@@ -28,24 +31,15 @@ pub async fn wiki_compile_now_core(
     if !settings.enabled {
         return Err(AppCommandError::configuration_invalid("wiki is disabled"));
     }
-    if !settings.synthesize.enabled {
-        return Err(AppCommandError::configuration_invalid(
-            "synthesize is disabled",
-        ));
-    }
     let vault = resolve_vault_path(settings.vault_path.as_deref());
     vault::initialize_vault(&vault).map_err(|e| AppCommandError::io_error(e.to_string()))?;
-    vault::initialize_state_root(&resolve_state_root(settings.vault_path.as_deref()))
+    vault::initialize_state_root(&resolve_state_root())
         .map_err(|e| AppCommandError::io_error(e.to_string()))?;
     let canonical = vault.to_string_lossy().to_string();
     let vault_row = wiki_service::ensure_active_vault(conn, &canonical)
         .await
         .map_err(AppCommandError::from)?;
-    let cutoff = wiki_service::max_source_seq(conn, &vault_row.id)
-        .await
-        .map_err(AppCommandError::from)?
-        .unwrap_or(0);
-    let manifest = compile::freeze_manifest(conn, &vault_row.id, cutoff, &vault)
+    let manifest = compile::list_pending_inputs(conn, &vault_row.id, &vault)
         .await
         .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
     let json = serde_json::to_string(&manifest)
@@ -55,7 +49,7 @@ pub async fn wiki_compile_now_core(
         .await
         .map_err(AppCommandError::from)?;
     engine::notify_jobs();
-    wiki_service::get_job(conn, &job.id)
+    crate::wiki::read_model::read_job(conn, &job.id)
         .await
         .map_err(AppCommandError::from)
 }
@@ -67,7 +61,7 @@ pub async fn wiki_retry_job_core(
     let job = wiki_service::retry_job(conn, &id).await.map_err(map_db)?;
     engine::clear_cancellation(&job.id);
     engine::notify_jobs();
-    wiki_service::get_job(conn, &job.id)
+    crate::wiki::read_model::read_job(conn, &job.id)
         .await
         .map_err(AppCommandError::from)
 }
@@ -86,7 +80,7 @@ pub async fn wiki_cancel_job_core(
         engine::request_cancel(&job.id);
     }
     engine::notify_jobs();
-    wiki_service::get_job(conn, &job.id)
+    crate::wiki::read_model::read_job(conn, &job.id)
         .await
         .map_err(AppCommandError::from)
 }
@@ -100,7 +94,7 @@ fn map_db(err: DbError) -> AppCommandError {
 }
 
 #[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[cfg_attr(feature = "tauri-runtime", tauri::command(rename_all = "snake_case"))]
 pub async fn wiki_compile_now(
     db: tauri::State<'_, AppDatabase>,
     request_id: String,
@@ -130,17 +124,18 @@ pub async fn wiki_cancel_job(
 mod tests {
     use super::*;
     use crate::db::test_helpers::fresh_in_memory_db;
-    use crate::wiki::settings::WikiSettings;
+    use crate::wiki::settings::{WikiSettings, WikiSynthesizeSettings};
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn compile_now_is_idempotent_on_request_id() {
         let db = fresh_in_memory_db().await;
         let dir = tempdir().unwrap();
-        let mut s = WikiSettings::default();
-        s.enabled = true;
-        s.synthesize.enabled = true;
-        s.vault_path = Some(dir.path().join("vault").to_string_lossy().into_owned());
+        let s = WikiSettings {
+            enabled: true,
+            vault_path: Some(dir.path().join("vault").to_string_lossy().into_owned()),
+            ..WikiSettings::default()
+        };
         settings::save_settings(&db.conn, &s).await.unwrap();
         let a = wiki_compile_now_core(&db.conn, "req-abc".into())
             .await
@@ -157,15 +152,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compile_now_respects_compile_enabled() {
+    async fn compile_now_is_allowed_when_automatic_synthesis_is_disabled() {
         let db = fresh_in_memory_db().await;
-        let mut s = WikiSettings::default();
-        s.enabled = true;
-        s.synthesize.enabled = false;
-        settings::save_settings(&db.conn, &s).await.unwrap();
-        let err = wiki_compile_now_core(&db.conn, "r1".into())
+        let dir = tempdir().unwrap();
+        let settings = WikiSettings {
+            enabled: true,
+            vault_path: Some(dir.path().join("vault").to_string_lossy().into_owned()),
+            synthesize: WikiSynthesizeSettings {
+                enabled: false,
+                ..WikiSynthesizeSettings::default()
+            },
+            ..WikiSettings::default()
+        };
+        settings::save_settings(&db.conn, &settings).await.unwrap();
+        let job = wiki_compile_now_core(&db.conn, "manual-without-schedule".into())
+            .await
+            .unwrap();
+        assert_eq!(job.kind, "wiki_synthesize");
+        assert_eq!(job.status, "queued");
+    }
+
+    #[tokio::test]
+    async fn compile_now_rejects_disabled_wiki() {
+        let db = fresh_in_memory_db().await;
+        let error = wiki_compile_now_core(&db.conn, "disabled-wiki".into())
             .await
             .unwrap_err();
-        assert!(err.message.contains("synthesize is disabled"));
+        assert!(error.message.contains("wiki is disabled"));
     }
 }
