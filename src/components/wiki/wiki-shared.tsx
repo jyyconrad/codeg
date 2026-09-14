@@ -1,32 +1,28 @@
+/**
+ * Wiki 阅读共用的空状态、Markdown 渲染、目录项和内部文件浏览器。
+ * 链接解析使用 wiki-content；目录与原文读取使用共享查询，内部浏览选择不改变主阅读路由。
+ */
 "use client"
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react"
+import { useCallback, useEffect, useState, type ReactNode } from "react"
 import { ChevronRight, FileText, Folder, Loader2 } from "lucide-react"
 import { useTranslations } from "next-intl"
 
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown"
+import remarkGfm from "remark-gfm"
+import { MarkdownLink } from "@/components/ai-elements/markdown-link"
+import {
+  prepareWikiMarkdown,
+  resolveWikiLink,
+  remarkWikiLinks,
+} from "@/lib/wiki-content"
+import { useWikiData, useWikiQuery } from "./wiki-data"
+
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { toErrorMessage } from "@/lib/app-error"
-import { wikiVaultRead, wikiVaultTree } from "@/lib/api"
+import { wikiVaultTree } from "@/lib/wiki-api"
 import { cn } from "@/lib/utils"
-import {
-  filterWikiVaultNoise,
-  normalizeWikiVaultTree,
-  resolveWikiNotePath,
-  splitWikiMarkdown,
-  vaultNodesUnderPrefix,
-  wikiNodeIsDir,
-  wikiNodeName,
-  wikiNodePath,
-  wikiVaultReadContent,
-  type WikiVaultTreeNode,
-} from "@/lib/wiki-types"
+import type { WikiVaultFile, WikiVaultTreeNode } from "@/lib/wiki-types"
 
 export function WikiEmptyState({
   title,
@@ -48,70 +44,82 @@ export function WikiEmptyState({
 
 export function WikiMarkdownPreview({
   content,
+  path = "",
   className,
   onOpenWikilink,
 }: {
   content: string
+  path?: string
   className?: string
-  onOpenWikilink?: (path: string) => void
+  onOpenWikilink?: (path: string, anchor: string) => void
 }) {
-  const parts = splitWikiMarkdown(content)
+  const t = useTranslations("Wiki.v2")
+  const prepared = prepareWikiMarkdown(content)
   return (
-    <pre
+    <div
       className={cn(
-        "whitespace-pre-wrap break-words font-mono text-xs leading-5",
+        "min-w-0 break-words text-base leading-[1.7] [&_h1]:my-5 [&_h1]:text-2xl [&_h2]:mb-3 [&_h2]:mt-7 [&_h2]:text-xl [&_h3]:mb-2 [&_h3]:mt-5 [&_h3]:text-lg [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold [&_p]:my-3 [&_ul]:my-3 [&_ul]:list-disc [&_ul]:ps-6 [&_ol]:my-3 [&_ol]:list-decimal [&_ol]:ps-6 [&_blockquote]:border-s-2 [&_blockquote]:ps-4 [&_blockquote]:text-muted-foreground [&_pre]:my-4 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-muted [&_pre]:p-4 [&_pre]:text-sm [&_code]:font-mono [&_a]:text-primary [&_a]:underline [&_th]:border [&_th]:p-2 [&_td]:border [&_td]:p-2 [&_img]:max-w-full [&_hr]:my-6",
         className
       )}
     >
-      {parts.map((part, index) => {
-        if (part.kind === "text") {
-          return <span key={index}>{part.text}</span>
+      {prepared.warning && (
+        <p role="status" className="text-sm text-amber-700 dark:text-amber-400">
+          {t("formatWarning")}
+        </p>
+      )}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkWikiLinks]}
+        skipHtml
+        urlTransform={(url) =>
+          url.startsWith("wiki:") ? url : defaultUrlTransform(url)
         }
-        const notePath =
-          part.target && onOpenWikilink
-            ? resolveWikiNotePath(part.target)
-            : null
-        if (!notePath || !onOpenWikilink) {
-          return <span key={index}>{part.raw}</span>
-        }
-        return (
-          <button
-            key={index}
-            type="button"
-            className="inline rounded-sm px-0.5 text-primary underline decoration-primary/60 hover:bg-muted"
-            onClick={() => onOpenWikilink(notePath)}
-          >
-            {part.label}
-          </button>
-        )
-      })}
-    </pre>
+        components={{
+          table: ({ children }) => (
+            <div className="my-4 max-w-full overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                {children}
+              </table>
+            </div>
+          ),
+          a: ({ href, children }) => {
+            if (href && /^(https?:|mailto:|tel:)/i.test(href))
+              return <MarkdownLink href={href}>{children}</MarkdownLink>
+            const target = href ? resolveWikiLink(href, path) : null
+            return (
+              <a
+                href={
+                  target
+                    ? `?wikiPath=${encodeURIComponent(target.path)}${target.anchor ? `#${encodeURIComponent(target.anchor)}` : ""}`
+                    : undefined
+                }
+                aria-disabled={!target}
+                onClick={(event) => {
+                  event.preventDefault()
+                  if (!target) return
+                  if (
+                    target.path === path &&
+                    target.anchor &&
+                    !/^l\d+(?:-l?\d+)?$/i.test(target.anchor)
+                  )
+                    document
+                      .getElementById(target.anchor)
+                      ?.scrollIntoView({ block: "start" })
+                  else onOpenWikilink?.(target.path, target.anchor)
+                }}
+              >
+                {children}
+              </a>
+            )
+          },
+        }}
+      >
+        {prepared.body}
+      </ReactMarkdown>
+    </div>
   )
 }
 
-function readWikiPathParam(): string | null {
-  if (typeof window === "undefined") return null
-  return new URLSearchParams(window.location.search).get("wikiPath")
-}
-
-function writeWikiPathParam(path: string | null) {
-  if (typeof window === "undefined") return
-  const url = new URL(window.location.href)
-  if (path) url.searchParams.set("wikiPath", path)
-  else url.searchParams.delete("wikiPath")
-  window.history.replaceState(
-    null,
-    "",
-    `${url.pathname}${url.search}${url.hash}`
-  )
-}
-
-function pathMatchesPrefix(path: string, prefix: string): boolean {
-  if (!prefix) return true
-  return path === prefix || path.startsWith(`${prefix}/`)
-}
-
-function VaultTreeItem({
+export function VaultTreeItem({
   node,
   selected,
   onSelect,
@@ -125,19 +133,46 @@ function VaultTreeItem({
   loadChildren: (path: string) => Promise<WikiVaultTreeNode[]>
 }) {
   const t = useTranslations("Wiki")
-  const isDir = wikiNodeIsDir(node)
-  const path = wikiNodePath(node)
+  const { revision } = useWikiData()
+  const isDir = node.is_dir
+  const path = node.path
   const providedChildren = node.children
-  const [open, setOpen] = useState(
-    () => depth < 1 && providedChildren !== undefined
-  )
-  const [fetchedChildren, setFetchedChildren] = useState<
-    WikiVaultTreeNode[] | null
-  >(null)
-  const [kidsLoading, setKidsLoading] = useState(false)
+  const [expansion, setExpansion] = useState<{
+    selected: string | null
+    open: boolean
+  } | null>(null)
+  const open =
+    expansion?.selected === selected
+      ? expansion.open
+      : !!selected && selected.startsWith(`${path}/`)
+  const [fetched, setFetched] = useState<{
+    revision: number
+    children: WikiVaultTreeNode[]
+  } | null>(null)
 
-  const children = providedChildren ?? fetchedChildren ?? []
-  const loaded = providedChildren !== undefined || fetchedChildren !== null
+  const children = providedChildren ?? fetched?.children ?? []
+  const loaded = providedChildren !== undefined || fetched !== null
+  const kidsLoading =
+    isDir &&
+    open &&
+    providedChildren === undefined &&
+    fetched?.revision !== revision
+
+  // 深层目录可能超出后端递归上限。自动展开和刷新都要补读，不能只在点击时加载。
+  useEffect(() => {
+    if (!isDir || !open || providedChildren !== undefined) return
+    let stale = false
+    loadChildren(path)
+      .then((kids) => {
+        if (!stale) setFetched({ revision, children: kids })
+      })
+      .catch(() => {
+        if (!stale) setFetched({ revision, children: [] })
+      })
+    return () => {
+      stale = true
+    }
+  }, [isDir, open, providedChildren, path, loadChildren, revision])
 
   const handleClick = () => {
     if (!isDir) {
@@ -145,14 +180,7 @@ function VaultTreeItem({
       return
     }
     const next = !open
-    setOpen(next)
-    if (next && !loaded && !kidsLoading) {
-      setKidsLoading(true)
-      loadChildren(path)
-        .then((kids) => setFetchedChildren(kids))
-        .catch(() => setFetchedChildren([]))
-        .finally(() => setKidsLoading(false))
-    }
+    setExpansion({ selected, open: next })
   }
 
   return (
@@ -165,6 +193,9 @@ function VaultTreeItem({
         )}
         style={{ paddingInlineStart: 8 + depth * 12 }}
         onClick={handleClick}
+        aria-expanded={isDir ? open : undefined}
+        aria-current={!isDir && selected === path ? "page" : undefined}
+        title={path}
       >
         {isDir ? (
           <ChevronRight
@@ -179,7 +210,7 @@ function VaultTreeItem({
         {isDir ? (
           <Folder className="size-3.5 shrink-0 text-muted-foreground" />
         ) : null}
-        <span className="truncate">{wikiNodeName(node)}</span>
+        <span className="truncate">{node.title || node.name}</span>
       </button>
       {isDir && open ? (
         kidsLoading && !loaded ? (
@@ -194,7 +225,7 @@ function VaultTreeItem({
           <ul>
             {children.map((child) => (
               <VaultTreeItem
-                key={wikiNodePath(child)}
+                key={child.path}
                 node={child}
                 selected={selected}
                 onSelect={onSelect}
@@ -210,146 +241,70 @@ function VaultTreeItem({
 }
 
 export function WikiNoteBrowser({
-  prefix,
   emptyTitle,
   emptyDescription,
-  extras,
   includeRaw = false,
 }: {
-  prefix: string
   emptyTitle: string
   emptyDescription: string
-  extras?: ReactNode
   includeRaw?: boolean
 }) {
   const t = useTranslations("Wiki")
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [nodes, setNodes] = useState<WikiVaultTreeNode[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
-  const [preview, setPreview] = useState<string>("")
-  const [previewError, setPreviewError] = useState<string | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-
-  const loadTree = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const payload = await wikiVaultTree({
-        recursive: true,
-        includeRaw,
-      })
-      const tree = filterWikiVaultNoise(normalizeWikiVaultTree(payload), {
-        includeRaw,
-      })
-      setNodes(vaultNodesUnderPrefix(tree, prefix))
-    } catch (err) {
-      setNodes([])
-      setError(t("loadFailed", { message: toErrorMessage(err) }))
-    } finally {
-      setLoading(false)
-    }
-  }, [includeRaw, prefix, t])
-
+  const { route } = useWikiData()
+  // 文件弹窗保留自己的选择，关闭后不改变主 Wiki 页的阅读位置。
+  const [selected, setSelected] = useState<string | null>(() => route.path)
+  const tree = useWikiQuery<WikiVaultTreeNode[]>("wiki_vault_tree", {
+    recursive: true,
+    include_raw: includeRaw,
+  })
+  const preview = useWikiQuery<WikiVaultFile>(
+    "wiki_vault_read",
+    { path: selected },
+    !!selected
+  )
+  const nodes = tree.data ?? []
   const loadChildren = useCallback(
-    async (dirPath: string) => {
-      const payload = await wikiVaultTree({
-        path: dirPath,
-        recursive: true,
-        includeRaw,
-      })
-      return filterWikiVaultNoise(normalizeWikiVaultTree(payload), {
-        includeRaw,
-      })
-    },
+    (path: string) => wikiVaultTree({ path, recursive: true, includeRaw }),
     [includeRaw]
   )
 
-  useEffect(() => {
-    loadTree().catch(console.error)
-  }, [loadTree])
-
-  useEffect(() => {
-    const initial = readWikiPathParam()
-    if (initial && pathMatchesPrefix(initial, prefix)) {
-      setSelected(initial)
-    }
-  }, [prefix])
-
-  const selectPath = useCallback((path: string) => {
-    setSelected(path)
-    writeWikiPathParam(path)
-  }, [])
-
-  useEffect(() => {
-    if (!selected) {
-      setPreview("")
-      setPreviewError(null)
-      return
-    }
-    let cancelled = false
-    setPreviewLoading(true)
-    setPreviewError(null)
-    wikiVaultRead(selected)
-      .then((payload) => {
-        if (cancelled) return
-        setPreview(wikiVaultReadContent(payload))
-      })
-      .catch((err) => {
-        if (cancelled) return
-        setPreview("")
-        setPreviewError(t("loadFailed", { message: toErrorMessage(err) }))
-      })
-      .finally(() => {
-        if (!cancelled) setPreviewLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [selected, t])
-
-  const hasNotes = nodes.length > 0
-  const treeTitle = useMemo(() => (prefix ? `${prefix}/` : "/"), [prefix])
-
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <WikiEmptyState title={emptyTitle} description={emptyDescription}>
-        {extras}
-      </WikiEmptyState>
+      <WikiEmptyState title={emptyTitle} description={emptyDescription} />
       <div className="flex min-h-0 flex-1 flex-col border-t md:flex-row">
         <div className="flex min-h-0 w-full flex-col border-b md:w-72 md:border-b-0 md:border-r">
           <div className="flex items-center justify-between gap-2 px-3 py-2">
             <p className="truncate text-xs font-medium text-muted-foreground">
-              {t("treeTitle", { path: treeTitle })}
+              {t("treeTitle", { path: "/" })}
             </p>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => loadTree().catch(console.error)}
+              onClick={tree.refresh}
             >
               {t("refresh")}
             </Button>
           </div>
           <ScrollArea className="min-h-0 flex-1">
-            {loading ? (
+            {tree.loading && !tree.data ? (
               <div className="flex items-center gap-2 px-3 py-4 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" />
                 {t("loading")}
               </div>
-            ) : error ? (
+            ) : tree.error ? (
               <div className="space-y-2 px-3 py-4 text-sm text-destructive">
-                <p>{error}</p>
+                <p>{t("loadFailed", { message: tree.error })}</p>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={() => loadTree().catch(console.error)}
+                  onClick={tree.refresh}
                 >
                   {t("retry")}
                 </Button>
               </div>
-            ) : !hasNotes ? (
+            ) : !nodes.length ? (
               <p className="px-3 py-4 text-sm text-muted-foreground">
                 {t("empty")}
               </p>
@@ -357,10 +312,10 @@ export function WikiNoteBrowser({
               <ul className="px-1 pb-3">
                 {nodes.map((node) => (
                   <VaultTreeItem
-                    key={wikiNodePath(node)}
+                    key={node.path}
                     node={node}
                     selected={selected}
-                    onSelect={selectPath}
+                    onSelect={setSelected}
                     depth={0}
                     loadChildren={loadChildren}
                   />
@@ -380,21 +335,22 @@ export function WikiNoteBrowser({
                 {t("note.preview")}
               </p>
             )}
-            {previewLoading ? (
+            {preview.loading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" />
                 {t("loading")}
               </div>
-            ) : previewError ? (
-              <p className="text-sm text-destructive">{previewError}</p>
-            ) : selected ? (
+            ) : preview.error ? (
+              <p className="text-sm text-destructive">
+                {t("loadFailed", { message: preview.error })}
+              </p>
+            ) : selected && preview.data ? (
               <WikiMarkdownPreview
-                content={preview}
-                onOpenWikilink={selectPath}
+                content={preview.data.content}
+                path={selected}
+                onOpenWikilink={setSelected}
               />
-            ) : (
-              <WikiMarkdownPreview content={preview} />
-            )}
+            ) : null}
           </div>
         </ScrollArea>
       </div>

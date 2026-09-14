@@ -1253,7 +1253,15 @@ function WorkbenchRouteConversationSync() {
   const prevRef = useRef(activeTabId)
   useEffect(() => {
     if (prevRef.current === activeTabId) return
+    const previousTabId = prevRef.current
     prevRef.current = activeTabId
+    // Initial tab hydration is not a user navigation. Preserve the incoming
+    // Wiki reading link while the conversation tabs restore in the background.
+    if (
+      previousTabId == null &&
+      new URLSearchParams(window.location.search).has("wikiView")
+    )
+      return
     // A remote tab snapshot that mirrors another client's focus also changes
     // activeTabId. That's not a local conversation activation, so don't hijack
     // this window into the conversations route — doing so would unmount whatever

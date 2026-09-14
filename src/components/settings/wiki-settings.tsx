@@ -1,603 +1,271 @@
+/**
+ * 个人 Wiki 设置页，编辑捕获范围、存储目录、模型绑定、提示词和整理日程。
+ * Wiki 专用 API 读写配置；模型和文件夹选项来自通用接口，表单转换只提交可持久化字段。
+ */
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import {
-  BookMarked,
-  Clock,
-  Folder,
-  Loader2,
-  Save,
-  Sparkles,
-  WandSparkles,
-} from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import Link from "next/link"
 import { useTranslations } from "next-intl"
-import { toast } from "sonner"
-
-import {
-  SettingCard,
-  SettingNote,
-  SettingRow,
-} from "@/components/shared/setting-card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
+import { Textarea } from "@/components/ui/textarea"
+import { SettingCard, SettingRow } from "@/components/shared/setting-card"
 import {
   SettingsError,
   SettingsSaveBar,
-  SettingsSection,
 } from "@/components/shared/settings-section"
-import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Switch } from "@/components/ui/switch"
-import { Textarea } from "@/components/ui/textarea"
-import { toErrorMessage } from "@/lib/app-error"
+import { listModelProviders, listAllFolderDetails } from "@/lib/api"
+import { getWikiSettings, updateWikiSettings } from "@/lib/wiki-api"
+import { catalogFromProviderModel } from "@/lib/codeg-agent-catalog"
+import { modelProvidersForAgent } from "@/lib/codeg-agent-providers"
 import {
-  getWikiSettings,
-  listAllFolderDetails,
-  updateWikiSettings,
-} from "@/lib/api"
-import { getAgentLabel } from "@/lib/custom-agents"
-import {
+  completionsModelIdFromProvider,
   AGENT_LABELS,
-  type BuiltinAgentType,
+  type ModelProviderInfo,
   type FolderDetail,
 } from "@/lib/types"
 import {
-  effectiveWikiPrompt,
+  dailyCronTime,
+  cronForDailyTime,
   normalizeWikiSettings,
   wikiSettingsPayload,
+  effectiveWikiPrompt,
   type WikiSettingsView,
+  type WikiModelPromptSettings,
 } from "@/lib/wiki-types"
+import { toErrorMessage } from "@/lib/app-error"
 
-const BUILTIN_AGENT_TYPES = Object.keys(AGENT_LABELS) as BuiltinAgentType[]
+function providerModels(
+  provider: ModelProviderInfo | null
+): { id: string; name: string }[] {
+  if (!provider) return []
+  const catalog = catalogFromProviderModel(provider.model)
+  if (catalog)
+    return catalog.models.map((model) => ({
+      id: model.id,
+      name: model.name || model.id,
+    }))
+  const model = completionsModelIdFromProvider(provider)
+  return model ? [{ id: model, name: model }] : []
+}
+const slots = ["turn_summary", "session_rollup", "synthesize"] as const
+const sectionKey = {
+  turn_summary: "turnSummary",
+  session_rollup: "sessionRollup",
+  synthesize: "synthesize",
+} as const
 
-function PromptSlotCard({
-  modelId,
-  promptId,
-  modelTitle,
-  modelHint,
-  modelPlaceholder,
-  promptTitle,
-  promptHint,
-  promptPlaceholder,
-  restoreLabel,
-  modelValue,
-  promptValue,
-  onModelChange,
-  onPromptChange,
-  onRestore,
+function ModelChoice({
+  id,
+  slot,
+  providers,
+  onChange,
 }: {
-  modelId: string
-  promptId: string
-  modelTitle: string
-  modelHint: string
-  modelPlaceholder: string
-  promptTitle: string
-  promptHint: string
-  promptPlaceholder: string
-  restoreLabel: string
-  modelValue: string | null
-  promptValue: string
-  onModelChange: (value: string) => void
-  onPromptChange: (value: string) => void
-  onRestore: () => void
+  id: string
+  slot: WikiModelPromptSettings
+  providers: ModelProviderInfo[]
+  onChange: (patch: Partial<WikiModelPromptSettings>) => void
 }) {
+  const t = useTranslations("Wiki.v2")
+  const provider =
+    providers.find((item) => item.id === slot.provider_id) ?? null
+  const choices = providerModels(provider)
   return (
-    <SettingCard>
-      <SettingRow title={modelTitle} description={modelHint} htmlFor={modelId}>
-        <Input
-          id={modelId}
-          value={modelValue ?? ""}
-          placeholder={modelPlaceholder}
-          onChange={(event) => onModelChange(event.target.value)}
-        />
-      </SettingRow>
-      <SettingRow title={promptTitle} htmlFor={promptId}>
-        <p className="mb-2 text-xs text-muted-foreground">{promptHint}</p>
-        <Textarea
-          id={promptId}
-          value={promptValue}
-          placeholder={promptPlaceholder}
-          className="min-h-64 font-mono text-xs"
-          onChange={(event) => onPromptChange(event.target.value)}
-        />
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="mt-2"
-          onClick={onRestore}
+    <div className="grid gap-3 sm:grid-cols-2">
+      <label className="space-y-1 text-sm">
+        <span className="text-muted-foreground">{t("provider")}</span>
+        <select
+          id={`${id}-provider`}
+          className="h-9 w-full rounded-md border bg-background px-2"
+          value={slot.provider_id ?? ""}
+          onChange={(event) => {
+            const next = providers.find(
+              (item) => item.id === Number(event.target.value)
+            )
+            onChange({
+              provider_id: next?.id ?? null,
+              model_id: providerModels(next ?? null)[0]?.id ?? null,
+            })
+          }}
         >
-          {restoreLabel}
-        </Button>
-      </SettingRow>
-    </SettingCard>
+          <option value="">{t("chooseProvider")}</option>
+          {slot.provider_id != null && !provider && (
+            <option value={slot.provider_id}>
+              {t("savedProviderUnavailable")}
+            </option>
+          )}
+          {providers.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="space-y-1 text-sm">
+        <span className="text-muted-foreground">{t("model")}</span>
+        <select
+          id={id}
+          className="h-9 w-full rounded-md border bg-background px-2"
+          disabled={!provider}
+          value={slot.model_id ?? ""}
+          onChange={(event) =>
+            onChange({ model_id: event.target.value || null })
+          }
+        >
+          <option value="">{t("chooseModel")}</option>
+          {slot.model_id &&
+            !choices.some((item) => item.id === slot.model_id) && (
+              <option value={slot.model_id}>
+                {slot.model_id} · {t("unavailable")}
+              </option>
+            )}
+          {choices.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
   )
-}
-
-function parseFolderIds(value: string): number[] {
-  const ids: number[] = []
-  const seen = new Set<number>()
-  for (const part of value.split(/[, \s]+/)) {
-    if (!part) continue
-    const n = Number(part)
-    if (!Number.isInteger(n) || seen.has(n)) continue
-    seen.add(n)
-    ids.push(n)
-  }
-  return ids
-}
-
-function formatTimestamp(value: string | null | undefined, tz: string): string {
-  if (!value) return ""
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: tz || undefined,
-    }).format(date)
-  } catch {
-    return date.toLocaleString()
-  }
 }
 
 export function WikiSettings() {
-  const t = useTranslations("WikiSettings")
-
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [folders, setFolders] = useState<FolderDetail[]>([])
+  const t = useTranslations("Wiki.v2")
+  const old = useTranslations("WikiSettings")
   const [draft, setDraft] = useState<WikiSettingsView>(() =>
     normalizeWikiSettings(null)
   )
-  const [folderIdsText, setFolderIdsText] = useState("")
-
-  const apply = useCallback((next: WikiSettingsView) => {
-    setDraft(next)
-    setFolderIdsText(next.capture.exclude_folder_ids.join(", "))
-  }, [])
-
+  const [saved, setSaved] = useState<WikiSettingsView>(() =>
+    normalizeWikiSettings(null)
+  )
+  const [providers, setProviders] = useState<ModelProviderInfo[]>([])
+  const [folders, setFolders] = useState<FolderDetail[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loaded, setLoaded] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const load = useCallback(async () => {
     setLoading(true)
-    setLoadError(null)
+    setError(null)
     try {
-      const [settings, folderRows] = await Promise.all([
+      const [settings, providerRows, folderRows] = await Promise.all([
         getWikiSettings(),
-        listAllFolderDetails().catch(() => [] as FolderDetail[]),
+        listModelProviders(),
+        listAllFolderDetails(),
       ])
-      apply(normalizeWikiSettings(settings))
+      // Suggestions come only from the first-use server response. A saved binding is never silently repaired.
+      const normalized = normalizeWikiSettings(settings)
+      setLoaded(true)
+      setDraft(normalized)
+      setSaved(normalized)
+      setProviders(modelProvidersForAgent("codeg_agent", providerRows))
       setFolders(folderRows.filter((folder) => folder.kind === "regular"))
     } catch (err) {
-      apply(normalizeWikiSettings(null))
-      setLoadError(t("loadFailed", { message: toErrorMessage(err) }))
+      setError(toErrorMessage(err))
     } finally {
       setLoading(false)
     }
-  }, [apply, t])
-
+  }, [])
   useEffect(() => {
-    load().catch(console.error)
+    void load()
   }, [load])
-
-  const excludeAgents = draft.capture.exclude_agent_types
-  const extraAgents = useMemo(
-    () =>
-      excludeAgents.filter(
-        (type) => !(BUILTIN_AGENT_TYPES as string[]).includes(type)
-      ),
-    [excludeAgents]
-  )
-  const agentTypes = useMemo(
-    () => [...BUILTIN_AGENT_TYPES, ...extraAgents],
-    [extraAgents]
-  )
-
-  const excludeFolderIds = draft.capture.exclude_folder_ids
-  const extraFolderIds = useMemo(() => {
-    const known = new Set(folders.map((folder) => folder.id))
-    return excludeFolderIds.filter((id) => !known.has(id))
-  }, [excludeFolderIds, folders])
-
-  const setCapture = useCallback(
-    (patch: Partial<WikiSettingsView["capture"]>) => {
-      setDraft((current) => ({
-        ...current,
-        capture: { ...current.capture, ...patch },
-      }))
-    },
-    []
-  )
-
-  const toggleAgent = useCallback(
-    (type: string, checked: boolean) => {
-      setCapture({
-        exclude_agent_types: checked
-          ? excludeAgents.includes(type)
-            ? excludeAgents
-            : [...excludeAgents, type]
-          : excludeAgents.filter((item) => item !== type),
-      })
-    },
-    [excludeAgents, setCapture]
-  )
-
-  const toggleFolder = useCallback(
-    (id: number, checked: boolean) => {
-      const next = checked
-        ? excludeFolderIds.includes(id)
-          ? excludeFolderIds
-          : [...excludeFolderIds, id]
-        : excludeFolderIds.filter((item) => item !== id)
-      setCapture({ exclude_folder_ids: next })
-      setFolderIdsText(next.join(", "))
-    },
-    [excludeFolderIds, setCapture]
-  )
-
-  const handleFolderIdsText = useCallback(
-    (value: string) => {
-      setFolderIdsText(value)
-      setCapture({ exclude_folder_ids: parseFolderIds(value) })
-    },
-    [setCapture]
-  )
-
-  const handleSave = useCallback(() => {
+  const dirty =
+    JSON.stringify(wikiSettingsPayload(draft)) !==
+    JSON.stringify(wikiSettingsPayload(saved))
+  const invalidModels = slots.some((slot) => {
+    if (slot === "synthesize" && !draft.synthesize.enabled) return false
+    const value = draft[slot]
+    return !providerModels(
+      providers.find((item) => item.id === value.provider_id) ?? null
+    ).some((model) => model.id === value.model_id)
+  })
+  const handleSave = async () => {
     setSaving(true)
-    const payload = wikiSettingsPayload({
-      ...draft,
-      capture: {
-        ...draft.capture,
-        exclude_folder_ids: parseFolderIds(folderIdsText),
-      },
-    })
-    updateWikiSettings(payload)
-      .then((saved) => {
-        apply(normalizeWikiSettings(saved))
-        toast.success(t("saved"))
-      })
-      .catch((err) => {
-        toast.error(t("saveFailed", { message: toErrorMessage(err) }))
-      })
-      .finally(() => setSaving(false))
-  }, [apply, draft, folderIdsText, t])
-
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-        {t("loading")}
-      </div>
-    )
+    setError(null)
+    setNotice(null)
+    try {
+      const next = normalizeWikiSettings(
+        await updateWikiSettings(wikiSettingsPayload(draft))
+      )
+      setDraft(next)
+      setSaved(next)
+      setNotice(old("saved"))
+    } catch (err) {
+      setError(toErrorMessage(err))
+    } finally {
+      setSaving(false)
+    }
   }
-
-  const nextCompile = formatTimestamp(draft.next_compile_at, draft.timezone)
-
+  const changeAllModels = (patch: Partial<WikiModelPromptSettings>) =>
+    setDraft((current) => ({
+      ...current,
+      turn_summary: { ...current.turn_summary, ...patch },
+      session_rollup: { ...current.session_rollup, ...patch },
+      synthesize: { ...current.synthesize, ...patch },
+    }))
+  const dailyTime = dailyCronTime(draft.compile_cron)
+  if (loading)
+    return (
+      <p role="status" className="p-6 text-sm">
+        {t("loading")}
+      </p>
+    )
   return (
-    <ScrollArea className="h-full">
-      <div className="space-y-6 px-3 py-3 md:px-4 md:py-4">
-        <header className="space-y-1">
-          <h1 className="text-sm font-semibold">{t("sectionTitle")}</h1>
-          <p className="line-clamp-3 max-w-3xl text-sm leading-5 text-muted-foreground">
-            {t("sectionDescription")}
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-6">
+        <header className="space-y-2">
+          <Link
+            href="/?wikiView=library"
+            className="text-sm text-primary underline"
+          >
+            {t("backToWiki")}
+          </Link>
+          <h1 className="text-xl font-semibold">{t("settingsTitle")}</h1>
+          <p className="text-sm leading-6 text-muted-foreground">
+            {t("settingsHint")}
           </p>
         </header>
-
-        {loadError ? (
+        {error && (
           <SettingsError>
-            {loadError}{" "}
-            <button
-              type="button"
-              className="underline"
-              onClick={() => load().catch(console.error)}
-            >
-              {t("retry")}
-            </button>
+            {error}{" "}
+            {!loaded && (
+              <button
+                type="button"
+                className="underline"
+                onClick={() => void load()}
+              >
+                {t("retry")}
+              </button>
+            )}
           </SettingsError>
-        ) : null}
-
-        <SettingsSection
-          icon={BookMarked}
-          title={t("enabled")}
-          description={t("enabledHint")}
-          htmlFor="wiki-enabled"
-          control={
-            <Switch
-              id="wiki-enabled"
-              checked={draft.enabled}
-              onCheckedChange={(enabled) =>
-                setDraft((current) => ({ ...current, enabled }))
-              }
-            />
-          }
-        >
-          <SettingNote>{t("enabledOffHint")}</SettingNote>
-        </SettingsSection>
-
-        {(draft.next_compile_at != null ||
-          draft.pending_source_count != null) && (
-          <SettingsSection
-            icon={Clock}
-            title={t("statusTitle")}
-            description={t("statusDescription")}
-          >
-            <SettingCard>
-              <SettingRow title={t("nextCompileAt")}>
-                <p className="text-sm">{nextCompile || t("notScheduled")}</p>
-              </SettingRow>
-              {draft.pending_source_count != null ? (
-                <SettingRow title={t("pendingSources")}>
-                  <p className="text-sm">{draft.pending_source_count}</p>
-                </SettingRow>
-              ) : null}
-            </SettingCard>
-          </SettingsSection>
         )}
-
-        <SettingsSection
-          icon={Folder}
-          title={t("vaultTitle")}
-          description={t("vaultDescription")}
-        >
+        <fieldset disabled={saving} className="space-y-6">
           <SettingCard>
             <SettingRow
-              title={t("vaultPath")}
-              description={t("vaultPathHint")}
-              htmlFor="wiki-vault-path"
-            >
-              <Input
-                id="wiki-vault-path"
-                value={draft.vault_path ?? ""}
-                placeholder={t("vaultPathPlaceholder")}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    vault_path: event.target.value,
-                  }))
-                }
-              />
-            </SettingRow>
-            <SettingRow
-              title={t("timezone")}
-              description={t("timezoneHint")}
-              htmlFor="wiki-timezone"
-            >
-              <Input
-                id="wiki-timezone"
-                value={draft.timezone}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    timezone: event.target.value,
-                  }))
-                }
-              />
-            </SettingRow>
-            <SettingRow
-              title={t("compileCron")}
-              description={t("compileCronHint")}
-              htmlFor="wiki-compile-cron"
-            >
-              <Input
-                id="wiki-compile-cron"
-                value={draft.compile_cron}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    compile_cron: event.target.value,
-                  }))
-                }
-              />
-            </SettingRow>
-          </SettingCard>
-        </SettingsSection>
-
-        <SettingsSection
-          icon={Sparkles}
-          title={t("captureTitle")}
-          description={t("captureDescription")}
-        >
-          <SettingCard>
-            <SettingRow
-              title={t("acpEnabled")}
-              description={t("acpEnabledHint")}
-              htmlFor="wiki-acp-enabled"
+              title={t("enable")}
+              description={t("enableHint")}
+              htmlFor="wiki-enabled"
               control={
                 <Switch
-                  id="wiki-acp-enabled"
-                  checked={draft.capture.acp_enabled}
-                  onCheckedChange={(acp_enabled) => setCapture({ acp_enabled })}
+                  id="wiki-enabled"
+                  checked={draft.enabled}
+                  onCheckedChange={(enabled) =>
+                    setDraft((current) => ({ ...current, enabled }))
+                  }
                 />
               }
             />
             <SettingRow
-              title={t("excludeAgentTypes")}
-              description={t("excludeAgentTypesHint")}
-            >
-              <div className="grid gap-2 sm:grid-cols-2">
-                {agentTypes.map((type) => {
-                  const id = `wiki-exclude-agent-${type}`
-                  return (
-                    <label
-                      key={type}
-                      htmlFor={id}
-                      className="flex items-center gap-2 text-sm"
-                    >
-                      <Checkbox
-                        id={id}
-                        checked={excludeAgents.includes(type)}
-                        onCheckedChange={(value) =>
-                          toggleAgent(type, value === true)
-                        }
-                      />
-                      <span className="truncate">{getAgentLabel(type)}</span>
-                    </label>
-                  )
-                })}
-              </div>
-            </SettingRow>
-            <SettingRow
-              title={t("excludeFolders")}
-              description={t("excludeFoldersHint")}
-              htmlFor="wiki-exclude-folders"
-            >
-              {folders.length > 0 || extraFolderIds.length > 0 ? (
-                <div className="mb-2 grid gap-2 sm:grid-cols-2">
-                  {folders.map((folder) => {
-                    const id = `wiki-exclude-folder-${folder.id}`
-                    return (
-                      <label
-                        key={folder.id}
-                        htmlFor={id}
-                        className="flex items-center gap-2 text-sm"
-                      >
-                        <Checkbox
-                          id={id}
-                          checked={excludeFolderIds.includes(folder.id)}
-                          onCheckedChange={(value) =>
-                            toggleFolder(folder.id, value === true)
-                          }
-                        />
-                        <span className="truncate">
-                          {folder.alias ?? folder.name}
-                          <span className="text-muted-foreground">
-                            {" "}
-                            ({folder.id})
-                          </span>
-                        </span>
-                      </label>
-                    )
-                  })}
-                  {extraFolderIds.map((folderId) => {
-                    const id = `wiki-exclude-folder-${folderId}`
-                    return (
-                      <label
-                        key={folderId}
-                        htmlFor={id}
-                        className="flex items-center gap-2 text-sm"
-                      >
-                        <Checkbox
-                          id={id}
-                          checked={excludeFolderIds.includes(folderId)}
-                          onCheckedChange={(value) =>
-                            toggleFolder(folderId, value === true)
-                          }
-                        />
-                        <span className="truncate">
-                          {t("unknownFolder", { id: folderId })}
-                        </span>
-                      </label>
-                    )
-                  })}
-                </div>
-              ) : null}
-              <Input
-                id="wiki-exclude-folders"
-                value={folderIdsText}
-                placeholder={t("excludeFoldersPlaceholder")}
-                onChange={(event) => handleFolderIdsText(event.target.value)}
-              />
-            </SettingRow>
-          </SettingCard>
-        </SettingsSection>
-
-        <SettingsSection
-          icon={Sparkles}
-          title={t("turnSummaryTitle")}
-          description={t("turnSummaryDescription")}
-        >
-          <PromptSlotCard
-            modelId="wiki-turn-summary-model"
-            promptId="wiki-turn-summary-prompt"
-            modelTitle={t("turnSummaryModel")}
-            modelHint={t("turnSummaryModelHint")}
-            modelPlaceholder={t("turnSummaryModelPlaceholder")}
-            promptTitle={t("turnSummaryPrompt")}
-            promptHint={t("turnSummaryPromptBuiltinHint")}
-            promptPlaceholder={t("turnSummaryPromptPlaceholder")}
-            restoreLabel={t("restoreBuiltinPrompt")}
-            modelValue={draft.turn_summary.model_id}
-            promptValue={effectiveWikiPrompt(
-              draft.turn_summary.prompt,
-              draft.turn_summary_builtin_prompt
-            )}
-            onModelChange={(model_id) =>
-              setDraft((current) => ({
-                ...current,
-                turn_summary: { ...current.turn_summary, model_id },
-              }))
-            }
-            onPromptChange={(prompt) =>
-              setDraft((current) => ({
-                ...current,
-                turn_summary: { ...current.turn_summary, prompt },
-              }))
-            }
-            onRestore={() =>
-              setDraft((current) => ({
-                ...current,
-                turn_summary: { ...current.turn_summary, prompt: null },
-              }))
-            }
-          />
-        </SettingsSection>
-
-        <SettingsSection
-          icon={Save}
-          title={t("sessionRollupTitle")}
-          description={t("sessionRollupDescription")}
-        >
-          <PromptSlotCard
-            modelId="wiki-session-rollup-model"
-            promptId="wiki-session-rollup-prompt"
-            modelTitle={t("sessionRollupModel")}
-            modelHint={t("sessionRollupModelHint")}
-            modelPlaceholder={t("sessionRollupModelPlaceholder")}
-            promptTitle={t("sessionRollupPrompt")}
-            promptHint={t("sessionRollupPromptBuiltinHint")}
-            promptPlaceholder={t("sessionRollupPromptPlaceholder")}
-            restoreLabel={t("restoreBuiltinPrompt")}
-            modelValue={draft.session_rollup.model_id}
-            promptValue={effectiveWikiPrompt(
-              draft.session_rollup.prompt,
-              draft.session_rollup_builtin_prompt
-            )}
-            onModelChange={(model_id) =>
-              setDraft((current) => ({
-                ...current,
-                session_rollup: { ...current.session_rollup, model_id },
-              }))
-            }
-            onPromptChange={(prompt) =>
-              setDraft((current) => ({
-                ...current,
-                session_rollup: { ...current.session_rollup, prompt },
-              }))
-            }
-            onRestore={() =>
-              setDraft((current) => ({
-                ...current,
-                session_rollup: { ...current.session_rollup, prompt: null },
-              }))
-            }
-          />
-        </SettingsSection>
-
-        <SettingsSection
-          icon={WandSparkles}
-          title={t("synthesizeTitle")}
-          description={t("synthesizeDescription")}
-        >
-          <SettingCard>
-            <SettingRow
-              title={t("synthesizeEnabled")}
-              description={t("synthesizeEnabledHint")}
-              htmlFor="wiki-synthesize-enabled"
+              title={t("autoOrganize")}
+              description={t("autoOrganizeHint")}
+              htmlFor="wiki-auto"
               control={
                 <Switch
-                  id="wiki-synthesize-enabled"
+                  id="wiki-auto"
                   checked={draft.synthesize.enabled}
                   onCheckedChange={(enabled) =>
                     setDraft((current) => ({
@@ -608,79 +276,294 @@ export function WikiSettings() {
                 />
               }
             />
-            {!draft.synthesize.enabled ? (
-              <SettingRow title={t("synthesizeNowUnavailable")} />
-            ) : null}
             <SettingRow
-              title={t("synthesizeModel")}
-              description={t("synthesizeModelHint")}
-              htmlFor="wiki-synthesize-model"
+              title={t("dailyTime")}
+              description={t("dailyTimeHint", { timezone: draft.timezone })}
+              htmlFor="wiki-daily-time"
             >
               <Input
-                id="wiki-synthesize-model"
-                value={draft.synthesize.model_id ?? ""}
-                placeholder={t("synthesizeModelPlaceholder")}
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    synthesize: {
-                      ...current.synthesize,
-                      model_id: event.target.value,
-                    },
-                  }))
-                }
+                id="wiki-daily-time"
+                type="time"
+                className="w-40"
+                value={dailyTime ?? ""}
+                onChange={(event) => {
+                  const cron = cronForDailyTime(event.target.value)
+                  if (cron)
+                    setDraft((current) => ({ ...current, compile_cron: cron }))
+                }}
               />
+              {dailyTime === null && (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {t("customSchedule")}
+                </p>
+              )}
+              {draft.next_compile_at && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {t("nextRun", {
+                    time: formatTime(draft.next_compile_at, draft.timezone),
+                  })}
+                </p>
+              )}
             </SettingRow>
             <SettingRow
-              title={t("synthesizePrompt")}
-              htmlFor="wiki-synthesize-prompt"
+              title={t("organizingModel")}
+              description={t("modelBindingHint")}
             >
-              <p className="mb-2 text-xs text-muted-foreground">
-                {t("synthesizePromptBuiltinHint")}
-              </p>
-              <Textarea
-                id="wiki-synthesize-prompt"
-                value={effectiveWikiPrompt(
-                  draft.synthesize.prompt,
-                  draft.synthesize_builtin_prompt
-                )}
-                placeholder={t("synthesizePromptPlaceholder")}
-                className="min-h-64 font-mono text-xs"
-                onChange={(event) =>
-                  setDraft((current) => ({
-                    ...current,
-                    synthesize: {
-                      ...current.synthesize,
-                      prompt: event.target.value,
-                    },
-                  }))
-                }
+              <ModelChoice
+                id="wiki-main-model"
+                slot={draft.synthesize}
+                providers={providers}
+                onChange={changeAllModels}
               />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="mt-2"
-                onClick={() =>
-                  setDraft((current) => ({
-                    ...current,
-                    synthesize: { ...current.synthesize, prompt: null },
-                  }))
-                }
-              >
-                {t("restoreBuiltinPrompt")}
-              </Button>
+              {invalidModels && (
+                <div className="mt-3 text-sm text-amber-700 dark:text-amber-400">
+                  <p>{t("modelUnavailable")}</p>
+                  <Link
+                    className="underline"
+                    href="/settings/model-providers?from=wiki"
+                  >
+                    {t("checkModel")}
+                  </Link>
+                </div>
+              )}
             </SettingRow>
           </SettingCard>
-        </SettingsSection>
-
-        <SettingsSaveBar
-          onSave={handleSave}
-          saving={saving}
-          label={t("save")}
-          savingLabel={t("saving")}
-        />
+          <details className="rounded-xl border p-4">
+            <summary className="cursor-pointer text-sm font-semibold">
+              {t("advancedSettings")}
+            </summary>
+            <div className="mt-5 space-y-5">
+              <SettingCard>
+                <SettingRow
+                  title={t("storageLocation")}
+                  description={t("storageHint")}
+                  htmlFor="wiki-vault-path"
+                >
+                  <Input
+                    id="wiki-vault-path"
+                    value={draft.vault_path ?? ""}
+                    placeholder={old("vaultPathPlaceholder")}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        vault_path: event.target.value || null,
+                      }))
+                    }
+                  />
+                </SettingRow>
+                <SettingRow title={old("timezone")} htmlFor="wiki-timezone">
+                  <Input
+                    id="wiki-timezone"
+                    value={draft.timezone}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        timezone: event.target.value,
+                      }))
+                    }
+                  />
+                </SettingRow>
+                <SettingRow title={old("compileCron")} htmlFor="wiki-cron">
+                  <Input
+                    id="wiki-cron"
+                    value={draft.compile_cron}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        compile_cron: event.target.value,
+                      }))
+                    }
+                  />
+                </SettingRow>
+              </SettingCard>
+              <SettingCard>
+                <SettingRow
+                  title={t("capture")}
+                  description={t("captureHint")}
+                  htmlFor="wiki-capture"
+                  control={
+                    <Switch
+                      id="wiki-capture"
+                      checked={draft.capture.acp_enabled}
+                      onCheckedChange={(acp_enabled) =>
+                        setDraft((current) => ({
+                          ...current,
+                          capture: { ...current.capture, acp_enabled },
+                        }))
+                      }
+                    />
+                  }
+                />
+                <SettingRow title={old("excludeAgentTypes")}>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {Object.entries(AGENT_LABELS).map(([key, label]) => (
+                      <label
+                        key={key}
+                        className="flex items-center gap-2 text-sm"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.capture.exclude_agent_types.includes(
+                            key
+                          )}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              capture: {
+                                ...current.capture,
+                                exclude_agent_types: event.target.checked
+                                  ? [
+                                      ...current.capture.exclude_agent_types,
+                                      key,
+                                    ]
+                                  : current.capture.exclude_agent_types.filter(
+                                      (item) => item !== key
+                                    ),
+                              },
+                            }))
+                          }
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </SettingRow>
+                <SettingRow title={old("excludeFolders")}>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {folders.map((folder) => (
+                      <label
+                        key={folder.id}
+                        className="flex items-center gap-2 text-sm"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.capture.exclude_folder_ids.includes(
+                            folder.id
+                          )}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              capture: {
+                                ...current.capture,
+                                exclude_folder_ids: event.target.checked
+                                  ? [
+                                      ...current.capture.exclude_folder_ids,
+                                      folder.id,
+                                    ]
+                                  : current.capture.exclude_folder_ids.filter(
+                                      (id) => id !== folder.id
+                                    ),
+                              },
+                            }))
+                          }
+                        />
+                        {folder.alias || folder.name}
+                      </label>
+                    ))}
+                  </div>
+                </SettingRow>
+              </SettingCard>
+              {slots.map((slot) => (
+                <section key={slot} className="space-y-3">
+                  <h2 className="text-sm font-semibold">
+                    {t(`stages.${slot}`)}
+                  </h2>
+                  <ModelChoice
+                    id={`wiki-${slot}-model`}
+                    slot={draft[slot]}
+                    providers={providers}
+                    onChange={(patch) =>
+                      setDraft((current) => ({
+                        ...current,
+                        [slot]: { ...current[slot], ...patch },
+                      }))
+                    }
+                  />
+                  <label className="block space-y-2 text-sm">
+                    <span>{old(`${sectionKey[slot]}Prompt`)}</span>
+                    <Textarea
+                      className="min-h-48 font-mono text-xs"
+                      value={effectiveWikiPrompt(
+                        draft[slot].prompt,
+                        draft[`${slot}_builtin_prompt`]
+                      )}
+                      onChange={(event) =>
+                        setDraft((current) => ({
+                          ...current,
+                          [slot]: {
+                            ...current[slot],
+                            prompt: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                  </label>
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    {t("promptBoundary")}
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      setDraft((current) => ({
+                        ...current,
+                        [slot]: { ...current[slot], prompt: null },
+                      }))
+                    }
+                  >
+                    {old("restoreBuiltinPrompt")}
+                  </Button>
+                </section>
+              ))}
+            </div>
+          </details>
+        </fieldset>
+        {notice && (
+          <p role="status" className="text-sm">
+            {notice}
+          </p>
+        )}
+        <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t bg-background py-3">
+          {dirty && (
+            <>
+              <p className="me-auto text-sm text-muted-foreground">
+                {t("unsaved")}
+              </p>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={saving}
+                onClick={() => {
+                  setDraft(saved)
+                  setError(null)
+                  setNotice(null)
+                }}
+              >
+                {t("discard")}
+              </Button>
+            </>
+          )}
+          <SettingsSaveBar
+            onSave={() => void handleSave()}
+            saving={saving}
+            disabled={!loaded || !dirty || (draft.enabled && invalidModels)}
+            label={old("save")}
+            savingLabel={old("saving")}
+          />
+        </div>
       </div>
-    </ScrollArea>
+    </div>
   )
+}
+function formatTime(value: string, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: timezone,
+    }).format(new Date(value))
+  } catch {
+    return value
+  }
 }

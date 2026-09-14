@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -47,9 +48,8 @@ const WorkbenchRouteContext = createContext<WorkbenchRouteContextValue | null>(
  * (which unmounts when collapsed) while the content swap is owned by
  * WorkspaceContent — both read this single source of truth.
  *
- * State is in-memory only: a reload lands back on the conversation workspace.
- * That is deliberate; static export rules out URL route segments, and the
- * established pattern here is in-memory context rather than query params.
+ * Wiki uses query parameters so reading links survive reload and browser Back.
+ * Other workbench views retain the existing in-memory routing behavior.
  */
 export function useWorkbenchRoute() {
   const ctx = useOptionalWorkbenchRoute()
@@ -76,8 +76,50 @@ export function useOptionalWorkbenchRoute(): WorkbenchRouteContextValue | null {
 export function WorkbenchRouteProvider({ children }: { children: ReactNode }) {
   const [routeId, setRouteId] = useState<WorkbenchRouteId>("conversations")
 
-  const setRoute = useCallback((id: WorkbenchRouteId) => setRouteId(id), [])
-  const openConversations = useCallback(() => setRouteId("conversations"), [])
+  useEffect(() => {
+    const restore = () => {
+      const query = new URLSearchParams(window.location.search)
+      if (
+        ["wikiView", "wikiPath", "wikiSource", "wikiJob"].some((key) =>
+          query.has(key)
+        )
+      ) {
+        setRouteId("wiki")
+      } else {
+        setRouteId((current) =>
+          current === "wiki" ? "conversations" : current
+        )
+      }
+    }
+    restore()
+    window.addEventListener("popstate", restore)
+    return () => window.removeEventListener("popstate", restore)
+  }, [])
+
+  const setRoute = useCallback((id: WorkbenchRouteId) => {
+    const url = new URL(window.location.href)
+    if (id === "wiki") {
+      if (!url.searchParams.has("wikiView"))
+        url.searchParams.set("wikiView", "library")
+    } else {
+      for (const key of [
+        "wikiView",
+        "wikiPath",
+        "wikiSource",
+        "wikiJob",
+        "wikiQuery",
+        "wikiScope",
+      ])
+        url.searchParams.delete(key)
+    }
+    if (url.href !== window.location.href)
+      window.history.pushState(null, "", url)
+    setRouteId(id)
+  }, [])
+  const openConversations = useCallback(
+    () => setRoute("conversations"),
+    [setRoute]
+  )
 
   const value = useMemo<WorkbenchRouteContextValue>(
     () => ({

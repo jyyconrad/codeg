@@ -7,8 +7,10 @@ import { isDesktop } from "@/lib/platform"
 export default function Page() {
   const router = useRouter()
   useEffect(() => {
+    // The static entry page must forward reading links, including line anchors.
+    const workspace = `/workspace${window.location.search}${window.location.hash}`
     if (isDesktop()) {
-      router.replace("/workspace")
+      router.replace(workspace)
       return
     }
     // Web mode: validate token before entering app
@@ -28,7 +30,7 @@ export default function Page() {
     })
       .then((res) => {
         if (res.ok) {
-          router.replace("/workspace")
+          router.replace(workspace)
           return
         }
         if (res.status === 401) {
@@ -40,13 +42,13 @@ export default function Page() {
         // Server reachable but unhealthy (5xx / proxy error). Keep the token
         // and enter the app; the in-app reconnect dialog handles recovery
         // instead of bouncing a valid session to /login.
-        router.replace("/workspace")
+        router.replace(workspace)
       })
       .catch(() => {
         // Server unreachable (restart, network blip, sleep/wake). The token is
         // almost certainly still valid — don't discard it. Enter the workspace
         // and let WebConnectionGuard surface the offline state and recover.
-        router.replace("/workspace")
+        router.replace(workspace)
       })
   }, [router])
   return null
