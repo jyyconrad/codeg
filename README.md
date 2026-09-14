@@ -28,6 +28,8 @@ It aggregates your sessions from every supported agent CLI into one searchable w
 
 **Full documentation lives at [docs.codeg.app](https://docs.codeg.app)** — [Getting Started](https://docs.codeg.app/getting-started/) · [Guide](https://docs.codeg.app/guide/) · [Reference](https://docs.codeg.app/reference/)
 
+For this checkout's build commands and Rust cache maintenance, see [Local builds (Chinese)](./docs/building.md).
+
 ## 💖 Sponsors
 
 <table>

@@ -1,3 +1,7 @@
+[build]
+# Resolved from the repository root, including standalone vendor tests.
+target-dir = "src-tauri/target"
+
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 ar = "aarch64-linux-gnu-gcc-ar"

@@ -62,14 +62,14 @@ git merge main
 
 ```bash
 pnpm test
-cd src-tauri && cargo check --features test-utils
+pnpm rust check --features test-utils
 ```
 
-碰了解析器、registry 或设置页时，再跑对应模块的 `cargo test --features test-utils --lib`。
+碰了解析器、registry 或设置页时，再跑对应模块的 `pnpm rust test --features test-utils --lib`。
 
-Rust 编译器跟仓库根 [rust-toolchain.toml](../rust-toolchain.toml)：`stable`。与 CI、Docker 一致。不要为本仓库 `rustup override set homebrew`；Homebrew rustc 1.88 编不过当前 lockfile。
+本地构建、验证命令都在仓库根执行，统一入口见 [构建与缓存维护](building.md)。Rust 编译器跟仓库根 [rust-toolchain.toml](../rust-toolchain.toml)：`stable`，与 CI、Docker 使用同一发布通道。不要为本仓库 `rustup override set homebrew`；Homebrew rustc 1.88 编不过当前 lockfile。
 
-`src-tauri/target` 过期 hash 不会自己回收。换 rustc、改 `[profile.*]`、或 debug 目录已经很大时，先 `cargo clean` 再 check / test / build；日常增量不用每次 clean。产物只放 `src-tauri/target`，依赖缓存在 `~/.cargo`。
+dev/test 已关闭增量缓存，产物统一放 `src-tauri/target`，依赖下载缓存在 `~/.cargo`。用 `pnpm rust:cache` 查看 debug 占用；超过默认 10 GiB 时，停止开发服务、编译与编辑器自动检查，再运行 `pnpm rust:cache:prune`（可加 `--dry-run` 预演）。换 rustc/profile 后要主动重置，可在空闲期执行 `pnpm rust clean --profile dev`。这些命令保留 release 安装包，日常不必每次清理。
 
 ---
 

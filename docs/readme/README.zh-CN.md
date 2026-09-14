@@ -28,6 +28,8 @@ Codeg（Code Generation）是一个多智能体编码工作台：把所有 AI �
 
 **完整文档见 [docs.codeg.app](https://docs.codeg.app)** — [快速开始](https://docs.codeg.app/zh/getting-started/) · [指南](https://docs.codeg.app/zh/guide/) · [参考](https://docs.codeg.app/zh/reference/)
 
+本仓库的开发、编译与磁盘维护命令见 [本地构建与缓存维护](../building.md)。
+
 ## 💖 赞助
 
 <table>

@@ -45,6 +45,12 @@ jobs:
       - name: Unit tests (vitest)
         run: pnpm test
 
+      - name: Install Rust for build script tests
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build script tests
+        run: pnpm test:build-scripts
+
       - name: Static export build
         run: pnpm build
 

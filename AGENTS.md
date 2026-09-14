@@ -28,31 +28,39 @@ pnpm test:coverage             # 覆盖率报告（输出到 coverage/index.html
 pnpm build                     # 静态导出构建
 ```
 
-### 后端 Rust（在 `src-tauri/` 目录下执行）
+### 后端 Rust（本地在仓库根目录执行）
+
+本地构建统一使用 `pnpm rust`，不要另建 target 目录或临时切换编译参数。入口与缓存维护详见 [docs/building.md](docs/building.md)。
 
 ```bash
 # 桌面模式（默认 feature）
-cargo check
-cargo test --features test-utils
-cargo clippy --all-targets --features test-utils -- -D warnings
+pnpm rust check
+pnpm rust test --features test-utils
+pnpm rust clippy --all-targets --features test-utils -- -D warnings
 
 # 服务器模式
-cargo check --no-default-features --bin codeg-server
-cargo test --no-default-features --bin codeg-server --lib
-cargo clippy --no-default-features --bin codeg-server --lib -- -D warnings
+pnpm rust check --no-default-features --bin codeg-server
+pnpm rust test --no-default-features --bin codeg-server --lib
+pnpm rust clippy --no-default-features --bin codeg-server --lib -- -D warnings
 
 # codeg-mcp 协作伴生进程（多智能体委托）
-cargo check --no-default-features --bin codeg-mcp
-cargo clippy --no-default-features --bin codeg-mcp -- -D warnings
+pnpm rust check --no-default-features --bin codeg-mcp
+pnpm rust clippy --no-default-features --bin codeg-mcp -- -D warnings
 
 # 解析器快照评审（输出变化时）
-cargo insta review
-INSTA_UPDATE=auto cargo test --features test-utils     # 自动写新 .snap
+pnpm rust insta review
+INSTA_UPDATE=auto pnpm rust test --features test-utils # 自动写新 .snap
 ```
 
 Rust 工具链以仓库根 `rust-toolchain.toml` 为准：`channel = "stable"`，与 CI `dtolnay/rust-toolchain@stable`、Docker `rust:slim-bookworm` 同一条线。本机用 rustup，不要 `rustup override set homebrew`，也不要把 Homebrew 1.88 当项目编译器。当前 lockfile 的传递依赖要求 rustc ≥ 1.90。
 
-`src-tauri/target` 里过期的 incremental / deps hash 不会自动删，debug 目录会一直涨。换 rustc、改 `Cargo.toml` 的 `[profile.*]`、或 `du -sh src-tauri/target` 已经很大时，先 `cargo clean` 再 check / test / clippy / build。日常增量不必每次 clean。产物只放本仓库 `src-tauri/target`，crate 缓存在全局 `~/.cargo`。
+`pnpm rust` 的参数与 Cargo 相同，脚本自动进入 `src-tauri`，所以 `--manifest-path` 等相对路径也以该目录为基准。`pnpm tauri`、`server:dev`、`server:build` 同样优先使用 `~/.cargo/bin`（或 `CARGO_HOME/bin`），避免 GUI/终端误用 Homebrew Rust。CI 的 Rust job 与 Docker 已显式准备 Rust，可继续直接调用 Cargo；本地直接运行 Cargo 时也须确保 rustup 代理在 PATH 最前。
+
+dev/test 已关闭 incremental，保留主项目回溯行号、关闭依赖调试信息；修改主库后的编译会变慢，未变化的依赖仍可复用。`.cargo/config.toml` 固定产物根目录为本仓库 `src-tauri/target`，依赖下载缓存仍在全局 `~/.cargo`。本地入口忽略继承的 `CARGO_BUILD_TARGET`，交叉编译请显式传 `--target`。
+
+`pnpm rust:cache` 查看 debug 占用；超过默认 10 GiB 时，构建入口会提示维护。停止开发服务、编译与编辑器自动检查后执行 `pnpm rust:cache:prune`，只有超限才会清理 debug；加 `--dry-run` 可预演，`--limit-gib N` 或 `CODEG_DEBUG_CACHE_LIMIT_GIB` 可调整阈值。该命令保留 release/bundle，并在检测到 Rust 编译进程时拒绝清理。Cargo 的整目录 clean 不取得构建锁，因此不在构建前自动删除，也不承诺限制单次构建峰值。换 rustc/profile 后需要主动清理时，可在空闲期运行 `pnpm rust clean --profile dev`；日常不必每次 clean，避免无参数 `cargo clean` 删除发布产物。
+
+构建脚本验证：`pnpm test:build-scripts`。
 
 ### 本地 macOS DMG
 

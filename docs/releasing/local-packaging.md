@@ -46,6 +46,12 @@ Intel Mac 本机构建同样落在 `src-tauri/target/release/bundle/dmg/`，文�
 pnpm tauri:dmg
 ```
 
+该入口会自动优先使用 rustup 的 `cargo` / `rustc`，并遵循仓库根的 `rust-toolchain.toml`。直接运行 Cargo 时也应让 rustup 代理优先：
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
 等价于（不要加 `--target`）：
 
 ```bash
@@ -53,6 +59,12 @@ pnpm tauri build --bundles dmg --ci --config src-tauri/tauri.local-dmg.conf.json
 ```
 
 `tauri.local-dmg.conf.json` 只关 updater 签名产物，避免本机没有 `TAURI_SIGNING_PRIVATE_KEY` 时构建失败。前端 `pnpm build` 和 sidecar `codeg-mcp` 仍由 `tauri:before-build` 自动跑。
+
+sidecar 本机构建复用 `src-tauri/target/release/`，即使 Tauri 传入本机 triple 也不会再创建一套 `<triple>/release`。交叉编译保留目标目录；用于 Tauri 打包的 sidecar 文件名始终包含目标 triple。
+
+开发缓存用 `pnpm rust:cache` 查看。dev/test 已关闭增量缓存；debug 超过默认 10 GiB 时，在停止开发服务、编译和编辑器自动检查后运行 `pnpm rust:cache:prune`。加 `--dry-run` 可预演，加 `--limit-gib N` 可调整阈值。清理只处理 debug，保留本节约定的 release 安装包；不要用无参数 `cargo clean` 代替。
+
+完整的环境、验证命令和主动清理方式见 [本地构建与缓存维护](../building.md)。
 
 可选：本机钥匙串里已有 Developer ID 时带上身份，Gatekeeper 少拦一层。没有也可以打，安装时用下文的「未公证」。
 

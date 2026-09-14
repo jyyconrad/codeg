@@ -15,7 +15,8 @@
 //   - Cross-compile in release.yml passes `--target <triple>` so we honour
 //     the matrix triple rather than rebuilding for the host.
 //   - Local `pnpm tauri dev` / `pnpm tauri build` invoke it without args and
-//     get a host-triple build, so the externalBin lookup still finds a file.
+//     reuse target/release, including when Tauri sets its host triple in env.
+//     Only cross-compilation adds a target-triple directory.
 //   - Skippable: set `CODEG_SKIP_SIDECAR=1` when iterating on the frontend
 //     and you don't care about delegation.
 //
@@ -24,12 +25,10 @@
 
 import { execFileSync } from "node:child_process"
 import { existsSync, copyFileSync, mkdirSync, chmodSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { join } from "node:path"
 import process from "node:process"
+import { rustEnv, SRC_TAURI, TARGET_DIR } from "./rust-env.mjs"
 
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
-const SRC_TAURI = resolve(SCRIPT_DIR, "..")
 const BINARIES_DIR = join(SRC_TAURI, "binaries")
 const BIN_NAME = "codeg-mcp"
 
@@ -55,9 +54,13 @@ function parseArgs(argv) {
   return args
 }
 
-function resolveHostTriple() {
+function resolveHostTriple(env) {
   try {
-    const out = execFileSync("rustc", ["-vV"], { encoding: "utf8" })
+    const out = execFileSync("rustc", ["-vV"], {
+      encoding: "utf8",
+      cwd: SRC_TAURI,
+      env,
+    })
     const line = out.split(/\r?\n/).find((l) => l.startsWith("host:"))
     if (!line) throw new Error("rustc -vV missing host: line")
     return line.replace(/^host:\s*/, "").trim()
@@ -72,9 +75,11 @@ function main() {
     return
   }
 
+  const env = rustEnv()
+  const host = resolveHostTriple(env)
   const { target: cliTarget } = parseArgs(process.argv.slice(2))
-  const target =
-    cliTarget || process.env.TAURI_TARGET_TRIPLE || resolveHostTriple()
+  const target = cliTarget || env.TAURI_TARGET_TRIPLE || host
+  const crossCompile = target !== host
   const isWindows = target.includes("windows")
   const ext = isWindows ? ".exe" : ""
 
@@ -86,24 +91,23 @@ function main() {
   // `--no-default-features` keeps codeg-mcp free of the Tauri runtime deps —
   // the bin's required-features is empty, so this just enables cross-compile
   // without dragging in macOS-private-api / Linux WebKit / Windows WebView2.
-  execFileSync(
-    "cargo",
-    [
-      "build",
-      "--release",
-      "--bin",
-      BIN_NAME,
-      "--no-default-features",
-      "--target",
-      target,
-    ],
-    { stdio: "inherit", cwd: SRC_TAURI }
-  )
+  const cargoArgs = [
+    "build",
+    "--release",
+    "--bin",
+    BIN_NAME,
+    "--no-default-features",
+  ]
+  if (crossCompile) cargoArgs.push("--target", target)
+  execFileSync("cargo", cargoArgs, {
+    stdio: "inherit",
+    cwd: SRC_TAURI,
+    env,
+  })
 
   const built = join(
-    SRC_TAURI,
-    "target",
-    target,
+    TARGET_DIR,
+    ...(crossCompile ? [target] : []),
     "release",
     `${BIN_NAME}${ext}`
   )
