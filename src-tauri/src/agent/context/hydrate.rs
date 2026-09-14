@@ -1020,6 +1020,7 @@ mod tests {
             level: 2,
             through_turn: "s1:1".into(),
             summary: "L2-RESUME-SUMMARY".into(),
+            files: Vec::new(),
             created_at_ms: 1,
         };
         let entries = vec![

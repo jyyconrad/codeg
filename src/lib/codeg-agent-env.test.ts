@@ -24,6 +24,12 @@ import {
 } from "./codeg-agent-env"
 
 describe("codeg agent env helpers", () => {
+  it("ships a resumable compact prompt that preserves goals and permits context files", () => {
+    expect(CODEG_BUILTIN_COMPACT_PROMPT).toContain("current work goal")
+    expect(CODEG_BUILTIN_COMPACT_PROMPT).toContain("unfinished")
+    expect(CODEG_BUILTIN_COMPACT_PROMPT).toContain("Markdown")
+  })
+
   it("writes a window on bind and keeps an existing one", () => {
     const env = ensureCodegLaunchEnv("", "gateway-model", 128000)
     expect(parseCodegContextWindows(env)).toEqual({ "gateway-model": 128000 })

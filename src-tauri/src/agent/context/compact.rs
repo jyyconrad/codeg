@@ -3,6 +3,8 @@
 //! L1 is [`TemplateCompactor`] (no HTTP). L2 is [`LlmCompactor`] on the second
 //! session trigger. Never call `AgentBuilder::memory()` — transcript is truth.
 
+use std::path::{Component, Path, PathBuf};
+
 use rig::client::CompletionClient;
 use rig::completion::message::{ToolResultContent, UserContent};
 use rig::completion::{AssistantContent, CompletionModel, Message};
@@ -30,11 +32,20 @@ const PROTECT_RECENT_TOOL_RESULTS: usize = 3;
 
 /// Artifact produced by [`LlmCompactor`].
 #[derive(Clone, Debug)]
-pub struct CompactArtifact(pub String);
+pub struct CompactFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CompactArtifact {
+    pub summary: String,
+    pub files: Vec<CompactFile>,
+}
 
 impl From<CompactArtifact> for Message {
     fn from(value: CompactArtifact) -> Self {
-        Message::user(value.0)
+        Message::user(value.summary)
     }
 }
 
@@ -45,6 +56,7 @@ pub struct LlmCompactor {
     model_id: String,
     compact_prompt: String,
     max_tokens: u64,
+    workspace: Option<PathBuf>,
 }
 
 impl LlmCompactor {
@@ -59,7 +71,13 @@ impl LlmCompactor {
             model_id: model_id.into(),
             compact_prompt: compact_prompt.into(),
             max_tokens: max_tokens.clamp(1, L2_MAX_TOKENS),
+            workspace: None,
         }
+    }
+
+    pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
     }
 
     pub fn max_tokens(&self) -> u64 {
@@ -72,9 +90,10 @@ impl LlmCompactor {
 
     async fn summarize(
         &self,
+        conversation_id: &str,
         evicted: &[Message],
         carry_over: Option<&str>,
-    ) -> Result<String, String> {
+    ) -> Result<CompactArtifact, String> {
         let mut body = String::new();
         if let Some(prev) = carry_over.map(str::trim).filter(|s| !s.is_empty()) {
             body.push_str("Previous summary:\n");
@@ -106,7 +125,19 @@ impl LlmCompactor {
         if text.trim().is_empty() {
             return Err("empty compact summary".into());
         }
-        Ok(text)
+        let mut artifact = parse_compact_artifact(&text)?;
+        if let Some(workspace) = &self.workspace {
+            let written = write_compact_files(workspace, conversation_id, &artifact.files)?;
+            if !written.is_empty() {
+                artifact.summary.push_str("\n\nContext files written:\n");
+                for path in written {
+                    artifact.summary.push_str("- ");
+                    artifact.summary.push_str(&path);
+                    artifact.summary.push('\n');
+                }
+            }
+        }
+        Ok(artifact)
     }
 }
 
@@ -115,17 +146,111 @@ impl Compactor for LlmCompactor {
 
     fn compact<'a>(
         &'a self,
-        _conversation_id: &'a str,
+        conversation_id: &'a str,
         evicted: &'a [Message],
         carry_over: Option<&'a Self::Artifact>,
     ) -> rig::wasm_compat::WasmBoxedFuture<'a, Result<Self::Artifact, MemoryError>> {
         Box::pin(async move {
-            self.summarize(evicted, carry_over.map(|a| a.0.as_str()))
-                .await
-                .map(CompactArtifact)
-                .map_err(MemoryError::Internal)
+            self.summarize(
+                conversation_id,
+                evicted,
+                carry_over.map(|a| a.summary.as_str()),
+            )
+            .await
+            .map_err(MemoryError::Internal)
         })
     }
+}
+
+#[derive(serde::Deserialize)]
+struct CompactEnvelope {
+    summary: String,
+    #[serde(default)]
+    files: Vec<CompactFileEnvelope>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompactFileEnvelope {
+    path: String,
+    content: String,
+}
+
+fn parse_compact_artifact(text: &str) -> Result<CompactArtifact, String> {
+    let trimmed = text.trim();
+    let parsed = serde_json::from_str::<CompactEnvelope>(trimmed).or_else(|_| {
+        let body = trimmed
+            .strip_prefix("```json")
+            .or_else(|| trimmed.strip_prefix("```JSON"))
+            .or_else(|| trimmed.strip_prefix("```"))
+            .map(|s| s.trim().trim_end_matches("```").trim())
+            .unwrap_or(trimmed);
+        serde_json::from_str::<CompactEnvelope>(body)
+    });
+    match parsed {
+        Ok(envelope) if !envelope.summary.trim().is_empty() => Ok(CompactArtifact {
+            summary: envelope.summary,
+            files: envelope
+                .files
+                .into_iter()
+                .map(|file| CompactFile {
+                    path: file.path,
+                    content: file.content,
+                })
+                .collect(),
+        }),
+        Ok(_) => Err("empty compact summary".into()),
+        Err(_) => Ok(CompactArtifact {
+            summary: trimmed.to_string(),
+            files: Vec::new(),
+        }),
+    }
+}
+
+fn write_compact_files(
+    workspace: &Path,
+    conversation_id: &str,
+    files: &[CompactFile],
+) -> Result<Vec<String>, String> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let session = conversation_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(80)
+        .collect::<String>();
+    let root = workspace
+        .join(".codeg")
+        .join("context")
+        .join(if session.is_empty() {
+            "session"
+        } else {
+            &session
+        });
+    std::fs::create_dir_all(&root).map_err(|e| format!("create compact context dir: {e}"))?;
+    let mut written = Vec::new();
+    for file in files {
+        let rel = Path::new(file.path.trim());
+        if rel.extension().and_then(|s| s.to_str()) != Some("md")
+            || rel.is_absolute()
+            || rel.components().any(|c| {
+                matches!(
+                    c,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(format!("invalid compact markdown path: {}", file.path));
+        }
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create compact file dir: {e}"))?;
+        }
+        std::fs::write(&path, &file.content)
+            .map_err(|e| format!("write compact markdown {}: {e}", path.display()))?;
+        written.push(path.to_string_lossy().to_string());
+    }
+    Ok(written)
 }
 
 /// Project canonical facts. At most one compact-level upgrade per call.
@@ -241,15 +366,24 @@ async fn upgrade_one_level(
             level: 1,
             through_turn,
             summary,
+            files: Vec::new(),
             created_at_ms: now_epoch_ms(),
         };
         return hard_drop_view(inputs, budget, live, None, 1, Some(record));
     }
 
     if level == 1 {
-        let carry = existing
-            .as_ref()
-            .map(|r| CompactArtifact(r.summary.clone()));
+        let carry = existing.as_ref().map(|r| CompactArtifact {
+            summary: r.summary.clone(),
+            files: r
+                .files
+                .iter()
+                .map(|path| CompactFile {
+                    path: path.clone(),
+                    content: String::new(),
+                })
+                .collect(),
+        });
         let Some(compactor) = llm else {
             return keep_l1(inputs, budget, live, existing);
         };
@@ -262,11 +396,16 @@ async fn upgrade_one_level(
         )
         .await
         {
-            Ok(artifact) if !artifact.0.trim().is_empty() => {
+            Ok(artifact) if !artifact.summary.trim().is_empty() => {
                 let record = CompactRecord {
                     level: 2,
                     through_turn,
-                    summary: artifact.0,
+                    summary: artifact.summary,
+                    files: artifact
+                        .files
+                        .iter()
+                        .map(|file| file.path.clone())
+                        .collect(),
                     created_at_ms: now_epoch_ms(),
                 };
                 hard_drop_view(inputs, budget, live, None, 2, Some(record))
@@ -566,6 +705,36 @@ mod tests {
 
     fn cfg(window: u64, output: u64) -> BudgetConfig {
         BudgetConfig::new(window, output)
+    }
+
+    #[test]
+    fn compact_envelope_preserves_summary_and_writes_session_markdown() {
+        let parsed = parse_compact_artifact(
+            r##"{"summary":"goal and next step","files":[{"path":"api.md","content":"# API"}]}"##,
+        )
+        .expect("valid compact envelope");
+        assert_eq!(parsed.summary, "goal and next step");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = write_compact_files(dir.path(), "session/unsafe", &parsed.files)
+            .expect("write compact file");
+        assert_eq!(paths.len(), 1);
+        assert_eq!(std::fs::read_to_string(&paths[0]).unwrap(), "# API");
+        assert!(paths[0].contains("sessionunsafe"));
+    }
+
+    #[test]
+    fn compact_files_reject_path_traversal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = write_compact_files(
+            dir.path(),
+            "session",
+            &[CompactFile {
+                path: "../escape.md".into(),
+                content: "x".into(),
+            }],
+        )
+        .expect_err("traversal must be rejected");
+        assert!(err.contains("invalid compact markdown path"));
     }
 
     fn fill_turns(store: &mut ContextStore, start: usize, n: usize, pad: usize) {

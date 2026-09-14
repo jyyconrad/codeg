@@ -48,6 +48,8 @@ pub struct CompactRecord {
     pub level: u8,
     pub through_turn: String,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
     #[serde(default)]
     pub created_at_ms: u64,
 }
@@ -252,6 +254,7 @@ mod tests {
             level: 2,
             through_turn: "s:3".into(),
             summary: "folded".into(),
+            files: Vec::new(),
             created_at_ms: 9,
         };
         let payload = compact_update_payload(&record);

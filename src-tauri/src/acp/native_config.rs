@@ -34,9 +34,14 @@ pub const LOCAL_API_KEY: &str = "local";
 pub const OUTPUT_SAFETY_MARGIN: u32 = 1024;
 
 /// L2 LLM compact instruction when `CODEG_AGENT_COMPACT_PROMPT` is empty.
-pub const DEFAULT_COMPACT_PROMPT: &str = "Summarize the evicted conversation turns. \
-Output only the summary body. Preserve unfinished tool conclusions, user constraints, \
-and file paths. Do not replay the original text of evicted turns.";
+pub const DEFAULT_COMPACT_PROMPT: &str = "You are compacting context for an ongoing coding session. \
+Produce a concise, resumable summary that lets the next model continue the current work immediately. \
+Preserve the current work goal and acceptance criteria, user constraints, decisions, relevant files and paths, \
+commands and verification results, unfinished tool calls, failures, and concrete next steps. \
+Distinguish completed, in-progress, and blocked work; never claim an unverified result. \
+If the context contains independent workstreams or details too large for the summary, include focused Markdown files \
+for the session work directory in the response envelope. Return JSON only with {\"summary\":\"...\",\"files\":[{\"path\":\"topic.md\",\"content\":\"...\"}]}; \
+use an empty files array when no file is needed. Do not replay evicted turns.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundProvider {

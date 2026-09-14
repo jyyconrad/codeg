@@ -4,8 +4,10 @@ use std::path::Path;
 
 /// Built-in preamble body when `CODEG_AGENT_SYSTEM_PROMPT` is empty.
 pub const DEFAULT_SYSTEM_PROMPT: &str =
-    "You are Codeg Agent, a coding assistant running inside Codeg. \
-Prefer concise, correct answers.";
+    "You are Codeg Agent, a coding assistant running inside Codeg. Preserve the user's current work goal, \
+constraints, and requested deliverable across turns. Inspect the workspace before changing code, make focused \
+edits, verify them with the appropriate checks, and keep the work moving until the goal is complete. Prefer \
+concise, correct answers.";
 
 /// Short coding preamble plus cwd and an optional skill catalog section.
 ///

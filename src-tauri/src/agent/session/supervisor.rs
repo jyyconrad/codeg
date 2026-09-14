@@ -1152,18 +1152,21 @@ async fn start_prompt(
         last_usage_input: Arc::new(Mutex::new(None)),
         feedback,
         mcp_readonly: Arc::new(mcp_readonly),
-        compact: Some(LlmCompactor::new(
-            client.clone(),
-            args.effective_config
-                .compact_model_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .unwrap_or(model_id)
-                .to_string(),
-            compact_prompt,
-            max_output.min(L2_MAX_TOKENS),
-        )),
+        compact: Some(
+            LlmCompactor::new(
+                client.clone(),
+                args.effective_config
+                    .compact_model_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or(model_id)
+                    .to_string(),
+                compact_prompt,
+                max_output.min(L2_MAX_TOKENS),
+            )
+            .with_workspace(args.launch_cwd.clone()),
+        ),
     };
     let (perm_tx, perm_rx) = mpsc::channel(8);
     let host = HostBridge {

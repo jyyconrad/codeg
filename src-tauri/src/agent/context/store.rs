@@ -318,6 +318,7 @@ pub struct FactRecorder {
     fail_started: Arc<AtomicBool>,
     fail_turn_end: Arc<AtomicBool>,
     memory_only: bool,
+    spill_override: Option<PathBuf>,
     writes: Arc<Mutex<Vec<String>>>,
 }
 
@@ -336,6 +337,7 @@ impl FactRecorder {
             fail_started: Arc::new(AtomicBool::new(false)),
             fail_turn_end: Arc::new(AtomicBool::new(false)),
             memory_only: false,
+            spill_override: None,
             writes: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -350,6 +352,7 @@ impl FactRecorder {
             fail_started: Arc::new(AtomicBool::new(false)),
             fail_turn_end: Arc::new(AtomicBool::new(false)),
             memory_only: true,
+            spill_override: None,
             writes: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -370,8 +373,15 @@ impl FactRecorder {
         Arc::clone(&self.store)
     }
 
+    pub fn with_spill_dir(mut self, dir: PathBuf) -> Self {
+        self.spill_override = Some(dir);
+        self
+    }
+
     pub fn spill_dir(&self) -> PathBuf {
-        super::spill::spill_dir(&self.root, &self.agent_dir, &self.session_id)
+        self.spill_override.clone().unwrap_or_else(|| {
+            super::spill::spill_dir(&self.root, &self.agent_dir, &self.session_id)
+        })
     }
 
     pub async fn record_fact_update(&self, fact: &ExecutionFact) -> Result<(), FactWriteError> {
