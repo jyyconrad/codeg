@@ -1613,6 +1613,10 @@ pub fn build_router(
             post(handlers::wiki::wiki_list_sources),
         )
         .route(
+            "/wiki_list_memory_notes",
+            post(handlers::wiki::wiki_list_memory_notes),
+        )
+        .route(
             "/wiki_list_project_bindings",
             post(handlers::wiki::wiki_list_project_bindings),
         )
@@ -1627,6 +1631,14 @@ pub fn build_router(
             "/wiki_import_files",
             // One file per request. 20 MiB decoded ≈ 27 MiB base64 + JSON envelope.
             post(handlers::wiki::wiki_import_files).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route(
+            "/wiki_import_local_sessions",
+            post(handlers::wiki::wiki_import_local_sessions),
+        )
+        .route(
+            "/wiki_import_directory",
+            post(handlers::wiki::wiki_import_directory),
         )
         .route(
             "/wiki_accept_extraction",

@@ -6275,7 +6275,7 @@
   },
   "WikiSettings": {
     "sectionTitle": "Wiki personnel",
-    "sectionDescription": "Capture completed work sessions and imported documents into a local Markdown vault. Compile turns those sources into work notes and capability notes with citations.",
+    "sectionDescription": "Enregistre les sessions de travail terminées et les documents importés dans un coffre Markdown local. Les mémoires de tour et de session sont écrites d'abord ; l'organisation planifiée ou manuelle synthétise ensuite les notes de projet et de capacité.",
     "loading": "Chargement...",
     "loadFailed": "Échec du chargement des paramètres du wiki : {message}",
     "retry": "Réessayer",
@@ -6284,10 +6284,10 @@
     "saved": "Paramètres du wiki enregistrés",
     "saveFailed": "Échec de l’enregistrement des paramètres du wiki : {message}",
     "enabled": "Activer le wiki personnel",
-    "enabledHint": "Turning this on stores session and imported text in a local vault. Extracted text may later be sent to the bound model for ingest and compile.",
+    "enabledHint": "Une fois activé, le texte des sessions et des imports est stocké dans un coffre local. Le texte extrait peut ensuite être envoyé au modèle lié pour écrire des mémoires ou synthétiser des notes.",
     "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
     "statusTitle": "Schedule",
-    "statusDescription": "Next compile time and sources still waiting to be analyzed.",
+    "statusDescription": "Prochaine heure d'organisation et sources encore en attente de traitement.",
     "nextCompileAt": "Prochaine compilation",
     "pendingSources": "Sources en attente",
     "notScheduled": "Non planifié",
@@ -6310,25 +6310,34 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "Dossier {id}",
-    "ingestTitle": "Ingest",
-    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
-    "ingestModel": "Ingest model id",
-    "ingestModelHint": "Override the bound Codeg Agent default model. Leave empty to use the bound channel.",
-    "ingestModelPlaceholder": "Bound default",
-    "ingestPrompt": "Ingest extra prompt",
-    "ingestPromptPlaceholder": "Optional overlay. Cannot expand read scope. Empty content must not invent a topic from the filename.",
-    "compileTitle": "Compiler",
-    "compileDescription": "Compile updates work and capability notes from ready sources.",
-    "compileEnabled": "Activer la compilation",
-    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
-    "compileNowUnavailable": "Compiler maintenant dans le plan de travail est indisponible si la compilation est désactivée.",
-    "compileModel": "Compile model id",
-    "compileModelHint": "Override the bound Codeg Agent default model for compile. Leave empty to use the bound channel.",
-    "compileModelPlaceholder": "Bound default",
-    "compilePrompt": "Compile extra prompt",
-    "compilePromptPlaceholder": "Optional overlay on the built-in WeKnora-style four-step compile skill. Cannot raise permissions or invent claims.",
-    "ingestPromptBuiltinHint": "Built-in ingest skill always applies: one-line source summary, no rewriting of raw evidence.",
-    "compilePromptBuiltinHint": "Built-in compile always uses WeKnora discipline: candidates → match (related ≠ same) → staged merge → host finalize. Extra text cannot skip grounding."
+    "restoreBuiltinPrompt": "Restore built-in",
+    "turnSummaryTitle": "Résumé de tour",
+    "turnSummaryDescription": "Après chaque tour ACP réussi, écrire une mémoire lisible de ce qui a changé et de ce qui a été implémenté. Un identifiant de modèle vide utilise le modèle lié par défaut.",
+    "turnSummaryModel": "Id de modèle du résumé de tour",
+    "turnSummaryModelHint": "Remplace le modèle par défaut de l'agent Codeg lié. Laissez vide pour utiliser le canal lié.",
+    "turnSummaryModelPlaceholder": "Défaut lié",
+    "turnSummaryPrompt": "Invite du résumé de tour",
+    "turnSummaryPromptPlaceholder": "Skill complet de résumé de tour. L'hôte valide toujours l'identité de la page et ne peut pas élargir la lecture.",
+    "turnSummaryPromptBuiltinHint": "Ceci est le skill complet de résumé de tour. Modifiez-le ici. Restaurer l'intégré suit les mises à jour futures.",
+    "sessionRollupTitle": "Synthèse de conversation",
+    "sessionRollupDescription": "Lorsqu'une conversation est marquée comme terminée, écrire une page de session à partir de ses mémoires de tour. Les conversations inachevées n'ont pas de page de session.",
+    "sessionRollupModel": "Id de modèle de la synthèse de conversation",
+    "sessionRollupModelHint": "Remplace le modèle par défaut de l'agent Codeg lié. Laissez vide pour utiliser le canal lié.",
+    "sessionRollupModelPlaceholder": "Défaut lié",
+    "sessionRollupPrompt": "Invite de la synthèse de conversation",
+    "sessionRollupPromptPlaceholder": "Skill complet de synthèse de conversation. L'hôte valide toujours l'identité de la page et ne peut pas élargir la lecture.",
+    "sessionRollupPromptBuiltinHint": "Ceci est le skill complet de synthèse de conversation. Modifiez-le ici. Restaurer l'intégré suit les mises à jour futures.",
+    "synthesizeTitle": "Organiser",
+    "synthesizeDescription": "L'organisation planifiée ou manuelle met à jour les notes de projet, de responsabilité, de décision, de résultat et de capacité à partir des pages mémoire. Les sources importées ne sont pas synthétisées automatiquement.",
+    "synthesizeEnabled": "Activer l'organisation",
+    "synthesizeEnabledHint": "Une fois désactivé, les pages mémoire peuvent encore être écrites. Les nouveaux jobs d'organisation s'arrêtent, et « Organiser maintenant » est indisponible.",
+    "synthesizeNowUnavailable": "« Organiser maintenant » dans le plan de travail est indisponible si l'organisation est désactivée.",
+    "synthesizeModel": "Id de modèle d'organisation",
+    "synthesizeModelHint": "Remplace le modèle par défaut de l'agent Codeg lié pour l'organisation. Laissez vide pour utiliser le canal lié.",
+    "synthesizeModelPlaceholder": "Défaut lié",
+    "synthesizePrompt": "Invite d'organisation",
+    "synthesizePromptPlaceholder": "Skill complet de synthèse. L'hôte valide toujours les localisateurs et ne peut pas inventer d'affirmations.",
+    "synthesizePromptBuiltinHint": "Ceci est le skill complet d'organisation. Modifiez-le ici. Restaurer l'intégré suit les mises à jour futures."
   },
   "Wiki": {
     "title": "Wiki personnel",
@@ -6354,8 +6363,15 @@
       "emptyDescription": "Tous les textes de connaissance de ce coffre : index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md et AGENTS.md. Ouvrez un fichier Markdown pour le lire. Les wikilinks restent dans le coffre."
     },
     "work": {
-      "emptyTitle": "Pas encore de notes de travail",
-      "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."
+      "emptyTitle": "Pas encore de mémoire de travail",
+      "emptyDescription": "Les tours ACP réussis et les conversations terminées deviennent des notes mémoire de ce qui a été fait dans ce tour ou cette session. Plus tard, l'organisation planifiée ou manuelle synthétise ces mémoires en notes de projet, de responsabilité, de décision, de résultat et de capacité. Les sources de l'onglet Sources n'apparaissent pas ici.",
+      "compileFailed": "Dernière organisation échouée : {message}",
+      "memoryCount": "{count, plural, one {# mémoire} other {# mémoires}}",
+      "ungrouped": "Non groupé",
+      "pageType": {
+        "turn-summary": "Tour",
+        "session-summary": "Session"
+      }
     },
     "capabilities": {
       "emptyTitle": "Pas encore de notes de capacité",
@@ -6415,19 +6431,22 @@
     },
     "jobs": {
       "emptyTitle": "Pas encore de tâches",
-      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
-      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
-      "compileNow": "Compile now",
-      "compiling": "Starting compile…",
+      "emptyDescription": "Les résumés de tour, les synthèses de conversation et les jobs d'organisation affichent ici la progression, les échecs et les conflits.",
+      "readOnlyHint": "« Organiser maintenant » met en file un job de synthèse. Réessayez un job échoué ; annulez-en un qui n'est pas encore validé.",
+      "compileNow": "Organiser maintenant",
+      "compiling": "Démarrage de l'organisation…",
       "retryJob": "Retry job",
       "cancelJob": "Cancel job",
-      "compileDisabled": "Compile is turned off in Settings.",
+      "compileDisabled": "L'organisation est désactivée dans les réglages.",
       "allStatuses": "Tous les statuts",
       "detailPlaceholder": "Select a job to see details.",
       "kind": {
         "ingest": "Ingest",
         "compile": "Compiler",
-        "unknown": "Tâche"
+        "unknown": "Tâche",
+        "turn_summary": "Résumé de tour",
+        "session_rollup": "Synthèse de conversation",
+        "wiki_synthesize": "Organiser"
       },
       "status": {
         "queued": "En file",
@@ -6447,6 +6466,18 @@
     "note": {
       "untitled": "Sans titre",
       "preview": "Sélectionnez une note pour l’aperçu."
-    }
+    },
+    "import": "Import",
+    "importTitle": "Import into wiki",
+    "importSessions": "Local agent conversations",
+    "importSessionsHint": "Importez les transcriptions des agents locaux (Claude, Codex, Grok et autres) comme sources wiki. L'import ne résume ni n'organise pas automatiquement.",
+    "importSessionsCount": "{count, plural, one {# local conversation ready} other {# local conversations ready}}",
+    "importSessionsAction": "Import all local conversations",
+    "importDirectory": "Specified directory",
+    "importDirectoryHint": "Import Markdown, TXT, PDF, and DOCX in a folder. Local agent sessions whose working directory is inside that folder are imported too.",
+    "importDirectoryAction": "Choose directory",
+    "importing": "Importing…",
+    "importResult": "Imported {imported}, duplicates {duplicates}, failed {failed}.",
+    "importFailed": "Import failed: {message}"
   }
 }

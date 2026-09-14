@@ -16,6 +16,7 @@ import {
 import { isLocalDesktop } from "@/lib/platform"
 import { WikiAllView } from "./wiki-all-view"
 import { WikiCapabilitiesView } from "./wiki-capabilities-view"
+import { WikiImportButton } from "./wiki-import-dialog"
 import { WikiJobsView } from "./wiki-jobs-view"
 import { WikiSourcesView } from "./wiki-sources-view"
 import { WikiWorkView } from "./wiki-work-view"
@@ -68,7 +69,8 @@ export function WikiPage() {
           <TabsTrigger value="sources">{t("views.sources")}</TabsTrigger>
           <TabsTrigger value="jobs">{t("views.jobs")}</TabsTrigger>
         </TabsList>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <WikiImportButton />
           <OpenInObsidianButton />
         </div>
       </div>

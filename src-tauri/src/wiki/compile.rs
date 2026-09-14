@@ -1,4 +1,4 @@
-//! Freeze compile input, segment, four host steps, stage, commit.
+//! Freeze synthesize input from memory notes, stage page proposals, commit.
 
 use std::collections::HashMap;
 use std::fs;
@@ -16,14 +16,21 @@ use crate::db::error::DbError;
 use crate::db::service::wiki_service;
 use crate::wiki::commit::{self, StagedProposal};
 use crate::wiki::fs_policy::{page_type_matches_rel, WikiFsPolicy};
-use crate::wiki::llm::{WikiLlm, WikiLlmError, COMPILE_CONTRACT_VERSION};
+use crate::wiki::llm::{
+    WikiLlm, WikiLlmError, COMPILE_CONTRACT_VERSION, SYNTHESIZE_CONTRACT_VERSION,
+};
 use crate::wiki::raw::{self, content_hash};
 use crate::wiki::settings;
 use crate::wiki::vault::{self, CONTENT_END, CONTENT_START};
 
-pub const SEGMENT_CHAR_BUDGET: usize = 8000;
-pub const MAX_CANDIDATES_PER_SEGMENT: usize = 5;
-pub const ANALYSIS_CONFIG_REVISION: &str = "0";
+pub const SEGMENT_CHAR_BUDGET: usize = 32_000;
+#[allow(dead_code)]
+pub const MAX_CANDIDATES_PER_SEGMENT: usize = 80;
+pub const ANALYSIS_CONFIG_REVISION: &str = "2";
+/// Prompt + verify only. The model decides how much to write under this.
+pub const LEAF_BODY_SOFT_CHARS: usize = 12_000;
+/// Reject only a runaway page body. Never silently truncate model prose.
+pub const LEAF_BODY_HARD_CHARS: usize = 100_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CompileError {
@@ -80,20 +87,44 @@ impl From<crate::wiki::fs_policy::FsPolicyError> for CompileError {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FrozenInput {
+    #[serde(default)]
     pub source_id: String,
+    #[serde(default)]
     pub raw_hash: String,
+    #[serde(default)]
     pub annotation_revision: i32,
+    #[serde(default)]
     pub segment_ids: Vec<String>,
+    #[serde(default)]
     pub compile_contract_version: String,
+    #[serde(default)]
     pub analysis_config_revision: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryNoteRef {
+    pub rel: String,
+    pub content_hash: String,
+    #[serde(default)]
+    pub page_type: String,
+    #[serde(default)]
+    pub project_binding_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompileJobManifest {
+    #[serde(default)]
     pub cutoff_source_seq: i64,
+    #[serde(default)]
     pub inputs: Vec<FrozenInput>,
+    #[serde(default)]
+    pub memory_notes: Vec<MemoryNoteRef>,
+    #[serde(default)]
+    pub extra_read_roots: Vec<String>,
+    #[serde(default)]
+    pub compile_contract_version: String,
 }
 
 #[derive(Debug, Clone)]
@@ -143,8 +174,8 @@ pub async fn run_compile_job(
     )
     .await?;
 
-    if manifest.inputs.is_empty() {
-        append_compile_log(vault, &job.id, "compile nothing_to_persist")?;
+    if manifest.memory_notes.is_empty() {
+        append_compile_log(vault, &job.id, "wiki_synthesize nothing_to_persist")?;
         return Ok(CompileOutcome {
             committed: Vec::new(),
             nothing_to_persist: true,
@@ -158,55 +189,176 @@ pub async fn run_compile_job(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "UTC".into());
     let today = local_date(Utc::now(), &timezone).to_string();
-
     let index = scan_note_index(vault);
-    let mut all_candidates: Vec<Value> = Vec::new();
     let mut allowed_reads: Vec<PathBuf> = Vec::new();
-    let mut sources_by_id: HashMap<String, wiki_source::Model> = HashMap::new();
-    let mut prior_contrib: HashMap<String, Vec<String>> = HashMap::new();
+    allowed_reads.push(vault.join("AGENTS.md"));
+    for entry in &index {
+        allowed_reads.push(vault.join(&entry.rel));
+    }
+    for note in &manifest.memory_notes {
+        allowed_reads.push(vault.join(&note.rel));
+    }
+
+    let payload = json!({
+        "schema": SYNTHESIZE_CONTRACT_VERSION,
+        "memory_notes": manifest.memory_notes.iter().map(|n| json!({
+            "rel": n.rel,
+            "content_hash": n.content_hash,
+        })).collect::<Vec<_>>(),
+        "extra_read_roots": manifest.extra_read_roots,
+        "index": index.iter().map(|e| json!({
+            "codeg_note_id": e.note_id,
+            "path": e.rel,
+            "type": e.page_type,
+            "title": e.title,
+        })).collect::<Vec<_>>(),
+        "vault_abs": vault.to_string_lossy(),
+        "staging_abs": staging.to_string_lossy(),
+        "max_turns": crate::agent::model::WIKI_COMPILE_MAX_TURNS,
+        "instruction": "Read listed memory notes with read_file. Do not return a candidates array. Write page_proposals as full markdown pages. Not reading project folders is success.",
+    });
+    if payload.get("candidates").is_some() {
+        return Err(CompileError::Validation(
+            "host synthesize payload must not include candidates".into(),
+        ));
+    }
+
+    let out = llm.complete_json("synthesize", payload).await?;
+    let nothing = out
+        .get("nothing_to_persist")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut proposals = proposals_from_merge(&out, vault)?;
+    proposals.retain(|p| !matches!(p.page_type.as_str(), "turn-summary" | "session-summary"));
+
+    let mut skipped_hard = 0usize;
+    let mut kept = Vec::new();
+    for p in proposals {
+        match check_leaf_body(&p.page_type, &p.after) {
+            Ok(w) => {
+                if let Some(w) = w {
+                    tracing::info!(rel = %p.rel, warning = %w, "[wiki] leaf body warning");
+                    let _ = append_compile_log(vault, &job.id, &format!("{} {w}", p.rel));
+                }
+                kept.push(p);
+            }
+            Err(e) => {
+                skipped_hard += 1;
+                tracing::info!(rel = %p.rel, error = %e, "[wiki] reject over-long leaf page");
+                let _ = append_compile_log(vault, &job.id, &format!("{} rejected: {e}", p.rel));
+            }
+        }
+    }
+    let mut proposals = kept;
+    let sources_by_id: HashMap<String, wiki_source::Model> = HashMap::new();
+    sanitize_capability_evidence(&mut proposals, &sources_by_id);
+
+    if nothing || proposals.is_empty() {
+        if skipped_hard > 0 && !nothing {
+            return Err(CompileError::Validation(
+                "all synthesize page proposals were rejected".into(),
+            ));
+        }
+        register_consumed(conn, &job.id, &manifest).await?;
+        append_compile_log(vault, &job.id, "wiki_synthesize nothing_to_persist")?;
+        return Ok(CompileOutcome {
+            committed: Vec::new(),
+            nothing_to_persist: true,
+        });
+    }
+
+    let policy = WikiFsPolicy::for_compile_job(vault, state_root, &staging, &allowed_reads);
+    for p in &proposals {
+        policy.check_page_type_path(&p.page_type, &p.rel)?;
+        let staged = staging.join(p.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = staged.parent() {
+            fs::create_dir_all(parent).map_err(|e| CompileError::Failed(e.to_string()))?;
+        }
+        fs::write(&staged, &p.after).map_err(|e| CompileError::Failed(e.to_string()))?;
+        policy
+            .check_stage_write(&staged)
+            .map_err(|e| CompileError::Validation(e.to_string()))?;
+    }
+
+    let compiled_pages = compiled_pages_from(&proposals);
+    let committed = commit::commit_proposals(vault, state_root, &job.id, &proposals)?;
+    register_consumed(conn, &job.id, &manifest).await?;
+    let _ = today;
+    let _ = sources_by_id;
+    touch_index_and_journal(vault, &job.id, &timezone, &HashMap::new(), &compiled_pages)?;
+    append_compile_log(
+        vault,
+        &job.id,
+        &format!(
+            "wiki_synthesize succeeded files={} skipped_hard={skipped_hard}",
+            committed.files.len()
+        ),
+    )?;
+    Ok(CompileOutcome {
+        nothing_to_persist: committed.files.is_empty(),
+        committed: committed.files.into_iter().map(|f| f.rel).collect(),
+    })
+}
+
+#[allow(dead_code)]
+async fn compile_one_input(
+    conn: &DatabaseConnection,
+    job: &wiki_job::Model,
+    llm: &dyn WikiLlm,
+    vault: &Path,
+    state_root: &Path,
+    staging: &Path,
+    input: &FrozenInput,
+    timezone: &str,
+    today: &str,
+) -> Result<CompileOutcome, CompileError> {
+    let index = scan_note_index(vault);
+    let mut allowed_reads: Vec<PathBuf> = Vec::new();
     allowed_reads.push(vault.join("AGENTS.md"));
     for entry in &index {
         allowed_reads.push(vault.join(&entry.rel));
     }
 
-    for input in &manifest.inputs {
-        let source = wiki_service::get_source_model(conn, &input.source_id).await?;
-        let raw_path = source
-            .raw_path
-            .as_deref()
-            .ok_or_else(|| CompileError::Validation(format!("source {} has no raw", source.id)))?;
-        let abs = vault.join(raw_path);
-        allowed_reads.push(abs.clone());
-        let raw_text =
-            fs::read_to_string(&abs).map_err(|e| CompileError::Failed(format!("read raw: {e}")))?;
-        if source.raw_hash.as_deref() != Some(input.raw_hash.as_str()) {
-            return Err(CompileError::Conflict(format!(
-                "source {} raw hash changed",
-                source.id
-            )));
-        }
-        let rows = wiki_service::list_contributions_for_source(conn, &source.id).await?;
-        prior_contrib.insert(
-            source.id.clone(),
-            rows.into_iter().map(|r| r.note_id).collect(),
-        );
-        let segments = persist_segments(conn, &source, &raw_text, &input.segment_ids).await?;
-
-        for (seg_id, seg_text) in &segments {
-            let payload = json!({
-                "source_id": source.id,
-                "raw_hash": input.raw_hash,
-                "annotation_revision": input.annotation_revision,
-                "segment_ids": [seg_id],
-                "segment_text": redacted_excerpt(seg_text),
-                "compile_contract_version": COMPILE_CONTRACT_VERSION,
-            });
-            let out = llm.complete_json("candidates", payload).await?;
-            let cands = validate_candidates(&out, &source.id, seg_id)?;
-            all_candidates.extend(cands);
-        }
-        sources_by_id.insert(source.id.clone(), source);
+    let source = wiki_service::get_source_model(conn, &input.source_id).await?;
+    let raw_path = source
+        .raw_path
+        .as_deref()
+        .ok_or_else(|| CompileError::Validation(format!("source {} has no raw", source.id)))?;
+    let abs = vault.join(raw_path);
+    allowed_reads.push(abs.clone());
+    let raw_text =
+        fs::read_to_string(&abs).map_err(|e| CompileError::Failed(format!("read raw: {e}")))?;
+    if source.raw_hash.as_deref() != Some(input.raw_hash.as_str()) {
+        return Err(CompileError::Conflict(format!(
+            "source {} raw hash changed",
+            source.id
+        )));
     }
+    let rows = wiki_service::list_contributions_for_source(conn, &source.id).await?;
+    let mut prior_contrib: HashMap<String, Vec<String>> = HashMap::new();
+    prior_contrib.insert(
+        source.id.clone(),
+        rows.into_iter().map(|r| r.note_id).collect(),
+    );
+    let segments = persist_segments(conn, &source, &raw_text, &input.segment_ids).await?;
+    let segment_ids: Vec<String> = segments.iter().map(|(id, _)| id.clone()).collect();
+    let payload = candidates_llm_input(
+        &source.id,
+        raw_path,
+        &input.raw_hash,
+        input.annotation_revision,
+        &segment_ids,
+        &vault.to_string_lossy(),
+        &staging.to_string_lossy(),
+    );
+    let out = llm.complete_json("candidates", payload).await?;
+    let fallback = segment_ids.first().map(String::as_str).unwrap_or("s1");
+    let (all_candidates, warnings) = validate_candidates(&out, &source.id, fallback, &segment_ids)?;
+    for w in &warnings {
+        tracing::info!(source_id = %source.id, warning = %w, "[wiki] compile candidate warning");
+    }
+    let mut sources_by_id: HashMap<String, wiki_source::Model> = HashMap::new();
+    sources_by_id.insert(source.id.clone(), source);
 
     let match_in = json!({
         "candidates": all_candidates,
@@ -216,6 +368,9 @@ pub async fn run_compile_job(
             "type": e.page_type,
             "title": e.title,
         })).collect::<Vec<_>>(),
+        "vault_abs": vault.to_string_lossy(),
+        "staging_abs": staging.to_string_lossy(),
+        "instruction": "Read existing notes from the index paths with read_file when you need the body. related≠same.",
     });
     let match_out = llm.complete_json("match", match_in.clone()).await?;
     let matches = match_out
@@ -228,10 +383,13 @@ pub async fn run_compile_job(
         "candidates": all_candidates,
         "matches": matches,
         "index": match_in["index"],
+        "vault_abs": vault.to_string_lossy(),
+        "staging_abs": staging.to_string_lossy(),
     });
     let merge_out = llm.complete_json("merge", merge_in).await?;
 
-    let policy = WikiFsPolicy::for_compile_job(vault, state_root, &staging, &allowed_reads);
+    let policy = WikiFsPolicy::for_compile_job(vault, state_root, staging, &allowed_reads);
+    let one_input = vec![input.clone()];
     let mut proposals = proposals_from_merge(&merge_out, vault)?;
     if proposals.is_empty() {
         proposals = host_pages_from_candidates(
@@ -239,9 +397,9 @@ pub async fn run_compile_job(
             &all_candidates,
             &matches,
             &index,
-            &manifest.inputs,
+            &one_input,
             &sources_by_id,
-            &today,
+            today,
         )?;
     }
     let contributed: Vec<(String, String, String)> = proposals
@@ -258,14 +416,20 @@ pub async fn run_compile_job(
     ensure_source_pages(
         &mut proposals,
         vault,
-        &manifest.inputs,
+        &one_input,
         &sources_by_id,
         &contributed,
         &prior_contrib,
         &index,
-        &today,
+        today,
     )?;
     sanitize_capability_evidence(&mut proposals, &sources_by_id);
+    for p in &proposals {
+        if let Some(w) = check_leaf_body(&p.page_type, &p.after)? {
+            tracing::info!(rel = %p.rel, warning = %w, "[wiki] leaf body warning");
+            let _ = append_compile_log(vault, &job.id, &format!("{} {w}", p.rel));
+        }
+    }
     for p in &proposals {
         policy.check_page_type_path(&p.page_type, &p.rel)?;
         let staged = staging.join(p.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -281,13 +445,17 @@ pub async fn run_compile_job(
     let _ = llm
         .complete_json(
             "finalize",
-            json!({ "processed_inputs": manifest.inputs, "pages": proposals.iter().map(|p| &p.rel).collect::<Vec<_>>() }),
+            json!({ "processed_inputs": one_input, "pages": proposals.iter().map(|p| &p.rel).collect::<Vec<_>>() }),
         )
         .await;
 
+    let one_manifest = CompileJobManifest {
+        cutoff_source_seq: 0,
+        inputs: one_input.clone(),
+        ..Default::default()
+    };
     if proposals.is_empty() {
-        register_consumed(conn, &job.id, &manifest).await?;
-        append_compile_log(vault, &job.id, "compile nothing_to_persist")?;
+        register_consumed(conn, &job.id, &one_manifest).await?;
         return Ok(CompileOutcome {
             committed: Vec::new(),
             nothing_to_persist: true,
@@ -296,7 +464,7 @@ pub async fn run_compile_job(
 
     let compiled_pages = compiled_pages_from(&proposals);
     let committed = commit::commit_proposals(vault, state_root, &job.id, &proposals)?;
-    register_consumed(conn, &job.id, &manifest).await?;
+    register_consumed(conn, &job.id, &one_manifest).await?;
     for file in &committed.files {
         let Some(p) = proposals.iter().find(|p| p.rel == file.rel) else {
             continue;
@@ -308,26 +476,19 @@ pub async fn run_compile_job(
         if note_id.is_empty() {
             continue;
         }
-        for input in &manifest.inputs {
-            if page_cites_source(&p.after, &input.source_id) {
-                wiki_service::insert_contribution(
-                    conn,
-                    &input.source_id,
-                    &input.raw_hash,
-                    input.annotation_revision,
-                    &note_id,
-                    Some(&job.id),
-                )
-                .await?;
-            }
+        if page_cites_source(&p.after, &input.source_id) {
+            wiki_service::insert_contribution(
+                conn,
+                &input.source_id,
+                &input.raw_hash,
+                input.annotation_revision,
+                &note_id,
+                Some(&job.id),
+            )
+            .await?;
         }
     }
-    append_compile_log(
-        vault,
-        &job.id,
-        &format!("compile succeeded files={}", committed.files.len()),
-    )?;
-    touch_index_and_journal(vault, &job.id, &timezone, &sources_by_id, &compiled_pages)?;
+    touch_index_and_journal(vault, &job.id, timezone, &sources_by_id, &compiled_pages)?;
     Ok(CompileOutcome {
         committed: committed.files.into_iter().map(|f| f.rel).collect(),
         nothing_to_persist: false,
@@ -341,7 +502,10 @@ async fn freeze_or_load_manifest(
 ) -> Result<CompileJobManifest, CompileError> {
     if let Some(raw) = job.input_manifest.as_deref().filter(|s| !s.is_empty()) {
         if let Ok(m) = serde_json::from_str::<CompileJobManifest>(raw) {
-            if !m.inputs.is_empty() || raw.contains("cutoff_source_seq") {
+            if !m.memory_notes.is_empty()
+                || raw.contains("memory_notes")
+                || raw.contains(SYNTHESIZE_CONTRACT_VERSION)
+            {
                 return Ok(m);
             }
         }
@@ -349,53 +513,138 @@ async fn freeze_or_load_manifest(
     let vault_row = wiki_service::active_vault(conn)
         .await?
         .ok_or_else(|| CompileError::Validation("no active vault".into()))?;
-    let cutoff = wiki_service::max_source_seq(conn, &vault_row.id)
-        .await?
-        .unwrap_or(0);
-    freeze_manifest(conn, &vault_row.id, cutoff, vault).await
+    freeze_manifest(conn, &vault_row.id, 0, vault).await
 }
 
 pub async fn freeze_manifest(
     conn: &DatabaseConnection,
     vault_id: &str,
-    cutoff_source_seq: i64,
+    _cutoff_source_seq: i64,
     vault: &Path,
 ) -> Result<CompileJobManifest, CompileError> {
-    let sources = wiki_service::ready_sources_up_to_seq(conn, vault_id, cutoff_source_seq).await?;
-    let mut inputs = Vec::new();
-    for source in sources {
-        let Some(raw_hash) = source.raw_hash.clone() else {
-            continue;
-        };
+    let notes = scan_memory_notes(vault);
+    let mut memory_notes = Vec::new();
+    let mut binding_ids: Vec<String> = Vec::new();
+    for note in notes {
         if wiki_service::compile_input_consumed(
             conn,
-            &source.id,
-            &raw_hash,
-            source.annotation_revision,
-            COMPILE_CONTRACT_VERSION,
+            &note.rel,
+            &note.content_hash,
+            0,
+            SYNTHESIZE_CONTRACT_VERSION,
         )
         .await?
         {
             continue;
         }
-        let raw_path = source.raw_path.as_deref().unwrap_or("");
-        let abs = vault.join(raw_path);
-        let text = fs::read_to_string(&abs).unwrap_or_default();
-        let segs = split_segments(&body_of(&text));
-        let segment_ids: Vec<String> = segs.iter().map(|(id, _)| id.clone()).collect();
-        inputs.push(FrozenInput {
-            source_id: source.id,
-            raw_hash,
-            annotation_revision: source.annotation_revision,
-            segment_ids,
-            compile_contract_version: COMPILE_CONTRACT_VERSION.into(),
-            analysis_config_revision: ANALYSIS_CONFIG_REVISION.into(),
-        });
+        binding_ids.extend(note.project_binding_ids.iter().cloned());
+        memory_notes.push(note);
     }
+    binding_ids.sort();
+    binding_ids.dedup();
+    let extra_read_roots = extra_project_roots(conn, vault_id, &binding_ids, &memory_notes).await?;
     Ok(CompileJobManifest {
-        cutoff_source_seq,
-        inputs,
+        cutoff_source_seq: 0,
+        inputs: Vec::new(),
+        memory_notes,
+        extra_read_roots,
+        compile_contract_version: SYNTHESIZE_CONTRACT_VERSION.into(),
     })
+}
+
+pub fn scan_memory_notes(vault: &Path) -> Vec<MemoryNoteRef> {
+    let mut out = Vec::new();
+    for dir_rel in ["work/turns", "work/sessions"] {
+        let dir = vault.join(dir_rel);
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let rel = path
+                .strip_prefix(vault)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let page_type = yaml_string(&text, "type").unwrap_or_default();
+            let mut project_binding_ids = yaml_list(&text, "codeg_project_binding_id");
+            if project_binding_ids.is_empty() {
+                if let Some(id) = yaml_string(&text, "codeg_project_binding_id") {
+                    project_binding_ids.push(id);
+                }
+            }
+            out.push(MemoryNoteRef {
+                rel,
+                content_hash: content_hash(&text),
+                page_type,
+                project_binding_ids,
+            });
+        }
+    }
+    out
+}
+
+async fn extra_project_roots(
+    conn: &DatabaseConnection,
+    vault_id: &str,
+    yaml_bindings: &[String],
+    notes: &[MemoryNoteRef],
+) -> Result<Vec<String>, CompileError> {
+    let mut ids: Vec<String> = yaml_bindings.to_vec();
+    for note in notes {
+        ids.extend(note.project_binding_ids.iter().cloned());
+        if !note.project_binding_ids.is_empty() {
+            continue;
+        }
+        let source_id = note
+            .rel
+            .rsplit('/')
+            .next()
+            .and_then(|n| n.strip_suffix(".md"))
+            .map(str::to_string);
+        if let Some(sid) = source_id {
+            if let Ok(src) = wiki_service::get_source_model(conn, &sid).await {
+                if let Some(list) = src.project_ids.as_deref() {
+                    if let Ok(parsed) = serde_json::from_str::<Vec<String>>(list) {
+                        ids.extend(parsed);
+                    }
+                }
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    let bindings = wiki_service::list_project_bindings(conn, Some(vault_id)).await?;
+    let mut roots = Vec::new();
+    for b in bindings {
+        if !ids.is_empty() && !ids.iter().any(|id| id == &b.id) {
+            continue;
+        }
+        if ids.is_empty() {
+            continue;
+        }
+        let Some(path) = b.root_folder_path.clone() else {
+            continue;
+        };
+        let p = PathBuf::from(&path);
+        if p.components().any(|c| {
+            matches!(
+                c.as_os_str().to_string_lossy().as_ref(),
+                ".git" | ".obsidian" | "originals"
+            )
+        }) {
+            continue;
+        }
+        if p.is_dir() {
+            roots.push(path);
+        }
+    }
+    Ok(roots)
 }
 
 pub fn split_segments(text: &str) -> Vec<(String, String)> {
@@ -460,21 +709,84 @@ async fn persist_segments(
     Ok(segs)
 }
 
+pub(crate) fn candidates_llm_input(
+    source_id: &str,
+    raw_path: &str,
+    raw_hash: &str,
+    annotation_revision: i32,
+    segment_ids: &[String],
+    vault_abs: &str,
+    staging_abs: &str,
+) -> Value {
+    json!({
+        "source_id": source_id,
+        "raw_path": raw_path,
+        "raw_hash": raw_hash,
+        "annotation_revision": annotation_revision,
+        "segment_ids": segment_ids,
+        "compile_contract_version": COMPILE_CONTRACT_VERSION,
+        "vault_abs": vault_abs,
+        "staging_abs": staging_abs,
+        "instruction": "Read the converted markdown at raw_path with read_file/grep. Do not wait for an embedded excerpt. Cite locators using the host segment_ids.",
+    })
+}
+
+const LEAF_PAGE_TYPES: &[&str] = &[
+    "project",
+    "area",
+    "work-record",
+    "decision",
+    "outcome",
+    "capability",
+    "method",
+    "concept",
+    "entity",
+    "turn-summary",
+    "session-summary",
+];
+
+pub(crate) fn check_leaf_body(
+    page_type: &str,
+    after: &str,
+) -> Result<Option<String>, CompileError> {
+    if !LEAF_PAGE_TYPES.contains(&page_type) {
+        return Ok(None);
+    }
+    let n = body_of(after).chars().count();
+    if n > LEAF_BODY_HARD_CHARS {
+        return Err(CompileError::Validation(format!(
+            "{page_type} body is {n} characters; over the runaway cap of {LEAF_BODY_HARD_CHARS}"
+        )));
+    }
+    if n > LEAF_BODY_SOFT_CHARS {
+        return Ok(Some(format!(
+            "{page_type} body is {n} characters (soft guidance {LEAF_BODY_SOFT_CHARS}); kept as the model wrote it"
+        )));
+    }
+    Ok(None)
+}
+
 fn validate_candidates(
     out: &Value,
     source_id: &str,
     segment_id: &str,
-) -> Result<Vec<Value>, CompileError> {
+    allowed_segments: &[String],
+) -> Result<(Vec<Value>, Vec<String>), CompileError> {
     let Some(arr) = out.get("candidates").and_then(|v| v.as_array()) else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
-    if arr.len() > MAX_CANDIDATES_PER_SEGMENT {
-        return Err(CompileError::Validation(format!(
-            "segment {segment_id} returned more than {MAX_CANDIDATES_PER_SEGMENT} candidates"
-        )));
-    }
+    let mut warnings = Vec::new();
+    let slice = if arr.len() > MAX_CANDIDATES_PER_SEGMENT {
+        warnings.push(format!(
+            "segment {segment_id} returned {} candidates; keeping first {MAX_CANDIDATES_PER_SEGMENT}",
+            arr.len()
+        ));
+        &arr[..MAX_CANDIDATES_PER_SEGMENT]
+    } else {
+        arr.as_slice()
+    };
     let mut kept = Vec::new();
-    for c in arr {
+    for c in slice {
         let loc = c
             .get("locator")
             .ok_or_else(|| CompileError::Validation("candidate missing locator".into()))?;
@@ -496,11 +808,18 @@ fn validate_candidates(
         let mut c = c.clone();
         if let Some(obj) = c.get_mut("locator").and_then(|v| v.as_object_mut()) {
             obj.entry("source_id").or_insert_with(|| json!(source_id));
-            obj.entry("segment_id").or_insert_with(|| json!(segment_id));
+            let cited = obj
+                .get("segment_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let seg = cited
+                .filter(|id| allowed_segments.iter().any(|a| a == id))
+                .unwrap_or_else(|| segment_id.to_string());
+            obj.insert("segment_id".into(), json!(seg));
         }
         kept.push(c);
     }
-    Ok(kept)
+    Ok((kept, warnings))
 }
 
 fn proposals_from_merge(
@@ -1437,7 +1756,7 @@ pub fn scan_note_index(vault: &Path) -> Vec<NoteIndexEntry> {
     out
 }
 
-fn yaml_string(md: &str, key: &str) -> Option<String> {
+pub(crate) fn yaml_string(md: &str, key: &str) -> Option<String> {
     let (yaml, _) = commit::split_frontmatter(md)?;
     for line in yaml.lines() {
         let line = line.trim();
@@ -1451,7 +1770,7 @@ fn yaml_string(md: &str, key: &str) -> Option<String> {
     None
 }
 
-fn yaml_list(md: &str, key: &str) -> Vec<String> {
+pub(crate) fn yaml_list(md: &str, key: &str) -> Vec<String> {
     let Some((yaml, _)) = commit::split_frontmatter(md) else {
         return Vec::new();
     };
@@ -1874,19 +2193,10 @@ fn rebuild_generated_region(path: &Path, inner: &str) -> Result<bool, CompileErr
     Ok(true)
 }
 
-fn body_of(md: &str) -> String {
+pub(crate) fn body_of(md: &str) -> String {
     commit::split_frontmatter(md)
         .map(|(_, b)| b)
         .unwrap_or_else(|| md.to_string())
-}
-
-fn redacted_excerpt(text: &str) -> String {
-    const MAX: usize = SEGMENT_CHAR_BUDGET;
-    if text.chars().count() <= MAX {
-        text.to_string()
-    } else {
-        text.chars().take(MAX).collect()
-    }
 }
 
 pub(crate) async fn register_consumed(
@@ -1894,13 +2204,27 @@ pub(crate) async fn register_consumed(
     job_id: &str,
     manifest: &CompileJobManifest,
 ) -> Result<(), CompileError> {
+    let version = if manifest.compile_contract_version.is_empty() {
+        SYNTHESIZE_CONTRACT_VERSION
+    } else {
+        manifest.compile_contract_version.as_str()
+    };
+    for note in &manifest.memory_notes {
+        wiki_service::insert_compile_input(conn, &note.rel, &note.content_hash, 0, version, job_id)
+            .await?;
+    }
     for input in &manifest.inputs {
+        let ver = if input.compile_contract_version.is_empty() {
+            version
+        } else {
+            input.compile_contract_version.as_str()
+        };
         wiki_service::insert_compile_input(
             conn,
             &input.source_id,
             &input.raw_hash,
             input.annotation_revision,
-            &input.compile_contract_version,
+            ver,
             job_id,
         )
         .await?;
@@ -2165,15 +2489,113 @@ mod tests {
         let mut text = String::new();
         for i in 0..20 {
             text.push_str(&format!("# Heading {i}\n"));
-            text.push_str(&"x".repeat(500));
+            text.push_str(&"x".repeat(2_000));
             text.push('\n');
         }
         let segs = split_segments(&text);
         assert!(segs.len() > 1);
     }
 
+    fn candidate_list(source_id: &str, n: usize) -> Value {
+        let cands: Vec<Value> = (0..n)
+            .map(|i| {
+                candidate_json(
+                    &format!("c{i}"),
+                    "method",
+                    &format!("Method {i}"),
+                    "reference",
+                    source_id,
+                    json!({}),
+                )
+            })
+            .collect();
+        json!({ "candidates": cands })
+    }
+
+    #[test]
+    fn candidates_payload_points_at_raw_file_not_excerpt() {
+        let v = candidates_llm_input(
+            "sid",
+            "raw/sessions/sid.md",
+            "hash",
+            0,
+            &["s1".into(), "s2".into()],
+            "/tmp/wiki-vault",
+            "/tmp/wiki-state/staging/job",
+        );
+        assert_eq!(v["raw_path"], "raw/sessions/sid.md");
+        assert_eq!(v["source_id"], "sid");
+        assert!(
+            v.get("segment_ids")
+                .and_then(|x| x.as_array())
+                .unwrap()
+                .len()
+                == 2
+        );
+        assert!(v.get("segment_text").is_none());
+        assert!(v.get("redacted_text").is_none());
+        let dumped = v.to_string();
+        assert!(
+            !dumped.contains("Require an idempotency"),
+            "payload must not embed source body"
+        );
+    }
+
+    #[test]
+    fn leaf_body_over_soft_cap_warns_without_truncating() {
+        let body = "x".repeat(LEAF_BODY_SOFT_CHARS + 50);
+        let after = format!("---\ntitle: t\ntype: capability\n---\n\n{body}\n");
+        let warning = check_leaf_body("capability", &after)
+            .unwrap()
+            .expect("soft cap should warn");
+        assert!(warning.contains("capability"));
+        assert!(body_of(&after).chars().count() >= LEAF_BODY_SOFT_CHARS + 50);
+    }
+
+    #[test]
+    fn leaf_body_runaway_is_rejected() {
+        let body = "x".repeat(LEAF_BODY_HARD_CHARS + 1);
+        let after = format!("---\ntitle: t\ntype: method\n---\n\n{body}\n");
+        assert!(check_leaf_body("method", &after).is_err());
+    }
+
+    #[test]
+    fn index_pages_are_not_leaf_body_capped() {
+        let body = "x".repeat(LEAF_BODY_HARD_CHARS + 1);
+        let after = format!("---\ntype: index\n---\n\n{body}\n");
+        assert!(check_leaf_body("index", &after).unwrap().is_none());
+    }
+
+    fn write_turn_note(vault: &Path, source_id: &str, body: &str) -> MemoryNoteRef {
+        let rel = format!("work/turns/{source_id}.md");
+        let page = format!(
+            "---\ntitle: Turn work\ntype: turn-summary\ncodeg_note_id: \"n-{source_id}\"\ncodeg_source_id: \"{source_id}\"\n---\n\n{CONTENT_START}\n{body}\n{CONTENT_END}\n"
+        );
+        fs::create_dir_all(vault.join("work/turns")).unwrap();
+        fs::write(vault.join(&rel), &page).unwrap();
+        MemoryNoteRef {
+            rel,
+            content_hash: content_hash(&page),
+            page_type: "turn-summary".into(),
+            project_binding_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn synthesize_payload_has_memory_rels_no_candidates() {
+        let v = json!({
+            "schema": SYNTHESIZE_CONTRACT_VERSION,
+            "memory_notes": [{"rel": "work/turns/sid.md", "content_hash": "abc"}],
+            "extra_read_roots": [],
+        });
+        assert!(v.get("candidates").is_none());
+        assert!(v.get("segment_ids").is_none());
+        assert_eq!(v["memory_notes"][0]["rel"], "work/turns/sid.md");
+        assert!(!v.to_string().contains("raw/sessions"));
+    }
+
     #[tokio::test]
-    async fn mock_llm_writes_capability_page_with_source_link() {
+    async fn mock_llm_writes_capability_page_from_memory_notes() {
         let dir = tempfile::tempdir().unwrap();
         let vault = dir.path().join("vault");
         let state = dir.path().join("state");
@@ -2194,65 +2616,16 @@ mod tests {
         .await
         .unwrap();
         let source_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let raw_rel = format!("raw/sessions/{source_id}.md");
-        let raw_body = format!(
-            "---\ntitle: spec\ntype: session-dump\n---\n\n# API spec\n\nRequire an idempotency key on retried POSTs.\n"
-        );
-        let hash = content_hash(&raw_body);
-        fs::create_dir_all(vault.join("raw/sessions")).unwrap();
-        fs::write(vault.join(&raw_rel), &raw_body).unwrap();
-        wiki_source::ActiveModel {
-            id: Set(source_id.into()),
-            source_group_id: Set(source_id.into()),
-            vault_id: Set(vault_row.id.clone()),
-            source_kind: Set("document".into()),
-            source_seq: Set(1),
-            run_id: Set(None),
-            original_hash: Set(None),
-            raw_path: Set(Some(raw_rel)),
-            raw_hash: Set(Some(hash.clone())),
-            extractor_version: Set(None),
-            coverage_status: Set(None),
-            eligibility: Set("ready".into()),
-            material_role: Set(Some("reference".into())),
-            personal_role: Set(None),
-            annotation_revision: Set(0),
-            conversation_id: Set(None),
-            folder_id: Set(None),
-            root_folder_id: Set(None),
-            agent_type: Set(None),
-            model: Set(None),
-            mode: Set(None),
-            captured_at: Set(None),
-            occurred_at: Set(None),
-            truncated: Set(false),
-            redacted: Set(false),
-            request_id: Set(None),
-            original_filename: Set(None),
-            format: Set(None),
-            source_title: Set(None),
-            source_url: Set(None),
-            author: Set(None),
-            project_ids: Set(None),
-            area_ids: Set(None),
-            warnings: Set(None),
-            page_count: Set(None),
-            previous_source_id: Set(None),
-            created_at: Set(now),
-            updated_at: Set(now),
-        }
-        .insert(&db.conn)
-        .await
-        .unwrap();
+        write_turn_note(&vault, source_id, "Fixed list API cursor pagination.");
         let job = wiki_job::ActiveModel {
-            id: Set("job-compile-1".into()),
-            vault_id: Set(vault_row.id),
-            source_id: Set(Some(source_id.into())),
-            kind: Set("compile".into()),
+            id: Set("job-syn-1".into()),
+            vault_id: Set(vault_row.id.clone()),
+            source_id: Set(None),
+            kind: Set("wiki_synthesize".into()),
             status: Set("running".into()),
             dedupe_key: Set(Some("req-1".into())),
             input_manifest: Set(None),
-            config_version: Set(Some(COMPILE_CONTRACT_VERSION.into())),
+            config_version: Set(Some(SYNTHESIZE_CONTRACT_VERSION.into())),
             model_id: Set(None),
             protocol: Set(None),
             attempt: Set(1),
@@ -2273,30 +2646,37 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.nothing_to_persist);
-        let cap = fs::read_dir(vault.join("capabilities"))
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .find(|e| {
-                e.path().extension().and_then(|x| x.to_str()) == Some("md")
-                    && e.file_name() != "index.md"
-            })
-            .expect("capability page");
-        let text = fs::read_to_string(cap.path()).unwrap();
+        let cap = vault.join("capabilities/interface-design-mock.md");
+        assert!(cap.is_file(), "capability page from synthesize");
+        let text = fs::read_to_string(&cap).unwrap();
         assert!(text.contains("type: capability"));
-        assert!(text.contains(&format!("[[sources/{source_id}]]")));
-        assert!(vault.join(format!("sources/{source_id}.md")).is_file());
+        assert!(vault.join(format!("work/turns/{source_id}.md")).is_file());
 
-        // Retry: unique compile_input makes a second freeze empty; committing
-        // the same after_hash is still success.
+        let frozen = freeze_manifest(&db.conn, &vault_row.id, 0, &vault)
+            .await
+            .unwrap();
+        assert!(
+            frozen.memory_notes.is_empty()
+                || wiki_service::compile_input_consumed(
+                    &db.conn,
+                    &frozen.memory_notes[0].rel,
+                    &frozen.memory_notes[0].content_hash,
+                    0,
+                    SYNTHESIZE_CONTRACT_VERSION
+                )
+                .await
+                .unwrap()
+                || frozen.memory_notes.is_empty()
+        );
         let job2 = wiki_job::ActiveModel {
-            id: Set("job-compile-2".into()),
-            vault_id: Set(job.vault_id.clone()),
-            source_id: Set(Some(source_id.into())),
-            kind: Set("compile".into()),
+            id: Set("job-syn-2".into()),
+            vault_id: Set(vault_row.id),
+            source_id: Set(None),
+            kind: Set("wiki_synthesize".into()),
             status: Set("running".into()),
             dedupe_key: Set(Some("req-2".into())),
             input_manifest: Set(None),
-            config_version: Set(Some(COMPILE_CONTRACT_VERSION.into())),
+            config_version: Set(Some(SYNTHESIZE_CONTRACT_VERSION.into())),
             model_id: Set(None),
             protocol: Set(None),
             attempt: Set(1),
@@ -2315,6 +2695,70 @@ mod tests {
             .await
             .unwrap();
         assert!(out2.nothing_to_persist || out2.committed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn leaf_over_hard_cap_rejects_that_page_only() {
+        let fx = Fixture::new().await;
+        write_turn_note(&fx.vault, "sid-cap", "did work");
+        let huge = "x".repeat(LEAF_BODY_HARD_CHARS + 10);
+        let ok_body = format!(
+            "---\ntitle: \"Ok page\"\ntype: method\ntags:\n  - \"type/method\"\ncodeg_note_id: \"ok-note\"\n---\n\n{CONTENT_START}\n# Ok\n\nshort.\n{CONTENT_END}\n"
+        );
+        let long_body = format!(
+            "---\ntitle: \"Too long\"\ntype: capability\ntags:\n  - \"type/capability\"\ncodeg_note_id: \"long\"\n---\n\n{CONTENT_START}\n{huge}\n{CONTENT_END}\n"
+        );
+        let llm = MockWikiLlm::default().with_stage(
+            "synthesize",
+            json!({
+                "schema": SYNTHESIZE_CONTRACT_VERSION,
+                "processed_inputs": [{"rel": "work/turns/sid-cap.md", "content_hash": "x"}],
+                "page_proposals": [
+                    {
+                        "op": "create",
+                        "type": "capability",
+                        "path": "capabilities/too-long.md",
+                        "body": long_body
+                    },
+                    {
+                        "op": "create",
+                        "type": "method",
+                        "path": "knowledge/methods/ok.md",
+                        "body": ok_body
+                    }
+                ],
+                "nothing_to_persist": false,
+                "warnings": []
+            }),
+        );
+        let job = fx.add_job("job-cap", "sid-cap").await;
+        let out = run_compile_job(&fx.db.conn, &job, &llm, &fx.vault, &fx.state)
+            .await
+            .unwrap();
+        assert!(!fx.vault.join("capabilities/too-long.md").exists());
+        assert!(fx.vault.join("knowledge/methods/ok.md").is_file());
+        assert!(out
+            .committed
+            .iter()
+            .any(|r| r.contains("knowledge/methods/ok.md")));
+    }
+
+    #[tokio::test]
+    async fn synthesize_failure_does_not_roll_back_turn_page() {
+        let fx = Fixture::new().await;
+        write_turn_note(&fx.vault, "keep-turn", "turn body stays");
+        let job = fx.add_job("job-fail", "keep-turn").await;
+        let err = run_compile_job(
+            &fx.db.conn,
+            &job,
+            &MockWikiLlm::failing(),
+            &fx.vault,
+            &fx.state,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("mock") || err.retryable());
+        assert!(fx.vault.join("work/turns/keep-turn.md").is_file());
     }
 
     struct Fixture {
@@ -2433,7 +2877,7 @@ mod tests {
                 id: Set(job_id.into()),
                 vault_id: Set(self.vault_id.clone()),
                 source_id: Set(Some(source_id.into())),
-                kind: Set("compile".into()),
+                kind: Set("wiki_synthesize".into()),
                 status: Set("running".into()),
                 dedupe_key: Set(Some(job_id.into())),
                 input_manifest: Set(None),
@@ -2640,371 +3084,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reference_candidate_is_knowledge_only_without_personal_practice() {
+    async fn freeze_manifest_lists_memory_notes_not_raw_segments() {
         let fx = Fixture::new().await;
-        let source_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-        fx.add_source(
-            source_id,
-            1,
-            None,
-            Some("reference"),
-            None,
-            Some("接口规范"),
-            Some("api-spec.md"),
-            Some("complete"),
-        )
-        .await;
-        let job = fx.add_job("job-ref", source_id).await;
-        let llm = MockWikiLlm::default();
-        run_compile_job(&fx.db.conn, &job, &llm, &fx.vault, &fx.state)
+        write_turn_note(&fx.vault, "mem-1", "did the pagination work");
+        let manifest = freeze_manifest(&fx.db.conn, &fx.vault_id, 0, &fx.vault)
             .await
             .unwrap();
-        let pages = md_pages(&fx.vault.join("capabilities"));
-        assert_eq!(pages.len(), 1);
-        let text = fs::read_to_string(&pages[0]).unwrap();
-        assert!(text.contains("evidence_level: knowledge_only"));
-        assert!(text.contains("暂无个人实践"));
-        assert!(text.contains("verification_status: source_reported"));
-        assert!(!text.contains("product verified"));
-        assert!(!text.contains("practice_supported"));
-    }
-
-    #[tokio::test]
-    async fn malicious_candidate_role_cannot_upgrade_reference_source() {
-        let fx = Fixture::new().await;
-        let source_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-        fx.add_source(
-            source_id,
-            1,
-            None,
-            Some("reference"),
-            None,
-            Some("规范"),
-            Some("spec.md"),
-            Some("complete"),
-        )
-        .await;
-        let job = fx.add_job("job-malicious-role", source_id).await;
-        let llm = MockWikiLlm::default().with_stage("candidates", json!({
-            "candidates": [candidate_json(
-                "c1", "capability", "Interface design", "result", source_id,
-                json!({"actor": "user", "personal_role": "owner", "verification_status": "user_confirmed"}),
-            )]
-        }));
-        run_compile_job(&fx.db.conn, &job, &llm, &fx.vault, &fx.state)
-            .await
-            .unwrap();
-        let pages = md_pages(&fx.vault.join("capabilities"));
-        assert_eq!(pages.len(), 1);
-        let text = fs::read_to_string(&pages[0]).unwrap();
-        assert!(text.contains("evidence_level: knowledge_only"));
-        assert!(text.contains("personal_role: 未说明"));
-        assert!(text.contains("verification_status: source_reported"));
-        assert!(!text.contains("practice_supported"));
-    }
-
-    #[tokio::test]
-    async fn same_title_without_note_id_creates_two_pages() {
-        let fx = Fixture::new().await;
-        let source_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-        fx.add_source(
-            source_id,
-            1,
-            None,
-            Some("reference"),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-        let existing = format!(
-            "---\ntitle: Interface design\ntype: capability\nstatus: draft\nevidence_level: knowledge_only\ncodeg_note_id: \"11111111-1111-4111-8111-111111111111\"\n---\n\n{CONTENT_START}\n# Interface design\n\nexisting page body\n{CONTENT_END}\n"
+        assert_eq!(manifest.memory_notes.len(), 1);
+        assert_eq!(manifest.memory_notes[0].rel, "work/turns/mem-1.md");
+        assert!(manifest.inputs.is_empty());
+        assert_eq!(
+            manifest.compile_contract_version,
+            SYNTHESIZE_CONTRACT_VERSION
         );
-        fs::write(
-            fx.vault.join("capabilities/interface-design-11111111.md"),
-            &existing,
-        )
-        .unwrap();
-        let job = fx.add_job("job-same-title", source_id).await;
-        let llm = MockWikiLlm::default()
-            .with_stage(
-                "candidates",
-                json!({
-                    "candidates": [candidate_json(
-                        "c1",
-                        "capability",
-                        "Interface design",
-                        "reference",
-                        source_id,
-                        json!({}),
-                    )]
-                }),
-            )
-            .with_stage(
-                "match",
-                json!({
-                    "matches": [{
-                        "candidate_id": "c1",
-                        "relation": "same",
-                        "existing_note_id": null,
-                        "reason": "same title only"
-                    }]
-                }),
-            );
-        run_compile_job(&fx.db.conn, &job, &llm, &fx.vault, &fx.state)
-            .await
-            .unwrap();
-        let pages = md_pages(&fx.vault.join("capabilities"));
-        assert_eq!(pages.len(), 2, "title-only same must not merge");
-        let existing_now =
-            fs::read_to_string(fx.vault.join("capabilities/interface-design-11111111.md")).unwrap();
-        assert!(existing_now.contains("existing page body"));
-        assert!(!existing_now.contains("补充证据"));
+        let dumped = serde_json::to_string(&manifest).unwrap();
+        assert!(!dumped.contains("candidates"));
+        assert!(!dumped.contains("segment_ids"));
     }
 
-    #[tokio::test]
-    async fn occurred_at_writes_journal_for_source_day_not_compile_today() {
-        let fx = Fixture::new().await;
-        let source_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-        let occurred = DateTime::parse_from_rfc3339("2026-01-02T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        fx.add_source(
-            source_id,
-            1,
-            Some(occurred),
-            Some("own-work"),
-            Some("engineer"),
-            None,
-            None,
-            None,
-        )
-        .await;
-        let job = fx.add_job("job-journal", source_id).await;
-        let llm = MockWikiLlm::default()
-            .with_stage(
-                "candidates",
-                json!({
-                    "candidates": [candidate_json(
-                        "c1",
-                        "work-record",
-                        "Fix retry",
-                        "application",
-                        source_id,
-                        json!({"actor": "user", "personal_role": "engineer"}),
-                    )]
-                }),
-            )
-            .with_stage(
-                "match",
-                json!({
-                    "matches": [{
-                        "candidate_id": "c1",
-                        "relation": "new",
-                        "existing_note_id": null
-                    }]
-                }),
-            );
-        run_compile_job(&fx.db.conn, &job, &llm, &fx.vault, &fx.state)
-            .await
-            .unwrap();
-        let dated = fx.vault.join("journal/2026-01-02.md");
-        assert!(dated.is_file(), "journal must follow occurred_at");
-        let journal = fs::read_to_string(&dated).unwrap();
-        assert!(journal.contains("source:dddddddd-dddd-4ddd-8ddd-dddddddddddd"));
-        assert!(journal.contains("[[work/records/") || journal.contains("Fix retry"));
-        let today = Utc::now().date_naive().to_string();
-        if today != "2026-01-02" {
-            assert!(
-                !fx.vault.join(format!("journal/{today}.md")).exists(),
-                "must not dump historical work onto compile-today"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn missing_occurred_at_does_not_dump_journal() {
-        let fx = Fixture::new().await;
-        let source_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-        fx.add_source(
-            source_id,
-            1,
-            None,
-            Some("reference"),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-        let job = fx.add_job("job-no-journal", source_id).await;
-        run_compile_job(
-            &fx.db.conn,
-            &job,
-            &MockWikiLlm::default(),
-            &fx.vault,
-            &fx.state,
-        )
-        .await
-        .unwrap();
-        let journal_md = md_pages(&fx.vault.join("journal"));
-        assert!(
-            journal_md.is_empty(),
-            "external import without occurred_at must not write daily journal content"
+    #[test]
+    fn extra_project_roots_only_on_synthesize_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        let staging = dir.path().join("staging");
+        let project = dir.path().join("proj");
+        fs::create_dir_all(&vault).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::write(project.join("src/lib.rs"), "fn x() {}").unwrap();
+        let turn = crate::acp::file_system_runtime::FsAccessPolicy::wiki_worker(&vault, &staging);
+        assert!(turn.check_read(&project.join("src/lib.rs")).is_err());
+        let syn = crate::acp::file_system_runtime::FsAccessPolicy::wiki_worker_with_extra_reads(
+            &vault,
+            &staging,
+            &[project.clone()],
         );
-        let log = fs::read_to_string(fx.vault.join("log.md")).unwrap();
-        assert!(log.contains("compile succeeded") || log.contains("job-no-journal"));
-    }
-
-    #[tokio::test]
-    async fn source_page_lists_contribution_after_commit() {
-        let fx = Fixture::new().await;
-        let source_id = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-        fx.add_source(
-            source_id,
-            1,
-            None,
-            Some("reference"),
-            None,
-            Some("接口规范"),
-            Some("api-spec.md"),
-            Some("complete"),
-        )
-        .await;
-        let job = fx.add_job("job-contrib", source_id).await;
-        run_compile_job(
-            &fx.db.conn,
-            &job,
-            &MockWikiLlm::default(),
-            &fx.vault,
-            &fx.state,
-        )
-        .await
-        .unwrap();
-        let src = fs::read_to_string(fx.vault.join(format!("sources/{source_id}.md"))).unwrap();
-        assert!(src.contains("接口规范") || src.contains("api-spec.md"));
-        assert!(src.contains("material_role: reference"));
-        assert!(src.contains("extraction coverage: complete"));
-        assert!(src.contains("raw/imports/"));
-        assert!(src.contains("## 贡献到的页面"));
-        assert!(src.contains("[[capabilities/") || src.contains("Interface design"));
-        let caps = md_pages(&fx.vault.join("capabilities"));
-        assert_eq!(caps.len(), 1);
-        let cap_rel = caps[0]
-            .strip_prefix(&fx.vault)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let link_path = cap_rel.trim_end_matches(".md");
-        assert!(src.contains(&format!("[[{link_path}")));
-    }
-
-    #[tokio::test]
-    async fn index_generated_region_updates_and_keeps_user_text() {
-        let fx = Fixture::new().await;
-        let source_id = "99999999-9999-4999-8999-999999999999";
-        fx.add_source(
-            source_id,
-            1,
-            None,
-            Some("reference"),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-        for rel in ["index.md", "work/index.md", "capabilities/index.md"] {
-            let path = fx.vault.join(rel);
-            let mut text = fs::read_to_string(&path).unwrap();
-            text.push_str("\n用户备注：请保留\n");
-            fs::write(&path, text).unwrap();
-        }
-        let job = fx.add_job("job-index", source_id).await;
-        run_compile_job(
-            &fx.db.conn,
-            &job,
-            &MockWikiLlm::default(),
-            &fx.vault,
-            &fx.state,
-        )
-        .await
-        .unwrap();
-        for rel in ["index.md", "work/index.md", "capabilities/index.md"] {
-            let text = fs::read_to_string(fx.vault.join(rel)).unwrap();
-            assert!(
-                text.contains("用户备注：请保留"),
-                "{rel} must keep user text outside markers"
-            );
-            assert_eq!(text.matches(CONTENT_START).count(), 1);
-            assert_eq!(text.matches(CONTENT_END).count(), 1);
-        }
-        let caps_index = fs::read_to_string(fx.vault.join("capabilities/index.md")).unwrap();
-        assert!(caps_index.contains("knowledge_only") || caps_index.contains("Interface design"));
-        let root = fs::read_to_string(fx.vault.join("index.md")).unwrap();
-        assert!(root.contains("[[work/index"));
-        assert!(root.contains("[[capabilities/index"));
-    }
-
-    #[tokio::test]
-    async fn proposal_only_decision_has_proposed_state() {
-        let fx = Fixture::new().await;
-        let source_id = "12121212-1212-4121-8121-121212121212";
-        fx.add_source(
-            source_id,
-            1,
-            None,
-            Some("reference"),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
-        let job = fx.add_job("job-decision", source_id).await;
-        let llm = MockWikiLlm::default()
-            .with_stage(
-                "candidates",
-                json!({
-                    "candidates": [candidate_json(
-                        "c1",
-                        "decision",
-                        "Adopt Postgres",
-                        "reference",
-                        source_id,
-                        json!({
-                            "constraints": "Must run on existing hosts",
-                            "options": "Postgres or MySQL",
-                            "choice": "Propose Postgres",
-                            "rationale": "JSON support"
-                        }),
-                    )]
-                }),
-            )
-            .with_stage(
-                "match",
-                json!({
-                    "matches": [{
-                        "candidate_id": "c1",
-                        "relation": "new",
-                        "existing_note_id": null
-                    }]
-                }),
-            );
-        run_compile_job(&fx.db.conn, &job, &llm, &fx.vault, &fx.state)
-            .await
-            .unwrap();
-        let pages = md_pages(&fx.vault.join("work/decisions"));
-        assert_eq!(pages.len(), 1);
-        let text = fs::read_to_string(&pages[0]).unwrap();
-        assert!(text.contains("decision_state: proposed"));
-        assert!(text.contains("status: draft"));
-        assert!(!text.contains("status: proposed"));
-        assert!(!text.contains("decision_state: adopted"));
-        assert!(text.contains("## 约束"));
-        assert!(text.contains("## 备选方案"));
-        assert!(text.contains("## 选择"));
-        assert!(text.contains("## 理由"));
+        assert!(syn.check_read(&project.join("src/lib.rs")).is_ok());
     }
 }

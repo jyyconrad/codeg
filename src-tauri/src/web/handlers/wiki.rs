@@ -6,6 +6,7 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::wiki as core;
+use crate::commands::wiki::WikiMemoryNote;
 use crate::commands::wiki_engine as engine_core;
 use crate::db::service::wiki_service::{
     WikiImportResult, WikiJobInfo, WikiProjectBindingInfo, WikiSourceInfo,
@@ -13,6 +14,9 @@ use crate::db::service::wiki_service::{
 use crate::wiki::import::{
     ImportFilesParams, ImportFilesResult, ImportTextParams, LinkVersionParams,
     UpdateAnnotationsParams,
+};
+use crate::wiki::session_import::{
+    ImportDirectoryParams, ImportLocalSessionsParams, WikiBulkImportResult,
 };
 use crate::wiki::settings::{WikiSettings, WikiSettingsView};
 
@@ -119,6 +123,14 @@ pub struct ListProjectBindingsParams {
     pub vault_id: Option<String>,
 }
 
+pub async fn wiki_list_memory_notes(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<Vec<WikiMemoryNote>>, AppCommandError> {
+    Ok(Json(
+        core::wiki_list_memory_notes_core(&state.db.conn).await?,
+    ))
+}
+
 pub async fn wiki_list_project_bindings(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ListProjectBindingsParams>,
@@ -172,6 +184,24 @@ pub async fn wiki_import_files(
 ) -> Result<Json<ImportFilesResult>, AppCommandError> {
     Ok(Json(
         core::wiki_import_files_core(&state.db.conn, params).await?,
+    ))
+}
+
+pub async fn wiki_import_local_sessions(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ImportLocalSessionsParams>,
+) -> Result<Json<WikiBulkImportResult>, AppCommandError> {
+    Ok(Json(
+        core::wiki_import_local_sessions_core(&state.db.conn, params).await?,
+    ))
+}
+
+pub async fn wiki_import_directory(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<ImportDirectoryParams>,
+) -> Result<Json<WikiBulkImportResult>, AppCommandError> {
+    Ok(Json(
+        core::wiki_import_directory_core(&state.db.conn, params).await?,
     ))
 }
 

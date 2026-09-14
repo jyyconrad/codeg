@@ -6275,7 +6275,7 @@
   },
   "WikiSettings": {
     "sectionTitle": "개인 위키",
-    "sectionDescription": "Capture completed work sessions and imported documents into a local Markdown vault. Compile turns those sources into work notes and capability notes with citations.",
+    "sectionDescription": "완료된 작업 세션과 가져온 문서를 로컬 Markdown vault에 남깁니다. 턴/세션 기억을 먼저 쓰고, 예약 또는 즉시 정리로 프로젝트와 역량 노트를 합성합니다.",
     "loading": "불러오는 중...",
     "loadFailed": "위키 설정을 불러오지 못했습니다: {message}",
     "retry": "다시 시도",
@@ -6284,10 +6284,10 @@
     "saved": "위키 설정을 저장했습니다",
     "saveFailed": "위키 설정을 저장하지 못했습니다: {message}",
     "enabled": "개인 위키 사용",
-    "enabledHint": "Turning this on stores session and imported text in a local vault. Extracted text may later be sent to the bound model for ingest and compile.",
+    "enabledHint": "켜면 세션과 가져온 본문이 로컬 vault에 저장됩니다. 추출된 텍스트는 나중에 바인딩된 모델로 보내져 기억을 쓰거나 정리하는 데 쓰일 수 있습니다.",
     "enabledOffHint": "While off, new capture, imports, and job pickup stop. Existing notes stay browsable. In-flight commits finish or roll back to a consistent boundary.",
     "statusTitle": "Schedule",
-    "statusDescription": "Next compile time and sources still waiting to be analyzed.",
+    "statusDescription": "다음 정리 시각과 아직 처리할 소스 수.",
     "nextCompileAt": "다음 정리",
     "pendingSources": "대기 중인 소스",
     "notScheduled": "예약 없음",
@@ -6310,25 +6310,34 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "폴더 {id}",
-    "ingestTitle": "수집 분석",
-    "ingestDescription": "Ingest saves sources. An empty model id uses the bound Codeg Agent default.",
-    "ingestModel": "Ingest model id",
-    "ingestModelHint": "Override the bound Codeg Agent default model. Leave empty to use the bound channel.",
-    "ingestModelPlaceholder": "Bound default",
-    "ingestPrompt": "Ingest extra prompt",
-    "ingestPromptPlaceholder": "Optional overlay. Cannot expand read scope. Empty content must not invent a topic from the filename.",
-    "compileTitle": "정리",
-    "compileDescription": "Compile updates work and capability notes from ready sources.",
-    "compileEnabled": "정리 사용",
-    "compileEnabledHint": "When off, sources can still be saved. New compile jobs stop, and Compile now on the workbench is unavailable.",
-    "compileNowUnavailable": "정리가 꺼져 있으면 작업대의 ‘지금 정리’를 사용할 수 없습니다.",
-    "compileModel": "Compile model id",
-    "compileModelHint": "Override the bound Codeg Agent default model for compile. Leave empty to use the bound channel.",
-    "compileModelPlaceholder": "Bound default",
-    "compilePrompt": "Compile extra prompt",
-    "compilePromptPlaceholder": "Optional overlay on the built-in WeKnora-style four-step compile skill. Cannot raise permissions or invent claims.",
-    "ingestPromptBuiltinHint": "Built-in ingest skill always applies: one-line source summary, no rewriting of raw evidence.",
-    "compilePromptBuiltinHint": "Built-in compile always uses WeKnora discipline: candidates → match (related ≠ same) → staged merge → host finalize. Extra text cannot skip grounding."
+    "restoreBuiltinPrompt": "Restore built-in",
+    "turnSummaryTitle": "턴 요약",
+    "turnSummaryDescription": "성공한 ACP 턴마다 무엇을 바꾸고 구현했는지 읽을 수 있는 기억을 씁니다. 모델 id가 비어 있으면 바인딩된 기본 모델을 사용합니다.",
+    "turnSummaryModel": "턴 요약 모델 id",
+    "turnSummaryModelHint": "바인딩된 Codeg Agent 기본 모델을 덮어씁니다. 비워 두면 바인딩된 채널을 사용합니다.",
+    "turnSummaryModelPlaceholder": "바인딩 기본값",
+    "turnSummaryPrompt": "턴 요약 프롬프트",
+    "turnSummaryPromptPlaceholder": "전체 턴 요약 스킬. 호스트는 페이지 신원을 검증하며 읽기 범위를 넓힐 수 없습니다.",
+    "turnSummaryPromptBuiltinHint": "전체 턴 요약 스킬입니다. 여기서 수정하세요. 내장으로 되돌리면 이후 스킬 업데이트를 따릅니다.",
+    "sessionRollupTitle": "대화 요약",
+    "sessionRollupDescription": "대화가 완료로 표시되면 기존 턴 기억으로 대화 페이지를 하나 씁니다. 미완료 대화에는 세션 페이지가 없습니다.",
+    "sessionRollupModel": "대화 요약 모델 id",
+    "sessionRollupModelHint": "바인딩된 Codeg Agent 기본 모델을 덮어씁니다. 비워 두면 바인딩된 채널을 사용합니다.",
+    "sessionRollupModelPlaceholder": "바인딩 기본값",
+    "sessionRollupPrompt": "대화 요약 프롬프트",
+    "sessionRollupPromptPlaceholder": "전체 대화 요약 스킬. 호스트는 페이지 신원을 검증하며 읽기 범위를 넓힐 수 없습니다.",
+    "sessionRollupPromptBuiltinHint": "전체 대화 요약 스킬입니다. 여기서 수정하세요. 내장으로 되돌리면 이후 스킬 업데이트를 따릅니다.",
+    "synthesizeTitle": "작업 정리",
+    "synthesizeDescription": "예약 또는 즉시 정리는 기억 페이지로 프로젝트, 역할, 결정, 성과, 역량 노트를 갱신합니다. 가져온 자료는 자동으로 정리되지 않습니다.",
+    "synthesizeEnabled": "정리 사용",
+    "synthesizeEnabledHint": "꺼져 있어도 기억 페이지는 쓸 수 있습니다. 새 정리 작업은 멈추고 작업대의 ‘지금 정리’는 사용할 수 없습니다.",
+    "synthesizeNowUnavailable": "정리가 꺼져 있으면 작업대의 ‘지금 정리’를 사용할 수 없습니다.",
+    "synthesizeModel": "정리 모델 id",
+    "synthesizeModelHint": "정리용으로 바인딩된 Codeg Agent 기본 모델을 덮어씁니다. 비워 두면 바인딩된 채널을 사용합니다.",
+    "synthesizeModelPlaceholder": "바인딩 기본값",
+    "synthesizePrompt": "정리 프롬프트",
+    "synthesizePromptPlaceholder": "전체 작업 정리 스킬. 호스트는 근거를 검증하며 주장을 지어낼 수 없습니다.",
+    "synthesizePromptBuiltinHint": "전체 작업 정리 스킬입니다. 여기서 수정하세요. 내장으로 되돌리면 이후 스킬 업데이트를 따릅니다."
   },
   "Wiki": {
     "title": "개인 위키",
@@ -6354,8 +6363,15 @@
       "emptyDescription": "볼트의 모든 지식 텍스트를 볼 수 있습니다. index.md, work/, capabilities/, knowledge/, sources/, journal/, log.md, AGENTS.md. Markdown 파일을 클릭하면 전문이 열립니다. [[wikilink]]는 볼트 안의 노트로 이동합니다."
     },
     "work": {
-      "emptyTitle": "작업 노트가 아직 없습니다",
-      "emptyDescription": "Projects, areas of responsibility, work records, decisions, and outcomes appear here after sources are compiled. A project page covers background, your role, progress, decisions, outcomes, and related capabilities. An area is an ongoing responsibility. Records capture a problem, action, and result. Decisions keep constraints, options, and rationale. Outcomes keep deliverables and evidence — never invented numbers."
+      "emptyTitle": "작업 기억이 아직 없습니다",
+      "emptyDescription": "성공한 ACP 턴과 완료된 대화는 이번 턴이나 세션에서 한 일을 기억 노트로 남깁니다. 이후 예약 또는 즉시 정리가 그 기억을 프로젝트, 역할, 결정, 성과, 역량 노트로 합성합니다. 자료 탭의 소스는 여기에 나타나지 않습니다.",
+      "compileFailed": "최근 작업 정리 실패: {message}",
+      "memoryCount": "{count, plural, other {기억 #개}}",
+      "ungrouped": "미분류",
+      "pageType": {
+        "turn-summary": "턴",
+        "session-summary": "세션"
+      }
     },
     "capabilities": {
       "emptyTitle": "역량 노트가 아직 없습니다",
@@ -6415,19 +6431,22 @@
     },
     "jobs": {
       "emptyTitle": "작업이 아직 없습니다",
-      "emptyDescription": "Ingest and compile jobs show progress, failures, and conflicts here. Retry and cancel will appear once those commands ship.",
-      "readOnlyHint": "Job status is read-only in this slice. Retry and cancel need later backend commands.",
-      "compileNow": "Compile now",
-      "compiling": "Starting compile…",
+      "emptyDescription": "턴 요약, 대화 요약, 작업 정리 작업의 진행, 실패, 충돌이 여기에 표시됩니다.",
+      "readOnlyHint": "‘지금 정리’는 작업 정리 작업을 대기열에 넣습니다. 실패한 작업은 재시도하고, 아직 커밋되지 않은 작업은 취소할 수 있습니다.",
+      "compileNow": "지금 정리",
+      "compiling": "정리를 시작하는 중…",
       "retryJob": "Retry job",
       "cancelJob": "Cancel job",
-      "compileDisabled": "Compile is turned off in Settings.",
+      "compileDisabled": "설정에서 정리가 꺼져 있습니다.",
       "allStatuses": "모든 상태",
       "detailPlaceholder": "Select a job to see details.",
       "kind": {
-        "ingest": "수집",
+        "ingest": "수집 분석",
         "compile": "정리",
-        "unknown": "작업"
+        "unknown": "작업",
+        "turn_summary": "턴 요약",
+        "session_rollup": "대화 요약",
+        "wiki_synthesize": "작업 정리"
       },
       "status": {
         "queued": "대기",
@@ -6447,6 +6466,18 @@
     "note": {
       "untitled": "제목 없음",
       "preview": "노트를 선택해 미리보세요."
-    }
+    },
+    "import": "Import",
+    "importTitle": "Import into wiki",
+    "importSessions": "Local agent conversations",
+    "importSessionsHint": "이 기기의 Claude, Codex, Grok 등 에이전트 대화를 위키 소스로 가져옵니다. 가져오기는 자동으로 요약하거나 정리하지 않습니다.",
+    "importSessionsCount": "{count, plural, one {# local conversation ready} other {# local conversations ready}}",
+    "importSessionsAction": "Import all local conversations",
+    "importDirectory": "Specified directory",
+    "importDirectoryHint": "Import Markdown, TXT, PDF, and DOCX in a folder. Local agent sessions whose working directory is inside that folder are imported too.",
+    "importDirectoryAction": "Choose directory",
+    "importing": "Importing…",
+    "importResult": "Imported {imported}, duplicates {duplicates}, failed {failed}.",
+    "importFailed": "Import failed: {message}"
   }
 }

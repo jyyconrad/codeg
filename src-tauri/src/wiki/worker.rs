@@ -1,4 +1,4 @@
-//! Run ingest-summary and compile attempts. No visible conversations.
+//! Run turn_summary, session_rollup, and wiki_synthesize attempts.
 
 use std::fs;
 use std::path::Path;
@@ -12,14 +12,17 @@ use crate::db::service::wiki_service;
 use crate::wiki::compile::{self, CompileError};
 use crate::wiki::llm::{parse_json_object, WikiLlm, WikiLlmError};
 use crate::wiki::raw;
+use crate::wiki::session_rollup;
+use crate::wiki::turn_summary;
 
-const WIKI_INGEST_SKILL: &str = include_str!("../../agent-skills/wiki-ingest/SKILL.md");
 const INGEST_MAX_TURNS: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
     #[error("{0}")]
     Failed(String),
+    #[error("blocked-by-configuration: {0}")]
+    Blocked(String),
     #[error(transparent)]
     Compile(#[from] CompileError),
     #[error(transparent)]
@@ -30,20 +33,50 @@ impl WorkerError {
     pub fn error_code(&self) -> &'static str {
         match self {
             Self::Failed(_) => "worker_failed",
+            Self::Blocked(_) => crate::wiki::llm::BLOCKED_BY_CONFIGURATION,
             Self::Compile(e) => e.error_code(),
             Self::Db(_) => "database",
         }
     }
+
+    pub fn retryable(&self) -> bool {
+        match self {
+            Self::Failed(_) | Self::Db(_) => true,
+            Self::Blocked(_) => false,
+            Self::Compile(e) => e.retryable(),
+        }
+    }
 }
 
-/// Optional one-line source summary. Never rewrites raw. Schema failure still
-/// leaves raw + source ready.
+pub async fn run_turn_summary(
+    conn: &DatabaseConnection,
+    job: &wiki_job::Model,
+    llm: &dyn WikiLlm,
+    vault: &Path,
+    state_root: &Path,
+) -> Result<(), WorkerError> {
+    turn_summary::run_turn_summary_job(conn, job, llm, vault, state_root).await?;
+    Ok(())
+}
+
+pub async fn run_session_rollup(
+    conn: &DatabaseConnection,
+    job: &wiki_job::Model,
+    llm: &dyn WikiLlm,
+    vault: &Path,
+    state_root: &Path,
+) -> Result<(), WorkerError> {
+    session_rollup::run_session_rollup_job(conn, job, llm, vault, state_root).await?;
+    Ok(())
+}
+
+/// Legacy ingest helper kept for existing tests. Production uses turn_summary.
 pub async fn run_ingest_summary(
     conn: &DatabaseConnection,
     job: &wiki_job::Model,
     llm: Option<&dyn WikiLlm>,
     vault: &Path,
-) -> Result<Value, WorkerError> {
+) -> Result<serde_json::Value, WorkerError> {
     let source_id = job
         .source_id
         .as_deref()
@@ -61,9 +94,7 @@ pub async fn run_ingest_summary(
             abs.display()
         )));
     }
-    let raw_text = fs::read_to_string(&abs).map_err(|e| WorkerError::Failed(e.to_string()))?;
-    // Never send the filesystem path of raw/ as a tool target; pass text.
-    let excerpt = clip_for_summary(&raw_text);
+    let _raw_text = fs::read_to_string(&abs).map_err(|e| WorkerError::Failed(e.to_string()))?;
 
     let mut output = json!({
         "raw_preserved": true,
@@ -78,12 +109,12 @@ pub async fn run_ingest_summary(
             warnings.push("no model bound; source summary skipped".into());
         }
         Some(llm) => {
-            let input = json!({
-                "source_id": source.id,
-                "source_kind": source.source_kind,
-                "skill": WIKI_INGEST_SKILL,
-                "redacted_text": excerpt,
-            });
+            let input = ingest_llm_input(
+                &source.id,
+                &source.source_kind,
+                raw_rel,
+                &vault.to_string_lossy(),
+            );
             match llm.complete_json("ingest", input).await {
                 Ok(v) => match validate_ingest_summary(&v, &source.id) {
                     Ok(summary) => {
@@ -119,6 +150,14 @@ pub async fn run_ingest_summary(
         &serde_json::to_string(&output).unwrap_or_else(|_| "{}".into()),
     )
     .await?;
+    if let Some(summary) = output
+        .pointer("/summary/source_summary")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let _ = wiki_service::fill_source_title_if_empty(conn, &source.id, summary).await;
+    }
 
     let log_line = format!(
         "{} ingest succeeded job={} source={}",
@@ -165,21 +204,19 @@ fn validate_ingest_summary(v: &Value, source_id: &str) -> Result<Value, String> 
     }))
 }
 
-fn clip_for_summary(text: &str) -> String {
-    const MAX: usize = 12_000;
-    if text.chars().count() <= MAX {
-        return text.to_string();
-    }
-    let head: String = text.chars().take(MAX / 2).collect();
-    let tail: String = text
-        .chars()
-        .rev()
-        .take(MAX / 2)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("{head}\n\n…[truncated for ingest summary]…\n\n{tail}")
+pub(crate) fn ingest_llm_input(
+    source_id: &str,
+    source_kind: &str,
+    raw_path: &str,
+    vault_abs: &str,
+) -> Value {
+    json!({
+        "source_id": source_id,
+        "source_kind": source_kind,
+        "raw_path": raw_path,
+        "vault_abs": vault_abs,
+        "instruction": "Read the converted markdown at raw_path with read_file. Do not wait for an embedded excerpt. Return a one-line source_summary.",
+    })
 }
 
 pub async fn run_compile_attempt(
@@ -208,6 +245,15 @@ mod tests {
     use chrono::Utc;
     use sea_orm::{ActiveModelTrait, Set};
     use tempfile::tempdir;
+
+    #[test]
+    fn ingest_payload_points_at_raw_file_not_clipped_body() {
+        let v = ingest_llm_input("sid", "acp-turn", "raw/sessions/sid.md", "/tmp/wiki-vault");
+        assert_eq!(v["raw_path"], "raw/sessions/sid.md");
+        assert_eq!(v["source_id"], "sid");
+        assert!(v.get("redacted_text").is_none());
+        assert!(v.get("excerpt").is_none());
+    }
 
     #[tokio::test]
     async fn ingest_summary_failure_does_not_delete_raw() {
@@ -280,7 +326,7 @@ mod tests {
             id: Set("job-ing".into()),
             vault_id: Set(v.id),
             source_id: Set(Some(source_id.into())),
-            kind: Set("ingest".into()),
+            kind: Set("turn_summary".into()),
             status: Set("running".into()),
             dedupe_key: Set(None),
             input_manifest: Set(None),

@@ -9,7 +9,10 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::wiki::paths::{is_safe_vault_relative, join_vault_relative};
 
-/// Page types the host may write during compile.
+/// Page types the host may write during compile / memory jobs.
+///
+/// Memory-note stable paths (host-owned; model does not mint filenames):
+/// `work/turns/{source_id}.md`, `work/sessions/c{conversation_id}.md`.
 pub const ALLOWED_PAGE_TYPES: &[&str] = &[
     "work-record",
     "decision",
@@ -23,6 +26,8 @@ pub const ALLOWED_PAGE_TYPES: &[&str] = &[
     "source",
     "daily",
     "index",
+    "turn-summary",
+    "session-summary",
 ];
 
 const DENIED_SEGMENTS: &[&str] = &[
@@ -290,6 +295,8 @@ pub fn is_allowed_commit_rel(rel: &str) -> bool {
         || rel.starts_with("work/records/")
         || rel.starts_with("work/decisions/")
         || rel.starts_with("work/outcomes/")
+        || rel.starts_with("work/turns/")
+        || rel.starts_with("work/sessions/")
         || rel.starts_with("capabilities/")
         || rel.starts_with("knowledge/concepts/")
         || rel.starts_with("knowledge/methods/")
@@ -322,6 +329,8 @@ pub fn page_type_matches_rel(page_type: &str, rel: &str) -> bool {
                 "index.md" | "work/index.md" | "capabilities/index.md" | "log.md"
             )
         }
+        "turn-summary" => rel.starts_with("work/turns/") && rel.ends_with(".md"),
+        "session-summary" => rel.starts_with("work/sessions/") && rel.ends_with(".md"),
         _ => false,
     }
 }
@@ -442,6 +451,56 @@ mod tests {
         fs::create_dir_all(escape.parent().unwrap()).unwrap();
         fs::write(&escape, "x").unwrap();
         assert!(p.check_stage_write(&escape).is_err());
+    }
+
+    #[test]
+    fn turn_and_session_summary_only_match_memory_dirs() {
+        let dir = tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        let p = policy(&vault, &dir.path().join("state"));
+
+        // Stable paths: work/turns/{source_id}.md, work/sessions/c{conversation_id}.md
+        assert!(is_allowed_commit_rel("work/turns/source-id.md"));
+        assert!(is_allowed_commit_rel("work/sessions/c42.md"));
+        assert!(page_type_matches_rel(
+            "turn-summary",
+            "work/turns/source-id.md"
+        ));
+        assert!(page_type_matches_rel(
+            "session-summary",
+            "work/sessions/c42.md"
+        ));
+        assert!(!page_type_matches_rel(
+            "turn-summary",
+            "work/sessions/c42.md"
+        ));
+        assert!(!page_type_matches_rel(
+            "session-summary",
+            "work/turns/source-id.md"
+        ));
+        assert!(!page_type_matches_rel("turn-summary", "work/projects/x.md"));
+        assert!(!page_type_matches_rel(
+            "session-summary",
+            "work/records/x.md"
+        ));
+        assert!(ALLOWED_PAGE_TYPES.contains(&"turn-summary"));
+        assert!(ALLOWED_PAGE_TYPES.contains(&"session-summary"));
+
+        assert!(p
+            .check_page_type_path("turn-summary", "work/turns/source-id.md")
+            .is_ok());
+        assert!(p
+            .check_page_type_path("session-summary", "work/sessions/c42.md")
+            .is_ok());
+        assert!(p
+            .check_page_type_path("turn-summary", "work/projects/x.md")
+            .is_err());
+        assert!(p
+            .check_page_type_path("session-summary", "work/turns/source-id.md")
+            .is_err());
+        assert!(p.check_commit_rel("work/turns/source-id.md").is_ok());
+        assert!(p.check_commit_rel("work/sessions/c42.md").is_ok());
     }
 
     #[test]

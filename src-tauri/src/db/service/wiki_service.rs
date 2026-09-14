@@ -16,8 +16,16 @@ use crate::db::error::DbError;
 #[derive(Debug, Clone)]
 pub struct InsertedSource {
     pub source: wiki_source::Model,
-    pub job: wiki_job::Model,
+    pub job: Option<wiki_job::Model>,
     pub created: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertMode {
+    /// Skip when any job with this key exists (including succeeded/failed).
+    ReuseTerminal,
+    /// Skip only queued/running; a later event may overwrite the same page.
+    ActiveOnly,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +77,8 @@ pub struct WikiSourceInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
@@ -110,17 +120,26 @@ pub struct WikiProjectBindingInfo {
     pub db_instance_id: String,
     pub root_folder_id: i32,
     pub project_note_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_folder_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_folder_path: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-fn project_binding_info(m: wiki_project_binding::Model) -> WikiProjectBindingInfo {
+fn project_binding_info(
+    m: wiki_project_binding::Model,
+    folder: Option<&crate::db::entities::folder::Model>,
+) -> WikiProjectBindingInfo {
     WikiProjectBindingInfo {
         id: m.id,
         vault_id: m.vault_id,
         db_instance_id: m.db_instance_id,
         root_folder_id: m.root_folder_id,
         project_note_id: m.project_note_id,
+        root_folder_name: folder.map(|f| f.name.clone()),
+        root_folder_path: folder.map(|f| f.path.clone()),
         created_at: m.created_at,
         updated_at: m.updated_at,
     }
@@ -175,10 +194,24 @@ pub async fn list_project_bindings(
     if let Some(vault) = vault_id.filter(|s| !s.is_empty()) {
         q = q.filter(wiki_project_binding::Column::VaultId.eq(vault));
     }
-    Ok(q.all(conn)
-        .await?
+    let rows = q.all(conn).await?;
+    let folder_ids: Vec<i32> = rows.iter().map(|r| r.root_folder_id).collect();
+    let folders = if folder_ids.is_empty() {
+        Vec::new()
+    } else {
+        crate::db::entities::folder::Entity::find()
+            .filter(crate::db::entities::folder::Column::Id.is_in(folder_ids))
+            .all(conn)
+            .await?
+    };
+    let by_id: std::collections::HashMap<i32, crate::db::entities::folder::Model> =
+        folders.into_iter().map(|f| (f.id, f)).collect();
+    Ok(rows
         .into_iter()
-        .map(project_binding_info)
+        .map(|m| {
+            let folder = by_id.get(&m.root_folder_id);
+            project_binding_info(m, folder)
+        })
         .collect())
 }
 
@@ -237,6 +270,7 @@ pub fn source_info(m: wiki_source::Model) -> WikiSourceInfo {
         format: m.format,
         title: source_title.clone(),
         source_title,
+        source_summary: None,
         source_url: m.source_url,
         author: m.author,
         material_role: m.material_role,
@@ -251,6 +285,112 @@ pub fn source_info(m: wiki_source::Model) -> WikiSourceInfo {
         extractor_version: m.extractor_version,
         original_hash: m.original_hash,
     }
+}
+
+fn ingest_source_summary(output_manifest: &Option<String>) -> Option<String> {
+    let raw = output_manifest.as_deref()?;
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    v.pointer("/summary/source_summary")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("summary").and_then(|x| x.as_str()))
+        .or_else(|| v.get("title").and_then(|x| x.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+async fn attach_ingest_summaries(
+    conn: &DatabaseConnection,
+    sources: &mut [WikiSourceInfo],
+) -> Result<(), DbError> {
+    if sources.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
+    let jobs = wiki_job::Entity::find()
+        .filter(wiki_job::Column::Kind.is_in(["ingest", "turn_summary"]))
+        .filter(wiki_job::Column::SourceId.is_in(ids))
+        .order_by_asc(wiki_job::Column::UpdatedAt)
+        .all(conn)
+        .await?;
+    let mut best: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for job in jobs {
+        if let (Some(sid), Some(sum)) = (job.source_id, ingest_source_summary(&job.output_manifest))
+        {
+            best.insert(sid, sum);
+        }
+    }
+    let conv_ids: Vec<i32> = sources.iter().filter_map(|s| s.conversation_id).collect();
+    let conv_titles: std::collections::HashMap<i32, String> = if conv_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        crate::db::entities::conversation::Entity::find()
+            .filter(crate::db::entities::conversation::Column::Id.is_in(conv_ids))
+            .all(conn)
+            .await?
+            .into_iter()
+            .filter_map(|c| {
+                c.title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| (c.id, s.to_string()))
+            })
+            .collect()
+    };
+    for source in sources.iter_mut() {
+        if let Some(sum) = best.get(&source.id) {
+            source.source_summary = Some(sum.clone());
+        }
+        let missing_title = source
+            .source_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none();
+        if missing_title {
+            if let Some(cid) = source.conversation_id {
+                if let Some(title) = conv_titles.get(&cid) {
+                    source.source_title = Some(title.clone());
+                    source.title = Some(title.clone());
+                    continue;
+                }
+            }
+            if let Some(sum) = source.source_summary.clone() {
+                source.source_title = Some(sum.clone());
+                source.title = Some(sum);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn fill_source_title_if_empty(
+    conn: &DatabaseConnection,
+    source_id: &str,
+    title: &str,
+) -> Result<(), DbError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(());
+    }
+    let row = wiki_source::Entity::find_by_id(source_id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("wiki source {source_id}")))?;
+    if row
+        .source_title
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Ok(());
+    }
+    let mut active: wiki_source::ActiveModel = row.into();
+    active.source_title = Set(Some(title.to_string()));
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
 }
 
 pub async fn ensure_active_vault(
@@ -323,6 +463,7 @@ pub struct NewAcpSource {
     pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
     pub truncated: bool,
     pub redacted: bool,
+    pub source_title: Option<String>,
 }
 
 /// Insert source + ingest job in one transaction. Idempotent on (vault_id, run_id).
@@ -331,9 +472,7 @@ pub async fn insert_acp_source_and_ingest_job(
     new: NewAcpSource,
 ) -> Result<InsertedSource, DbError> {
     if let Some(existing) = find_source_by_run(conn, &new.vault_id, &new.run_id).await? {
-        let job = find_ingest_job(conn, &existing.id)
-            .await?
-            .ok_or_else(|| DbError::NotFound(format!("ingest job for source {}", existing.id)))?;
+        let job = find_ingest_job(conn, &existing.id).await?;
         return Ok(InsertedSource {
             source: existing,
             job,
@@ -344,14 +483,12 @@ pub async fn insert_acp_source_and_ingest_job(
     let now = Utc::now();
     let source_id = uuid::Uuid::new_v4().to_string();
     let job_id = uuid::Uuid::new_v4().to_string();
-    let dedupe_key = format!("{}:ingest:{}", new.vault_id, new.run_id);
+    let dedupe_key = format!("turn_summary:{source_id}:pending");
     let db_instance_id = crate::wiki::settings::ensure_db_instance_id(conn).await?;
 
     let txn = conn.begin().await?;
     if let Some(existing) = find_source_by_run(&txn, &new.vault_id, &new.run_id).await? {
-        let job = find_ingest_job(&txn, &existing.id)
-            .await?
-            .ok_or_else(|| DbError::NotFound(format!("ingest job for source {}", existing.id)))?;
+        let job = find_ingest_job(&txn, &existing.id).await?;
         txn.commit().await?;
         return Ok(InsertedSource {
             source: existing,
@@ -396,7 +533,7 @@ pub async fn insert_acp_source_and_ingest_job(
         request_id: Set(None),
         original_filename: Set(None),
         format: Set(None),
-        source_title: Set(None),
+        source_title: Set(new.source_title.clone()),
         source_url: Set(None),
         author: Set(None),
         project_ids: Set(if let Some(root_id) = new.root_folder_id {
@@ -421,9 +558,7 @@ pub async fn insert_acp_source_and_ingest_job(
             let existing = find_source_by_run(conn, &new.vault_id, &new.run_id)
                 .await?
                 .ok_or_else(|| DbError::Conflict("wiki source unique race".into()))?;
-            let job = find_ingest_job(conn, &existing.id).await?.ok_or_else(|| {
-                DbError::NotFound(format!("ingest job for source {}", existing.id))
-            })?;
+            let job = find_ingest_job(conn, &existing.id).await?;
             return Ok(InsertedSource {
                 source: existing,
                 job,
@@ -437,7 +572,7 @@ pub async fn insert_acp_source_and_ingest_job(
         id: Set(job_id),
         vault_id: Set(new.vault_id),
         source_id: Set(Some(source_id)),
-        kind: Set("ingest".into()),
+        kind: Set("turn_summary".into()),
         status: Set("queued".into()),
         dedupe_key: Set(Some(dedupe_key)),
         input_manifest: Set(None),
@@ -457,7 +592,7 @@ pub async fn insert_acp_source_and_ingest_job(
     txn.commit().await?;
     Ok(InsertedSource {
         source: source_model,
-        job: job_model,
+        job: Some(job_model),
         created: true,
     })
 }
@@ -480,7 +615,7 @@ pub async fn find_ingest_job<C: ConnectionTrait>(
 ) -> Result<Option<wiki_job::Model>, DbError> {
     Ok(wiki_job::Entity::find()
         .filter(wiki_job::Column::SourceId.eq(source_id))
-        .filter(wiki_job::Column::Kind.eq("ingest"))
+        .filter(wiki_job::Column::Kind.is_in(["turn_summary", "ingest"]))
         .order_by_asc(wiki_job::Column::CreatedAt)
         .one(conn)
         .await?)
@@ -550,7 +685,7 @@ pub async fn insert_failed_job(
         id: Set(uuid::Uuid::new_v4().to_string()),
         vault_id: Set(vault_id),
         source_id: Set(source_id.map(str::to_string)),
-        kind: Set("ingest".into()),
+        kind: Set("turn_summary".into()),
         status: Set("failed".into()),
         dedupe_key: Set(None),
         input_manifest: Set(None),
@@ -615,14 +750,16 @@ pub async fn list_sources(
             })
             .unwrap_or(true)
     });
-    Ok(if project_id.is_some() {
+    let mut items: Vec<WikiSourceInfo> = if project_id.is_some() {
         iter.skip(offset as usize)
             .take(limit as usize)
             .map(source_info)
             .collect()
     } else {
         iter.map(source_info).collect()
-    })
+    };
+    attach_ingest_summaries(conn, &mut items).await?;
+    Ok(items)
 }
 
 pub async fn get_source(conn: &DatabaseConnection, id: &str) -> Result<WikiSourceInfo, DbError> {
@@ -630,7 +767,9 @@ pub async fn get_source(conn: &DatabaseConnection, id: &str) -> Result<WikiSourc
         .one(conn)
         .await?
         .ok_or_else(|| DbError::NotFound(format!("wiki source {id}")))?;
-    Ok(source_info(row))
+    let mut items = vec![source_info(row)];
+    attach_ingest_summaries(conn, &mut items).await?;
+    Ok(items.into_iter().next().expect("one source"))
 }
 
 pub async fn pending_source_count(conn: &DatabaseConnection) -> Result<u64, DbError> {
@@ -755,7 +894,6 @@ pub async fn insert_import_source_and_ingest_job(
         .id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let job_id = uuid::Uuid::new_v4().to_string();
     let vault_id = new.vault_id.clone();
     let request_id = new.request_id.clone();
     let original_hash = new.original_hash.clone();
@@ -764,7 +902,6 @@ pub async fn insert_import_source_and_ingest_job(
         .source_group_id
         .clone()
         .unwrap_or_else(|| source_id.clone());
-    let dedupe_key = format!("{}:import:{}", vault_id, request_id);
 
     let txn = conn.begin().await?;
     if let Some(existing) = find_source_by_request_id(&txn, &vault_id, &request_id).await? {
@@ -847,35 +984,11 @@ pub async fn insert_import_source_and_ingest_job(
         Err(e) => return Err(e.into()),
     };
 
-    let finished = matches!(
-        new.job_status.as_str(),
-        "succeeded" | "failed" | "cancelled"
-    );
-    let job = wiki_job::ActiveModel {
-        id: Set(job_id),
-        vault_id: Set(new.vault_id),
-        source_id: Set(Some(source_id)),
-        kind: Set("ingest".into()),
-        status: Set(new.job_status),
-        dedupe_key: Set(Some(dedupe_key)),
-        input_manifest: Set(new.input_manifest),
-        config_version: Set(None),
-        model_id: Set(None),
-        protocol: Set(None),
-        attempt: Set(1),
-        error_code: Set(new.error_code),
-        error_message: Set(new.error_message),
-        output_manifest: Set(None),
-        started_at: Set(Some(now)),
-        finished_at: Set(if finished { Some(now) } else { None }),
-        created_at: Set(now),
-        updated_at: Set(now),
-    };
-    let job_model = job.insert(&txn).await?;
+    let _ = (new.job_status, new.error_code, new.error_message);
     txn.commit().await?;
     Ok(InsertedSource {
         source: source_model,
-        job: job_model,
+        job: None,
         created: true,
     })
 }
@@ -884,12 +997,10 @@ async fn existing_import(
     conn: &DatabaseConnection,
     existing: wiki_source::Model,
 ) -> Result<InsertedSource, DbError> {
-    let job = find_ingest_job(conn, &existing.id)
-        .await?
-        .ok_or_else(|| DbError::NotFound(format!("ingest job for source {}", existing.id)))?;
+    let _ = conn;
     Ok(InsertedSource {
         source: existing,
-        job,
+        job: None,
         created: false,
     })
 }
@@ -1024,11 +1135,13 @@ pub async fn insert_compile_job(
         id: Set(uuid::Uuid::new_v4().to_string()),
         vault_id: Set(vault_id.to_string()),
         source_id: Set(None),
-        kind: Set("compile".into()),
+        kind: Set("wiki_synthesize".into()),
         status: Set("queued".into()),
         dedupe_key: Set(Some(dedupe_key.to_string())),
         input_manifest: Set(input_manifest.map(str::to_string)),
-        config_version: Set(Some(crate::wiki::llm::COMPILE_CONTRACT_VERSION.to_string())),
+        config_version: Set(Some(
+            crate::wiki::llm::SYNTHESIZE_CONTRACT_VERSION.to_string(),
+        )),
         model_id: Set(None),
         protocol: Set(None),
         attempt: Set(1),
@@ -1049,6 +1162,265 @@ pub async fn insert_compile_job(
         }
         Err(e) => Err(e.into()),
     }
+}
+
+pub async fn insert_kind_job(
+    conn: &DatabaseConnection,
+    vault_id: &str,
+    kind: &str,
+    dedupe_key: &str,
+    source_id: Option<&str>,
+    input_manifest: Option<&str>,
+    mode: InsertMode,
+) -> Result<wiki_job::Model, DbError> {
+    if let Some(existing) = find_job_by_dedupe_key(conn, dedupe_key).await? {
+        match mode {
+            InsertMode::ReuseTerminal => return Ok(existing),
+            InsertMode::ActiveOnly if matches!(existing.status.as_str(), "queued" | "running") => {
+                return Ok(existing);
+            }
+            InsertMode::ActiveOnly if existing.status == "failed" => {
+                return retry_job(conn, &existing.id).await;
+            }
+            InsertMode::ActiveOnly => {}
+        }
+    }
+    let now = Utc::now();
+    let job = wiki_job::ActiveModel {
+        id: Set(uuid::Uuid::new_v4().to_string()),
+        vault_id: Set(vault_id.to_string()),
+        source_id: Set(source_id.map(str::to_string)),
+        kind: Set(kind.to_string()),
+        status: Set("queued".into()),
+        dedupe_key: Set(Some(dedupe_key.to_string())),
+        input_manifest: Set(input_manifest.map(str::to_string)),
+        config_version: Set(None),
+        model_id: Set(None),
+        protocol: Set(None),
+        attempt: Set(1),
+        error_code: Set(None),
+        error_message: Set(None),
+        output_manifest: Set(None),
+        started_at: Set(None),
+        finished_at: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    Ok(job.insert(conn).await?)
+}
+
+pub async fn set_job_dedupe_and_manifest(
+    conn: &DatabaseConnection,
+    job_id: &str,
+    dedupe_key: &str,
+    manifest: &str,
+) -> Result<(), DbError> {
+    let row = get_job_model(conn, job_id).await?;
+    let mut active: wiki_job::ActiveModel = row.into();
+    active.dedupe_key = Set(Some(dedupe_key.to_string()));
+    active.input_manifest = Set(Some(manifest.to_string()));
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
+}
+
+pub async fn list_jobs_by_kind(
+    conn: &DatabaseConnection,
+    kind: &str,
+) -> Result<Vec<wiki_job::Model>, DbError> {
+    Ok(wiki_job::Entity::find()
+        .filter(wiki_job::Column::Kind.eq(kind))
+        .order_by_asc(wiki_job::Column::CreatedAt)
+        .all(conn)
+        .await?)
+}
+
+pub async fn list_queued_jobs_by_kind(
+    conn: &DatabaseConnection,
+    kind: &str,
+) -> Result<Vec<wiki_job::Model>, DbError> {
+    Ok(wiki_job::Entity::find()
+        .filter(wiki_job::Column::Kind.eq(kind))
+        .filter(wiki_job::Column::Status.eq("queued"))
+        .order_by_asc(wiki_job::Column::CreatedAt)
+        .all(conn)
+        .await?)
+}
+
+pub async fn claim_job_if_queued(
+    conn: &DatabaseConnection,
+    job_id: &str,
+) -> Result<Option<wiki_job::Model>, DbError> {
+    use sea_orm::sea_query::Expr;
+    let now = Utc::now();
+    let res = wiki_job::Entity::update_many()
+        .col_expr(wiki_job::Column::Status, Expr::value("running"))
+        .col_expr(wiki_job::Column::StartedAt, Expr::value(now))
+        .col_expr(wiki_job::Column::UpdatedAt, Expr::value(now))
+        .filter(wiki_job::Column::Id.eq(job_id))
+        .filter(wiki_job::Column::Status.eq("queued"))
+        .exec(conn)
+        .await?;
+    if res.rows_affected == 0 {
+        return Ok(None);
+    }
+    Ok(Some(get_job_model(conn, job_id).await?))
+}
+
+pub async fn conversation_has_active_turn_summary(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<bool, DbError> {
+    let jobs = wiki_job::Entity::find()
+        .filter(wiki_job::Column::Kind.eq("turn_summary"))
+        .filter(wiki_job::Column::Status.is_in(["queued", "running"]))
+        .all(conn)
+        .await?;
+    for job in jobs {
+        if let Some(raw) = job.input_manifest.as_deref() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+                let cid = v.get("conversation_id").and_then(|x| {
+                    x.as_i64()
+                        .map(|n| n as i32)
+                        .or_else(|| x.as_str().and_then(|s| s.parse().ok()))
+                });
+                if cid == Some(conversation_id) {
+                    return Ok(true);
+                }
+            }
+        }
+        if let Some(sid) = job.source_id.as_deref() {
+            if let Ok(src) = get_source_model(conn, sid).await {
+                if src.conversation_id == Some(conversation_id) {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+pub async fn list_sources_for_conversation(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Vec<wiki_source::Model>, DbError> {
+    Ok(wiki_source::Entity::find()
+        .filter(wiki_source::Column::ConversationId.eq(conversation_id))
+        .order_by_asc(wiki_source::Column::SourceSeq)
+        .all(conn)
+        .await?)
+}
+
+pub async fn find_local_session_source(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Option<wiki_source::Model>, DbError> {
+    Ok(wiki_source::Entity::find()
+        .filter(wiki_source::Column::ConversationId.eq(conversation_id))
+        .filter(wiki_source::Column::SourceKind.eq("local-session"))
+        .order_by_asc(wiki_source::Column::CreatedAt)
+        .one(conn)
+        .await?)
+}
+
+pub async fn list_sources_by_kind(
+    conn: &DatabaseConnection,
+    kind: &str,
+) -> Result<Vec<wiki_source::Model>, DbError> {
+    Ok(wiki_source::Entity::find()
+        .filter(wiki_source::Column::SourceKind.eq(kind))
+        .order_by_asc(wiki_source::Column::SourceSeq)
+        .all(conn)
+        .await?)
+}
+
+pub struct NewLocalSessionSource {
+    pub id: String,
+    pub vault_id: String,
+    pub conversation_id: i32,
+    pub folder_id: Option<i32>,
+    pub root_folder_id: Option<i32>,
+    pub agent_type: Option<String>,
+    pub model: Option<String>,
+    pub captured_at: chrono::DateTime<chrono::Utc>,
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub source_title: Option<String>,
+    pub raw_path: String,
+    pub raw_hash: String,
+    pub project_ids: Option<String>,
+}
+
+pub async fn insert_local_session_source(
+    conn: &DatabaseConnection,
+    new: NewLocalSessionSource,
+) -> Result<wiki_source::Model, DbError> {
+    if let Some(existing) = find_local_session_source(conn, new.conversation_id).await? {
+        return Ok(existing);
+    }
+    let now = Utc::now();
+    let last = wiki_source::Entity::find()
+        .filter(wiki_source::Column::VaultId.eq(&new.vault_id))
+        .order_by_desc(wiki_source::Column::SourceSeq)
+        .one(conn)
+        .await?;
+    let source_seq = last.map(|s| s.source_seq + 1).unwrap_or(1);
+    let source = wiki_source::ActiveModel {
+        id: Set(new.id.clone()),
+        source_group_id: Set(new.id.clone()),
+        vault_id: Set(new.vault_id),
+        source_kind: Set("local-session".into()),
+        source_seq: Set(source_seq),
+        run_id: Set(None),
+        original_hash: Set(None),
+        raw_path: Set(Some(new.raw_path)),
+        raw_hash: Set(Some(new.raw_hash)),
+        extractor_version: Set(None),
+        coverage_status: Set(None),
+        eligibility: Set("ready".into()),
+        material_role: Set(Some("unspecified".into())),
+        personal_role: Set(None),
+        annotation_revision: Set(0),
+        conversation_id: Set(Some(new.conversation_id)),
+        folder_id: Set(new.folder_id),
+        root_folder_id: Set(new.root_folder_id),
+        agent_type: Set(new.agent_type),
+        model: Set(new.model),
+        mode: Set(None),
+        captured_at: Set(Some(new.captured_at)),
+        occurred_at: Set(new.occurred_at),
+        truncated: Set(false),
+        redacted: Set(false),
+        request_id: Set(None),
+        original_filename: Set(None),
+        format: Set(None),
+        source_title: Set(new.source_title),
+        source_url: Set(None),
+        author: Set(None),
+        project_ids: Set(new.project_ids),
+        area_ids: Set(None),
+        warnings: Set(None),
+        page_count: Set(None),
+        previous_source_id: Set(None),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+    Ok(source.insert(conn).await?)
+}
+
+pub async fn list_completed_conversation_ids(
+    conn: &DatabaseConnection,
+) -> Result<Vec<i32>, DbError> {
+    Ok(crate::db::entities::conversation::Entity::find()
+        .filter(
+            crate::db::entities::conversation::Column::Status
+                .eq(crate::db::entities::conversation::ConversationStatus::Completed),
+        )
+        .filter(crate::db::entities::conversation::Column::DeletedAt.is_null())
+        .all(conn)
+        .await?
+        .into_iter()
+        .map(|c| c.id)
+        .collect())
 }
 
 pub async fn set_job_input_manifest(

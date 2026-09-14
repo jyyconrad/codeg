@@ -28,9 +28,9 @@ pub async fn wiki_compile_now_core(
     if !settings.enabled {
         return Err(AppCommandError::configuration_invalid("wiki is disabled"));
     }
-    if !settings.compile.enabled {
+    if !settings.synthesize.enabled {
         return Err(AppCommandError::configuration_invalid(
-            "compile is disabled",
+            "synthesize is disabled",
         ));
     }
     let vault = resolve_vault_path(settings.vault_path.as_deref());
@@ -50,7 +50,7 @@ pub async fn wiki_compile_now_core(
         .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
     let json = serde_json::to_string(&manifest)
         .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
-    let dedupe = format!("compile:now:{request_id}");
+    let dedupe = format!("wiki_synthesize:now:{request_id}");
     let job = wiki_service::insert_compile_job(conn, &vault_row.id, &dedupe, Some(&json))
         .await
         .map_err(AppCommandError::from)?;
@@ -139,7 +139,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut s = WikiSettings::default();
         s.enabled = true;
-        s.compile.enabled = true;
+        s.synthesize.enabled = true;
         s.vault_path = Some(dir.path().join("vault").to_string_lossy().into_owned());
         settings::save_settings(&db.conn, &s).await.unwrap();
         let a = wiki_compile_now_core(&db.conn, "req-abc".into())
@@ -149,7 +149,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(a.id, b.id);
-        assert_eq!(a.kind, "compile");
+        assert_eq!(a.kind, "wiki_synthesize");
         let c = wiki_compile_now_core(&db.conn, "req-other".into())
             .await
             .unwrap();
@@ -161,11 +161,11 @@ mod tests {
         let db = fresh_in_memory_db().await;
         let mut s = WikiSettings::default();
         s.enabled = true;
-        s.compile.enabled = false;
+        s.synthesize.enabled = false;
         settings::save_settings(&db.conn, &s).await.unwrap();
         let err = wiki_compile_now_core(&db.conn, "r1".into())
             .await
             .unwrap_err();
-        assert!(err.message.contains("compile is disabled"));
+        assert!(err.message.contains("synthesize is disabled"));
     }
 }

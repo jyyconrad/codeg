@@ -89,6 +89,35 @@ impl FsAccessPolicy {
         }
     }
 
+    /// WikiWorker: read converted vault notes/raw; write only this job's staging.
+    /// Empty extra roots still leave the vault as the sole read root (never
+    /// unrestricted).
+    pub fn wiki_worker(vault: &Path, staging: &Path) -> Self {
+        Self::wiki_worker_with_extra_reads(vault, staging, &[])
+    }
+
+    /// WikiWorker with additional project-folder read roots (synthesize only).
+    /// Denied segments such as `.git` are skipped. Extra roots are never writes.
+    pub fn wiki_worker_with_extra_reads(
+        vault: &Path,
+        staging: &Path,
+        extra_read_roots: &[PathBuf],
+    ) -> Self {
+        let mut read_roots = vec![canonical_root(vault)];
+        for root in extra_read_roots {
+            if wiki_denied_extra_root(root) {
+                continue;
+            }
+            read_roots.push(canonical_root(root));
+        }
+        read_roots.sort();
+        read_roots.dedup();
+        Self {
+            read_roots,
+            write_roots: vec![canonical_root(staging)],
+        }
+    }
+
     /// No path gate at all in either direction. `CODEG_ACP_FS_POLICY=unrestricted`.
     pub fn unrestricted() -> Self {
         Self {
@@ -736,6 +765,16 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
 /// Absolutize + canonicalize a configured root. Falls back to the absolutized
 /// raw path when the directory does not exist yet (a non-existent root simply
 /// never matches, which is the correct outcome).
+fn wiki_denied_extra_root(path: &Path) -> bool {
+    path.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        matches!(
+            s.as_ref(),
+            ".git" | ".obsidian" | "originals" | ".codeg-wiki.lock" | "session_store"
+        )
+    })
+}
+
 fn canonical_root(root: &Path) -> PathBuf {
     let absolute = if root.is_absolute() {
         root.to_path_buf()
@@ -1481,6 +1520,41 @@ mod tests {
 
         let _ = fs::remove_dir_all(workspace);
         let _ = fs::remove_dir_all(elsewhere_in_temp);
+    }
+
+    #[test]
+    fn wiki_worker_extra_reads_do_not_go_unrestricted_and_skip_git() {
+        let vault = temp_workspace();
+        let staging = temp_workspace();
+        let project = temp_workspace();
+        let git = project.join(".git");
+        fs::create_dir_all(&git).unwrap();
+        fs::write(project.join("src.rs"), "fn main() {}").unwrap();
+        fs::write(vault.join("AGENTS.md"), "prefs").unwrap();
+
+        let turn = FsAccessPolicy::wiki_worker(&vault, &staging);
+        assert!(
+            !turn.read_roots.is_empty(),
+            "empty roots would be unrestricted"
+        );
+        assert!(turn.check_read(&vault.join("AGENTS.md")).is_ok());
+        assert!(turn.check_read(&project.join("src.rs")).is_err());
+
+        let syn = FsAccessPolicy::wiki_worker_with_extra_reads(
+            &vault,
+            &staging,
+            &[project.clone(), git.clone()],
+        );
+        assert!(syn.check_read(&project.join("src.rs")).is_ok());
+        assert!(
+            !syn.read_roots.iter().any(|r| r.ends_with(".git")),
+            ".git must not be added as a read root"
+        );
+        assert_eq!(syn.write_roots, vec![canonical_root(&staging)]);
+
+        for dir in [vault, staging, project] {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]

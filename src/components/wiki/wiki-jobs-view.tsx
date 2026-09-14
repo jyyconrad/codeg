@@ -26,6 +26,9 @@ import {
 import { cn } from "@/lib/utils"
 import {
   normalizeWikiList,
+  normalizeWikiSettings,
+  wikiJobKindKey,
+  wikiSynthesizeEnabled,
   type WikiJob,
   type WikiJobStatus,
 } from "@/lib/wiki-types"
@@ -56,13 +59,6 @@ function statusKey(
   }
 }
 
-function kindKey(
-  kind: string | null | undefined
-): "ingest" | "compile" | "unknown" {
-  if (kind === "ingest" || kind === "compile") return kind
-  return "unknown"
-}
-
 function statusVariant(
   status: string
 ): "secondary" | "destructive" | "outline" | "default" {
@@ -85,7 +81,7 @@ export function WikiJobsView() {
   const [detailError, setDetailError] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
-  const [compileEnabled, setCompileEnabled] = useState(true)
+  const [synthesizeEnabled, setSynthesizeEnabled] = useState(true)
 
   const load = useCallback(
     async (offset: number, nextStatus = status) => {
@@ -129,7 +125,7 @@ export function WikiJobsView() {
   useEffect(() => {
     getWikiSettings()
       .then((view) => {
-        setCompileEnabled(view.compile?.enabled !== false)
+        setSynthesizeEnabled(wikiSynthesizeEnabled(normalizeWikiSettings(view)))
       })
       .catch(console.error)
   }, [])
@@ -245,8 +241,8 @@ export function WikiJobsView() {
             <Button
               type="button"
               size="sm"
-              disabled={actionBusy || !compileEnabled}
-              title={compileEnabled ? undefined : t("jobs.compileDisabled")}
+              disabled={actionBusy || !synthesizeEnabled}
+              title={synthesizeEnabled ? undefined : t("jobs.compileDisabled")}
               onClick={() => {
                 handleCompileNow().catch(console.error)
               }}
@@ -294,7 +290,7 @@ export function WikiJobsView() {
                       >
                         <span className="flex items-center gap-2">
                           <Badge variant="outline">
-                            {t(`jobs.kind.${kindKey(job.kind)}`)}
+                            {t(`jobs.kind.${wikiJobKindKey(job.kind)}`)}
                           </Badge>
                           <Badge variant={statusVariant(statusName)}>
                             {t(`jobs.status.${statusName}`)}
@@ -334,7 +330,7 @@ export function WikiJobsView() {
               <>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="outline">
-                    {t(`jobs.kind.${kindKey(detail.kind)}`)}
+                    {t(`jobs.kind.${wikiJobKindKey(detail.kind)}`)}
                   </Badge>
                   <Badge variant={statusVariant(statusKey(detail.status))}>
                     {t(`jobs.status.${statusKey(detail.status)}`)}

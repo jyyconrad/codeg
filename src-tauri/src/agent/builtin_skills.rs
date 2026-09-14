@@ -13,11 +13,16 @@ pub const USING_PLAN_EXPLORE_ID: &str = "using-plan-explore";
 pub const USING_PLAN_EXPLORE_DOC_ID: &str = "codeg-using-plan-explore";
 pub const WIKI_INGEST_ID: &str = "wiki-ingest";
 pub const WIKI_COMPILE_ID: &str = "wiki-compile";
+pub const WIKI_TURN_SUMMARY_ID: &str = "wiki-turn-summary";
+pub const WIKI_SESSION_ROLLUP_ID: &str = "wiki-session-rollup";
+pub const WIKI_SYNTHESIZE_ID: &str = "wiki-synthesize";
 
 const USING_PLAN_EXPLORE_SKILL: &str =
     include_str!("../../agent-skills/using-plan-explore/SKILL.md");
-const WIKI_INGEST_SKILL: &str = include_str!("../../agent-skills/wiki-ingest/SKILL.md");
-const WIKI_COMPILE_SKILL: &str = include_str!("../../agent-skills/wiki-compile/SKILL.md");
+const WIKI_TURN_SUMMARY_SKILL: &str = include_str!("../../agent-skills/wiki-turn-summary/SKILL.md");
+const WIKI_SESSION_ROLLUP_SKILL: &str =
+    include_str!("../../agent-skills/wiki-session-rollup/SKILL.md");
+const WIKI_SYNTHESIZE_SKILL: &str = include_str!("../../agent-skills/wiki-synthesize/SKILL.md");
 
 pub fn system_skills_dir() -> PathBuf {
     codeg_agent_dir().join("skills").join(".system")
@@ -40,12 +45,14 @@ fn install_bundled_skill(id: &str, body: &str) -> io::Result<PathBuf> {
 
 /// Write bundled skills under `skills/.system`. Idempotent when content matches.
 ///
-/// Wiki ingest/compile live on this same `.system` path so WikiWorker can load
-/// them later. They set `disable-model-invocation` and are not attached as
-/// general Codeg Agent extra context.
+/// Wiki turn/session/synthesize live on this same `.system` path so WikiWorker
+/// can load them later. They set `disable-model-invocation` and are not
+/// attached as general Codeg Agent extra context. wiki-ingest / wiki-compile
+/// are no longer installed.
 pub fn ensure_installed() -> io::Result<PathBuf> {
-    install_bundled_skill(WIKI_INGEST_ID, WIKI_INGEST_SKILL)?;
-    install_bundled_skill(WIKI_COMPILE_ID, WIKI_COMPILE_SKILL)?;
+    install_bundled_skill(WIKI_TURN_SUMMARY_ID, WIKI_TURN_SUMMARY_SKILL)?;
+    install_bundled_skill(WIKI_SESSION_ROLLUP_ID, WIKI_SESSION_ROLLUP_SKILL)?;
+    install_bundled_skill(WIKI_SYNTHESIZE_ID, WIKI_SYNTHESIZE_SKILL)?;
     install_bundled_skill(USING_PLAN_EXPLORE_ID, USING_PLAN_EXPLORE_SKILL)
 }
 
@@ -85,26 +92,49 @@ mod tests {
     }
 
     #[test]
-    fn wiki_ingest_skill_has_required_frontmatter_and_contract() {
-        assert!(WIKI_INGEST_SKILL.contains("name: wiki-ingest"));
-        assert!(WIKI_INGEST_SKILL.contains(
-            "description: Use when summarizing a frozen wiki source snapshot into a one-line source summary and optional topic suggestions. Never rewrite evidence."
+    fn wiki_turn_summary_skill_has_required_frontmatter_and_contract() {
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains("name: wiki-turn-summary"));
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains(
+            "description: Use when WikiWorker is writing one ACP-turn memory note of what that turn did."
         ));
-        assert!(WIKI_INGEST_SKILL.contains("Do not reconstruct"));
-        assert!(WIKI_INGEST_SKILL.contains("host schema"));
-        assert!(WIKI_INGEST_SKILL.contains("disable-model-invocation: true"));
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains("disable-model-invocation: true"));
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains("codeg.wiki.turn_summary.v1"));
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains("NEVER conversation title verbatim"));
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains("NEVER prefix `ACP turn:`"));
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains("NEVER a source UUID"));
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains("host validates and commits"));
+        assert!(WIKI_TURN_SUMMARY_SKILL.contains("no YAML front matter"));
     }
 
     #[test]
-    fn wiki_compile_skill_has_required_frontmatter_and_contract() {
-        assert!(WIKI_COMPILE_SKILL.contains("name: wiki-compile"));
-        assert!(WIKI_COMPILE_SKILL.contains(
-            "description: Use when compiling wiki sources into personal work notes and capability notes. Process only the host manifest."
+    fn wiki_session_rollup_skill_has_required_frontmatter_and_contract() {
+        assert!(WIKI_SESSION_ROLLUP_SKILL.contains("name: wiki-session-rollup"));
+        assert!(WIKI_SESSION_ROLLUP_SKILL.contains(
+            "description: Use when WikiWorker is writing one session memory page after ConversationStatus::Completed."
         ));
-        assert!(WIKI_COMPILE_SKILL.contains("related≠same"));
-        assert!(WIKI_COMPILE_SKILL.contains("knowledge_only"));
-        assert!(WIKI_COMPILE_SKILL.contains("host validates and commits"));
-        assert!(WIKI_COMPILE_SKILL.contains("disable-model-invocation: true"));
+        assert!(WIKI_SESSION_ROLLUP_SKILL.contains("disable-model-invocation: true"));
+        assert!(WIKI_SESSION_ROLLUP_SKILL.contains("codeg.wiki.session_rollup.v1"));
+        assert!(WIKI_SESSION_ROLLUP_SKILL.contains("Turn pages first"));
+        assert!(WIKI_SESSION_ROLLUP_SKILL.contains("host validates and commits"));
+        assert!(WIKI_SESSION_ROLLUP_SKILL.contains("no YAML front matter"));
+    }
+
+    #[test]
+    fn wiki_synthesize_skill_has_required_frontmatter_and_contract() {
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("name: wiki-synthesize"));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains(
+            "description: Use when WikiWorker is updating personal work wiki and capability wiki from memory notes (turn/session pages), not from raw segment candidates."
+        ));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("disable-model-invocation: true"));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("codeg.wiki.synthesize.v1"));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("related≠same"));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("knowledge_only"));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("host validates and commits"));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("Do not return a `candidates` array"));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("Do not apply per-segment candidate quotas"));
+        assert!(WIKI_SYNTHESIZE_SKILL.contains("Do not run a four-step candidate pipeline"));
+        assert!(!WIKI_SYNTHESIZE_SKILL.contains("WeKnora"));
+        assert!(!WIKI_SYNTHESIZE_SKILL.contains("Four steps"));
     }
 
     #[test]
@@ -123,24 +153,35 @@ mod tests {
                 let body = fs::read_to_string(&path).expect("read");
                 assert_eq!(body, USING_PLAN_EXPLORE_SKILL);
 
-                let ingest = system_skill_path(&home, WIKI_INGEST_ID);
-                let compile = system_skill_path(&home, WIKI_COMPILE_ID);
+                let turn = system_skill_path(&home, WIKI_TURN_SUMMARY_ID);
+                let session = system_skill_path(&home, WIKI_SESSION_ROLLUP_ID);
+                let synthesize = system_skill_path(&home, WIKI_SYNTHESIZE_ID);
                 assert_eq!(
-                    fs::read_to_string(&ingest).expect("read ingest"),
-                    WIKI_INGEST_SKILL
+                    fs::read_to_string(&turn).expect("read turn"),
+                    WIKI_TURN_SUMMARY_SKILL
                 );
                 assert_eq!(
-                    fs::read_to_string(&compile).expect("read compile"),
-                    WIKI_COMPILE_SKILL
+                    fs::read_to_string(&session).expect("read session"),
+                    WIKI_SESSION_ROLLUP_SKILL
                 );
+                assert_eq!(
+                    fs::read_to_string(&synthesize).expect("read synthesize"),
+                    WIKI_SYNTHESIZE_SKILL
+                );
+                assert!(!system_skill_path(&home, WIKI_INGEST_ID).exists());
+                assert!(!system_skill_path(&home, WIKI_COMPILE_ID).exists());
                 ensure_installed().expect("idempotent");
                 assert_eq!(
-                    fs::read_to_string(&ingest).expect("reread ingest"),
-                    WIKI_INGEST_SKILL
+                    fs::read_to_string(&turn).expect("reread turn"),
+                    WIKI_TURN_SUMMARY_SKILL
                 );
                 assert_eq!(
-                    fs::read_to_string(&compile).expect("reread compile"),
-                    WIKI_COMPILE_SKILL
+                    fs::read_to_string(&session).expect("reread session"),
+                    WIKI_SESSION_ROLLUP_SKILL
+                );
+                assert_eq!(
+                    fs::read_to_string(&synthesize).expect("reread synthesize"),
+                    WIKI_SYNTHESIZE_SKILL
                 );
             },
         );
@@ -191,8 +232,23 @@ mod tests {
                     catalog.get(WIKI_COMPILE_ID).is_none(),
                     "wiki-compile is WikiWorker-only"
                 );
+                assert!(
+                    catalog.get(WIKI_TURN_SUMMARY_ID).is_none(),
+                    "wiki-turn-summary is WikiWorker-only"
+                );
+                assert!(
+                    catalog.get(WIKI_SESSION_ROLLUP_ID).is_none(),
+                    "wiki-session-rollup is WikiWorker-only"
+                );
+                assert!(
+                    catalog.get(WIKI_SYNTHESIZE_ID).is_none(),
+                    "wiki-synthesize is WikiWorker-only"
+                );
                 assert!(!section.contains("`wiki-ingest`"), "{section}");
                 assert!(!section.contains("`wiki-compile`"), "{section}");
+                assert!(!section.contains("`wiki-turn-summary`"), "{section}");
+                assert!(!section.contains("`wiki-session-rollup`"), "{section}");
+                assert!(!section.contains("`wiki-synthesize`"), "{section}");
             },
         );
     }

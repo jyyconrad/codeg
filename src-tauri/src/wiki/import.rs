@@ -689,19 +689,24 @@ async fn ingest(
         .map_err(AppCommandError::from)?;
 
     if inserted.created {
+        let job_id = inserted
+            .job
+            .as_ref()
+            .map(|j| j.id.as_str())
+            .unwrap_or("none");
         let log_line = format!(
-            "{} ingest {} job={} source={} import={}",
+            "{} import {} job={} source={} import={}",
             Utc::now().to_rfc3339(),
             if extract_outcome.ok {
                 "succeeded"
             } else {
                 "failed"
             },
-            inserted.job.id,
+            job_id,
             inserted.source.id,
             inserted.source.source_kind
         );
-        raw::append_log_idempotent(&vault_path.join("log.md"), &inserted.job.id, &log_line)
+        raw::append_log_idempotent(&vault_path.join("log.md"), job_id, &log_line)
             .map_err(|e| AppCommandError::io_error(e.to_string()))?;
     } else {
         let _ = fs::remove_dir_all(originals_dir(&state_root, &source_id));
@@ -1350,8 +1355,12 @@ mod tests {
             let jobs = wiki_service::list_jobs_by_status(&db.conn, "queued")
                 .await
                 .unwrap();
-            assert_eq!(jobs.len(), 2);
-            assert!(jobs.iter().all(|j| j.kind == "ingest"));
+            assert!(
+                jobs.iter().all(|j| j.kind != "ingest"
+                    && j.kind != "turn_summary"
+                    && j.kind != "wiki_synthesize"),
+                "imports freeze sources only"
+            );
             assert!(sources.iter().all(|s| s.source_group_id == "batch-1"));
             assert!(sources.iter().any(|s| s.id == first.source.id));
         })
@@ -1406,7 +1415,10 @@ mod tests {
                 panic!("multi-file retry should return a batch result")
             };
             assert_eq!(second.results.len(), 2);
-            assert!(second.results[0].duplicate);
+            assert_eq!(
+                second.results[0].source.as_ref().map(|s| s.id.as_str()),
+                first.results[0].source.as_ref().map(|s| s.id.as_str())
+            );
             assert_eq!(
                 wiki_service::list_sources(&db.conn, 10, 0, None, None)
                     .await

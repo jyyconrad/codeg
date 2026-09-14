@@ -6,7 +6,9 @@ use rig::providers::openai::CompletionsClient;
 
 pub use client::{resolve_session_wire_protocol, CodegLlmClient};
 pub use preamble::session_preamble;
-pub use turn::{run_native_turn, NativeTurnOutcome, NativeTurnRequest, NativeTurnTools};
+pub use turn::{
+    run_native_turn, NativeTurnOutcome, NativeTurnRequest, NativeTurnTools, WIKI_COMPILE_MAX_TURNS,
+};
 
 /// Total model-call budget for one Prompt (initial call plus retries).
 pub const DEFAULT_MAX_TURNS: usize = 40;
