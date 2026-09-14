@@ -40,6 +40,7 @@ export interface WikiSettingsView extends WikiSettings {
   turn_summary_builtin_prompt?: string | null
   session_rollup_builtin_prompt?: string | null
   synthesize_builtin_prompt?: string | null
+  resolved_vault_path?: string | null
 }
 
 /** Current Wiki settings. Retired settings are intentionally not migrated. */
@@ -334,6 +335,7 @@ export function normalizeWikiSettings(
     turn_summary_builtin_prompt: raw?.turn_summary_builtin_prompt ?? "",
     session_rollup_builtin_prompt: raw?.session_rollup_builtin_prompt ?? "",
     synthesize_builtin_prompt: raw?.synthesize_builtin_prompt ?? "",
+    resolved_vault_path: emptyToNull(raw?.resolved_vault_path) ?? "",
   }
 }
 

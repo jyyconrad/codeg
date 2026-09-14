@@ -513,6 +513,9 @@ async fn ingest_locked(
     conn: &DatabaseConnection,
     payload: ImportPayload,
 ) -> Result<WikiImportResult, AppCommandError> {
+    crate::wiki::relocate::relocate_legacy_app_data_wiki(conn)
+        .await
+        .map_err(AppCommandError::from)?;
     let settings = settings::load_settings(conn)
         .await
         .map_err(AppCommandError::from)?;

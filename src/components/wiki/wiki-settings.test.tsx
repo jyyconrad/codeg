@@ -87,10 +87,9 @@ describe("independent Wiki model settings", () => {
     backend.settings.mockResolvedValue(value)
     renderSettings()
     await screen.findByLabelText(messages.Wiki.v2.dailyTime)
-    expect(
-      document.querySelector<HTMLSelectElement>("#wiki-main-model-provider")
-        ?.value
-    ).toBe("99")
+    expect(document.getElementById("wiki-main-model-provider")).toHaveTextContent(
+      messages.Wiki.v2.savedProviderUnavailable
+    )
     fireEvent.change(screen.getByLabelText(messages.Wiki.v2.dailyTime), {
       target: { value: "04:12" },
     })

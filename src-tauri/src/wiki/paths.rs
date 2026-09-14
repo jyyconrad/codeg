@@ -1,5 +1,6 @@
 //! 解析 Wiki 正文目录与独立运行状态目录，并校验目录内相对路径。
-//! 正文优先使用用户配置，再依次读取 CODEG_HOME、CODEG_DATA_DIR、~/.codeg。
+//! 正文优先使用用户配置，再读取 CODEG_HOME，最后使用 ~/.codeg。
+//! 不把桌面应用的 CODEG_DATA_DIR（Application Support）当作 Wiki 默认目录。
 //! 状态目录始终独立于用户的 Obsidian 目录，供原件、暂存和恢复记录使用。
 
 use std::path::{Path, PathBuf};
@@ -27,16 +28,26 @@ fn resolve_under(explicit: Option<&str>, leaf: &str) -> PathBuf {
     if let Some(home) = env_dir("CODEG_HOME") {
         return home.join(leaf);
     }
-    if let Some(data) = env_dir("CODEG_DATA_DIR") {
-        return data.join(leaf);
-    }
     default_codeg_dir().join(leaf)
 }
 
-/// Vault root: explicit `vault_path` → `$CODEG_HOME/wiki` → `$CODEG_DATA_DIR/wiki`
-/// → `~/.codeg/wiki`.
+/// Vault root: explicit `vault_path` → `$CODEG_HOME/wiki` → `~/.codeg/wiki`.
 pub fn resolve_vault_path(explicit: Option<&str>) -> PathBuf {
     resolve_under(explicit, WIKI_DIR_NAME)
+}
+
+pub fn legacy_app_data_wiki_dirs() -> Vec<PathBuf> {
+    let Some(data) = env_dir("CODEG_DATA_DIR") else {
+        return Vec::new();
+    };
+    vec![data.join(WIKI_DIR_NAME), data.join("wiki-v2")]
+}
+
+pub fn legacy_app_data_state_dirs() -> Vec<PathBuf> {
+    let Some(data) = env_dir("CODEG_DATA_DIR") else {
+        return Vec::new();
+    };
+    vec![data.join(WIKI_STATE_DIR_NAME), data.join("wiki-state-v2")]
 }
 
 /// State root (originals, logs, staging): same priority with `wiki-state/`.
@@ -120,17 +131,18 @@ mod tests {
     }
 
     #[test]
-    fn data_dir_used_without_codeg_home() {
+    fn app_data_dir_is_not_the_default_wiki_location() {
         temp_env::with_vars(
             [
                 ("CODEG_HOME", None),
                 ("CODEG_DATA_DIR", Some("/tmp/codeg-data-wiki-test")),
             ],
             || {
-                assert_eq!(
-                    resolve_vault_path(None),
-                    PathBuf::from("/tmp/codeg-data-wiki-test/wiki")
-                );
+                let vault = resolve_vault_path(None);
+                let state = resolve_state_root();
+                assert_ne!(vault, PathBuf::from("/tmp/codeg-data-wiki-test/wiki"));
+                assert_eq!(vault, default_codeg_dir().join("wiki"));
+                assert_eq!(state, default_codeg_dir().join("wiki-state"));
             },
         );
     }

@@ -25,6 +25,7 @@ pub struct WikiLibrary {
 /// enables capture nor calls a model, and emits no recursive refresh events.
 pub async fn refresh(conn: &DatabaseConnection) -> Result<WikiLibrary, DbError> {
     let _transition = crate::wiki::lifecycle::lock().await;
+    crate::wiki::relocate::relocate_legacy_app_data_wiki(conn).await?;
     let config = settings::load_settings(conn).await?;
     let root = paths::resolve_vault_path(config.vault_path.as_deref());
     vault::validate_new_location(&root)?;

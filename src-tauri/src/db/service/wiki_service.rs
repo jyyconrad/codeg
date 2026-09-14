@@ -410,6 +410,37 @@ async fn deactivate_all<C: ConnectionTrait>(conn: &C) -> Result<(), DbError> {
     Ok(())
 }
 
+/// Keep the same vault identity when the physical directory moves.
+pub async fn retarget_canonical_path(
+    conn: &DatabaseConnection,
+    from: &str,
+    to: &str,
+) -> Result<Option<wiki_vault::Model>, DbError> {
+    let from = std::path::Path::new(from)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(from));
+    let to = std::path::Path::new(to)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(to));
+    let from = from.to_string_lossy();
+    let to = to.to_string_lossy();
+    if from == to {
+        return active_vault(conn).await;
+    }
+    let Some(existing) = wiki_vault::Entity::find()
+        .filter(wiki_vault::Column::CanonicalPath.eq(from.as_ref()))
+        .one(conn)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let now = Utc::now();
+    let mut active: wiki_vault::ActiveModel = existing.into();
+    active.canonical_path = Set(to.into_owned());
+    active.updated_at = Set(now);
+    Ok(Some(active.update(conn).await?))
+}
+
 pub async fn active_vault(conn: &DatabaseConnection) -> Result<Option<wiki_vault::Model>, DbError> {
     Ok(wiki_vault::Entity::find()
         .filter(wiki_vault::Column::IsActive.eq(true))

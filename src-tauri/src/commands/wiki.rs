@@ -38,6 +38,14 @@ use crate::db::AppDatabase;
 pub async fn get_wiki_settings_core(
     conn: &DatabaseConnection,
 ) -> Result<WikiSettingsView, DbError> {
+    {
+        let _transition = crate::wiki::lifecycle::lock().await;
+        crate::wiki::relocate::relocate_legacy_app_data_wiki(conn).await?;
+    }
+    wiki_settings_view(conn).await
+}
+
+async fn wiki_settings_view(conn: &DatabaseConnection) -> Result<WikiSettingsView, DbError> {
     let mut settings = settings::load_settings(conn).await?;
     // Suggestions are only offered before the first save. A missing slot in
     // saved configuration must remain visible instead of tracking chat changes.
@@ -51,6 +59,9 @@ pub async fn get_wiki_settings_core(
     let pending_source_count = crate::wiki::read_model::get_overview(conn)
         .await?
         .pending_memory_count as u64;
+    let resolved_vault_path = resolve_vault_path(settings.vault_path.as_deref())
+        .to_string_lossy()
+        .into_owned();
     Ok(WikiSettingsView {
         settings,
         next_compile_at,
@@ -58,6 +69,7 @@ pub async fn get_wiki_settings_core(
         turn_summary_builtin_prompt: settings::WIKI_TURN_SUMMARY_BUILTIN.to_string(),
         session_rollup_builtin_prompt: settings::WIKI_SESSION_ROLLUP_BUILTIN.to_string(),
         synthesize_builtin_prompt: settings::WIKI_SYNTHESIZE_BUILTIN.to_string(),
+        resolved_vault_path,
     })
 }
 
@@ -99,6 +111,7 @@ pub async fn update_wiki_settings_core(
     settings: WikiSettings,
 ) -> Result<WikiSettingsView, DbError> {
     let transition = crate::wiki::lifecycle::lock().await;
+    crate::wiki::relocate::relocate_legacy_app_data_wiki(conn).await?;
     settings::validate_settings(&settings)?;
     let previous = settings::load_settings(conn).await?;
     let vault_path = resolve_vault_path(settings.vault_path.as_deref());
@@ -127,7 +140,7 @@ pub async fn update_wiki_settings_core(
     }
     crate::wiki::engine::notify_jobs();
     drop(transition);
-    get_wiki_settings_core(conn).await
+    wiki_settings_view(conn).await
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

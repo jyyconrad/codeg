@@ -31,6 +31,7 @@ pub async fn persist_acp_turn(
     mut snap: WikiTurnSnapshot,
 ) -> Result<PersistOutcome, DbError> {
     let _transition = crate::wiki::lifecycle::lock().await;
+    crate::wiki::relocate::relocate_legacy_app_data_wiki(conn).await?;
     let settings = settings::load_settings(conn).await?;
     let CaptureContext {
         kind,

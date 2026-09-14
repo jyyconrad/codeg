@@ -121,6 +121,8 @@ pub struct WikiSettingsView {
     pub session_rollup_builtin_prompt: String,
     #[serde(default)]
     pub synthesize_builtin_prompt: String,
+    #[serde(default)]
+    pub resolved_vault_path: String,
 }
 
 fn default_true() -> bool {

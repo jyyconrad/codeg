@@ -30,6 +30,7 @@ struct ReadContext {
 impl ReadContext {
     async fn load(conn: &DatabaseConnection) -> Result<Self, DbError> {
         let _transition = crate::wiki::lifecycle::lock().await;
+        crate::wiki::relocate::relocate_legacy_app_data_wiki(conn).await?;
         let config = settings::load_settings(conn).await?;
         let root = paths::resolve_vault_path(config.vault_path.as_deref());
         let active = wiki_service::active_vault(conn).await?;

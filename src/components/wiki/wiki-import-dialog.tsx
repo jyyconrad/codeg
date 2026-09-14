@@ -10,6 +10,13 @@ import { useTranslations } from "next-intl"
 import { DirectoryBrowserDialog } from "@/components/shared/directory-browser-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
@@ -333,24 +340,25 @@ export function WikiImportButton() {
                     </label>
                     <label className="space-y-1">
                       <span>{t("materialRole")}</span>
-                      <select
-                        className="h-9 w-full rounded-md border bg-background px-2"
-                        value={role}
-                        onChange={(event) => setRole(event.target.value)}
-                      >
-                        {(
-                          [
-                            "reference",
-                            "own-work",
-                            "team-work",
-                            "unspecified",
-                          ] as const
-                        ).map((value) => (
-                          <option key={value} value={value}>
-                            {old(`sources.materialRole.${value}`)}
-                          </option>
-                        ))}
-                      </select>
+                      <Select value={role} onValueChange={setRole}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent align="start">
+                          {(
+                            [
+                              "reference",
+                              "own-work",
+                              "team-work",
+                              "unspecified",
+                            ] as const
+                          ).map((value) => (
+                            <SelectItem key={value} value={value}>
+                              {old(`sources.materialRole.${value}`)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </label>
                     <label className="space-y-1">
                       <span>{t("sourceUrl")}</span>

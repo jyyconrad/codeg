@@ -7,6 +7,13 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import type {
   WikiListPage,
   WikiNoteSummary,
@@ -87,51 +94,57 @@ export function WikiNotesView({
             </Button>
           </div>
           {view !== "capabilities" && (
-            <select
-              aria-label={t("noteType")}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              value={type}
-              onChange={(event) => {
-                setType(event.target.value)
+            <Select
+              value={type || "all"}
+              onValueChange={(value) => {
+                setType(value === "all" ? "" : value)
                 setLimit(50)
                 navigate({ path: null }, true)
               }}
             >
-              <option value="">{t("allTypes")}</option>
-              {(
-                [
-                  "turn-summary",
-                  "session-summary",
-                  "project",
-                  "work-record",
-                  "method",
-                  "concept",
-                ] as const
-              ).map((value) => (
-                <option key={value} value={value}>
-                  {t(`types.${value}`)}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger aria-label={t("noteType")} className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                <SelectItem value="all">{t("allTypes")}</SelectItem>
+                {(
+                  [
+                    "turn-summary",
+                    "session-summary",
+                    "project",
+                    "work-record",
+                    "method",
+                    "concept",
+                  ] as const
+                ).map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {t(`types.${value}`)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           )}
           {view === "work" && (projects.data?.length ?? 0) > 0 && (
-            <select
-              aria-label={t("project")}
-              className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-              value={project}
-              onChange={(event) => {
-                setProject(event.target.value)
+            <Select
+              value={project || "all"}
+              onValueChange={(value) => {
+                setProject(value === "all" ? "" : value)
                 setLimit(50)
                 navigate({ path: null }, true)
               }}
             >
-              <option value="">{t("allProjects")}</option>
-              {projects.data?.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {wikiProjectDisplayTitle(item)}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger aria-label={t("project")} className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                <SelectItem value="all">{t("allProjects")}</SelectItem>
+                {projects.data?.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {wikiProjectDisplayTitle(item)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           )}
         </div>
         {error && (

@@ -9,6 +9,13 @@ import Link from "next/link"
 import { useTranslations } from "next-intl"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
@@ -51,6 +58,7 @@ function providerModels(
   return model ? [{ id: model, name: model }] : []
 }
 const slots = ["turn_summary", "session_rollup", "synthesize"] as const
+const NONE = "__none__"
 const sectionKey = {
   turn_summary: "turnSummary",
   session_rollup: "sessionRollup",
@@ -76,57 +84,67 @@ function ModelChoice({
     <div className="grid gap-3 sm:grid-cols-2">
       <label className="space-y-1 text-sm">
         <span className="text-muted-foreground">{t("provider")}</span>
-        <select
-          id={`${id}-provider`}
-          className="h-9 w-full rounded-md border bg-background px-2"
-          value={slot.provider_id ?? ""}
-          onChange={(event) => {
-            const next = providers.find(
-              (item) => item.id === Number(event.target.value)
-            )
+        <Select
+          value={
+            slot.provider_id != null ? String(slot.provider_id) : NONE
+          }
+          onValueChange={(value) => {
+            if (value === NONE) {
+              onChange({ provider_id: null, model_id: null })
+              return
+            }
+            const next = providers.find((item) => item.id === Number(value))
             onChange({
               provider_id: next?.id ?? null,
               model_id: providerModels(next ?? null)[0]?.id ?? null,
             })
           }}
         >
-          <option value="">{t("chooseProvider")}</option>
-          {slot.provider_id != null && !provider && (
-            <option value={slot.provider_id}>
-              {t("savedProviderUnavailable")}
-            </option>
-          )}
-          {providers.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger id={`${id}-provider`} className="w-full">
+            <SelectValue placeholder={t("chooseProvider")} />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value={NONE}>{t("chooseProvider")}</SelectItem>
+            {slot.provider_id != null && !provider && (
+              <SelectItem value={String(slot.provider_id)}>
+                {t("savedProviderUnavailable")}
+              </SelectItem>
+            )}
+            {providers.map((item) => (
+              <SelectItem key={item.id} value={String(item.id)}>
+                {item.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </label>
       <label className="space-y-1 text-sm">
         <span className="text-muted-foreground">{t("model")}</span>
-        <select
-          id={id}
-          className="h-9 w-full rounded-md border bg-background px-2"
+        <Select
+          value={slot.model_id ?? NONE}
           disabled={!provider}
-          value={slot.model_id ?? ""}
-          onChange={(event) =>
-            onChange({ model_id: event.target.value || null })
+          onValueChange={(value) =>
+            onChange({ model_id: value === NONE ? null : value })
           }
         >
-          <option value="">{t("chooseModel")}</option>
-          {slot.model_id &&
-            !choices.some((item) => item.id === slot.model_id) && (
-              <option value={slot.model_id}>
-                {slot.model_id} · {t("unavailable")}
-              </option>
-            )}
-          {choices.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger id={id} className="w-full">
+            <SelectValue placeholder={t("chooseModel")} />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value={NONE}>{t("chooseModel")}</SelectItem>
+            {slot.model_id &&
+              !choices.some((item) => item.id === slot.model_id) && (
+                <SelectItem value={slot.model_id}>
+                  {slot.model_id} · {t("unavailable")}
+                </SelectItem>
+              )}
+            {choices.map((item) => (
+              <SelectItem key={item.id} value={item.id}>
+                {item.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </label>
     </div>
   )
@@ -342,7 +360,9 @@ export function WikiSettings() {
                   <Input
                     id="wiki-vault-path"
                     value={draft.vault_path ?? ""}
-                    placeholder={old("vaultPathPlaceholder")}
+                    placeholder={
+                      draft.resolved_vault_path || old("vaultPathPlaceholder")
+                    }
                     onChange={(event) =>
                       setDraft((current) => ({
                         ...current,

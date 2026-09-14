@@ -175,6 +175,14 @@ fn spawn_with_roots(
 impl WikiEngine {
     async fn run(self) {
         // 状态目录与用户选中的Wiki目录分离；启动时在引擎持有锁的目录恢复一次即可。
+        if let Err(e) = async {
+            let _transition = crate::wiki::lifecycle::lock().await;
+            crate::wiki::relocate::relocate_legacy_app_data_wiki(&self.db.conn).await
+        }
+        .await
+        {
+            tracing::warn!("[wiki] relocate error: {e}");
+        }
         if let Err(e) = crate::wiki::source::recover_pending(&self.db.conn).await {
             tracing::warn!("[wiki] pending ACP recovery error: {e}");
         }
@@ -200,6 +208,9 @@ impl WikiEngine {
         // Settings saves hold the same short lock while checking active jobs.
         // Claim under it, then release before binding or running any model.
         let transition = crate::wiki::lifecycle::lock().await;
+        crate::wiki::relocate::relocate_legacy_app_data_wiki(conn)
+            .await
+            .map_err(|e| e.to_string())?;
         let settings = settings::load_settings(conn)
             .await
             .map_err(|e| e.to_string())?;

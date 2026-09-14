@@ -11,6 +11,13 @@ import { useTranslations } from "next-intl"
 import { WorkbenchPageTitle } from "@/components/workbench/workbench-page-title"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { WikiDataProvider, useWikiData, type WikiViewId } from "./wiki-data"
 import { WikiAllView } from "./wiki-all-view"
@@ -144,25 +151,32 @@ function WikiPageContent() {
               />
             </div>
             {route.view !== "sources" && (
-              <select
-                aria-label={t("searchScope")}
-                className="max-w-32 rounded-md border bg-background px-2 text-sm"
+              <Select
                 value={route.scope}
-                onChange={(event) =>
+                onValueChange={(value) =>
                   navigate(
                     {
-                      scope: event.target.value as "all" | "notes" | "sources",
+                      scope: value as "all" | "notes" | "sources",
                     },
                     true
                   )
                 }
               >
-                {(["all", "notes", "sources"] as const).map((value) => (
-                  <option key={value} value={value}>
-                    {t(`scopes.${value}`)}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  aria-label={t("searchScope")}
+                  className="w-32"
+                  size="sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {(["all", "notes", "sources"] as const).map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {t(`scopes.${value}`)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             )}
             <Button type="submit" size="sm" className="h-9">
               {t("search")}

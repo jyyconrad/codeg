@@ -18,6 +18,7 @@ pub mod project_metadata;
 pub mod raw;
 pub mod read_model;
 pub mod redact;
+pub mod relocate;
 pub mod result;
 pub mod session_import;
 pub mod session_rollup;

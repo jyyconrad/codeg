@@ -10,6 +10,13 @@ import { useTranslations } from "next-intl"
 import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { wikiCancelJob, wikiCompileNow, wikiRetryJob } from "@/lib/wiki-api"
 import { toErrorMessage } from "@/lib/app-error"
 import {
@@ -144,32 +151,35 @@ export function WikiJobsView() {
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b p-3">
-        <select
-          aria-label={t("jobFilter")}
-          className="h-9 rounded-md border bg-background px-3 text-sm"
+        <Select
           value={status}
-          onChange={(event) => {
-            setStatus(event.target.value)
+          onValueChange={(value) => {
+            setStatus(value)
             setLimit(50)
           }}
         >
-          {(
-            [
-              "all",
-              "active",
-              "failed",
-              "succeeded",
-              "generated",
-              "no_content",
-              "no_new_input",
-              "cancelled",
-            ] as const
-          ).map((value) => (
-            <option key={value} value={value}>
-              {t(`jobFilters.${value}`)}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger aria-label={t("jobFilter")} className="w-44">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="start">
+            {(
+              [
+                "all",
+                "active",
+                "failed",
+                "succeeded",
+                "generated",
+                "no_content",
+                "no_new_input",
+                "cancelled",
+              ] as const
+            ).map((value) => (
+              <SelectItem key={value} value={value}>
+                {t(`jobFilters.${value}`)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <WikiCompileButton />
       </div>
       <div className="flex min-h-0 flex-1">

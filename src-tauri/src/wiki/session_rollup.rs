@@ -60,6 +60,7 @@ async fn enqueue_on_completed_inner(
     conversation_id: i32,
 ) -> Result<(), DbError> {
     let _transition = crate::wiki::lifecycle::lock().await;
+    crate::wiki::relocate::relocate_legacy_app_data_wiki(conn).await?;
     let settings = settings::load_settings(conn).await?;
     if !settings.enabled {
         return Ok(());
