@@ -1,29 +1,44 @@
 //! Two-level context compression using rig-memory Compactor / MemoryPolicy.
 //!
-//! L1 is [`TemplateCompactor`] (no HTTP). L2 is [`LlmCompactor`] on the second
-//! session trigger. Never call `AgentBuilder::memory()` — transcript is truth.
+//! L1 is [`TemplateCompactor`] (no HTTP). L2 is a built-in compact agent-loop
+//! on the second session trigger. Never call `AgentBuilder::memory()` —
+//! transcript is truth.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use rig::client::CompletionClient;
+use futures::StreamExt;
+use rig::agent::{
+    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, InvalidToolCallAction,
+    InvalidToolCallContext, MultiTurnStreamItem, ObservationAction, TextDelta, ToolCall,
+    ToolCallAction,
+};
+use rig::client::AgentClientExt;
 use rig::completion::message::{ToolResultContent, UserContent};
-use rig::completion::{AssistantContent, CompletionModel, Message};
+use rig::completion::Message;
 use rig_memory::{Compactor, MemoryError, MemoryPolicy, SlidingWindowMemory, TemplateCompactor};
+use tokio_util::sync::CancellationToken;
 
 use super::budget::{
     estimate_request, messages_from_turns, BudgetConfig, BudgetError, BudgetInputs,
 };
 use super::store::{
-    CanonicalTurn, CompactRecord, ContextStore, ContextView, ExecutionFact, UsageSource,
+    CallIdentity, CallIdentityBridge, CanonicalTurn, CompactRecord, ContextStore, ContextView,
+    ExecutionFact, FactRecorder, UsageSource,
 };
 use super::tool_prune::{
     distill_tool_result, hard_clear_tool_result, tool_skips_hard_clear, DistillKind,
 };
+use crate::acp::file_system_runtime::{FileSystemRuntime, FsAccessPolicy};
 use crate::acp_transcript::now_epoch_ms;
-use crate::agent::model::CodegLlmClient;
+use crate::agent::mode::compact_context_dir;
+use crate::agent::model::{CodegLlmClient, DEFAULT_INVALID_TOOL_CALL_RETRIES};
+use crate::agent::tools::{GlobTool, LoadedSkills, NativeToolCtx, ReadFileTool, WriteFileTool};
 
 /// Cap on L2 compact `max_tokens` (min of this and the session setting).
 pub const L2_MAX_TOKENS: u64 = 2048;
+/// Model-call budget for the built-in compact agent-loop.
+pub const COMPACT_MAX_TURNS: usize = 8;
 const L1_SUMMARY_MAX_BYTES: usize = 8 * 1024;
 /// OpenCode prune: keep the last two user turns' tool output intact.
 const PROTECT_RECENT_USER_TURNS: usize = 2;
@@ -49,14 +64,15 @@ impl From<CompactArtifact> for Message {
     }
 }
 
-/// L2 LLM summarizer. Same session client/protocol as the main turn.
+/// L2 compact agent. Same session client/protocol as the main turn.
 #[derive(Clone)]
 pub struct LlmCompactor {
     client: CodegLlmClient,
     model_id: String,
     compact_prompt: String,
     max_tokens: u64,
-    workspace: Option<PathBuf>,
+    artifacts_dir: Option<PathBuf>,
+    cancel: CancellationToken,
 }
 
 impl LlmCompactor {
@@ -71,12 +87,18 @@ impl LlmCompactor {
             model_id: model_id.into(),
             compact_prompt: compact_prompt.into(),
             max_tokens: max_tokens.clamp(1, L2_MAX_TOKENS),
-            workspace: None,
+            artifacts_dir: None,
+            cancel: CancellationToken::new(),
         }
     }
 
-    pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
-        self.workspace = Some(workspace.into());
+    pub fn with_artifacts(mut self, artifacts_dir: impl Into<PathBuf>) -> Self {
+        self.artifacts_dir = Some(artifacts_dir.into());
+        self
+    }
+
+    pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
+        self.cancel = cancel;
         self
     }
 
@@ -103,41 +125,55 @@ impl LlmCompactor {
         body.push_str("Evicted turns:\n");
         body.push_str(&messages_as_text(evicted));
         let prompt = Message::user(body);
-        let response = match &self.client {
-            CodegLlmClient::Completions(client) => client
-                .completion_model(&self.model_id)
-                .completion_request(prompt)
-                .preamble(self.compact_prompt.clone())
-                .max_tokens(self.max_tokens)
-                .send()
-                .await
-                .map_err(|err| err.to_string())?,
-            CodegLlmClient::Responses(client) => client
-                .completion_model(&self.model_id)
-                .completion_request(prompt)
-                .preamble(self.compact_prompt.clone())
-                .max_tokens(self.max_tokens)
-                .send()
-                .await
-                .map_err(|err| err.to_string())?,
+        let context_dir = self.prepare_context_dir()?;
+        tracing::info!("codeg agent compacting context with built-in agent loop");
+        let summary = match &self.client {
+            CodegLlmClient::Completions(client) => {
+                run_compact_agent(
+                    client.clone(),
+                    &self.model_id,
+                    &self.compact_prompt,
+                    prompt,
+                    context_dir.as_deref(),
+                    conversation_id,
+                    self.max_tokens,
+                    self.cancel.clone(),
+                )
+                .await?
+            }
+            CodegLlmClient::Responses(client) => {
+                run_compact_agent(
+                    client.clone(),
+                    &self.model_id,
+                    &self.compact_prompt,
+                    prompt,
+                    context_dir.as_deref(),
+                    conversation_id,
+                    self.max_tokens,
+                    self.cancel.clone(),
+                )
+                .await?
+            }
         };
-        let text = choice_text(&response);
-        if text.trim().is_empty() {
+        if summary.trim().is_empty() {
             return Err("empty compact summary".into());
         }
-        let mut artifact = parse_compact_artifact(&text)?;
-        if let Some(workspace) = &self.workspace {
-            let written = write_compact_files(workspace, conversation_id, &artifact.files)?;
-            if !written.is_empty() {
-                artifact.summary.push_str("\n\nContext files written:\n");
-                for path in written {
-                    artifact.summary.push_str("- ");
-                    artifact.summary.push_str(&path);
-                    artifact.summary.push('\n');
-                }
-            }
+        let mut files = Vec::new();
+        if let Some(dir) = &context_dir {
+            files = collect_markdown_files(dir)?;
         }
-        Ok(artifact)
+        let mut summary = summary;
+        ensure_summary_lists_files(&mut summary, &files);
+        Ok(CompactArtifact { summary, files })
+    }
+
+    fn prepare_context_dir(&self) -> Result<Option<PathBuf>, String> {
+        let Some(artifacts) = &self.artifacts_dir else {
+            return Ok(None);
+        };
+        let dir = compact_context_dir(artifacts);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create compact context dir: {e}"))?;
+        Ok(Some(dir))
     }
 }
 
@@ -162,95 +198,247 @@ impl Compactor for LlmCompactor {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct CompactEnvelope {
-    summary: String,
-    #[serde(default)]
-    files: Vec<CompactFileEnvelope>,
+struct CompactHook {
+    cancel: CancellationToken,
+    identity: Arc<CallIdentityBridge>,
+    turn_id: u64,
+    turn_key: String,
+    text: Arc<Mutex<String>>,
 }
 
-#[derive(serde::Deserialize)]
-struct CompactFileEnvelope {
-    path: String,
-    content: String,
-}
-
-fn parse_compact_artifact(text: &str) -> Result<CompactArtifact, String> {
-    let trimmed = text.trim();
-    let parsed = serde_json::from_str::<CompactEnvelope>(trimmed).or_else(|_| {
-        let body = trimmed
-            .strip_prefix("```json")
-            .or_else(|| trimmed.strip_prefix("```JSON"))
-            .or_else(|| trimmed.strip_prefix("```"))
-            .map(|s| s.trim().trim_end_matches("```").trim())
-            .unwrap_or(trimmed);
-        serde_json::from_str::<CompactEnvelope>(body)
-    });
-    match parsed {
-        Ok(envelope) if !envelope.summary.trim().is_empty() => Ok(CompactArtifact {
-            summary: envelope.summary,
-            files: envelope
-                .files
-                .into_iter()
-                .map(|file| CompactFile {
-                    path: file.path,
-                    content: file.content,
-                })
-                .collect(),
-        }),
-        Ok(_) => Err("empty compact summary".into()),
-        Err(_) => Ok(CompactArtifact {
-            summary: trimmed.to_string(),
-            files: Vec::new(),
-        }),
+impl AgentHook for CompactHook {
+    async fn on_completion_call(
+        &self,
+        _ctx: &HookContext,
+        _event: CompletionCallEvent<'_>,
+    ) -> CompletionCallAction {
+        if self.cancel.is_cancelled() {
+            return CompletionCallAction::stop("cancelled");
+        }
+        CompletionCallAction::continue_run()
     }
-}
 
-fn write_compact_files(
-    workspace: &Path,
-    conversation_id: &str,
-    files: &[CompactFile],
-) -> Result<Vec<String>, String> {
-    if files.is_empty() {
-        return Ok(Vec::new());
+    async fn on_invalid_tool_call(
+        &self,
+        _ctx: &HookContext,
+        event: &InvalidToolCallContext,
+    ) -> Option<InvalidToolCallAction> {
+        if self.cancel.is_cancelled() {
+            return Some(InvalidToolCallAction::stop("cancelled"));
+        }
+        Some(InvalidToolCallAction::retry(format!(
+            "unknown or disallowed tool `{}`; use write_file, read_file, or glob",
+            event.tool_name
+        )))
     }
-    let session = conversation_id
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .take(80)
-        .collect::<String>();
-    let root = workspace
-        .join(".codeg")
-        .join("context")
-        .join(if session.is_empty() {
-            "session"
-        } else {
-            &session
+
+    async fn on_tool_call(&self, _ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {
+        if self.cancel.is_cancelled() {
+            return ToolCallAction::stop("cancelled");
+        }
+        let tool_call_id = event
+            .tool_call_id
+            .map(str::to_string)
+            .unwrap_or_else(|| event.internal_call_id.to_string());
+        self.identity.set(CallIdentity {
+            turn_id: self.turn_id,
+            turn_key: self.turn_key.clone(),
+            tool_call_id,
+            function_name: event.tool_name.to_string(),
         });
-    std::fs::create_dir_all(&root).map_err(|e| format!("create compact context dir: {e}"))?;
-    let mut written = Vec::new();
-    for file in files {
-        let rel = Path::new(file.path.trim());
-        if rel.extension().and_then(|s| s.to_str()) != Some("md")
-            || rel.is_absolute()
-            || rel.components().any(|c| {
-                matches!(
-                    c,
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
-                )
-            })
-        {
-            return Err(format!("invalid compact markdown path: {}", file.path));
-        }
-        let path = root.join(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("create compact file dir: {e}"))?;
-        }
-        std::fs::write(&path, &file.content)
-            .map_err(|e| format!("write compact markdown {}: {e}", path.display()))?;
-        written.push(path.to_string_lossy().to_string());
+        ToolCallAction::run()
     }
-    Ok(written)
+
+    async fn on_text_delta(&self, _ctx: &HookContext, event: TextDelta<'_>) -> ObservationAction {
+        *self.text.lock().expect("compact text") = event.aggregated.to_string();
+        ObservationAction::continue_run()
+    }
+}
+
+fn compact_tool_ctx(
+    context_dir: &Path,
+    session_id: &str,
+    cancel: CancellationToken,
+) -> NativeToolCtx {
+    let identity = Arc::new(CallIdentityBridge::new());
+    let store = Arc::new(Mutex::new(ContextStore::new(format!(
+        "compact:{session_id}"
+    ))));
+    let recorder = Arc::new(FactRecorder::memory(Arc::clone(&store)));
+    NativeToolCtx {
+        turn_id: 1,
+        identity,
+        recorder,
+        cancel,
+        launch_cwd: context_dir.to_path_buf(),
+        fs: Arc::new(FileSystemRuntime::with_policy(FsAccessPolicy::strict(
+            context_dir,
+        ))),
+        session_id: session_id.to_string(),
+        spill_dir: context_dir.join("spills"),
+        loaded_skills: LoadedSkills::shared(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_compact_agent<C>(
+    client: C,
+    model_id: &str,
+    preamble: &str,
+    prompt: Message,
+    context_dir: Option<&Path>,
+    session_id: &str,
+    max_tokens: u64,
+    cancel: CancellationToken,
+) -> Result<String, String>
+where
+    C: AgentClientExt + Send,
+    C::CompletionModel: 'static,
+{
+    let text = Arc::new(Mutex::new(String::new()));
+    let (hook, tool_ctx) = if let Some(dir) = context_dir {
+        let ctx = compact_tool_ctx(dir, session_id, cancel.clone());
+        (
+            CompactHook {
+                cancel: cancel.clone(),
+                identity: Arc::clone(&ctx.identity),
+                turn_id: ctx.turn_id,
+                turn_key: format!("compact:{session_id}"),
+                text: Arc::clone(&text),
+            },
+            Some(ctx),
+        )
+    } else {
+        (
+            CompactHook {
+                cancel: cancel.clone(),
+                identity: Arc::new(CallIdentityBridge::new()),
+                turn_id: 1,
+                turn_key: format!("compact:{session_id}"),
+                text: Arc::clone(&text),
+            },
+            None,
+        )
+    };
+    let stream = if let Some(ctx) = tool_ctx {
+        client
+            .agent(model_id)
+            .preamble(preamble)
+            .max_tokens(max_tokens)
+            .default_max_turns(COMPACT_MAX_TURNS)
+            .tool(ReadFileTool::new(ctx.clone()))
+            .tool(WriteFileTool::new(ctx.clone()))
+            .tool(GlobTool::new(ctx))
+            .build()
+            .runner(prompt)
+            .history(Vec::<Message>::new())
+            .max_turns(COMPACT_MAX_TURNS)
+            .tool_concurrency(1)
+            .max_invalid_tool_call_retries(DEFAULT_INVALID_TOOL_CALL_RETRIES)
+            .add_hook(hook)
+            .stream()
+            .await
+    } else {
+        client
+            .agent(model_id)
+            .preamble(preamble)
+            .max_tokens(max_tokens)
+            .default_max_turns(COMPACT_MAX_TURNS)
+            .build()
+            .runner(prompt)
+            .history(Vec::<Message>::new())
+            .max_turns(COMPACT_MAX_TURNS)
+            .tool_concurrency(1)
+            .max_invalid_tool_call_retries(DEFAULT_INVALID_TOOL_CALL_RETRIES)
+            .add_hook(hook)
+            .stream()
+            .await
+    };
+    drain_compact_stream(stream, cancel, text).await
+}
+
+async fn drain_compact_stream(
+    mut stream: rig::agent::StreamingResult,
+    cancel: CancellationToken,
+    text: Arc<Mutex<String>>,
+) -> Result<String, String> {
+    let mut output = String::new();
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return Err("cancelled".into()),
+            item = stream.next() => match item {
+                None => break,
+                Some(Ok(MultiTurnStreamItem::FinalResponse(response))) => {
+                    output = response.output;
+                    break;
+                }
+                Some(Err(err)) => {
+                    let message = err.to_string();
+                    if cancel.is_cancelled() || message.to_ascii_lowercase().contains("cancel") {
+                        return Err("cancelled".into());
+                    }
+                    return Err(message);
+                }
+                Some(Ok(_)) => {}
+            }
+        }
+    }
+    if output.trim().is_empty() {
+        output = text.lock().expect("compact text").clone();
+    }
+    Ok(output)
+}
+
+fn collect_markdown_files(root: &Path) -> Result<Vec<CompactFile>, String> {
+    let mut files = Vec::new();
+    collect_markdown_files_inner(root, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+fn collect_markdown_files_inner(dir: &Path, out: &mut Vec<CompactFile>) -> Result<(), String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("read compact context dir: {e}"))?
+            .path();
+        if path.is_dir() {
+            collect_markdown_files_inner(&path, out)?;
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        out.push(CompactFile {
+            path: path.to_string_lossy().to_string(),
+            content,
+        });
+    }
+    Ok(())
+}
+
+fn ensure_summary_lists_files(summary: &mut String, files: &[CompactFile]) {
+    let missing: Vec<&str> = files
+        .iter()
+        .map(|file| file.path.as_str())
+        .filter(|path| !summary.contains(path))
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    if !summary.is_empty() && !summary.ends_with('\n') {
+        summary.push('\n');
+    }
+    summary.push_str("\nContext files:\n");
+    for path in missing {
+        summary.push_str("- ");
+        summary.push_str(path);
+        summary.push('\n');
+    }
 }
 
 /// Project canonical facts. At most one compact-level upgrade per call.
@@ -674,18 +862,6 @@ fn messages_as_text(messages: &[Message]) -> String {
     serde_json::to_string(messages).unwrap_or_else(|_| format!("{messages:?}"))
 }
 
-fn choice_text(response: &rig::completion::CompletionResponse) -> String {
-    response
-        .choice
-        .iter()
-        .filter_map(|part| match part {
-            AssistantContent::Text(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,33 +884,30 @@ mod tests {
     }
 
     #[test]
-    fn compact_envelope_preserves_summary_and_writes_session_markdown() {
-        let parsed = parse_compact_artifact(
-            r##"{"summary":"goal and next step","files":[{"path":"api.md","content":"# API"}]}"##,
-        )
-        .expect("valid compact envelope");
-        assert_eq!(parsed.summary, "goal and next step");
-        let dir = tempfile::tempdir().expect("tempdir");
-        let paths = write_compact_files(dir.path(), "session/unsafe", &parsed.files)
-            .expect("write compact file");
-        assert_eq!(paths.len(), 1);
-        assert_eq!(std::fs::read_to_string(&paths[0]).unwrap(), "# API");
-        assert!(paths[0].contains("sessionunsafe"));
+    fn compact_context_dir_nests_under_session_artifacts() {
+        let artifacts = PathBuf::from("/tmp/artifacts/sess");
+        assert_eq!(
+            compact_context_dir(&artifacts),
+            PathBuf::from("/tmp/artifacts/sess/context")
+        );
     }
 
     #[test]
-    fn compact_files_reject_path_traversal() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let err = write_compact_files(
-            dir.path(),
-            "session",
+    fn summary_appends_missing_session_file_paths() {
+        let mut summary = "goal and next step".to_string();
+        ensure_summary_lists_files(
+            &mut summary,
             &[CompactFile {
-                path: "../escape.md".into(),
-                content: "x".into(),
+                path: "/tmp/artifacts/sess/context/api.md".into(),
+                content: "# API".into(),
             }],
-        )
-        .expect_err("traversal must be rejected");
-        assert!(err.contains("invalid compact markdown path"));
+        );
+        assert!(summary.contains("goal and next step"), "{summary}");
+        assert!(
+            summary.contains("/tmp/artifacts/sess/context/api.md"),
+            "{summary}"
+        );
+        assert!(!summary.contains("{\"summary\""), "{summary}");
     }
 
     fn fill_turns(store: &mut ContextStore, start: usize, n: usize, pad: usize) {
@@ -799,7 +972,7 @@ mod tests {
                 let next = {
                     let mut script = script.lock().expect("script");
                     if script.is_empty() {
-                        json!({"ok": false})
+                        json!({"text": "ok"})
                     } else {
                         script.remove(0)
                     }
@@ -812,26 +985,10 @@ mod tests {
                     )
                         .into_response();
                 }
-                let text = next
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("L2-SUMMARY");
-                let payload = json!({
-                    "id": "chatcmpl-compact",
-                    "object": "chat.completion",
-                    "created": 1,
-                    "model": "m",
-                    "choices": [{
-                        "index": 0,
-                        "message": { "role": "assistant", "content": text },
-                        "finish_reason": "stop"
-                    }],
-                    "usage": { "prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28 }
-                });
                 (
                     StatusCode::OK,
-                    [(header::CONTENT_TYPE, "application/json")],
-                    payload.to_string(),
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    compact_sse(&next),
                 )
                     .into_response()
             }
@@ -844,6 +1001,94 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         (format!("http://{addr}/v1"), bodies)
+    }
+
+    fn compact_sse(script: &Value) -> String {
+        if script.get("kind").and_then(Value::as_str) == Some("tools") {
+            let calls = script
+                .get("calls")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let tool_calls: Vec<Value> = calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    json!({
+                        "index": index,
+                        "id": call.get("id").and_then(Value::as_str).unwrap_or("call"),
+                        "type": "function",
+                        "function": {
+                            "name": call.get("name").and_then(Value::as_str).unwrap_or("write_file"),
+                            "arguments": call.get("arguments").cloned().unwrap_or(json!({})).to_string()
+                        }
+                    })
+                })
+                .collect();
+            compact_sse_frames(&[
+                json!({
+                    "id": "chatcmpl-compact",
+                    "object": "chat.completion.chunk",
+                    "choices": [{
+                        "index": 0,
+                        "delta": { "role": "assistant", "content": null, "tool_calls": tool_calls },
+                        "finish_reason": null
+                    }]
+                })
+                .to_string(),
+                json!({
+                    "id": "chatcmpl-compact",
+                    "object": "chat.completion.chunk",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls"
+                    }],
+                    "usage": { "prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28 }
+                })
+                .to_string(),
+                "[DONE]".to_string(),
+            ])
+        } else {
+            let text = script
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("L2-SUMMARY");
+            compact_sse_frames(&[
+                json!({
+                    "id": "chatcmpl-compact",
+                    "object": "chat.completion.chunk",
+                    "choices": [{
+                        "index": 0,
+                        "delta": { "role": "assistant", "content": text },
+                        "finish_reason": null
+                    }]
+                })
+                .to_string(),
+                json!({
+                    "id": "chatcmpl-compact",
+                    "object": "chat.completion.chunk",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": { "prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28 }
+                })
+                .to_string(),
+                "[DONE]".to_string(),
+            ])
+        }
+    }
+
+    fn compact_sse_frames(payloads: &[String]) -> String {
+        let mut out = String::new();
+        for payload in payloads {
+            out.push_str("data: ");
+            out.push_str(payload);
+            out.push_str("\n\n");
+        }
+        out
     }
 
     fn llm(base: &str, prompt: &str, max_tokens: u64) -> LlmCompactor {
@@ -1257,5 +1502,129 @@ mod tests {
             "L2 input must keep the read path instead of a 2000-char prefix cut ({} bytes)",
             body.len()
         );
+    }
+
+    #[tokio::test]
+    async fn l2_writes_markdown_into_global_session_context() {
+        let mut store = ContextStore::new("s");
+        fill_turns(&mut store, 0, 8, 200);
+        let artifacts = tempfile::tempdir().expect("artifacts");
+        let (base, bodies) = spawn_json_completions(vec![
+            json!({
+                "kind": "tools",
+                "calls": [{
+                    "name": "write_file",
+                    "id": "w1",
+                    "arguments": {"path": "api.md", "content": "# API"}
+                }]
+            }),
+            json!({"text": "## Handoff\n\nKeep the current work goal."}),
+        ])
+        .await;
+        let compact =
+            llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 4096).with_artifacts(artifacts.path());
+        let prompt = Message::user("current question");
+        let (_, rec1) = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(8_000, 1024),
+                preamble: "short",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            Some(&compact),
+        )
+        .await
+        .expect("l1");
+        store.set_compact(rec1.expect("l1"));
+        fill_turns(&mut store, 8, 8, 200);
+        let (view2, rec2) = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(8_000, 1024),
+                preamble: "short",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            Some(&compact),
+        )
+        .await
+        .expect("l2");
+        let rec2 = rec2.expect("l2 record");
+        assert_eq!(rec2.level, 2);
+        let dumped = serde_json::to_string(&view2.messages).unwrap();
+        assert!(dumped.contains("## Handoff"), "{dumped}");
+        assert!(!dumped.contains("{\"summary\""), "{dumped}");
+        let written = compact_context_dir(artifacts.path()).join("api.md");
+        assert_eq!(std::fs::read_to_string(&written).unwrap(), "# API");
+        assert!(
+            rec2.files.iter().any(|path| path.ends_with("api.md")),
+            "{:?}",
+            rec2.files
+        );
+        assert!(
+            dumped.contains(&written.to_string_lossy().to_string()) || dumped.contains("api.md"),
+            "{dumped}"
+        );
+        let captured = bodies.lock().expect("bodies").clone();
+        assert_eq!(captured.len(), 2, "{captured:?}");
+        let body = captured[0].to_string();
+        assert!(body.contains("write_file"), "{body}");
+        assert!(body.contains("CODEG-COMPACT-PROMPT-MARKER"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn l2_write_file_cannot_leave_session_context() {
+        let mut store = ContextStore::new("s");
+        fill_turns(&mut store, 0, 8, 200);
+        let artifacts = tempfile::tempdir().expect("artifacts");
+        let (base, _bodies) = spawn_json_completions(vec![
+            json!({
+                "kind": "tools",
+                "calls": [{
+                    "name": "write_file",
+                    "id": "w1",
+                    "arguments": {"path": "../escape.md", "content": "nope"}
+                }]
+            }),
+            json!({"text": "handoff only"}),
+        ])
+        .await;
+        let compact =
+            llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 4096).with_artifacts(artifacts.path());
+        let prompt = Message::user("current question");
+        let (_, rec1) = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(8_000, 1024),
+                preamble: "short",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            Some(&compact),
+        )
+        .await
+        .expect("l1");
+        store.set_compact(rec1.expect("l1"));
+        fill_turns(&mut store, 8, 8, 200);
+        let _ = project_compacted(
+            BudgetInputs {
+                store: &store,
+                config: cfg(8_000, 1024),
+                preamble: "short",
+                tool_schemas: &[],
+                prompt: &prompt,
+            },
+            Some(&compact),
+        )
+        .await
+        .expect("l2");
+        assert!(
+            !artifacts.path().join("escape.md").exists(),
+            "write_file must not escape the session context directory"
+        );
+        assert!(!compact_context_dir(artifacts.path())
+            .join("escape.md")
+            .exists());
     }
 }

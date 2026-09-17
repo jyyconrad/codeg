@@ -253,6 +253,12 @@ impl CodegHook {
         self
     }
 
+    /// Skip permission cards for mutating tools. Host events still emit.
+    pub fn auto_allow_permissions(mut self) -> Self {
+        self.permission = PermissionPolicy::AutoAllow;
+        self
+    }
+
     fn request_patch(&self) -> Option<RequestPatch> {
         match (&self.history_override, self.max_tokens) {
             (None, None) => None,
@@ -627,7 +633,11 @@ impl AgentHook for CodegHook {
                 .input_budget()
                 .unwrap_or(native.budget.window)
                 .saturating_sub(*native.last_estimate.lock().expect("estimate"));
-            let (mut shown, truncated) = truncate_presentation(&presentation, remaining.max(1024));
+            let (mut shown, truncated) = if matches!(event.tool_name, "skill" | "read_file") {
+                (presentation.clone(), false)
+            } else {
+                truncate_presentation(&presentation, remaining.max(1024))
+            };
             let mut locator = None;
             if truncated {
                 let spill_dir = native.recorder.spill_dir();

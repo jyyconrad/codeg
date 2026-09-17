@@ -127,12 +127,12 @@ pub fn run_credential_helper() {
     // CODEG_DATA_DIR setups land on the right database.
     let explicit_data_dir = parse_data_dir_arg(std::env::args());
 
-    // Pin CODEG_DATA_DIR for downstream lookups (notably the file-based
-    // `keyring_store::tokens_file_path` in server mode). The DB path comes
-    // from `--data-dir`, but the token file path comes from the env var,
-    // and they must match — otherwise the helper finds the account row but
-    // returns no token. set_var is safe here because run_credential_helper
-    // is invoked from main() before any tokio runtime is built.
+    // Pin CODEG_DATA_DIR for downstream lookups (`keyring_store` resolves
+    // `tokens.json` from this var). The DB path comes from `--data-dir`,
+    // but the token file path comes from the env var, and they must match
+    // — otherwise the helper finds the account row but returns no token.
+    // set_var is safe here because run_credential_helper is invoked from
+    // main() before any tokio runtime is built.
     if let Some(dir) = &explicit_data_dir {
         std::env::set_var("CODEG_DATA_DIR", dir);
     }
@@ -204,8 +204,7 @@ fn read_host_from_stdin() -> String {
 }
 
 /// Look up a (username, token) pair for the given host using the codeg
-/// database in `app_data_dir` plus whichever token store is active for this
-/// build (OS keyring on desktop, `tokens.json` on server).
+/// database in `app_data_dir` plus `tokens.json` in that same data dir.
 ///
 /// Returns:
 ///   - `Ok(Some((u, p)))` when a matching account + token are found.
@@ -216,6 +215,11 @@ fn read_host_from_stdin() -> String {
 ///     when the user hits an unconfigured GitLab/enterprise host.
 ///   - `Err(_)` for I/O / DB / driver errors that the caller should
 ///     surface verbatim.
+///
+/// Tokens are read from `tokens.json` under `CODEG_DATA_DIR` (desktop
+/// and server). Desktop still migrates leftover macOS Keychain items
+/// into that file on first read so replacing the `.app` does not
+/// re-prompt.
 ///
 /// Extracted from `run_credential_helper` so tests can exercise the
 /// lookup path without spawning a subprocess.
@@ -946,16 +950,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// End-to-end check of the server-mode credential helper lookup path.
+    /// End-to-end check of the credential helper lookup path.
     /// Sets up a real on-disk SQLite DB, seeds a GitHub account row, writes
     /// a token to the file-based store, then exercises `lookup_credential`
-    /// the same way `run_credential_helper` does. Compiled only in
-    /// server-mode builds (`cargo test --no-default-features`) because the
-    /// Tauri-mode token store hits the OS keyring, which we can't safely
-    /// mutate from a test.
-    #[cfg(all(unix, not(feature = "tauri-runtime")))]
+    /// the same way `run_credential_helper` does. Tokens live in
+    /// `tokens.json` for both desktop and server so this does not touch
+    /// the OS keyring.
+    #[cfg(unix)]
     #[test]
-    fn test_credential_helper_e2e_server_mode() {
+    fn test_credential_helper_e2e_file_store() {
         let _guard = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let data_dir =
@@ -966,7 +969,7 @@ mod tests {
         let token = "ghp_test_token_value";
         let account_id = "acct-1";
 
-        // Override CODEG_DATA_DIR for the duration of this test — server-mode
+        // Override CODEG_DATA_DIR for the duration of this test —
         // `keyring_store` resolves `tokens.json` from this var.
         //
         // Through `temp_env`, NOT a bare `set_var` + manual restore. `STATE_LOCK`

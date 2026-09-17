@@ -32,6 +32,7 @@ const nextConfig: NextConfig = {
     unoptimized: true,
   },
   assetPrefix: isProd ? undefined : `http://${internalHost}:3000`,
+  transpilePackages: ["@js-preview/pdf", "@js-preview/docx", "pptx-preview"],
 }
 
 export default withNextIntl(nextConfig)

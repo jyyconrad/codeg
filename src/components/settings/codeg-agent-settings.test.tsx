@@ -18,6 +18,7 @@ vi.mock("@/lib/api", () => ({
   updateModelProvider: vi.fn(),
   deleteModelProvider: vi.fn(),
   acpFetchKimiModels: vi.fn(),
+  acpProbeCodegProtocol: vi.fn(),
 }))
 
 vi.mock("sonner", () => ({
@@ -35,7 +36,6 @@ import {
   acpUpdateAgentEnv,
   listModelProviders,
 } from "@/lib/api"
-import { CODEG_BUILTIN_SYSTEM_PROMPT } from "@/lib/codeg-agent-prompts"
 import type { AcpAgentInfo, ModelProviderInfo } from "@/lib/types"
 import { CodegAgentSettings } from "./codeg-agent-settings"
 
@@ -129,13 +129,17 @@ describe("Codeg Agent dedicated settings", () => {
   it("redesigns the page around in-agent provider management", () => {
     expect(page).toContain("CodegAgentProviderManager")
     expect(page).toContain('title={t("promptsTitle")}')
+    expect(page).toContain('title={t("contextTitle")}')
     expect(page).toContain('title={t("compressionTitle")}')
     expect(page).toContain('title={t("runtimeTitle")}')
     expect(page).toContain("CodegAgentCompactModelField")
     expect(page).toContain("CodegAgentPromptEditors")
+    expect(page).toContain("CodegAgentContextFields")
     expect(page).toContain("CODEG_BUILTIN_SYSTEM_PROMPT")
     expect(page).toContain("overlayCodegPromptEnv")
     expect(page).toContain("persistThenRunPreflight")
+    expect(page).toContain("bindCodegProviderWithProbe")
+    expect(page).toContain("acpProbeCodegProtocol")
     expect(page).not.toContain("AddModelProviderDialog")
     expect(manager).toContain('agentType: "codeg_agent"')
     expect(manager).toContain("acpFetchKimiModels")
@@ -176,9 +180,21 @@ describe("Codeg Agent dedicated settings", () => {
     ).toBeInTheDocument()
     expect(screen.getAllByText("Ollama local").length).toBeGreaterThan(1)
     expect(screen.getByRole("heading", { name: "Prompts" })).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Context" })).toBeInTheDocument()
     expect(
       screen.getByRole("heading", { name: "Context compression" })
     ).toBeInTheDocument()
+    expect(
+      screen.getByRole("checkbox", { name: "AGENTS.md" })
+    ).not.toBeChecked()
+    expect(
+      screen.getByRole("checkbox", { name: "CLAUDE.md" })
+    ).not.toBeChecked()
+    const treeCheckbox = screen.getByRole("checkbox", {
+      name: "Workspace structure",
+    })
+    expect(treeCheckbox).not.toBeChecked()
+    expect(treeCheckbox.closest("label")).not.toBeNull()
     expect(screen.getByRole("heading", { name: "Runtime" })).toBeInTheDocument()
     expect(screen.getByDisplayValue("70")).toBeInTheDocument()
     expect(screen.getByDisplayValue("24")).toBeInTheDocument()
@@ -186,7 +202,9 @@ describe("Codeg Agent dedicated settings", () => {
       screen.getByRole("switch", { name: "Enable Codeg Agent" })
     ).not.toBeChecked()
     expect(
-      screen.getByDisplayValue(CODEG_BUILTIN_SYSTEM_PROMPT)
+      screen.getByDisplayValue(
+        /You are Codeg Agent, a coding assistant that runs inside Codeg/
+      )
     ).toBeInTheDocument()
     expect(screen.getByText("Compact model")).toBeInTheDocument()
   })
@@ -199,6 +217,10 @@ describe("Codeg Agent dedicated settings", () => {
       ).toBeInTheDocument()
     })
     fireEvent.click(screen.getByRole("switch", { name: "Enable Codeg Agent" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "AGENTS.md" }))
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Workspace structure" })
+    )
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
     await waitFor(() => {
       expect(mockUpdateEnv).toHaveBeenCalled()
@@ -209,6 +231,9 @@ describe("Codeg Agent dedicated settings", () => {
     expect(payload?.env.CODEG_AGENT_COMPACT_SOFT_PERCENT).toBe("70")
     expect(payload?.env.CODEG_AGENT_MAX_TURNS).toBe("24")
     expect(payload?.env.CODEG_AGENT_SYSTEM_PROMPT).toBeUndefined()
+    expect(payload?.env.CODEG_AGENT_INJECT_AGENTS_MD).toBe("1")
+    expect(payload?.env.CODEG_AGENT_INJECT_TREE).toBe("1")
+    expect(payload?.env.CODEG_AGENT_INJECT_CLAUDE_MD).toBeUndefined()
     expect(mockPreflight).toHaveBeenCalled()
   })
 })

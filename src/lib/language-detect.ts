@@ -97,6 +97,7 @@ const EXTENSION_MAP: Record<string, string> = {
   proto: "proto",
   graphql: "graphql",
   gql: "graphql",
+  csv: "csv",
 
   // Markup
   md: "markdown",

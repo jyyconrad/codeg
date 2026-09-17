@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -60,6 +61,12 @@ const library = {
       is_dir: true,
       children: [
         {
+          path: "work/index.md",
+          name: "index.md",
+          title: "Work",
+          is_dir: false,
+        },
+        {
           path: "work/records",
           name: "records",
           is_dir: true,
@@ -91,19 +98,35 @@ function document(path: string) {
       title:
         path === "index.md"
           ? "Wiki home"
-          : path.endsWith("a.md")
-            ? "Article A"
-            : "Article B",
-      type: "index",
+          : path === "work/index.md"
+            ? "Work"
+            : path.endsWith("a.md")
+              ? "Article A"
+              : "Article B",
+      type:
+        path === "index.md" || path.endsWith("/index.md") ? "index" : "note",
       summary: "",
       updated_at: null,
       project_ids: [],
-      source_ids: [],
+      source_ids: path.endsWith("a.md") ? ["src"] : [],
       evidence_level: null,
     },
     body: contents[path],
     source: contents[path],
-    sources: [],
+    sources: path.endsWith("a.md")
+      ? [
+          {
+            title: "Pagination turn",
+            path: "raw/sessions/src.md",
+            source_id: "src",
+            availability: "available",
+            start_line: 1,
+            end_line: 4,
+            excerpt: "secret dump",
+            source_url: null,
+          },
+        ]
+      : [],
     headings: [],
     format_warning: false,
   }
@@ -122,6 +145,7 @@ beforeEach(() => {
   backend.events.clear()
   contents = {
     "index.md": "[Start reading](work/records/a.md)",
+    "work/index.md": "Work landing page",
     "work/records/a.md": "[Next article](b.md)",
     "work/records/b.md": "Current B content",
   }
@@ -159,6 +183,34 @@ describe("Wiki library reading", () => {
     expect(
       await screen.findByText(messages.Wiki.v2.library.copied)
     ).toBeVisible()
+  })
+
+  it("opens a folder index when the folder name is clicked, while the chevron only expands", async () => {
+    mount()
+    expect(
+      await screen.findByRole("heading", { name: "Wiki home" })
+    ).toBeVisible()
+    const directory = screen.getByRole("navigation", {
+      name: messages.Wiki.v2.library.directory,
+    })
+    fireEvent.click(within(directory).getByRole("button", { name: "work" }))
+    expect(await screen.findByRole("heading", { name: "Work" })).toBeVisible()
+    expect(window.location.search).toContain("wikiPath=work%2Findex.md")
+    expect(
+      within(directory).getByRole("button", { name: "work" })
+    ).toHaveAttribute("aria-expanded", "true")
+    fireEvent.click(
+      within(directory).getByRole("button", {
+        name: messages.Wiki.v2.library.expandDirectory.replace(
+          "{name}",
+          "records"
+        ),
+      })
+    )
+    expect(await screen.findByRole("heading", { name: "Work" })).toBeVisible()
+    expect(
+      within(directory).getByRole("button", { name: "records" })
+    ).toHaveAttribute("aria-expanded", "true")
   })
 
   it("follows links and directory selection without leaving the library, then restores history", async () => {
@@ -240,6 +292,21 @@ describe("Wiki library reading", () => {
       "aria-current",
       "page"
     )
+  })
+
+  it("shows material titles instead of dump paths on a note", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/?wikiView=library&wikiPath=work%2Frecords%2Fa.md"
+    )
+    mount()
+    expect(
+      await screen.findByRole("heading", { name: "Article A" })
+    ).toBeVisible()
+    expect(screen.getByText("Pagination turn")).toBeVisible()
+    expect(screen.queryByText(/raw\/sessions/)).not.toBeInTheDocument()
+    expect(screen.queryByText("secret dump")).not.toBeInTheDocument()
   })
 
   it("searches from the library using the existing overview results", async () => {

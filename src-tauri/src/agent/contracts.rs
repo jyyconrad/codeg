@@ -758,6 +758,7 @@ async fn write_file_reject_is_failed_and_does_not_write() {
         ))),
         session_id: "s".into(),
         spill_dir: dir.path().join("spills"),
+        loaded_skills: crate::agent::tools::LoadedSkills::shared(),
     };
     let tool = WriteFileTool::new(ctx);
     let (base, _) = spawn_completions(vec![
@@ -853,6 +854,7 @@ async fn write_a_cancel_b_keeps_file_and_does_not_replay() {
         ))),
         session_id: "s".into(),
         spill_dir: dir.path().join("spills"),
+        loaded_skills: crate::agent::tools::LoadedSkills::shared(),
     };
     let tool = WriteFileTool::new(ctx);
     let (base, _) = spawn_completions(vec![sse_tools(vec![

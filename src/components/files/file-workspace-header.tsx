@@ -1,9 +1,9 @@
 "use client"
 
-import { Code, ExternalLink, Eye } from "lucide-react"
+import { Code, Eye } from "lucide-react"
 import { useTranslations } from "next-intl"
-import { openPath } from "@/lib/platform"
-import { isHtmlPreviewable } from "@/lib/language-detect"
+import { hasSourcePreviewToggle } from "@/lib/file-preview-kind"
+import { FileOpenDropdown } from "@/components/files/file-open-dropdown"
 import {
   useWorkspaceActions,
   useWorkspaceFileTabs,
@@ -13,8 +13,8 @@ import { cn } from "@/lib/utils"
 
 /**
  * Desktop file-detail header: the active file's name on the left, its file-type
- * actions on the right — the markdown/html preview⇄source toggle and
- * open-in-browser (html). Maximize/restore lives in the file tab strip
+ * actions on the right — the markdown/html/csv preview⇄source toggle and
+ * open-with (default app / folder). Maximize/restore lives in the file tab strip
  * (`FileWorkspaceTabBar`, embedded) instead, flush right of the tabs. Rendered
  * only on desktop (`WorkspaceContent`); the mobile panel row keeps these
  * buttons in its own tab bar. Sits above every `FileWorkspacePanel` render
@@ -37,10 +37,7 @@ export function FileWorkspaceHeader() {
   // preview toggle for markdown/html, browser-open for html.
   const canPreview =
     activeFileTab.kind === "file" &&
-    (activeFileTab.language === "markdown" ||
-      isHtmlPreviewable(activeFileTab.path))
-  const canOpenInBrowser =
-    activeFileTab.kind === "file" && isHtmlPreviewable(activeFileTab.path)
+    hasSourcePreviewToggle(activeFileTab.path)
   const isPreviewActive =
     canPreview && activeFileTabId
       ? previewFileTabIds.has(activeFileTabId)
@@ -93,19 +90,8 @@ export function FileWorkspaceHeader() {
             )}
           </button>
         )}
-        {canOpenInBrowser && activeFileTab.path && (
-          <button
-            type="button"
-            onClick={() => {
-              // File tab paths are absolute — hand the path straight to the OS.
-              openPath(activeFileTab.path as string).catch(() => {})
-            }}
-            className={actionBtn}
-            aria-label={t("preview")}
-            title={t("preview")}
-          >
-            <ExternalLink className="h-4 w-4" />
-          </button>
+        {activeFileTab.kind === "file" && activeFileTab.path && (
+          <FileOpenDropdown path={activeFileTab.path} />
         )}
       </div>
     </div>

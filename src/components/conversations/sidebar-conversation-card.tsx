@@ -4,6 +4,8 @@ import {
   memo,
   useState,
   useCallback,
+  useEffect,
+  useSyncExternalStore,
   type CSSProperties,
   type FocusEvent,
 } from "react"
@@ -30,6 +32,14 @@ import type { DbConversationSummary, ConversationStatus } from "@/lib/types"
 import { STATUS_ORDER } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { formatConversationTitle } from "@/lib/conversation-title"
+import {
+  conversationAttentionKind,
+  conversationSeenEpoch,
+  getConversationAttentionSeenEpoch,
+  markConversationAttentionSeen,
+  subscribeConversationAttention,
+  type ConversationAttentionKind,
+} from "@/lib/conversation-attention"
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -132,6 +142,27 @@ function resolveAttachTabId(): string | null {
   return activeTab.id
 }
 
+/** Unread pip on the row's trailing slot: blue for a finished turn, red for a
+ *  failure. Clicking the row (or having it selected) records the status epoch
+ *  so the pip stays gone until the conversation finishes or fails again. */
+function AttentionPip({
+  kind,
+  title,
+}: {
+  kind: ConversationAttentionKind
+  title: string
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-2 w-2 shrink-0 items-center justify-center rounded-full",
+        kind === "failed" ? "bg-red-500" : "bg-blue-500"
+      )}
+      title={title}
+    />
+  )
+}
+
 /** How long the pointer must rest on a row before its details bubble opens.
  *  Long enough that sweeping the pointer down the list stays quiet. */
 const HOVER_CARD_OPEN_DELAY_MS = 500
@@ -222,12 +253,18 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const [hoverOpen, setHoverOpen] = useState(false)
 
   const handleClick = useCallback(() => {
+    markConversationAttentionSeen(
+      conversation.id,
+      conversationSeenEpoch(conversation.status, conversation.updated_at)
+    )
     onSelect(conversation.id, conversation.agent_type, conversation.folder_id)
   }, [
     onSelect,
     conversation.id,
     conversation.agent_type,
     conversation.folder_id,
+    conversation.status,
+    conversation.updated_at,
   ])
 
   const handleDblClick = useCallback(() => {
@@ -306,6 +343,27 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
   const isCancelled = status === "cancelled"
   const isPinned = conversation.pinned_at != null
   const isCompleted = status === "completed"
+  const seenEpoch = useSyncExternalStore(
+    subscribeConversationAttention,
+    () => getConversationAttentionSeenEpoch(conversation.id),
+    () => getConversationAttentionSeenEpoch(conversation.id)
+  )
+  const attention =
+    isSelected ||
+    seenEpoch === conversationSeenEpoch(status, conversation.updated_at)
+      ? null
+      : conversationAttentionKind(status)
+
+  useEffect(() => {
+    if (!isSelected) return
+    // Persist without notifying: the pip is already hidden while selected, and
+    // emitting would re-render this row on every mount of the active session.
+    markConversationAttentionSeen(
+      conversation.id,
+      conversationSeenEpoch(status, conversation.updated_at),
+      { notify: false }
+    )
+  }, [isSelected, conversation.id, status, conversation.updated_at])
   // Delegation sub-sessions (a child of another conversation) don't get the
   // hover quick actions: pinning a sub-agent run to the root Pinned section or
   // hand-toggling its status doesn't fit — its lifecycle is the sub-agent's. The
@@ -538,31 +596,49 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                           </span>
                         </span>
                       ) : isCancelled ? (
-                        <span
-                          className="relative inline-flex shrink-0 items-center justify-center"
-                          title={tSidebar("statusCancelledBadge")}
-                        >
-                          <XCircle
-                            className="h-3.5 w-3.5 text-destructive"
-                            aria-hidden
-                          />
-                          <span className="sr-only">
-                            {tSidebar("statusCancelledBadge")}
+                        <span className="flex items-center gap-1">
+                          {attention === "failed" ? (
+                            <AttentionPip
+                              kind="failed"
+                              title={tSidebar("statusUnreadFailedBadge")}
+                            />
+                          ) : null}
+                          <span
+                            className="relative inline-flex shrink-0 items-center justify-center"
+                            title={tSidebar("statusCancelledBadge")}
+                          >
+                            <XCircle
+                              className="h-3.5 w-3.5 text-destructive"
+                              aria-hidden
+                            />
+                            <span className="sr-only">
+                              {tSidebar("statusCancelledBadge")}
+                            </span>
                           </span>
                         </span>
-                      ) : timeLabel ? (
-                        <span
-                          className={cn(
-                            "relative shrink-0 tabular-nums",
-                            "text-[0.71875rem]",
-                            isSelected
-                              ? "font-medium text-muted-foreground"
-                              : "font-normal text-muted-foreground/70"
-                          )}
-                        >
-                          {timeLabel}
+                      ) : (
+                        <span className="flex items-center gap-1">
+                          {attention === "completed" ? (
+                            <AttentionPip
+                              kind="completed"
+                              title={tSidebar("statusUnreadCompletedBadge")}
+                            />
+                          ) : null}
+                          {timeLabel ? (
+                            <span
+                              className={cn(
+                                "relative shrink-0 tabular-nums",
+                                "text-[0.71875rem]",
+                                isSelected
+                                  ? "font-medium text-muted-foreground"
+                                  : "font-normal text-muted-foreground/70"
+                              )}
+                            >
+                              {timeLabel}
+                            </span>
+                          ) : null}
                         </span>
-                      ) : null}
+                      )}
                     </span>
                     {/* Hover quick actions — roots only (sub-sessions opt out above).
                     Default /90 is the lightest muted shade that still clears the

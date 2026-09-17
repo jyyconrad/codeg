@@ -1,6 +1,6 @@
 //! Subprocess-level end-to-end test for the git credential helper.
 //!
-//! The lib-level `test_credential_helper_e2e_server_mode` exercises the
+//! The lib-level `test_credential_helper_e2e_file_store` exercises the
 //! lookup function directly. This test goes one layer deeper: it spawns
 //! the actual `codeg-server` binary with `--credential-helper`, pipes the
 //! git credential protocol through stdin, and asserts on stdout. That
@@ -8,8 +8,8 @@
 //! short-circuit, real argv parsing, real stdin reading, and the exact
 //! `username=...\npassword=...\n` wire format git expects.
 //!
-//! Server-mode only: in Tauri mode the token store is the OS keyring,
-//! which we won't poke from CI.
+//! Server-mode only: it spawns the `codeg-server` binary. Desktop uses
+//! the same `tokens.json` store via the GUI binary's `--credential-helper`.
 
 #![cfg(all(unix, not(feature = "tauri-runtime")))]
 

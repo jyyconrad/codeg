@@ -15,6 +15,7 @@ import {
   prepareWikiMarkdown,
   resolveWikiLink,
   remarkWikiLinks,
+  wikiFolderLandingPath,
 } from "@/lib/wiki-content"
 import { useWikiData, useWikiQuery } from "./wiki-data"
 
@@ -152,6 +153,10 @@ export function VaultTreeItem({
 
   const children = providedChildren ?? fetched?.children ?? []
   const loaded = providedChildren !== undefined || fetched !== null
+  const landing = isDir
+    ? wikiFolderLandingPath(path, loaded ? children : undefined)
+    : null
+  const folderCurrent = isDir && landing != null && selected === landing
   const kidsLoading =
     isDir &&
     open &&
@@ -179,39 +184,65 @@ export function VaultTreeItem({
       onSelect(path)
       return
     }
-    const next = !open
-    setExpansion({ selected, open: next })
+    setExpansion({ selected, open: true })
+    if (landing) onSelect(landing)
   }
+
+  const toggleFolder = (event: { stopPropagation: () => void }) => {
+    event.stopPropagation()
+    setExpansion({ selected, open: !open })
+  }
+
+  const label = node.title || node.name
 
   return (
     <li>
-      <button
-        type="button"
+      <div
         className={cn(
-          "flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-sm hover:bg-muted/60",
-          selected === path && "bg-muted"
+          "flex w-full items-center gap-1 rounded-md px-2 py-1 text-sm hover:bg-muted/60",
+          (selected === path || folderCurrent) && "bg-muted"
         )}
         style={{ paddingInlineStart: 8 + depth * 12 }}
-        onClick={handleClick}
-        aria-expanded={isDir ? open : undefined}
-        aria-current={!isDir && selected === path ? "page" : undefined}
-        title={path}
       >
         {isDir ? (
-          <ChevronRight
-            className={cn(
-              "size-3.5 shrink-0 text-muted-foreground transition-transform",
-              open && "rotate-90"
+          <button
+            type="button"
+            className="flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted"
+            aria-expanded={open}
+            aria-label={t(
+              open
+                ? "v2.library.collapseDirectory"
+                : "v2.library.expandDirectory",
+              { name: label }
             )}
-          />
+            onClick={toggleFolder}
+          >
+            <ChevronRight
+              className={cn(
+                "size-3.5 transition-transform",
+                open && "rotate-90"
+              )}
+            />
+          </button>
         ) : (
           <FileText className="size-3.5 shrink-0 text-muted-foreground" />
         )}
-        {isDir ? (
-          <Folder className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : null}
-        <span className="truncate">{node.title || node.name}</span>
-      </button>
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1 text-left"
+          onClick={handleClick}
+          aria-expanded={isDir ? open : undefined}
+          aria-current={
+            (!isDir && selected === path) || folderCurrent ? "page" : undefined
+          }
+          title={path}
+        >
+          {isDir ? (
+            <Folder className="size-3.5 shrink-0 text-muted-foreground" />
+          ) : null}
+          <span className="truncate">{label}</span>
+        </button>
+      </div>
       {isDir && open ? (
         kidsLoading && !loaded ? (
           <div

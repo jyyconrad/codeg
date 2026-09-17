@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
+import {
+  remarkAutolinkInlineFilePaths,
+  remarkRewriteFileUriLinks,
+} from "./remark-file-uri-links"
 
 // Minimal mdast node shapes for the transform.
 type Node = {
@@ -87,5 +90,92 @@ describe("remarkRewriteFileUriLinks", () => {
 
   it("leaves non-file URLs untouched", () => {
     expect(rewrite("https://example.com/x")).toBe("https://example.com/x")
+  })
+})
+
+describe("remarkAutolinkInlineFilePaths", () => {
+  function treeWithInlineCode(value: string): Node {
+    return {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [{ type: "inlineCode", value } as Node],
+        },
+      ],
+    }
+  }
+
+  function firstChildOfParagraph(tree: Node): Node | undefined {
+    const para = tree.children?.[0]
+    return para?.children?.[0]
+  }
+
+  it("turns an absolute POSIX path in inline code into a file link", () => {
+    const tree = treeWithInlineCode(
+      "/Users/jiangyayun/develop/code/work_code/switchgear/docs/使用手册.docx"
+    )
+    remarkAutolinkInlineFilePaths()(tree)
+    const node = firstChildOfParagraph(tree)
+    expect(node?.type).toBe("link")
+    expect(node?.url).toBe(
+      "/Users/jiangyayun/develop/code/work_code/switchgear/docs/使用手册.docx"
+    )
+  })
+
+  it("rewrites file:// inline code to a sanitize-safe path href", () => {
+    const tree = treeWithInlineCode("file:///Users/a/手册.docx")
+    remarkAutolinkInlineFilePaths()(tree)
+    expect(firstChildOfParagraph(tree)?.url).toBe(
+      "/Users/a/%E6%89%8B%E5%86%8C.docx"
+    )
+  })
+
+  it("turns a workspace-relative path in inline code into a file link", () => {
+    const tree = treeWithInlineCode("docs/使用手册.docx")
+    remarkAutolinkInlineFilePaths()(tree)
+    const node = firstChildOfParagraph(tree)
+    expect(node?.type).toBe("link")
+    expect(node?.url).toBe("docs/使用手册.docx")
+  })
+
+  it("turns a document filename in inline code into a file link", () => {
+    const tree = treeWithInlineCode("使用手册.docx")
+    remarkAutolinkInlineFilePaths()(tree)
+    expect(firstChildOfParagraph(tree)?.type).toBe("link")
+  })
+
+  it("does not promote extension-less directories or bare identifiers", () => {
+    for (const value of ["/usr/bin", "/api/users", "app.ts", "foo"]) {
+      const tree = treeWithInlineCode(value)
+      remarkAutolinkInlineFilePaths()(tree)
+      expect(firstChildOfParagraph(tree)?.type).toBe("inlineCode")
+    }
+  })
+
+  it("leaves inline code inside an existing link alone", () => {
+    const tree: Node = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "link",
+              url: "https://example.com",
+              children: [
+                {
+                  type: "inlineCode",
+                  value: "/Users/a/b.docx",
+                } as Node,
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    remarkAutolinkInlineFilePaths()(tree)
+    const inner = tree.children?.[0]?.children?.[0]?.children?.[0]
+    expect(inner?.type).toBe("inlineCode")
   })
 })

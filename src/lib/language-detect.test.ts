@@ -27,6 +27,7 @@ describe("languageFromPath", () => {
       ["foo.css", "css"],
       ["foo.html", "html"],
       ["foo.htm", "html"],
+      ["foo.csv", "csv"],
       ["foo.sh", "shell"],
       ["foo.sql", "sql"],
     ])("%s -> %s", (path, expected) => {

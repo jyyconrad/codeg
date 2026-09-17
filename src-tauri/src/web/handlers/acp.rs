@@ -892,6 +892,28 @@ pub async fn acp_fetch_kimi_models(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AcpProbeCodegProtocolParams {
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(default)]
+    pub model_id: String,
+}
+
+pub async fn acp_probe_codeg_protocol(
+    Json(params): Json<AcpProbeCodegProtocolParams>,
+) -> Result<Json<String>, AppCommandError> {
+    let protocol = acp_commands::acp_probe_codeg_protocol_core(
+        &params.base_url,
+        &params.api_key,
+        &params.model_id,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(protocol))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AcpUpdatePiConfigParams {
     pub provider: String,
     pub model: String,

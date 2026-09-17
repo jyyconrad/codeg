@@ -2271,6 +2271,7 @@ describe("codeg agent settings", () => {
     expect(switchClick).toMatch(/: persist\(\)/)
     expect(src).toMatch(/disabled=\{selectedIsSaving \|\| selectedGrokSaving\}/)
     expect(src).toContain("CodegAgentPromptEditors")
+    expect(src).toContain("CodegAgentContextFields")
     expect(src).toContain("codegDraftFromEnv")
     expect(src).toContain("CodegAgentProviderManager")
     expect(src).toContain("CodegAgentCompactModelField")

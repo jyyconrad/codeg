@@ -44,12 +44,15 @@ import {
 import {
   isBinaryImageFile,
   isHiddenPath,
-  isHtmlPreviewable,
   isImageFile,
   isOfficeOwnerFile,
-  isOfficePreviewable,
   languageFromPath,
 } from "@/lib/language-detect"
+import {
+  hasSourcePreviewToggle,
+  isBinaryPreviewable,
+  tabLanguageFromPath,
+} from "@/lib/file-preview-kind"
 import {
   loadImageDiffSides,
   type ImageDiffSides,
@@ -127,6 +130,33 @@ interface WorkspaceActionsValue {
   closeFileTab: (tabId: string) => void
   closeOtherFileTabs: (tabId: string) => void
   closeAllFileTabs: () => void
+  /**
+   * Swap the whole file column for a parked snapshot. Used when switching
+   * conversations so each session keeps its own preview; this is not a close
+   * (no dirty prompt, no closed-tab stack).
+   */
+  captureFileWorkspace: () => {
+    fileTabs: FileWorkspaceTab[]
+    activeFileTabId: string | null
+    previewFileTabIds: string[]
+    filesMaximized: boolean
+    pendingFileReveal: {
+      requestId: number
+      path: string
+      line: number
+    } | null
+  }
+  replaceFileWorkspace: (snapshot: {
+    fileTabs: FileWorkspaceTab[]
+    activeFileTabId: string | null
+    previewFileTabIds: readonly string[]
+    filesMaximized: boolean
+    pendingFileReveal: {
+      requestId: number
+      path: string
+      line: number
+    } | null
+  }) => void
   reorderFileTabs: (tabs: FileWorkspaceTab[]) => void
   // Open a file tab. Accepts absolute paths, `~/` paths (expanded via the
   // backend home dir), and paths relative to a folder root. `folderId` is
@@ -647,10 +677,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       // source view it survives an external change. Restricted to real file
       // tabs — diffs never enter preview, and .vue/.svelte (language "html"
       // but not isHtmlPreviewable) stay on source.
-      if (
-        nextTab.kind === "file" &&
-        (nextTab.language === "markdown" || isHtmlPreviewable(nextTab.path))
-      ) {
+      if (nextTab.kind === "file" && hasSourcePreviewToggle(nextTab.path)) {
         setPreviewFileTabIds((prev) => {
           if (prev.has(nextTab.id)) return prev
           const next = new Set(prev)
@@ -1234,7 +1261,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         }
         const tabId = buildFileTabId({ kind: "file", path: absPath })
         const image = isImageFile(absPath)
-        const office = !image && isOfficePreviewable(absPath)
+        const binaryPreview = !image && isBinaryPreviewable(absPath)
         const seed = loadingTab(
           tabId,
           null,
@@ -1242,7 +1269,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           fileName(absPath),
           absPath,
           absPath,
-          image ? "image" : office ? "office" : languageFromPath(absPath)
+          tabLanguageFromPath(absPath)
         )
 
         const decision = decideLoad(
@@ -1255,10 +1282,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const { gen } = decision
 
         try {
-          // Office files (.docx/.xlsx/.pptx) are binary OpenXML — never read as
-          // text. The OfficePreview component renders them via the OfficeCLI
-          // backend on its own, so just settle the tab as a ready preview shell.
-          if (office) {
+          // Binary preview files (pdf/docx/pptx/xlsx/xls) are never read as
+          // text. FilePreview renders them from bytes or a paged spreadsheet
+          // command, so just settle the tab as a ready preview shell.
+          if (binaryPreview) {
             if (!settleFetch(tabId, gen)) return
             setFileTabs((prev) =>
               prev.map((tab) =>
@@ -1402,7 +1429,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           .map((tab) => tab.path as string)
       )
       for (const changed of changed_paths) {
-        if (!isOfficePreviewable(changed)) continue
+        if (!isBinaryPreviewable(changed)) continue
         // Dot-prefixed paths are hidden/machine-owned (editor lock files,
         // AppleDouble sidecars, anything under `.git`/`.tmp`) — never a
         // document the agent meant to show. Skipping here means we neither
@@ -2419,6 +2446,42 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [activateFilePane, t]
   )
 
+  const fileWorkspaceSnapshotRef = useRef({
+    fileTabs,
+    activeFileTabId,
+    previewFileTabIds,
+    filesMaximized,
+    pendingFileReveal,
+  })
+  useEffect(() => {
+    fileWorkspaceSnapshotRef.current = {
+      fileTabs,
+      activeFileTabId,
+      previewFileTabIds,
+      filesMaximized,
+      pendingFileReveal,
+    }
+  }, [
+    fileTabs,
+    activeFileTabId,
+    previewFileTabIds,
+    filesMaximized,
+    pendingFileReveal,
+  ])
+
+  const captureFileWorkspace = useCallback(
+    () => ({
+      fileTabs: fileWorkspaceSnapshotRef.current.fileTabs,
+      activeFileTabId: fileWorkspaceSnapshotRef.current.activeFileTabId,
+      previewFileTabIds: [
+        ...fileWorkspaceSnapshotRef.current.previewFileTabIds,
+      ],
+      filesMaximized: fileWorkspaceSnapshotRef.current.filesMaximized,
+      pendingFileReveal: fileWorkspaceSnapshotRef.current.pendingFileReveal,
+    }),
+    []
+  )
+
   const closeAllFileTabs = useCallback(() => {
     setFileTabs((prev) => {
       if (prev.some(isDirtyFileTab)) {
@@ -2438,6 +2501,42 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       return []
     })
   }, [activateConversationPane, t])
+
+  const replaceFileWorkspace = useCallback(
+    (snapshot: {
+      fileTabs: FileWorkspaceTab[]
+      activeFileTabId: string | null
+      previewFileTabIds: readonly string[]
+      filesMaximized: boolean
+      pendingFileReveal: {
+        requestId: number
+        path: string
+        line: number
+      } | null
+    }) => {
+      const sameTabs = snapshot.fileTabs === fileTabsRef.current
+      const sameActive = snapshot.activeFileTabId === activeFileTabIdRef.current
+      if (
+        sameTabs &&
+        sameActive &&
+        snapshot.fileTabs.length === 0 &&
+        snapshot.pendingFileReveal == null
+      ) {
+        return
+      }
+      fileTabsRef.current = snapshot.fileTabs
+      activeFileTabIdRef.current = snapshot.activeFileTabId
+      setFileTabs(snapshot.fileTabs)
+      setActiveFileTabId(snapshot.activeFileTabId)
+      setPreviewFileTabIds(new Set(snapshot.previewFileTabIds))
+      setFilesMaximized(snapshot.filesMaximized)
+      setPendingFileReveal(snapshot.pendingFileReveal)
+      if (snapshot.fileTabs.length === 0) {
+        activateConversationPane()
+      }
+    },
+    [activateConversationPane]
+  )
 
   const reorderFileTabs = useCallback((tabs: FileWorkspaceTab[]) => {
     setFileTabs(tabs)
@@ -2581,6 +2680,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       closeFileTab,
       closeOtherFileTabs,
       closeAllFileTabs,
+      captureFileWorkspace,
+      replaceFileWorkspace,
       reorderFileTabs,
       openFilePreview,
       reloadOpenFileBackground,
@@ -2609,6 +2710,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       closeFileTab,
       closeOtherFileTabs,
       closeAllFileTabs,
+      captureFileWorkspace,
+      replaceFileWorkspace,
       reorderFileTabs,
       openFilePreview,
       reloadOpenFileBackground,

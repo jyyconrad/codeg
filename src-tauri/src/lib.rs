@@ -40,6 +40,7 @@ pub mod pets;
 #[cfg(feature = "tauri-runtime")]
 pub mod preferences;
 pub mod process;
+pub mod spreadsheet_preview;
 pub mod supervise;
 mod terminal;
 pub mod turn_timings;
@@ -76,7 +77,8 @@ mod tauri_app {
         office_tools as office_tools_commands, open_in, pet as pet_commands, project_boot,
         question as question_commands, quick_messages as quick_messages_commands,
         remote_proxy as remote_proxy_commands, remote_workspace as remote_workspace_commands,
-        science as science_commands, session_info as session_info_commands, system_settings,
+        science as science_commands, session_info as session_info_commands,
+        spreadsheet_preview as spreadsheet_preview_commands, system_settings,
         terminal as terminal_commands, token_usage as token_usage_commands, toolbox,
         version_control, wiki as wiki_commands, wiki_engine as wiki_engine_commands, windows,
         work_task as work_task_commands, workspace_state as workspace_state_commands,
@@ -1291,6 +1293,8 @@ mod tauri_app {
                 folders::read_file_base64,
                 folders::read_workspace_file_base64,
                 folders::read_file_preview,
+                folders::path_exists,
+                spreadsheet_preview_commands::read_spreadsheet_preview,
                 folders::read_file_for_edit,
                 folders::save_file_content,
                 folders::save_file_copy,
@@ -1456,6 +1460,7 @@ mod tauri_app {
                 acp_commands::acp_update_hermes_config,
                 acp_commands::acp_update_kimi_code_config,
                 acp_commands::acp_fetch_kimi_models,
+                acp_commands::acp_probe_codeg_protocol,
                 deepseek_settings_commands::acp_load_deepseek_model_catalog,
                 deepseek_settings_commands::acp_update_deepseek_model_catalog,
                 acp_commands::acp_update_pi_config,
@@ -1686,6 +1691,8 @@ mod tauri_app {
                 chat_channel_commands::set_chat_event_webhooks,
                 chat_channel_commands::get_chat_message_language,
                 chat_channel_commands::set_chat_message_language,
+                chat_channel_commands::get_chat_folder_inbound_idle_minutes,
+                chat_channel_commands::set_chat_folder_inbound_idle_minutes,
                 chat_channel_commands::weixin_get_qrcode,
                 chat_channel_commands::weixin_check_qrcode,
                 chat_channel_commands::list_folder_chat_channels,

@@ -60,6 +60,17 @@ const REQUIRED_KEYS = [
   "maxTurns",
 ] as const
 
+const SETTINGS_REQUIRED_KEYS = [
+  "contextTitle",
+  "contextDescription",
+  "injectConstraints",
+  "injectConstraintsHint",
+  "injectAgentsMd",
+  "injectClaudeMd",
+  "injectTree",
+  "injectTreeHint",
+] as const
+
 type CodegAgentCopy = Record<(typeof REQUIRED_KEYS)[number], string>
 
 function codegAgentCopy(messages: unknown): CodegAgentCopy {
@@ -104,6 +115,25 @@ describe("Codeg Agent experimental copy", () => {
       expect(codegAgentCopy(messages).protocol).toMatch(/Chat Completions/)
     }
   )
+})
+
+describe("Codeg Agent settings context copy", () => {
+  it.each(ALL_LOCALES)("%s has context-inject keys", (_locale, messages) => {
+    const block = (
+      messages as {
+        CodegAgentSettings: Record<
+          (typeof SETTINGS_REQUIRED_KEYS)[number],
+          string
+        >
+      }
+    ).CodegAgentSettings
+    for (const key of SETTINGS_REQUIRED_KEYS) {
+      expect(block[key], key).toEqual(expect.any(String))
+      expect(block[key].trim().length, key).toBeGreaterThan(0)
+    }
+    expect(block.injectAgentsMd).toBe("AGENTS.md")
+    expect(block.injectClaudeMd).toBe("CLAUDE.md")
+  })
 })
 
 describe("Codeg Agent README roster", () => {

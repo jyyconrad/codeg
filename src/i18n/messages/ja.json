@@ -1621,7 +1621,8 @@
       "noSandbox": "OS サンドボックスはありません。ファイル書き込みと bash は呼び出しごとの許可後にだけ実行されます。ワークスペースの FS ポリシーはシェルの隔離ではありません。",
       "recovery": "クラッシュ復旧ではツールを自動再実行しません。開始済みで完了が確認できない呼び出しは unknown として復元します。",
       "contextWindowsHint": "モデルチャネルをバインドすると、編集可能な CODEG_AGENT_CONTEXT_WINDOWS が書き込まれます（既定 128000。プロバイダーに窓があればそれを使います）。窓のないモデルは起動できません。",
-      "protocol": "v1 は OpenAI Chat Completions のみで、Responses API は使いません。",
+      "protocol": "プロバイダーをバインドするとき Chat Completions または Responses を固定します。セッションはそのプロトコルを使います。",
+      "protocolDetectFailed": "リクエストプロトコルを検出できませんでした: {message}",
       "modelSelectorHint": "セッションのモデル選択には CODEG_AGENT_CONTEXT_WINDOWS にある id だけが出ます。未知の id は拒否されます。",
       "usageLastRequest": "コンテキスト表示は設定ウィンドウに対する直近のモデルリクエスト占有量であり、ラン全体の累計トークンではありません。ゲートウェイが入力使用量を返さない場合は推定します。",
       "envWindowsHint": "環境変数はバインドしたプロバイダーとカード上の窓・最大出力の投影です。任意の CODEG_AGENT_MAX_OUTPUT_TOKENS の既定は 4096 で、窓から安全余量を引いた値より小さくなければなりません。",
@@ -1635,7 +1636,7 @@
       "contextWindow": "コンテキスト窓",
       "maxOutput": "最大出力トークン",
       "systemPrompt": "システムプロンプト",
-      "systemPromptHint": "空なら組み込み既定を使います。作業ディレクトリとスキル一覧は引き続き付与されます。",
+      "systemPromptHint": "空なら組み込み既定を使います。実行環境・現在時刻・作業ディレクトリ・グローバル保存先とスキル一覧は引き続き付与されます。",
       "compactPrompt": "コンテキスト圧縮プロンプト（L2）",
       "compactPromptHint": "同一セッションの 2 回目の圧縮でのみ使います。空なら組み込みテンプレートです。",
       "save": "保存",
@@ -1666,6 +1667,14 @@
     "presetHint": "クラウド、ローカル、カスタムは同じ方法でバインドします。ループバックのローカルサーバーは API キーを省略できます。",
     "promptsTitle": "プロンプト",
     "promptsDescription": "Codeg Agent が実際に使うプロンプトです。既定に戻すと組み込み本文に戻ります。",
+    "contextTitle": "コンテキスト",
+    "contextDescription": "セッション開始時に注入します。指示ファイルはメインエージェントのみ、ディレクトリツリーはメインとサブエージェントの両方です。",
+    "injectConstraints": "プロジェクト指示を注入",
+    "injectConstraintsHint": "オンにすると、作業ディレクトリ直下の該当ファイルを起動時にメインエージェントへ注入します。第1期は1階層のみ走査します。",
+    "injectAgentsMd": "AGENTS.md",
+    "injectClaudeMd": "CLAUDE.md",
+    "injectTree": "構造情報",
+    "injectTreeHint": "オンにすると、起動時に作業ディレクトリを最大 3 階層まで走査し、Markdown ツリーとしてメインエージェントとサブエージェントへ注入します。それより深いパスは省略します。",
     "compressionTitle": "コンテキスト圧縮",
     "compressionDescription": "使用量がソフトしきい値を超えると古いターンを要約し、直近のターンはそのまま残します。",
     "compactSoftPercent": "ソフト圧縮しきい値（%）",
@@ -1720,7 +1729,8 @@
     "preset": "プラットフォーム",
     "creating": "Creating…",
     "requestProtocol": "リクエストプロトコル",
-    "requestProtocolHint": "1 セッションは 1 つのプロトコルです。Auto は先に Chat Completions を試し、404 のときだけ Responses にします。",
+    "requestProtocolHint": "プロバイダーをバインドするとき Chat Completions を先に試し、欠落や失敗なら Responses を使って結果を固定します。セッションはそのプロトコルを使います。",
+    "protocolDetectFailed": "リクエストプロトコルを検出できませんでした: {message}",
     "protocolChatCompletions": "Chat Completions",
     "protocolResponses": "Responses",
     "protocolAuto": "自動"
@@ -1892,10 +1902,15 @@
       "notifyChannels": "通知チャネル…",
       "notifyChannelsDialog": {
         "title": "通知チャネル",
-        "description": "このフォルダーの実行が終了したとき、最終メッセージを選択したチャネルへ送ります。",
+        "description": "このフォルダーの実行が終了したとき、最終メッセージを選択したチャネルへ送ります。チャネルごとにセッション ID を指定でき、空欄ならチャネルのデフォルトを使います。",
         "empty": "チャットチャネルはまだありません。設定で追加してください。",
         "loadFailed": "チャネルの読み込みに失敗しました: {message}",
-        "saveFailed": "チャネルの保存に失敗しました: {message}"
+        "saveFailed": "チャネルの保存に失敗しました: {message}",
+        "sessionId": "セッション ID",
+        "sessionIdForChannel": "{name} のセッション ID",
+        "sessionIdHint": "空欄の場合、このチャネルのデフォルトチャットを使います。",
+        "sessionIdPlaceholder": "デフォルト",
+        "sessionIdPlaceholderWithDefault": "デフォルト: {chatId}"
       },
       "error": "エラー: {message}",
       "completeAllSessions": "すべてのセッションを完了",
@@ -1944,6 +1959,8 @@
       "statusRunningBadge": "実行中",
       "runningCountBadge": "{count} 件の会話が実行中",
       "statusCancelledBadge": "キャンセル済み",
+      "statusUnreadCompletedBadge": "未確認の完了",
+      "statusUnreadFailedBadge": "未確認の異常",
       "worktreeRemovedBadge": "元の worktree は削除済み",
       "conversationCountUnit": "{count} 件",
       "emptyFolderHint": "会話がありません",
@@ -2422,7 +2439,19 @@
       "officeWatchFailed": "ライブプレビューを開始できませんでした",
       "officeWatchRetry": "再試行",
       "officeServerInstallHint": "OfficeCLI はサーバーホストにインストールする必要があります。サーバーで次のコマンドを実行してから再試行してください：",
-      "officeRemoteDesktopUnsupported": "リモートデスクトップウィンドウではライブプレビューを利用できません。Office ファイルをプレビューするには、サーバーの Web UI でこのワークスペースを開いてください。"
+      "officeRemoteDesktopUnsupported": "リモートデスクトップウィンドウではライブプレビューを利用できません。Office ファイルをプレビューするには、サーバーの Web UI でこのワークスペースを開いてください。",
+      "spreadsheetSheet": "Sheet",
+      "spreadsheetRows": "Rows {from}–{to} of {total}",
+      "spreadsheetPrevPage": "Previous page",
+      "spreadsheetNextPage": "Next page",
+      "spreadsheetPrevCols": "Previous columns",
+      "spreadsheetNextCols": "Next columns",
+      "spreadsheetPageSize": "Rows per page",
+      "spreadsheetEmpty": "This sheet is empty",
+      "spreadsheetLoadFailed": "Couldn't load the spreadsheet",
+      "spreadsheetRetry": "Retry",
+      "officeJsPreviewFailed": "Couldn't preview this file",
+      "officeJsPreviewRetry": "Retry"
     },
     "fileViewer": {
       "title": "ファイルプレビュー",
@@ -3383,6 +3412,7 @@
       },
       "linkSafety": {
         "errorCannotOpen": "ローカルファイルを開けません",
+        "errorFileNotFound": "This file does not exist.",
         "errorNoWorkspace": "現在アクティブなワークスペースフォルダがありません。",
         "errorFailedOpen": "ローカルファイルを開けませんでした",
         "errorFailedLink": "リンクを開けませんでした",
@@ -3980,6 +4010,12 @@
     },
     "toasts": {
       "cloneFailed": "リポジトリのクローンに失敗しました"
+    },
+    "fileOpen": {
+      "open": "Open",
+      "defaultApp": "Default app",
+      "folder": "Folder",
+      "failed": "Couldn't open the file"
     }
   },
   "ProjectBoot": {
@@ -4236,6 +4272,15 @@
       "fr": "フランス語",
       "pt": "ポルトガル語",
       "ar": "アラビア語"
+    },
+    "folderInbound": {
+      "title": "フォルダセッションの再利用",
+      "description": "フォルダに紐づいたチャネルで引用なしのメッセージを受け取ったとき、最新の会話がこの分数以内に更新されていればその会話を続け、超えていれば新しい会話を開始します。0 にすると常に新規開始します。",
+      "minutesLabel": "分",
+      "saved": "再利用ウィンドウを保存しました。",
+      "saveFailed": "再利用ウィンドウの保存に失敗しました。",
+      "invalid": "0 から 10080 の整数を入力してください。",
+      "save": "保存"
     }
   },
   "ModelProviderSettings": {
@@ -6310,13 +6355,13 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "フォルダー {id}",
-    "restoreBuiltinPrompt": "Restore built-in",
+    "restoreBuiltinPrompt": "組み込みスキルに戻す",
     "turnSummaryTitle": "ターン要約",
     "turnSummaryDescription": "成功した ACP ターンのたびに、何を変え何を実装したかの読みやすい記憶を書きます。モデル id が空ならバインド済みの既定モデルを使います。",
     "turnSummaryModel": "ターン要約モデル id",
     "turnSummaryModelHint": "この選択は Wiki の全処理段階に適用されます。保存後はチャット設定と独立し、詳細設定で段階別に変更できます。",
     "turnSummaryModelPlaceholder": "バインド済み既定",
-    "turnSummaryPrompt": "ターン要約プロンプト",
+    "turnSummaryPrompt": "ターン要約スキル（SKILL.md）",
     "turnSummaryPromptPlaceholder": "ターン要約スキル全文。ホストはページ識別を検証し、読み取り範囲は広げられません。",
     "turnSummaryPromptBuiltinHint": "これはターン要約スキル全文です。その場で編集できます。組み込みに戻すと今後のスキル更新に追従します。",
     "sessionRollupTitle": "セッション集約",
@@ -6324,7 +6369,7 @@
     "sessionRollupModel": "セッション集約モデル id",
     "sessionRollupModelHint": "この選択は Wiki の全処理段階に適用されます。保存後はチャット設定と独立し、詳細設定で段階別に変更できます。",
     "sessionRollupModelPlaceholder": "バインド済み既定",
-    "sessionRollupPrompt": "セッション集約プロンプト",
+    "sessionRollupPrompt": "セッション集約スキル（SKILL.md）",
     "sessionRollupPromptPlaceholder": "セッション集約スキル全文。ホストはページ識別を検証し、読み取り範囲は広げられません。",
     "sessionRollupPromptBuiltinHint": "これはセッション集約スキル全文です。その場で編集できます。組み込みに戻すと今後のスキル更新に追従します。",
     "synthesizeTitle": "作業整理",
@@ -6335,7 +6380,7 @@
     "synthesizeModel": "整理モデル id",
     "synthesizeModelHint": "この選択は Wiki の全処理段階に適用されます。保存後はチャット設定と独立し、詳細設定で段階別に変更できます。",
     "synthesizeModelPlaceholder": "バインド済み既定",
-    "synthesizePrompt": "整理プロンプト",
+    "synthesizePrompt": "作業整理スキル（SKILL.md）",
     "synthesizePromptPlaceholder": "作業整理スキル全文。ホストは根拠を検証し、主張を捏造できません。",
     "synthesizePromptBuiltinHint": "これは作業整理スキル全文です。その場で編集できます。組み込みに戻すと今後のスキル更新に追従します。"
   },
@@ -6669,7 +6714,10 @@
       "storageHint": "場所を変更しても既存ファイルは移動しません。処理を一時停止してから切り替えてください。",
       "capture": "会話を記録",
       "captureHint": "会話ターンの成功後に資料を保存します。委任された子会話は対象外です。",
-      "promptBoundary": "カスタム指示でも読み取り範囲の拡張、出典検証の省略、書き込み保護の解除はできません。",
+      "promptBoundary": "カスタムスキルでも読み取り範囲の拡張、出典検証の省略、書き込み保護の解除はできません。",
+      "skillHint": "継続的に使う作業手順と判断基準を編集します。具体的なファイルと今回のタスクは実行時にシステムが提供します。組み込みに戻すと今後のスキル更新が適用されます。",
+      "builtinTask": "組み込みのタスク指示",
+      "builtinTaskHint": "この段階を開始するユーザーメッセージの読み取り専用テンプレートです。実行時にシステムがソースファイル、Wiki ディレクトリ、今回のタスク情報と実行要件を設定します。",
       "unsaved": "未保存の変更",
       "discard": "変更を破棄",
       "reasons": {
@@ -6682,12 +6730,14 @@
       "navigation": "概要",
       "sourceSections": "資料情報",
       "stages": {
-        "turn_summary": "ターン記録",
-        "session_rollup": "会話の要約",
-        "synthesize": "今すぐ整理"
+        "turn_summary": "ターン要約",
+        "session_rollup": "セッション集約",
+        "synthesize": "作業整理"
       },
       "library": {
         "directory": "目次",
+        "expandDirectory": "{name} を展開",
+        "collapseDirectory": "{name} を折りたたむ",
         "home": "Wiki ホーム",
         "backHome": "Wiki ホームに戻る",
         "location": "Wiki フォルダー",

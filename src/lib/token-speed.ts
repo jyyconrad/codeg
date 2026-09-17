@@ -188,8 +188,8 @@ export class TokenCountAccumulator {
 /**
  * First-order low-pass over instantaneous token rates. Time-constant based
  * (rather than per-sample alpha) so the reading doesn't depend on how regularly
- * the caller samples, and so a bursty thinking stream followed by a tool pause
- * decays toward zero instead of pinning the old reading.
+ * the caller samples. Silent gaps (tool calls, retries, permission prompts) hold
+ * the last generation rate rather than decaying toward zero.
  *
  * The accumulated weight is tracked alongside the average and divided back out
  * (the bias correction Adam uses). Without it the filter cold-starts from its
@@ -203,6 +203,13 @@ export class TokenSpeedTracker {
   private static readonly TAU_MS = 1500
   /** Hold the reading back until it covers a meaningful slice of wall clock. */
   private static readonly WARMUP_MS = 300
+  /**
+   * Silent gaps shorter than this (the 4–16ms holes between stream-batch
+   * flushes) still enter the EWMA as 0 tok/s so a batched commit is amortized
+   * over the window it actually covered. Gaps at or above this — a 500ms live
+   * sample with no new text — hold the last generation rate instead.
+   */
+  private static readonly HOLD_MS = 250
 
   private lastTime: number | null = null
   private lastTokens = 0
@@ -228,9 +235,15 @@ export class TokenSpeedTracker {
     }
     const dt = nowMs - this.lastTime
     if (dt <= 0) return this.read()
-    const instant = (totalTokens - this.lastTokens) / (dt / 1000)
+    const delta = totalTokens - this.lastTokens
     this.lastTime = nowMs
     this.lastTokens = totalTokens
+    // A long silent gap (tool, retry, permission) must not be averaged in as
+    // 0 tok/s. Advancing `lastTime` (not `elapsed`) keeps the next burst's `dt`
+    // equal to the burst itself. Tiny holes between stream-batch flushes still
+    // enter as 0 so a 16ms commit is not scored as a 4ms spike.
+    if (delta <= 0 && dt >= TokenSpeedTracker.HOLD_MS) return this.read()
+    const instant = delta <= 0 ? 0 : delta / (dt / 1000)
     this.elapsed += dt
     const alpha = 1 - Math.exp(-dt / TokenSpeedTracker.TAU_MS)
     this.ewma = this.ewma * (1 - alpha) + instant * alpha

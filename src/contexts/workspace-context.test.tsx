@@ -452,6 +452,61 @@ describe("WorkspaceProvider files-maximized", () => {
     expect(screen.getByTestId("mode")).toHaveTextContent("fusion")
   })
 
+  it("replaceFileWorkspace parks the column without recording a closed tab", () => {
+    function Probe() {
+      const { fileTabs, mode, replaceFileWorkspace, openSessionFileDiff } =
+        useWorkspaceContext()
+      return (
+        <div>
+          <output data-testid="mode">{mode}</output>
+          <output data-testid="count">{fileTabs.length}</output>
+          <button
+            type="button"
+            onClick={() =>
+              openSessionFileDiff("src/app.ts", "diff --git", "Turn 1")
+            }
+          >
+            Open
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              replaceFileWorkspace({
+                fileTabs: [],
+                activeFileTabId: null,
+                previewFileTabIds: [],
+                filesMaximized: false,
+                pendingFileReveal: null,
+              })
+            }
+          >
+            Park
+          </button>
+        </div>
+      )
+    }
+
+    render(
+      <WorkspaceProvider>
+        <Probe />
+      </WorkspaceProvider>
+    )
+
+    act(() => {
+      screen.getByRole("button", { name: "Open" }).click()
+    })
+    expect(screen.getByTestId("count")).toHaveTextContent("1")
+    expect(peekClosedTab()).toBeNull()
+
+    act(() => {
+      screen.getByRole("button", { name: "Park" }).click()
+    })
+    expect(screen.getByTestId("count")).toHaveTextContent("0")
+    expect(screen.getByTestId("mode")).toHaveTextContent("conversation")
+    // Parked, not closed — Cmd+Shift+T must not resurrect this as a user close.
+    expect(peekClosedTab()).toBeNull()
+  })
+
   it("does not touch file tab data when toggling maximize", () => {
     renderWorkspace()
 

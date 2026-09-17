@@ -43,9 +43,9 @@ impl CodegLlmClient {
 
 /// Resolve the single wire protocol this session will use.
 ///
-/// Auto probes Completions first. A 404 means a Responses-only gateway.
-/// Any other outcome (2xx, 4xx auth, network) stays Completions so spawn
-/// does not hang waiting for a Responses-only guess.
+/// Concrete catalog values are used as-is. `auto` (legacy / unbound) still
+/// probes Completions first, then Responses when Completions is missing or
+/// ambiguous (404/405, or 5xx/400 that Responses accepts).
 pub async fn resolve_session_wire_protocol(config: &EffectiveNativeConfig) -> WireProtocol {
     match config.protocol {
         CodegProtocol::ChatCompletions => WireProtocol::ChatCompletions,
@@ -54,37 +54,165 @@ pub async fn resolve_session_wire_protocol(config: &EffectiveNativeConfig) -> Wi
             if let Some(resolved) = config.resolved_protocol {
                 return resolved;
             }
-            probe_completions_then_responses(&config.api_base_url, &config.api_key).await
+            probe_wire_protocol(&config.api_base_url, &config.api_key, &config.model_id).await
         }
     }
 }
 
-async fn probe_completions_then_responses(base_url: &str, api_key: &str) -> WireProtocol {
-    let url = format!("{}/chat/completions", base_url.trim().trim_end_matches('/'));
+#[derive(Clone, Copy)]
+enum ProbeClass {
+    Present,
+    Absent,
+    Uncertain,
+}
+
+/// Completions-first protocol probe. Bind locks this result onto the catalog.
+pub async fn probe_wire_protocol(base_url: &str, api_key: &str, model_id: &str) -> WireProtocol {
+    let base = base_url.trim().trim_end_matches('/');
+    let model = model_id.trim();
+    let model = if model.is_empty() { "probe" } else { model };
+    let client = reqwest::Client::new();
+    match classify_probe(probe_chat_completions(&client, base, api_key, model).await) {
+        ProbeClass::Present => WireProtocol::ChatCompletions,
+        ProbeClass::Absent => WireProtocol::Responses,
+        ProbeClass::Uncertain => {
+            match classify_probe(probe_responses(&client, base, api_key, model).await) {
+                ProbeClass::Present => WireProtocol::Responses,
+                ProbeClass::Absent | ProbeClass::Uncertain => WireProtocol::ChatCompletions,
+            }
+        }
+    }
+}
+
+fn classify_probe(status: Option<reqwest::StatusCode>) -> ProbeClass {
+    match status {
+        Some(status)
+            if status.is_success()
+                || status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+        {
+            ProbeClass::Present
+        }
+        Some(status)
+            if status == reqwest::StatusCode::NOT_FOUND
+                || status == reqwest::StatusCode::METHOD_NOT_ALLOWED =>
+        {
+            ProbeClass::Absent
+        }
+        Some(_) | None => ProbeClass::Uncertain,
+    }
+}
+
+async fn probe_chat_completions(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    model: &str,
+) -> Option<reqwest::StatusCode> {
+    let url = format!("{base}/chat/completions");
     let request = json!({
-        "model": "codeg-protocol-probe",
+        "model": model,
         "messages": [{"role": "user", "content": "ping"}],
         "max_tokens": 1,
     });
-    match reqwest::Client::new()
-        .post(&url)
+    probe_post(client, &url, api_key, request).await
+}
+
+async fn probe_responses(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    model: &str,
+) -> Option<reqwest::StatusCode> {
+    let url = format!("{base}/responses");
+    let request = json!({
+        "model": model,
+        "input": "ping",
+        "max_output_tokens": 1,
+    });
+    probe_post(client, &url, api_key, request).await
+}
+
+async fn probe_post(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    request: serde_json::Value,
+) -> Option<reqwest::StatusCode> {
+    client
+        .post(url)
         .bearer_auth(api_key)
         .json(&request)
         .timeout(Duration::from_secs(8))
         .send()
         .await
-    {
-        Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
-            WireProtocol::Responses
-        }
-        _ => WireProtocol::ChatCompletions,
-    }
+        .ok()
+        .map(|response| response.status())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::acp::native_config::CodegProtocol;
+    use axum::extract::Json;
+    use axum::http::{header, StatusCode, Uri};
+    use axum::response::IntoResponse;
+    use axum::routing::post;
+    use axum::Router;
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct ProbeCapture {
+        paths: Arc<Mutex<Vec<String>>>,
+        bodies: Arc<Mutex<Vec<Value>>>,
+        completions: StatusCode,
+        responses: StatusCode,
+    }
+
+    async fn spawn_probe_gateway(
+        completions: StatusCode,
+        responses: StatusCode,
+    ) -> (String, ProbeCapture) {
+        let capture = ProbeCapture {
+            paths: Arc::new(Mutex::new(Vec::new())),
+            bodies: Arc::new(Mutex::new(Vec::new())),
+            completions,
+            responses,
+        };
+        let state = capture.clone();
+        let app = Router::new().fallback(post(move |uri: Uri, Json(body): Json<Value>| {
+            let state = state.clone();
+            async move {
+                state
+                    .paths
+                    .lock()
+                    .expect("paths")
+                    .push(uri.path().to_string());
+                state.bodies.lock().expect("bodies").push(body);
+                let status = if uri.path().ends_with("/responses") {
+                    state.responses
+                } else {
+                    state.completions
+                };
+                (
+                    status,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    "{\"ok\":true}",
+                )
+                    .into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind probe gateway");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{addr}/v1"), capture)
+    }
 
     #[test]
     fn explicit_protocols_do_not_need_a_probe() {
@@ -102,6 +230,7 @@ mod tests {
             max_turns: 40,
             protocol: CodegProtocol::ChatCompletions,
             resolved_protocol: None,
+            context_inject: Default::default(),
         };
         assert_eq!(completions.wire_protocol(), WireProtocol::ChatCompletions);
         let mut responses = completions.clone();
@@ -111,5 +240,97 @@ mod tests {
         auto.protocol = CodegProtocol::Auto;
         auto.resolved_protocol = Some(WireProtocol::Responses);
         assert_eq!(auto.wire_protocol(), WireProtocol::Responses);
+    }
+
+    #[tokio::test]
+    async fn completions_ok_locks_chat_completions() {
+        let (base, capture) = spawn_probe_gateway(StatusCode::OK, StatusCode::OK).await;
+        let wire = probe_wire_protocol(&base, "sk", "gateway-model").await;
+        assert_eq!(wire, WireProtocol::ChatCompletions);
+        let paths = capture.paths.lock().expect("paths").clone();
+        assert!(
+            paths.iter().any(|p| p.ends_with("/chat/completions")),
+            "{paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.ends_with("/responses")),
+            "must not probe Responses after Completions succeeds: {paths:?}"
+        );
+        let body = &capture.bodies.lock().expect("bodies")[0];
+        assert_eq!(
+            body.get("model").and_then(Value::as_str),
+            Some("gateway-model")
+        );
+    }
+
+    #[tokio::test]
+    async fn completions_404_locks_responses() {
+        let (base, _) = spawn_probe_gateway(StatusCode::NOT_FOUND, StatusCode::OK).await;
+        let wire = probe_wire_protocol(&base, "sk", "gateway-model").await;
+        assert_eq!(wire, WireProtocol::Responses);
+    }
+
+    #[tokio::test]
+    async fn completions_500_then_responses_ok_locks_responses() {
+        let (base, capture) =
+            spawn_probe_gateway(StatusCode::INTERNAL_SERVER_ERROR, StatusCode::OK).await;
+        let wire = probe_wire_protocol(&base, "sk", "gateway-model").await;
+        assert_eq!(wire, WireProtocol::Responses);
+        let paths = capture.paths.lock().expect("paths").clone();
+        assert!(
+            paths.iter().any(|p| p.ends_with("/chat/completions")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.ends_with("/responses")),
+            "Completions 500 must try Responses: {paths:?}"
+        );
+        let bodies = capture.bodies.lock().expect("bodies").clone();
+        assert!(
+            bodies
+                .iter()
+                .all(|body| body.get("model").and_then(Value::as_str) == Some("gateway-model")),
+            "{bodies:?}"
+        );
+        assert!(
+            !bodies
+                .iter()
+                .any(|body| body.get("model").and_then(Value::as_str)
+                    == Some("codeg-protocol-probe")),
+            "probe must use the bound model id, not a dummy: {bodies:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn completions_500_then_responses_404_stays_completions() {
+        let (base, _) =
+            spawn_probe_gateway(StatusCode::INTERNAL_SERVER_ERROR, StatusCode::NOT_FOUND).await;
+        let wire = probe_wire_protocol(&base, "sk", "gateway-model").await;
+        assert_eq!(wire, WireProtocol::ChatCompletions);
+    }
+
+    #[tokio::test]
+    async fn completions_429_locks_chat_completions() {
+        let (base, capture) =
+            spawn_probe_gateway(StatusCode::TOO_MANY_REQUESTS, StatusCode::OK).await;
+        let wire = probe_wire_protocol(&base, "sk", "gateway-model").await;
+        assert_eq!(wire, WireProtocol::ChatCompletions);
+        let paths = capture.paths.lock().expect("paths").clone();
+        assert!(
+            !paths.iter().any(|p| p.ends_with("/responses")),
+            "rate-limit on Completions means the path exists: {paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn completions_401_locks_chat_completions() {
+        let (base, capture) = spawn_probe_gateway(StatusCode::UNAUTHORIZED, StatusCode::OK).await;
+        let wire = probe_wire_protocol(&base, "sk", "gateway-model").await;
+        assert_eq!(wire, WireProtocol::ChatCompletions);
+        let paths = capture.paths.lock().expect("paths").clone();
+        assert!(
+            !paths.iter().any(|p| p.ends_with("/responses")),
+            "auth on Completions means the path exists: {paths:?}"
+        );
     }
 }

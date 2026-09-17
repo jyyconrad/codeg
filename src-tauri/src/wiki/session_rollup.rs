@@ -6,13 +6,13 @@ use std::fs;
 use std::path::Path;
 
 use chrono::Utc;
-use sea_orm::{DatabaseConnection, EntityTrait};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::db::entities::conversation;
 use crate::db::entities::conversation::{ConversationKind, ConversationStatus};
-use crate::db::entities::wiki_job;
+use crate::db::entities::{wiki_job, wiki_source};
 use crate::db::error::DbError;
 use crate::db::service::{folder_service, wiki_service};
 use crate::models::{AgentType, ConversationDetail};
@@ -20,7 +20,7 @@ use crate::wiki::commit::{self, StagedProposal};
 use crate::wiki::compile::{check_leaf_body, yaml_string, CompileError};
 use crate::wiki::llm::{WikiLlm, WikiLlmError, WIKI_SESSION_ROLLUP_MAX_TURNS};
 use crate::wiki::paths::{resolve_state_root, resolve_vault_path};
-use crate::wiki::raw::{self, RawWriteOutcome};
+use crate::wiki::raw;
 use crate::wiki::result::{JobOutputManifest, WikiOutput};
 use crate::wiki::settings;
 use crate::wiki::turn_summary::{self, MemoryPageFields};
@@ -160,14 +160,7 @@ async fn ensure_local_session_raw(
 ) -> Result<String, DbError> {
     if let Some(existing) = wiki_service::find_local_session_source(conn, vault_id, conv.id).await?
     {
-        if existing
-            .raw_path
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|s| !s.is_empty())
-        {
-            return Ok(existing.id);
-        }
+        return Ok(existing.id);
     }
     let body = export_conversation_transcript(conv)?;
     if body.trim().is_empty() {
@@ -176,28 +169,23 @@ async fn ensure_local_session_raw(
         ));
     }
     let source_id = uuid::Uuid::new_v4().to_string();
-    let (doc, hash) = render_local_session_raw(
-        &source_id,
-        conv.id,
-        conv.title.as_deref().unwrap_or("Local session"),
-        &conv.agent_type,
-        folder_path,
-        &body,
-    );
-    let path = raw::raw_session_path(vault, &source_id);
-    match raw::write_raw_exclusive(&path, &doc, &hash).map_err(DbError::from)? {
-        RawWriteOutcome::Created { .. } | RawWriteOutcome::Identical { .. } => {}
-        RawWriteOutcome::Conflict {
-            existing_hash,
-            new_hash,
-            ..
-        } => {
-            return Err(DbError::Conflict(format!(
-                "local-session raw exists with hash {existing_hash}, new hash {new_hash}"
-            )));
-        }
-    }
-    let rel = format!("raw/sessions/{source_id}.md");
+    let hash = raw::content_hash(&body);
+    crate::wiki::locator::write_locator(
+        &crate::wiki::paths::resolve_state_root(),
+        &crate::wiki::locator::SourceLocator {
+            source_id: source_id.clone(),
+            kind: "local-session".into(),
+            conversation_id: Some(conv.id),
+            run_id: None,
+            agent_type: Some(conv.agent_type.clone()),
+            session_id: conv.external_id.clone(),
+            original_path: None,
+            title: conv.title.clone(),
+        },
+    )
+    .map_err(DbError::from)?;
+    let _ = vault;
+    let _ = folder_path;
     let now = Utc::now();
     let db_instance_id = crate::wiki::settings::ensure_db_instance_id(conn).await?;
     let project_ids = if let Some(root_id) = root_folder_id {
@@ -220,7 +208,7 @@ async fn ensure_local_session_raw(
             captured_at: now,
             occurred_at: Some(conv.updated_at),
             source_title: conv.title.clone(),
-            raw_path: rel,
+            raw_path: String::new(),
             raw_hash: hash,
             project_ids,
         },
@@ -319,39 +307,55 @@ pub async fn run_session_rollup_job(
     let rel = page_rel(conversation_id);
     let sources =
         wiki_service::list_sources_for_conversation(conn, &job.vault_id, conversation_id).await?;
-    let mut paths = Vec::new();
-    let mut turn_rels = Vec::new();
-    for source in &sources {
-        let turn = turn_summary::page_rel(&source.id);
-        let path = if source.source_kind == "acp-turn" && vault.join(&turn).is_file() {
-            turn_rels.push(turn.clone());
-            Some(turn)
-        } else {
-            source.raw_path.clone()
-        };
-        if let Some(path) = path {
-            paths.push((path, vec![source.id.clone()]));
-        }
+    if sources.is_empty() {
+        return Err(WikiLlmError::SourceMissing(format!("conversation {conversation_id}")).into());
     }
-    let required = turn_summary::source_inputs(&paths)?;
-    let source_references = turn_summary::source_references(&required);
-    let existing = turn_summary::read_existing(vault, &rel)?;
     let staging = state_root
         .join("staging")
         .join(&job.id)
         .join(job.attempt.to_string());
     fs::create_dir_all(&staging).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    let staging = fs::canonicalize(&staging).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    let mut paths = Vec::new();
+    let mut turn_rels = Vec::new();
+    let mut source_references = Vec::new();
+    let mut source_warnings = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let turn = turn_summary::page_rel(&source.id);
+        let (identity, readable) =
+            if source.source_kind == "acp-turn" && read_vault_material(vault, &turn)?.is_some() {
+                turn_rels.push(turn.clone());
+                (turn.clone(), turn)
+            } else {
+                let (material, warning) = source_material(conn, source, vault, state_root).await?;
+                source_warnings.extend(warning);
+                let path = staging.join(format!("source-{index:04}.md"));
+                fs::write(&path, material).map_err(|e| WorkerError::Failed(e.to_string()))?;
+                (
+                    format!("source:{}", source.id),
+                    path.to_string_lossy().into_owned(),
+                )
+            };
+        paths.push((identity, vec![source.id.clone()]));
+        source_references.push(crate::wiki::llm::SourceReference {
+            rel: readable,
+            source_ids: vec![source.id.clone()],
+        });
+    }
+    let required = turn_summary::source_inputs(&paths)?;
+    let existing = turn_summary::read_existing(vault, &rel)?;
     let input = json!({
         "schema": crate::wiki::llm::SESSION_ROLLUP_CONTRACT_VERSION,
         "job_id": job.id, "attempt": job.attempt,
         "conversation_id": conversation_id, "rel": rel,
         "turn_rels": turn_rels, "source_references": source_references,
+        "source_warnings": source_warnings,
         "vault_abs": vault, "staging_abs": staging,
         "max_turns": WIKI_SESSION_ROLLUP_MAX_TURNS,
-        "instruction": "Use source_references to read the conversation material needed for a coherent Wiki note. Return title and substantive body, or nothing_to_summarize with reason_code empty_input, fully_redacted or no_durable_content. No YAML or line evidence is required; the host adds source metadata. Do not invent success when a read fails.",
     });
     let run = llm.complete_json(KIND, input).await?;
-    let parsed = validate_session_rollup(&run.output, conversation_id)?;
+    let mut parsed = validate_session_rollup(&run.output, conversation_id)?;
+    parsed.warnings.extend(source_warnings);
     if parsed.nothing_to_summarize {
         crate::wiki::worker::ensure_commit_allowed(conn, &job.id, llm).await?;
         return turn_summary::save_result(
@@ -425,6 +429,151 @@ pub async fn run_session_rollup_job(
     Ok(out)
 }
 
+/// 来源身份保留在结果中；正文只物化到当前 attempt 的 staging，供文件工具读取。
+async fn source_material(
+    conn: &DatabaseConnection,
+    source: &wiki_source::Model,
+    vault: &Path,
+    state_root: &Path,
+) -> Result<(String, Option<String>), WorkerError> {
+    if source.source_kind == "acp-turn" {
+        let jobs = wiki_job::Entity::find()
+            .filter(wiki_job::Column::VaultId.eq(&source.vault_id))
+            .filter(wiki_job::Column::SourceId.eq(&source.id))
+            .filter(wiki_job::Column::Kind.eq(turn_summary::KIND))
+            .order_by_desc(wiki_job::Column::CreatedAt)
+            .all(conn)
+            .await
+            .map_err(DbError::from)?;
+        for job in jobs {
+            let Some(manifest) = job.input_manifest else {
+                continue;
+            };
+            let manifest: Value = serde_json::from_str(&manifest)
+                .map_err(|e| WikiLlmError::SourceReadFailed(format!("{}: {e}", source.id)))?;
+            if let Some(material) = manifest
+                .get("material_markdown")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+            {
+                return Ok((crate::wiki::redact::redact_text(material).0, None));
+            }
+        }
+    }
+    let snapshot_fallback = if source.source_kind == "local-session" {
+        match local_session_material(conn, source, state_root).await {
+            Ok(material) => return Ok((material, None)),
+            Err(WorkerError::Llm(WikiLlmError::SourceMissing(_))) => true,
+            Err(error) => return Err(error),
+        }
+    } else {
+        false
+    };
+    if let Some(rel) = source
+        .raw_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|rel| !rel.is_empty())
+    {
+        if let Some(material) = read_vault_material(vault, rel)? {
+            let warning = snapshot_fallback.then(|| {
+                format!(
+                    "Current session is unavailable; source {} uses saved snapshot {rel} and may omit later turns.",
+                    source.id
+                )
+            });
+            return Ok((crate::wiki::redact::redact_text(&material).0, warning));
+        }
+    }
+    Err(WikiLlmError::SourceMissing(source.id.clone()).into())
+}
+
+/// 使用真实路径限制宿主读取，避免把越界软链接的内容复制进可读 staging。
+fn read_vault_material(vault: &Path, rel: &str) -> Result<Option<String>, WorkerError> {
+    let path = crate::wiki::paths::join_vault_relative(vault, rel)
+        .map_err(WikiLlmError::SourceReadFailed)?;
+    let canonical = match fs::canonicalize(&path) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(WikiLlmError::SourceReadFailed(format!("{rel}: {error}")).into()),
+    };
+    let root =
+        fs::canonicalize(vault).map_err(|e| WikiLlmError::SourceReadFailed(e.to_string()))?;
+    if !canonical.starts_with(&root) {
+        return Err(
+            WikiLlmError::SourceReadFailed(format!("source path escapes vault: {rel}")).into(),
+        );
+    }
+    fs::read_to_string(canonical)
+        .map(Some)
+        .map_err(|e| WikiLlmError::SourceReadFailed(format!("{rel}: {e}")).into())
+}
+
+async fn local_session_material(
+    conn: &DatabaseConnection,
+    source: &wiki_source::Model,
+    state_root: &Path,
+) -> Result<String, WorkerError> {
+    // continuation 后 locator 仍可能保留旧 session ID，当前会话行才指向最新完整链。
+    let current = if let Some(id) = source.conversation_id {
+        conversation::Entity::find_by_id(id)
+            .one(conn)
+            .await
+            .map_err(DbError::from)?
+            .and_then(|conv| {
+                conv.external_id
+                    .filter(|id| !id.trim().is_empty())
+                    .map(|session| (conv.agent_type, session))
+            })
+    } else {
+        None
+    };
+    let (agent_type, session_id) = match current {
+        Some(identity) => identity,
+        None => {
+            let locator =
+                crate::wiki::locator::read_locator(state_root, &source.id).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        WikiLlmError::SourceMissing(source.id.clone())
+                    } else {
+                        WikiLlmError::SourceReadFailed(format!("{}: {error}", source.id))
+                    }
+                })?;
+            let identity = locator
+                .agent_type
+                .zip(locator.session_id)
+                .filter(|(agent, session)| !agent.trim().is_empty() && !session.trim().is_empty());
+            identity.ok_or_else(|| WikiLlmError::SourceMissing(source.id.clone()))?
+        }
+    };
+    let agent = AgentType::from_wire(&agent_type).ok_or_else(|| {
+        WikiLlmError::SourceReadFailed(format!("unknown agent type {agent_type}"))
+    })?;
+    let source_id = source.id.clone();
+    let markdown = tokio::task::spawn_blocking(move || {
+        let detail = crate::parsers::build_agent_parser(agent)
+            .get_conversation(&session_id)
+            .map_err(|error| match error {
+                crate::parsers::ParseError::ConversationNotFound(_) => {
+                    WikiLlmError::SourceMissing(source_id.clone())
+                }
+                crate::parsers::ParseError::Io(ref io)
+                    if io.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    WikiLlmError::SourceMissing(source_id.clone())
+                }
+                _ => WikiLlmError::SourceReadFailed(format!("{source_id}: {error}")),
+            })?;
+        if detail.turns.is_empty() {
+            return Err(WikiLlmError::SourceMissing(source_id));
+        }
+        Ok(crate::wiki::redact::redact_text(&session_export_markdown(&detail)).0)
+    })
+    .await
+    .map_err(|e| WorkerError::Failed(e.to_string()))??;
+    Ok(markdown)
+}
+
 fn validate_session_rollup(
     v: &Value,
     conversation_id: i32,
@@ -450,13 +599,15 @@ fn first_project_id(raw: &Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::entities::conversation;
+    use crate::db::entities::{conversation, wiki_source};
     use crate::db::service::conversation_service;
     use crate::db::test_helpers::{fresh_in_memory_db, seed_conversation, seed_folder};
     use crate::models::{ContentBlock, ConversationSummary, MessageTurn, TurnRole};
     use crate::wiki::settings::WikiSettings;
     use crate::wiki::vault;
-    use sea_orm::EntityTrait;
+    use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
     use tempfile::tempdir;
 
     fn turn(role: TurnRole, text: &str) -> MessageTurn {
@@ -632,5 +783,236 @@ mod tests {
         vault::initialize_vault(dir.path()).unwrap();
         assert!(dir.path().join("work/sessions").is_dir());
         assert!(dir.path().join("work/turns").is_dir());
+    }
+
+    struct MaterialFixture {
+        dir: tempfile::TempDir,
+        db: crate::db::AppDatabase,
+        vault: PathBuf,
+        state: PathBuf,
+        source: wiki_source::Model,
+        turn_job: wiki_job::Model,
+        session_job: wiki_job::Model,
+        conversation_id: i32,
+    }
+
+    async fn material_fixture() -> MaterialFixture {
+        let dir = tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        let state = dir.path().join("state");
+        vault::initialize_vault(&vault).unwrap();
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/materials").await;
+        let conversation_id = seed_conversation(&db, folder, AgentType::CodegAgent).await;
+        let row = wiki_service::ensure_active_vault(&db.conn, &vault.to_string_lossy())
+            .await
+            .unwrap();
+        let inserted = wiki_service::insert_acp_source_and_turn_job(
+            &db.conn,
+            wiki_service::NewAcpSource {
+                vault_id: row.id.clone(),
+                run_id: "run-1".into(),
+                conversation_id: Some(conversation_id),
+                folder_id: Some(folder),
+                root_folder_id: Some(folder),
+                agent_type: Some("codeg_agent".into()),
+                model: None,
+                mode: None,
+                captured_at: Utc::now(),
+                occurred_at: None,
+                truncated: false,
+                redacted: false,
+                source_title: None,
+            },
+        )
+        .await
+        .unwrap();
+        let session_job = enqueue_session_job(&db.conn, &row.id, conversation_id)
+            .await
+            .unwrap();
+        MaterialFixture {
+            dir,
+            db,
+            vault,
+            state,
+            source: inserted.source,
+            turn_job: inserted.job.unwrap(),
+            session_job,
+            conversation_id,
+        }
+    }
+
+    #[derive(Default)]
+    struct InspectMaterialLlm(Mutex<Option<Value>>);
+
+    #[async_trait::async_trait]
+    impl WikiLlm for InspectMaterialLlm {
+        async fn complete_json(
+            &self,
+            stage: &str,
+            input: Value,
+        ) -> Result<crate::wiki::llm::WikiLlmRun, WikiLlmError> {
+            *self.0.lock().unwrap() = Some(input.clone());
+            crate::wiki::llm::MockWikiLlm::default()
+                .complete_json(stage, input)
+                .await
+        }
+    }
+
+    impl InspectMaterialLlm {
+        fn material(&self, vault: &Path) -> (PathBuf, String) {
+            let input = self.0.lock().unwrap();
+            let rel = input.as_ref().unwrap()["source_references"][0]["rel"]
+                .as_str()
+                .unwrap();
+            let path = vault.join(rel);
+            let text = fs::read_to_string(&path).expect("model source must be a readable file");
+            (path, text)
+        }
+    }
+
+    #[tokio::test]
+    async fn rollup_materializes_saved_turn_without_persisting_staging_identity() {
+        let f = material_fixture().await;
+        wiki_service::set_job_input_manifest(&f.db.conn, &f.turn_job.id,
+            &json!({"material_markdown":"User requested pagination. Assistant fixed cursor handling."}).to_string())
+            .await.unwrap();
+        let llm = InspectMaterialLlm::default();
+        let out = run_session_rollup_job(&f.db.conn, &f.session_job, &llm, &f.vault, &f.state)
+            .await
+            .unwrap();
+        let (path, text) = llm.material(&f.vault);
+        assert!(path.starts_with(fs::canonicalize(f.state.join("staging")).unwrap()));
+        assert!(text.contains("fixed cursor handling"));
+        assert_eq!(
+            out["processed_inputs"][0]["rel"],
+            format!("source:{}", f.source.id)
+        );
+        assert_eq!(
+            fs::read_dir(f.vault.join("raw/sessions")).unwrap().count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn rollup_rejects_missing_material_before_calling_model() {
+        let f = material_fixture().await;
+        let llm = InspectMaterialLlm::default();
+        let error = run_session_rollup_job(&f.db.conn, &f.session_job, &llm, &f.vault, &f.state)
+            .await
+            .unwrap_err();
+        assert_eq!(error.error_code(), "source_missing");
+        assert!(llm.0.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn rollup_reads_existing_legacy_material() {
+        let f = material_fixture().await;
+        fs::create_dir_all(f.vault.join("raw/sessions")).unwrap();
+        fs::write(
+            f.vault.join("raw/sessions/legacy.md"),
+            "Legacy user request and completed implementation.",
+        )
+        .unwrap();
+        let mut source: wiki_source::ActiveModel = f.source.clone().into();
+        source.raw_path = Set(Some("raw/sessions/legacy.md".into()));
+        source.update(&f.db.conn).await.unwrap();
+        let llm = InspectMaterialLlm::default();
+        run_session_rollup_job(&f.db.conn, &f.session_job, &llm, &f.vault, &f.state)
+            .await
+            .unwrap();
+        let (_, text) = llm.material(&f.vault);
+        assert!(text.contains("Legacy user request"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rollup_rejects_turn_note_symlink_outside_vault() {
+        let f = material_fixture().await;
+        let outside = f.dir.path().join("private.md");
+        fs::write(&outside, "Private unrelated material.").unwrap();
+        std::os::unix::fs::symlink(&outside, f.vault.join(turn_summary::page_rel(&f.source.id)))
+            .unwrap();
+        let llm = InspectMaterialLlm::default();
+        let error = run_session_rollup_job(&f.db.conn, &f.session_job, &llm, &f.vault, &f.state)
+            .await
+            .unwrap_err();
+        assert_eq!(error.error_code(), "source_read_failed");
+        assert!(llm.0.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn rollup_reports_saved_snapshot_fallback_to_model_and_result() {
+        let f = material_fixture().await;
+        fs::write(
+            f.vault.join("raw/sessions/saved.md"),
+            "Saved session material.",
+        )
+        .unwrap();
+        let mut conv: conversation::ActiveModel =
+            conversation::Entity::find_by_id(f.conversation_id)
+                .one(&f.db.conn)
+                .await
+                .unwrap()
+                .unwrap()
+                .into();
+        conv.external_id = Set(None);
+        conv.update(&f.db.conn).await.unwrap();
+        let mut source: wiki_source::ActiveModel = f.source.clone().into();
+        source.source_kind = Set("local-session".into());
+        source.raw_path = Set(Some("raw/sessions/saved.md".into()));
+        source.update(&f.db.conn).await.unwrap();
+        let llm = InspectMaterialLlm::default();
+        let out = run_session_rollup_job(&f.db.conn, &f.session_job, &llm, &f.vault, &f.state)
+            .await
+            .unwrap();
+        let warnings = out["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1);
+        let warning = warnings[0].as_str().unwrap();
+        assert!(warning.contains(&f.source.id));
+        assert!(warning.contains("raw/sessions/saved.md"));
+        assert_eq!(
+            llm.0.lock().unwrap().as_ref().unwrap()["source_warnings"],
+            out["warnings"]
+        );
+        assert_eq!(llm.material(&f.vault).1, "Saved session material.");
+    }
+
+    #[tokio::test]
+    async fn rollup_exports_current_local_session_and_redacts_material() {
+        let f = material_fixture().await;
+        let codeg_root = f.dir.path().join("codeg");
+        let codeg_root_text = codeg_root.to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(codeg_root_text.as_str()))], async {
+            let sessions = crate::paths::codeg_agent_sessions_root();
+            for (id, previous, body) in [("old", None, "first request"), ("new", Some("old"), "follow up API_KEY=sk-live-test-secret")] {
+                let mut header = crate::acp_transcript::TranscriptHeader::new("codeg_agent", id, "/tmp/materials", 1_750_000_000_000);
+                if let Some(previous) = previous { header = header.continuing(previous); }
+                crate::acp_transcript::append_line_in(&sessions, "project", id, &serde_json::to_string(&header).unwrap());
+                crate::acp_transcript::append_line_in(&sessions, "project", id,
+                    &json!({"t":1_750_000_000_001_u64,"k":"prompt","p":[{"type":"text","text":body}]}).to_string());
+            }
+            let mut conv: conversation::ActiveModel = conversation::Entity::find_by_id(f.conversation_id).one(&f.db.conn).await.unwrap().unwrap().into();
+            conv.external_id = Set(Some("new".into()));
+            conv.update(&f.db.conn).await.unwrap();
+            let mut source: wiki_source::ActiveModel = f.source.clone().into();
+            source.source_kind = Set("local-session".into());
+            fs::write(f.vault.join("raw/sessions/old.md"), "Legacy snapshot before continuation.").unwrap();
+            source.raw_path = Set(Some("raw/sessions/old.md".into()));
+            source.update(&f.db.conn).await.unwrap();
+            crate::wiki::locator::write_locator(&f.state, &crate::wiki::locator::SourceLocator {
+                source_id: f.source.id.clone(), kind: "local-session".into(),
+                agent_type: Some("codeg_agent".into()), session_id: Some("old".into()),
+                ..Default::default()
+            }).unwrap();
+            let llm = InspectMaterialLlm::default();
+            run_session_rollup_job(&f.db.conn, &f.session_job, &llm, &f.vault, &f.state).await.unwrap();
+            let (path, text) = llm.material(&f.vault);
+            assert!(path.starts_with(fs::canonicalize(f.state.join("staging")).unwrap()));
+            assert!(text.contains("first request"));
+            assert!(text.contains("follow up"), "current session must supersede the old locator");
+            assert!(!text.contains("sk-live-test-secret"));
+            assert!(text.contains("[REDACTED]"));
+        }).await;
     }
 }

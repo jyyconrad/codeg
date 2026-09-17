@@ -125,6 +125,53 @@ vi.mock("@/components/files/office-preview", () => ({
     <div data-testid="office" data-rel={relPath ?? ""} />
   ),
 }))
+vi.mock("@/components/files/file-preview", () => ({
+  FilePreview: ({
+    path,
+    language,
+    content,
+    rootPath,
+    previewRoot,
+    openFilePreview,
+  }: {
+    path: string
+    language: string
+    content: string
+    rootPath: string | null
+    previewRoot?: string | null
+    openFilePreview?: (path: string) => void
+  }) => {
+    if (language === "image") return <div data-testid="image" />
+    if (
+      language === "office" ||
+      language === "pdf" ||
+      language === "spreadsheet"
+    ) {
+      return (
+        <div
+          data-testid="office"
+          data-rel={path.split(/[\\/]/).pop() ?? ""}
+        />
+      )
+    }
+    if (language === "html") return <div data-testid="html" />
+    return (
+      <div
+        data-testid="markdown"
+        data-file-dir={rootPath ?? ""}
+        data-preview-root={previewRoot ?? ""}
+      >
+        {content}
+        <button
+          type="button"
+          onClick={() => openFilePreview?.("/repo/docs/spec.md")}
+        >
+          follow link
+        </button>
+      </div>
+    )
+  },
+}))
 vi.mock("@/components/files/html-preview", () => ({
   HtmlPreview: () => <div data-testid="html" />,
 }))
@@ -227,13 +274,31 @@ describe("FileViewerDrawer", () => {
   })
 
   it("routes image and office tabs to their own renderers", async () => {
-    state.fileTabs = [tab({ language: "image" })]
-    await open({ path: ABS_PATH, line: null })
+    const imagePath = "/repo/docs/photo.png"
+    const imageId = buildFileTabId({ kind: "file", path: imagePath })
+    mockOpenFilePreview.mockResolvedValue(imagePath)
+    state.fileTabs = [
+      tab({ id: imageId, language: "image", path: imagePath, title: "photo.png" }),
+    ]
+    await open({ path: imagePath, line: null })
     expect(screen.getByTestId("image")).toBeInTheDocument()
 
-    state.fileTabs = [tab({ language: "office" })]
-    await open({ path: ABS_PATH, line: null })
-    expect(screen.getByTestId("office")).toHaveAttribute("data-rel", "plan.md")
+    const officePath = "/repo/docs/letter.docx"
+    const officeId = buildFileTabId({ kind: "file", path: officePath })
+    mockOpenFilePreview.mockResolvedValue(officePath)
+    state.fileTabs = [
+      tab({
+        id: officeId,
+        language: "office",
+        path: officePath,
+        title: "letter.docx",
+      }),
+    ]
+    await open({ path: officePath, line: null })
+    expect(screen.getByTestId("office")).toHaveAttribute(
+      "data-rel",
+      "letter.docx"
+    )
   })
 
   it("waits for content rather than showing an empty document", async () => {

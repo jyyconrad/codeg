@@ -74,6 +74,12 @@ impl SessionBridge {
             .find(|s| s.target.matches_thread(target))
     }
 
+    pub fn find_by_conversation(&self, conversation_id: i32) -> Option<&ActiveSession> {
+        self.sessions
+            .values()
+            .find(|s| s.conversation_id == conversation_id)
+    }
+
     pub fn find_by_sender_mut(
         &mut self,
         channel_id: i32,

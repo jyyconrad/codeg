@@ -5,12 +5,9 @@ import { useTranslations } from "next-intl"
 import type { BundledLanguage } from "shiki"
 
 import { CodeBlockContent } from "@/components/ai-elements/code-block"
-import { HtmlPreview } from "@/components/files/html-preview"
-import { ImagePreview } from "@/components/files/image-preview"
-import { MarkdownDocumentPreview } from "@/components/files/markdown-document-preview"
-import { OfficePreview } from "@/components/files/office-preview"
+import { FilePreview } from "@/components/files/file-preview"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
-import { isHtmlPreviewable } from "@/lib/language-detect"
+import { shouldUseFilePreview } from "@/lib/file-preview-kind"
 
 /**
  * Read-only rendering of one workspace file tab — the shared body behind every
@@ -20,10 +17,7 @@ import { isHtmlPreviewable } from "@/lib/language-detect"
  * It branches exactly the way the file column does, on the same tab fields, so
  * the surfaces can never disagree about what a tab holds:
  *
- *   language "image"  → ImagePreview      (content is a data: URL)
- *   language "office" → OfficePreview     (an officecli watch, no bytes here)
- *   HTML + preview on → HtmlPreview
- *   markdown + preview on → MarkdownDocumentPreview
+ *   previewable kinds → FilePreview (image / office / html / markdown / …)
  *   everything else   → shiki-highlighted source
  *
  * Deliberately NOT Monaco: these surfaces never edit, and Monaco's models and
@@ -120,30 +114,20 @@ export function FileDocumentView({
   // whatever the tab holds. A load failure surfaces as its own message in the
   // document body, which is exactly where the column shows it.
   //
-  // The synthetic "image" / "office" languages are stamped onto the tab by
-  // whoever seeded it — branch on those, exactly as the file column does.
-  if (tab.language === "image") {
-    return <ImagePreview key={tab.id} tab={tab} />
-  }
-  if (tab.language === "office") {
+  if (tab.path && shouldUseFilePreview(tab.path, isPreview)) {
     return (
-      <OfficePreview
+      <FilePreview
         key={tab.id}
+        path={tab.path}
+        content={tab.content}
         rootPath={io?.rootPath ?? null}
         relPath={io?.ioPath ?? null}
-      />
-    )
-  }
-  if (isPreview && isHtmlPreviewable(tab.path)) {
-    return <HtmlPreview key={tab.id} tab={tab} rootPath={previewRoot} />
-  }
-  if (isPreview && tab.language === "markdown") {
-    return (
-      <MarkdownDocumentPreview
-        content={tab.content}
-        fileDir={io?.rootPath ?? null}
-        previewRoot={previewRoot}
+        language={tab.language}
+        isPreview={isPreview}
+        loading={tab.loading}
         openFilePreview={onOpenMarkdownLink ?? noop}
+        previewRoot={previewRoot}
+        tab={tab}
       />
     )
   }

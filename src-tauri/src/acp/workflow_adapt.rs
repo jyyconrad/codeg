@@ -55,6 +55,8 @@ pub fn adapt_air_workflow(delta: &AsyncTaskDelta, known: bool) -> Option<Workflo
     Some(WorkflowDelta {
         run_id: delta.task_id.clone(),
         spawned: delta.spawned,
+        result_summary: delta.summary.clone().filter(|s| !s.trim().is_empty()),
+        revision: None,
         name: delta.name.clone(),
         objective: delta.description.clone().filter(|s| !s.is_empty()),
         state: delta.state.clone(),
@@ -120,6 +122,8 @@ fn grok_delta(run_id: String, spawned: bool, update: &Value) -> WorkflowDelta {
     WorkflowDelta {
         run_id,
         spawned,
+        result_summary: opt_trim(update.get("result_summary")),
+        revision: update.get("revision").and_then(Value::as_u64),
         name: update
             .get("name")
             .and_then(Value::as_str)
@@ -345,6 +349,119 @@ mod tests {
         .expect("mapped");
         assert_eq!(delta.state.as_deref(), Some("completed"));
         assert_eq!(delta.last_event.as_deref(), Some("workflow_completed"));
+    }
+
+    #[test]
+    fn grok_workflow_result_survives_adaptation_and_repeated_terminal_frames() {
+        let mut seen = HashSet::new();
+        // Real workflow reports can exceed 16K characters. Preserve the report,
+        // not just the short `last_event_detail` that announces completion.
+        let report = format!(
+            "# Findings\n\n{}\n\n## Next steps\nReview findings.",
+            "结果 ".repeat(6000)
+        );
+        let params = grok_params(json!({
+            "sessionUpdate": "workflow_updated", "run_id": "wf_1",
+            "revision": 55, "status": "complete", "name": "research",
+            "last_event": "workflow_completed", "result_summary": report
+        }));
+        let mut record = None;
+        for expected_spawn in [true, false, false] {
+            let delta = adapt_grok_workflow(
+                AgentType::Grok,
+                "_x.ai/session_notification",
+                &params,
+                &mut seen,
+            )
+            .unwrap();
+            assert_eq!(delta.spawned, expected_spawn);
+            if let Some(stored) = record.as_mut() {
+                delta.apply_to(stored);
+            } else {
+                record = Some(delta.to_record());
+            }
+        }
+        let stored = serde_json::to_value(record.unwrap()).unwrap();
+        assert!(
+            stored["result_summary"] == report,
+            "the complete report must survive"
+        );
+        assert_eq!(stored["state"], "completed");
+    }
+
+    #[test]
+    fn air_workflow_terminal_summary_is_retained_as_result() {
+        let mut delta = air("workflow", false);
+        delta.state = Some("completed".into());
+        delta.summary = Some("## Results\n3 files changed".into());
+        let mapped = adapt_air_workflow(&delta, true).unwrap();
+        let stored = serde_json::to_value(mapped.to_record()).unwrap();
+        assert_eq!(stored["result_summary"], "## Results\n3 files changed");
+    }
+
+    #[test]
+    fn workflow_result_survives_sparse_or_blank_late_updates() {
+        let mut seen = HashSet::new();
+        let params = |summary: Value| {
+            grok_params(json!({
+                "sessionUpdate": "workflow_updated", "run_id": "wf_1",
+                "status": "complete", "result_summary": summary,
+            }))
+        };
+        let mut record = adapt_grok_workflow(
+            AgentType::Grok,
+            "_x.ai/session/update",
+            &params(json!("Report")),
+            &mut seen,
+        )
+        .unwrap()
+        .to_record();
+        for summary in [Value::Null, json!("  \n ")] {
+            adapt_grok_workflow(
+                AgentType::Grok,
+                "_x.ai/session/update",
+                &params(summary),
+                &mut seen,
+            )
+            .unwrap()
+            .apply_to(&mut record);
+        }
+        assert_eq!(
+            serde_json::to_value(record).unwrap()["result_summary"],
+            "Report"
+        );
+    }
+
+    #[test]
+    fn workflow_snapshot_keeps_the_latest_result_when_old_progress_is_replayed() {
+        let mut seen = HashSet::new();
+        let mut record = None;
+        for (revision, status, summary) in [
+            (54, "active", Value::Null),
+            (55, "complete", json!("Final report")),
+            (54, "active", json!("Old report")),
+            (55, "complete", json!("Duplicate report")),
+        ] {
+            let delta = adapt_grok_workflow(
+                AgentType::Grok,
+                "_x.ai/session/update",
+                &grok_params(json!({
+                    "sessionUpdate": "workflow_updated", "run_id": "wf_1",
+                    "revision": revision, "status": status, "result_summary": summary,
+                })),
+                &mut seen,
+            )
+            .unwrap();
+            if let Some(stored) = record.as_mut() {
+                delta.apply_to(stored);
+            } else {
+                record = Some(delta.to_record());
+            }
+        }
+        let stored = serde_json::to_value(record.unwrap()).unwrap();
+        assert_eq!(stored["result_summary"], "Final report");
+        assert_eq!(stored["state"], "completed");
+        assert_eq!(stored["revision"], 55);
     }
 
     #[test]

@@ -31,7 +31,7 @@ const VAULT_DIRS: &[&str] = &[
     "journal",
 ];
 
-const STATE_DIRS: &[&str] = &["originals", "logs", "staging"];
+const STATE_DIRS: &[&str] = &["originals", "logs", "staging", "sources", "extracts"];
 
 fn wrapped(body: &str) -> String {
     format!("{CONTENT_START}\n{body}\n{CONTENT_END}\n")

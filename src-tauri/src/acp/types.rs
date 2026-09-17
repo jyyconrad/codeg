@@ -318,6 +318,13 @@ pub struct WorkflowAgent {
 pub struct WorkflowRun {
     pub run_id: String,
     pub name: String,
+    /// Final report supplied by the workflow. Kept separate from progress
+    /// labels so late progress/replayed completion frames cannot erase it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
+    /// Grok's per-run watermark; AIR tasks do not publish revisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective: Option<String>,
     /// Same vocabulary as [`AsyncTaskRecord::state`].
@@ -357,6 +364,10 @@ pub struct WorkflowDelta {
     pub run_id: String,
     pub spawned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub objective: Option<String>,
@@ -393,6 +404,8 @@ impl WorkflowDelta {
         WorkflowRun {
             run_id: self.run_id.clone(),
             name: self.name.clone().unwrap_or_else(|| "Workflow".into()),
+            result_summary: self.result_summary.clone().filter(|s| !s.trim().is_empty()),
+            revision: self.revision,
             objective: self.objective.clone(),
             state: self.state.clone().unwrap_or_else(|| "running".into()),
             phases: self.phases.clone().unwrap_or_default(),
@@ -411,6 +424,17 @@ impl WorkflowDelta {
     }
 
     pub fn apply_to(&self, record: &mut WorkflowRun) {
+        if let (Some(incoming), Some(stored)) = (self.revision, record.revision) {
+            if incoming <= stored {
+                return;
+            }
+        }
+        if let Some(revision) = self.revision {
+            record.revision = Some(revision);
+        }
+        if let Some(v) = self.result_summary.as_ref().filter(|s| !s.trim().is_empty()) {
+            record.result_summary = Some(v.clone());
+        }
         if let Some(v) = &self.name {
             record.name = v.clone();
         }

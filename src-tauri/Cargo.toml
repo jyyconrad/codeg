@@ -97,6 +97,9 @@ bzip2 = "0.5"
 zstd = "0.13"
 tar = "0.4"
 zip = "2"
+calamine = { version = "0.26", features = ["dates"] }
+csv = "1"
+encoding_rs = "0.8"
 # Wiki document extractors (PR2 extract slice). Pure Rust; no poppler/Office/OCR.
 # `document_extract` is compiled via tests until the wiki orchestrator wires lib.rs.
 lopdf = { version = "0.44", default-features = false }

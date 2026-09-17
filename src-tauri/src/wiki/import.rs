@@ -56,6 +56,8 @@ pub struct ImportFilePart {
     #[serde(default)]
     pub mime: Option<String>,
     pub bytes_base64: String,
+    #[serde(default)]
+    pub original_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -140,6 +142,7 @@ struct ImportPayload {
     skip_hash_dedup: bool,
     source_group_id: Option<String>,
     previous_source_id: Option<String>,
+    original_path: Option<String>,
 }
 
 pub async fn import_text(
@@ -183,6 +186,7 @@ pub async fn import_text(
             skip_hash_dedup: false,
             source_group_id: None,
             previous_source_id: None,
+            original_path: None,
         },
     )
     .await
@@ -270,6 +274,7 @@ pub async fn import_files_with_result(
                     skip_hash_dedup: false,
                     source_group_id: batch_id.clone(),
                     previous_source_id: None,
+                    original_path: empty_to_none(file.original_path.clone()),
                 },
             )
             .await
@@ -434,7 +439,13 @@ pub async fn reextract(
         .original_filename
         .clone()
         .unwrap_or_else(|| "upload.bin".into());
-    let original_path = originals_dir(&state_root, &row.id).join(&filename);
+    let indexed = crate::wiki::locator::read_locator(&state_root, &row.id)
+        .ok()
+        .and_then(|locator| locator.original_path)
+        .filter(|path| Path::new(path).is_file());
+    let original_path = indexed
+        .map(PathBuf::from)
+        .unwrap_or_else(|| originals_dir(&state_root, &row.id).join(&filename));
     if !original_path.is_file() {
         return Err(AppCommandError::not_found(format!(
             "original file missing for source {source_id}"
@@ -467,6 +478,10 @@ pub async fn reextract(
             skip_hash_dedup: true,
             source_group_id: Some(row.source_group_id.clone()),
             previous_source_id: Some(row.id.clone()),
+            original_path: row
+                .source_url
+                .clone()
+                .filter(|url| !url.starts_with("http://") && !url.starts_with("https://")),
         },
     )
     .await?;
@@ -570,7 +585,29 @@ async fn ingest_locked(
     };
 
     let source_id = uuid::Uuid::new_v4().to_string();
-    store_original(&state_root, &source_id, &payload.filename, &payload.bytes)?;
+    if let Some(original_path) = payload
+        .original_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        crate::wiki::locator::write_locator(
+            &state_root,
+            &crate::wiki::locator::SourceLocator {
+                source_id: source_id.clone(),
+                kind: payload.source_kind.clone(),
+                conversation_id: None,
+                run_id: None,
+                agent_type: None,
+                session_id: None,
+                original_path: Some(original_path.to_string()),
+                title: payload.title.clone(),
+            },
+        )
+        .map_err(|e| AppCommandError::io_error(e.to_string()))?;
+    } else {
+        store_original(&state_root, &source_id, &payload.filename, &payload.bytes)?;
+    }
 
     let (title, source_url, author, personal_role, redacted_meta) = redact_meta(
         payload.title.as_deref(),
@@ -1069,6 +1106,7 @@ mod tests {
                 filename: filename.into(),
                 mime: None,
                 bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                original_path: None,
             }],
             material_role: None,
             personal_role: None,
@@ -1373,11 +1411,13 @@ mod tests {
                         filename: "one.txt".into(),
                         mime: Some("text/plain".into()),
                         bytes_base64: base64::engine::general_purpose::STANDARD.encode("one"),
+                        original_path: None,
                     },
                     ImportFilePart {
                         filename: "two.txt".into(),
                         mime: Some("text/plain".into()),
                         bytes_base64: base64::engine::general_purpose::STANDARD.encode("two"),
+                        original_path: None,
                     },
                 ],
                 material_role: None,
@@ -1426,11 +1466,13 @@ mod tests {
                         filename: "ok.txt".into(),
                         mime: Some("text/plain".into()),
                         bytes_base64: base64::engine::general_purpose::STANDARD.encode("ok"),
+                        original_path: None,
                     },
                     ImportFilePart {
                         filename: "broken.txt".into(),
                         mime: Some("text/plain".into()),
                         bytes_base64: "%%%invalid%%%".into(),
+                        original_path: None,
                     },
                 ],
                 material_role: None,

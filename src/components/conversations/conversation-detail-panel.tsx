@@ -69,6 +69,7 @@ import { TabDragGhost } from "@/components/tabs/tab-drag-ghost"
 import { useSidebarContext } from "@/contexts/sidebar-context"
 import { useAuxPanelContext } from "@/contexts/aux-panel-context"
 import { useWorkspaceView } from "@/contexts/workspace-context"
+import { useConversationScopedFileWorkspace } from "@/hooks/use-conversation-file-workspace"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { usePlatform } from "@/hooks/use-platform"
 import { useZoomLevel } from "@/hooks/use-appearance"
@@ -2431,6 +2432,8 @@ export function ConversationDetailPanel() {
   const allFolders = useAppWorkspaceStore((s) => s.allFolders)
   const tabs = useTabStore((s) => s.tabs)
   const activeTabId = useTabStore((s) => s.activeTabId)
+  const liveTabIds = useMemo(() => tabs.map((tab) => tab.id), [tabs])
+  useConversationScopedFileWorkspace(activeTabId, liveTabIds)
   const groupLayout = useTabStore((s) => s.groupLayout)
   const groupOf = useTabStore((s) => s.groupOf)
   const groupSelection = useTabStore((s) => s.groupSelection)

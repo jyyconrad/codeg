@@ -2775,6 +2775,8 @@ mod tests {
         WorkflowDelta {
             run_id: run_id.into(),
             spawned,
+            result_summary: None,
+            revision: None,
             name: None,
             objective: None,
             state: None,
@@ -2854,6 +2856,8 @@ mod tests {
         s.apply_event(&AcpEvent::Workflow {
             delta: WorkflowDelta {
                 state: Some("completed".into()),
+                result_summary: Some("## Findings\n\nThe result survives reconnect.".into()),
+                revision: Some(55),
                 ..workflow_delta("wf_1", false)
             },
         });
@@ -2861,6 +2865,11 @@ mod tests {
         let snap = s.to_snapshot();
         assert_eq!(snap.workflows.len(), 1);
         assert_eq!(snap.workflows[0].run_id, "wf_1");
+        assert_eq!(snap.workflows[0].revision, Some(55));
+        assert_eq!(
+            snap.workflows[0].result_summary.as_deref(),
+            Some("## Findings\n\nThe result survives reconnect.")
+        );
     }
 
     #[test]

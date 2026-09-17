@@ -1621,7 +1621,8 @@
       "noSandbox": "Kein OS-Sandbox. Dateischreiben und bash laufen nur nach Freigabe pro Aufruf. Die FS-Richtlinie des Workspace ist kein Shell-Jail.",
       "recovery": "Die Absturz-Wiederherstellung spielt Werkzeuge nicht automatisch erneut. Begonnene Aufrufe ohne bestätigtes Ende werden als unknown fortgesetzt.",
       "contextWindowsHint": "Beim Binden eines Modellkanals wird ein editierbarer CODEG_AGENT_CONTEXT_WINDOWS-Eintrag geschrieben (128000, außer der Anbieter hat schon ein Fenster). Ein Modell ohne Fenster startet nicht.",
-      "protocol": "v1 verwendet nur OpenAI Chat Completions, nicht die Responses API.",
+      "protocol": "Chat Completions or Responses is locked when you bind a provider. Sessions use that protocol.",
+      "protocolDetectFailed": "Could not detect request protocol: {message}",
       "modelSelectorHint": "Die Modellauswahl der Sitzung listet nur IDs aus CODEG_AGENT_CONTEXT_WINDOWS. Unbekannte IDs werden abgelehnt.",
       "usageLastRequest": "Der Kontextring zeigt die Belegung der letzten Modellanfrage im konfigurierten Fenster, nicht die kumulierten Tokens des Laufs. Fehlt die Eingabenutzung der Gateway-Antwort, wird geschätzt.",
       "envWindowsHint": "Die Umgebungsvariablen sind eine Projektion des gebundenen Anbieters plus Fenster und Max-Output auf dieser Karte. Optionales CODEG_AGENT_MAX_OUTPUT_TOKENS ist 4096 und muss unter dem Fenster minus Sicherheitsreserve bleiben.",
@@ -1635,7 +1636,7 @@
       "contextWindow": "Kontextfenster",
       "maxOutput": "Max. Ausgabetokens",
       "systemPrompt": "Systemprompt",
-      "systemPromptHint": "Leer = integrierte Vorgabe. Arbeitsverzeichnis und Skill-Katalog werden weiterhin angehängt.",
+      "systemPromptHint": "Leer = integrierte Vorgabe. Laufzeit (OS, Uhrzeit), Arbeitsverzeichnis, globaler Speicher und Skill-Katalog werden weiterhin angehängt.",
       "compactPrompt": "Komprimierungs-Prompt (L2)",
       "compactPromptHint": "Nur bei der zweiten Kompression in einer Sitzung. Leer = integrierte Vorlage.",
       "save": "Speichern",
@@ -1666,6 +1667,14 @@
     "presetHint": "Cloud, lokal und benutzerdefiniert werden gleich gebunden. Lokale Loopback-Server dürfen den API-Schlüssel weglassen.",
     "promptsTitle": "Prompts",
     "promptsDescription": "Optionale Überschreibungen. Leere Felder behalten die integrierten Vorgaben.",
+    "contextTitle": "Kontext",
+    "contextDescription": "Wird beim Sitzungsstart eingefügt. Anweisungsdateien nur für den Hauptagenten; der Verzeichnisbaum für Haupt- und Subagenten.",
+    "injectConstraints": "Projektanweisungen einfügen",
+    "injectConstraintsHint": "Wenn aktiv, wird die Datei auf der obersten Ebene des Arbeitsverzeichnisses beim Start in den Hauptagenten eingefügt. Phase 1 scannt nur die erste Ebene.",
+    "injectAgentsMd": "AGENTS.md",
+    "injectClaudeMd": "CLAUDE.md",
+    "injectTree": "Strukturinformationen",
+    "injectTreeHint": "Wenn aktiv, werden beim Start höchstens 3 Verzeichnisebenen als Markdown-Baum in Haupt- und Subagenten eingefügt. Tiefere Pfade entfallen.",
     "compressionTitle": "Kontextkompression",
     "compressionDescription": "Überschreitet die Belegung die weiche Schwelle, werden ältere Turns zusammengefasst. Die neuesten bleiben erhalten.",
     "compactSoftPercent": "Weiche Kompressionsschwelle (%)",
@@ -1720,7 +1729,8 @@
     "preset": "Platform",
     "creating": "Creating…",
     "requestProtocol": "Request protocol",
-    "requestProtocolHint": "One session uses one protocol. Auto probes Chat Completions first and falls back to Responses only if that path 404s.",
+    "requestProtocolHint": "Binding a provider probes Chat Completions first, then Responses if that path is missing or fails. The result is locked; sessions use it directly.",
+    "protocolDetectFailed": "Could not detect request protocol: {message}",
     "protocolChatCompletions": "Chat Completions",
     "protocolResponses": "Responses",
     "protocolAuto": "Auto"
@@ -1892,10 +1902,15 @@
       "notifyChannels": "Benachrichtigungskanäle…",
       "notifyChannelsDialog": {
         "title": "Benachrichtigungskanäle",
-        "description": "Wenn ein Lauf in diesem Ordner endet, wird die Abschlussnachricht an alle ausgewählten Kanäle gesendet.",
+        "description": "Wenn ein Lauf in diesem Ordner endet, wird die Abschlussnachricht an alle ausgewählten Kanäle gesendet. Pro Kanal kann eine Session-ID gesetzt werden; leer lassen für die Kanalvorgabe.",
         "empty": "Noch keine Chat-Kanäle. Fügen Sie einen in den Einstellungen hinzu.",
         "loadFailed": "Kanäle konnten nicht geladen werden: {message}",
-        "saveFailed": "Kanäle konnten nicht gespeichert werden: {message}"
+        "saveFailed": "Kanäle konnten nicht gespeichert werden: {message}",
+        "sessionId": "Session-ID",
+        "sessionIdForChannel": "Session-ID für {name}",
+        "sessionIdHint": "Leer lassen, um den Standard-Chat dieses Kanals zu verwenden.",
+        "sessionIdPlaceholder": "Standard",
+        "sessionIdPlaceholderWithDefault": "Standard: {chatId}"
       },
       "error": "Fehler: {message}",
       "completeAllSessions": "Alle Sitzungen abschließen",
@@ -1944,6 +1959,8 @@
       "statusRunningBadge": "Läuft",
       "runningCountBadge": "{count, plural, one {# laufende Sitzung} other {# laufende Sitzungen}}",
       "statusCancelledBadge": "Abgebrochen",
+      "statusUnreadCompletedBadge": "Ungelesen abgeschlossen",
+      "statusUnreadFailedBadge": "Ungelesen fehlgeschlagen",
       "worktreeRemovedBadge": "Quell-Worktree entfernt",
       "conversationCountUnit": "{count, plural, one {# Konversation} other {# Konversationen}}",
       "emptyFolderHint": "Keine Konversationen",
@@ -2422,7 +2439,19 @@
       "officeWatchFailed": "Live-Vorschau konnte nicht gestartet werden",
       "officeWatchRetry": "Erneut versuchen",
       "officeServerInstallHint": "OfficeCLI muss auf dem Server-Host installiert sein. Führe diesen Befehl dort aus und versuche es erneut:",
-      "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen."
+      "officeRemoteDesktopUnsupported": "Die Live-Vorschau ist in einem Remote-Desktop-Fenster nicht verfügbar. Öffne diesen Arbeitsbereich in der Web-Oberfläche des Servers, um Office-Dateien anzusehen.",
+      "spreadsheetSheet": "Sheet",
+      "spreadsheetRows": "Rows {from}–{to} of {total}",
+      "spreadsheetPrevPage": "Previous page",
+      "spreadsheetNextPage": "Next page",
+      "spreadsheetPrevCols": "Previous columns",
+      "spreadsheetNextCols": "Next columns",
+      "spreadsheetPageSize": "Rows per page",
+      "spreadsheetEmpty": "This sheet is empty",
+      "spreadsheetLoadFailed": "Couldn't load the spreadsheet",
+      "spreadsheetRetry": "Retry",
+      "officeJsPreviewFailed": "Couldn't preview this file",
+      "officeJsPreviewRetry": "Retry"
     },
     "fileViewer": {
       "title": "Dateivorschau",
@@ -3383,6 +3412,7 @@
       },
       "linkSafety": {
         "errorCannotOpen": "Lokale Datei kann nicht geöffnet werden",
+        "errorFileNotFound": "This file does not exist.",
         "errorNoWorkspace": "Es ist kein Arbeitsbereichsordner aktiv.",
         "errorFailedOpen": "Lokale Datei konnte nicht geöffnet werden",
         "errorFailedLink": "Link konnte nicht geöffnet werden",
@@ -3980,6 +4010,12 @@
     },
     "toasts": {
       "cloneFailed": "Repository konnte nicht geklont werden"
+    },
+    "fileOpen": {
+      "open": "Open",
+      "defaultApp": "Default app",
+      "folder": "Folder",
+      "failed": "Couldn't open the file"
     }
   },
   "ProjectBoot": {
@@ -4236,6 +4272,15 @@
       "fr": "Französisch",
       "pt": "Portugiesisch",
       "ar": "Arabisch"
+    },
+    "folderInbound": {
+      "title": "Ordner-Sitzung wiederverwenden",
+      "description": "Sendet ein ordnergebundener Chat eine Nachricht ohne Zitat, wird die neueste Unterhaltung fortgesetzt, wenn sie innerhalb dieser Minuten aktiv war. Sonst wird eine neue gestartet. 0 startet immer neu.",
+      "minutesLabel": "Minuten",
+      "saved": "Wiederverwendungsfenster gespeichert.",
+      "saveFailed": "Wiederverwendungsfenster konnte nicht gespeichert werden.",
+      "invalid": "Ganze Zahl von 0 bis 10080 eingeben.",
+      "save": "Speichern"
     }
   },
   "ModelProviderSettings": {
@@ -6310,13 +6355,13 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "Ordner {id}",
-    "restoreBuiltinPrompt": "Restore built-in",
+    "restoreBuiltinPrompt": "Integrierten Skill wiederherstellen",
     "turnSummaryTitle": "Turn-Zusammenfassung",
     "turnSummaryDescription": "Nach jedem erfolgreichen ACP-Turn eine lesbare Erinnerung schreiben: was geändert und implementiert wurde. Eine leere Modell-ID nutzt das gebundene Standardmodell.",
     "turnSummaryModel": "Turn-Zusammenfassungs-Modell-ID",
     "turnSummaryModelHint": "Diese Auswahl gilt für alle Wiki-Phasen. Gespeicherte Einstellungen sind unabhängig vom Chat; einzelne Phasen lassen sich erweitert anpassen.",
     "turnSummaryModelPlaceholder": "Gebundener Standard",
-    "turnSummaryPrompt": "Turn-Zusammenfassungs-Prompt",
+    "turnSummaryPrompt": "Skill für die Rundenzusammenfassung (SKILL.md)",
     "turnSummaryPromptPlaceholder": "Vollständiger Turn-Zusammenfassungs-Skill. Der Host prüft weiterhin die Seitenidentität und kann den Leseumfang nicht erweitern.",
     "turnSummaryPromptBuiltinHint": "Das ist der vollständige Turn-Zusammenfassungs-Skill. Bearbeiten Sie ihn hier. Wiederherstellen folgt künftigen Skill-Updates.",
     "sessionRollupTitle": "Sitzungsüberblick",
@@ -6324,7 +6369,7 @@
     "sessionRollupModel": "Sitzungsüberblick-Modell-ID",
     "sessionRollupModelHint": "Diese Auswahl gilt für alle Wiki-Phasen. Gespeicherte Einstellungen sind unabhängig vom Chat; einzelne Phasen lassen sich erweitert anpassen.",
     "sessionRollupModelPlaceholder": "Gebundener Standard",
-    "sessionRollupPrompt": "Sitzungsüberblick-Prompt",
+    "sessionRollupPrompt": "Skill für die Gesprächszusammenfassung (SKILL.md)",
     "sessionRollupPromptPlaceholder": "Vollständiger Sitzungsüberblick-Skill. Der Host prüft weiterhin die Seitenidentität und kann den Leseumfang nicht erweitern.",
     "sessionRollupPromptBuiltinHint": "Das ist der vollständige Sitzungsüberblick-Skill. Bearbeiten Sie ihn hier. Wiederherstellen folgt künftigen Skill-Updates.",
     "synthesizeTitle": "Organisieren",
@@ -6335,7 +6380,7 @@
     "synthesizeModel": "Organisieren-Modell-ID",
     "synthesizeModelHint": "Diese Auswahl gilt für alle Wiki-Phasen. Gespeicherte Einstellungen sind unabhängig vom Chat; einzelne Phasen lassen sich erweitert anpassen.",
     "synthesizeModelPlaceholder": "Gebundener Standard",
-    "synthesizePrompt": "Organisieren-Prompt",
+    "synthesizePrompt": "Skill für die Arbeitsaufbereitung (SKILL.md)",
     "synthesizePromptPlaceholder": "Vollständiger Synthesize-Skill. Der Host prüft weiterhin Belege und kann keine Behauptungen erfinden.",
     "synthesizePromptBuiltinHint": "Das ist der vollständige Organisieren-Skill. Bearbeiten Sie ihn hier. Wiederherstellen folgt künftigen Skill-Updates."
   },
@@ -6669,7 +6714,10 @@
       "storageHint": "Ein Ortswechsel verschiebt keine Dateien. Verarbeitung vor dem Wechsel pausieren.",
       "capture": "Gespräche aufzeichnen",
       "captureHint": "Material nach erfolgreichen Gesprächsrunden speichern; delegierte Untergespräche sind ausgenommen.",
-      "promptBoundary": "Eigene Anweisungen erweitern keine Dateizugriffe und umgehen weder Quellenprüfung noch Schreibschutz.",
+      "promptBoundary": "Eigene Skills erweitern keine Dateizugriffe und umgehen weder Quellenprüfung noch Schreibschutz.",
+      "skillHint": "Bearbeiten Sie die dauerhaften Arbeitsmethoden und Entscheidungsregeln. Konkrete Dateien und die aktuelle Aufgabe stellt das System zur Laufzeit bereit. Der integrierte Skill erhält künftige Aktualisierungen.",
+      "builtinTask": "Integrierte Aufgabenanweisungen",
+      "builtinTaskHint": "Schreibgeschützte Vorlage der Benutzernachricht, die diese Phase startet. Zur Laufzeit ergänzt das System Quelldateien, Wiki-Verzeichnis, aktuelle Aufgabendetails und Ausführungsanforderungen.",
       "unsaved": "Ungespeicherte Änderungen",
       "discard": "Änderungen verwerfen",
       "reasons": {
@@ -6682,12 +6730,14 @@
       "navigation": "Übersicht",
       "sourceSections": "Materialinformationen",
       "stages": {
-        "turn_summary": "Rundenprotokoll",
+        "turn_summary": "Rundenzusammenfassung",
         "session_rollup": "Gesprächszusammenfassung",
-        "synthesize": "Jetzt organisieren"
+        "synthesize": "Arbeitsaufbereitung"
       },
       "library": {
         "directory": "Verzeichnis",
+        "expandDirectory": "{name} ausklappen",
+        "collapseDirectory": "{name} einklappen",
         "home": "Wiki-Startseite",
         "backHome": "Zur Wiki-Startseite",
         "location": "Wiki-Ordner",

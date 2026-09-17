@@ -629,6 +629,58 @@ const MODEL_OPTION: SessionConfigOptionInfo = {
   },
 }
 
+const THOUGHT_OPTION: SessionConfigOptionInfo = {
+  id: "thought_level",
+  name: "Thinking",
+  description: "Reasoning effort sent to the bound provider",
+  category: "thought_level",
+  kind: {
+    type: "select",
+    current_value: "off",
+    options: [
+      { value: "off", name: "Off", description: "No extra reasoning" },
+      { value: "high", name: "High", description: "Extensive reasoning" },
+    ],
+    groups: [],
+  },
+}
+
+const PERMISSION_OPTION: SessionConfigOptionInfo = {
+  id: "permission",
+  name: "Permission",
+  description: "Whether mutating tools wait for approval",
+  category: "mode",
+  kind: {
+    type: "select",
+    current_value: "ask",
+    options: [
+      { value: "ask", name: "Ask", description: "Ask before mutating tools" },
+      {
+        value: "allow",
+        name: "Full access",
+        description: "Run tools without asking",
+      },
+    ],
+    groups: [],
+  },
+}
+
+const MODE_OPTION: SessionConfigOptionInfo = {
+  id: "mode",
+  name: "Mode",
+  description: "Code implements; Plan is read-only planning",
+  category: "mode",
+  kind: {
+    type: "select",
+    current_value: "code",
+    options: [
+      { value: "code", name: "Code", description: "Implement and edit" },
+      { value: "plan", name: "Plan", description: "Read-only planning" },
+    ],
+    groups: [],
+  },
+}
+
 const MSGS = enMessages.Folder.chat.messageInput
 
 // Cline 3.0.50's `auto_approve` — the first boolean config option any pinned
@@ -690,6 +742,37 @@ describe("MessageInput boolean config options", () => {
       within(popover).getByRole("button", { name: MSGS.toggleOn })
     )
     expect(onConfigOptionChange).toHaveBeenCalledWith("auto_approve", "true")
+  })
+})
+
+describe("MessageInput built-in agent selectors", () => {
+  afterEach(() => cleanup())
+
+  it("shows permission, plan mode, model, and thinking like Codex", async () => {
+    const { container } = renderInput({
+      configOptions: [
+        PERMISSION_OPTION,
+        MODE_OPTION,
+        MODEL_OPTION,
+        THOUGHT_OPTION,
+      ],
+    })
+    await waitFor(() =>
+      expect(container.querySelector('[role="textbox"]')).not.toBeNull()
+    )
+
+    expect(
+      screen.getByRole("button", { name: "Permission: Ask" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Mode: Code" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Model: Default" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Thinking: Off" })
+    ).toBeInTheDocument()
   })
 })
 

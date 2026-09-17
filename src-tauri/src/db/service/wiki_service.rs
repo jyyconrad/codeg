@@ -631,7 +631,11 @@ pub async fn mark_source_raw(
         return Err(DbError::NotFound(format!("wiki source {source_id}")));
     };
     let mut active: wiki_source::ActiveModel = row.into();
-    active.raw_path = Set(Some(raw_path.to_string()));
+    active.raw_path = Set(if raw_path.trim().is_empty() {
+        None
+    } else {
+        Some(raw_path.to_string())
+    });
     active.raw_hash = Set(Some(raw_hash.to_string()));
     active.eligibility = Set(eligibility.to_string());
     active.updated_at = Set(Utc::now());
@@ -1467,7 +1471,11 @@ pub async fn insert_local_session_source(
         source_seq: Set(source_seq),
         run_id: Set(None),
         original_hash: Set(None),
-        raw_path: Set(Some(new.raw_path)),
+        raw_path: Set(if new.raw_path.trim().is_empty() {
+            None
+        } else {
+            Some(new.raw_path)
+        }),
         raw_hash: Set(Some(new.raw_hash)),
         extractor_version: Set(None),
         coverage_status: Set(None),

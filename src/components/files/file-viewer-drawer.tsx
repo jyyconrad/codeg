@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { ArrowLeft, Code, Eye, ExternalLink } from "lucide-react"
+import { FileOpenDropdown } from "@/components/files/file-open-dropdown"
 
 import {
   CenteredNotice,
@@ -30,7 +31,7 @@ import {
   normalizeAbsPath,
   splitAbsPath,
 } from "@/lib/file-open-target"
-import { isHtmlPreviewable } from "@/lib/language-detect"
+import { hasSourcePreviewToggle } from "@/lib/file-preview-kind"
 import { cn } from "@/lib/utils"
 
 /** One entry of the drawer's own history: the request as issued, plus the
@@ -241,8 +242,7 @@ function FileViewerBody({ request }: { request: FileViewerRequest }) {
 
   const isPreview = tabId ? previewFileTabIds.has(tabId) : false
   const canTogglePreview =
-    tab?.kind === "file" &&
-    (tab.language === "markdown" || isHtmlPreviewable(tab.path))
+    tab?.kind === "file" && hasSourcePreviewToggle(tab.path)
 
   const diff = entry.request.diff
   const canOpenInWorkspace = route != null && (tabId != null || diff != null)
@@ -304,6 +304,9 @@ function FileViewerBody({ request }: { request: FileViewerRequest }) {
             </span>
           )}
         </div>
+        {entry.absPath && !entry.request.diff && (
+          <FileOpenDropdown path={entry.absPath} />
+        )}
         {canTogglePreview && tabId && (
           <HeaderButton
             label={isPreview ? t("source") : t("preview")}

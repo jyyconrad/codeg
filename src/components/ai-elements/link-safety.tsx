@@ -12,6 +12,7 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useOpenFileTarget } from "@/hooks/use-open-file-target"
 import { isHomeRelativePath } from "@/lib/file-open-target"
 import { isAbsoluteFilePath } from "@/lib/file-path-display"
+import { ensureLocalFileExists } from "@/lib/local-file-exists"
 import { cn } from "@/lib/utils"
 
 export interface LocalFileTarget {
@@ -91,20 +92,41 @@ function splitPathAndLine(rawPath: string): LocalFileTarget {
   return { path: maybePath, line }
 }
 
+function hasFilenameExtension(path: string): boolean {
+  const base = path.split(/[\\/]/).pop() ?? ""
+  return /\.[A-Za-z0-9]{1,10}$/.test(base)
+}
+
+function isDocumentFilename(path: string): boolean {
+  const base = path.split(/[\\/]/).pop() ?? ""
+  return /\.(pdf|docx|xlsx|xls|pptx|csv|md|markdown|txt|html|htm)$/i.test(base)
+}
+
 function isLocalPathLike(path: string): boolean {
   // "//host/…" (forward slashes) is protocol-relative — a WEB url, not a
   // local path. It must fall through to the external-URL route, never into
   // local file IO. A "\\server\share" (backslashes) IS a local UNC path
   // (a web url never uses backslashes) — the form remark-file-uri-links
   // emits for file://server/share URIs.
-  return (
+  if (
     (path.startsWith("/") && !path.startsWith("//")) ||
     path.startsWith("\\\\") ||
     path.startsWith("./") ||
     path.startsWith("../") ||
     path.startsWith("~/") ||
     WINDOWS_ABSOLUTE_PATH.test(path)
-  )
+  ) {
+    return true
+  }
+  // Protocol-relative `//host/file.js` is a web URL, not a workspace path.
+  if (path.startsWith("//")) return false
+  if (
+    hasFilenameExtension(path) &&
+    (path.includes("/") || path.includes("\\"))
+  ) {
+    return true
+  }
+  return isDocumentFilename(path) && !path.includes("://")
 }
 
 /**
@@ -398,9 +420,16 @@ export function useOpenLinkOrFile() {
         // Absolute and ~ paths open with no folder context (works in chat
         // mode too); only folder-relative paths still need an active
         // folder to resolve against.
-        if (!isSelfLocatingPath(localTarget.path) && !folderPath) {
+        const exists = await ensureLocalFileExists(
+          localTarget.path.replace(/^\.\/+/, ""),
+          folderPath ?? null
+        )
+        if (!exists.ok) {
           toast.error(t("errorCannotOpen"), {
-            description: t("errorNoWorkspace"),
+            description:
+              exists.reason === "no-workspace"
+                ? t("errorNoWorkspace")
+                : t("errorFileNotFound"),
           })
           return
         }
@@ -522,16 +551,21 @@ export function FilePathLink({
     if (!target) return
     // Only folder-relative paths need an active folder; absolute and ~
     // paths are self-locating.
-    if (!isSelfLocatingPath(target) && !folderPath) {
-      toast.error(t("errorCannotOpen"), {
-        description: t("errorNoWorkspace"),
-      })
-      return
-    }
-
     openingRef.current = true
     setOpening(true)
-    void openFileTarget(target, { line })
+    void (async () => {
+      const exists = await ensureLocalFileExists(target, folderPath)
+      if (!exists.ok) {
+        toast.error(t("errorCannotOpen"), {
+          description:
+            exists.reason === "no-workspace"
+              ? t("errorNoWorkspace")
+              : t("errorFileNotFound"),
+        })
+        return
+      }
+      await openFileTarget(target, { line })
+    })()
       .catch((error) => {
         toast.error(t("errorFailedOpen"), {
           description: toErrorMessage(error),

@@ -11,6 +11,7 @@ import {
 const mocks = vi.hoisted(() => ({
   openUrl: vi.fn(),
   openFilePreview: vi.fn(),
+  pathExists: vi.fn(),
   toastError: vi.fn(),
   isDesktop: vi.fn(() => false),
   getActiveRemoteConnectionId: vi.fn<() => string | null>(() => null),
@@ -29,6 +30,11 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/lib/platform", () => ({
   openUrl: mocks.openUrl,
+}))
+
+vi.mock("@/lib/api", () => ({
+  pathExists: mocks.pathExists,
+  getHomeDirectory: async () => "/Users/me",
 }))
 
 vi.mock("@/lib/transport", () => ({
@@ -89,6 +95,8 @@ describe("link safety direct opening", () => {
     mocks.getActiveRemoteConnectionId.mockReset()
     mocks.getActiveRemoteConnectionId.mockReturnValue(null)
     mocks.openFilePreview.mockResolvedValue(undefined)
+    mocks.pathExists.mockReset()
+    mocks.pathExists.mockResolvedValue(true)
     mocks.activeFolderPath = "/repo"
     vi.spyOn(window, "open").mockReturnValue(null)
   })
@@ -126,6 +134,33 @@ describe("link safety direct opening", () => {
       })
     })
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+  })
+
+  it("toasts and does not open when the file is missing", async () => {
+    mocks.pathExists.mockResolvedValue(false)
+    render(<LinkSafetyHarness url="file:///repo/docs/missing.docx" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Trigger link" }))
+
+    await waitFor(() => {
+      expect(mocks.toastError).toHaveBeenCalledWith("errorCannotOpen", {
+        description: "errorFileNotFound",
+      })
+    })
+    expect(mocks.openFilePreview).not.toHaveBeenCalled()
+  })
+
+  it("opens a workspace-relative markdown file link after it exists", async () => {
+    render(<LinkSafetyHarness url="docs/使用手册.docx" />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Trigger link" }))
+
+    await waitFor(() => {
+      expect(mocks.pathExists).toHaveBeenCalledWith("/repo/docs/使用手册.docx")
+      expect(mocks.openFilePreview).toHaveBeenCalledWith("docs/使用手册.docx", {
+        line: undefined,
+      })
+    })
   })
 
   it("jumps to the start line of a ranged file link (#L<start>-<end>)", async () => {

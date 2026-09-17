@@ -13,6 +13,7 @@ import { useState } from "react"
 import { describe, expect, it, vi } from "vitest"
 
 import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
+import { OverlayHostHiddenProvider } from "@/components/ui/overlay-host-hidden"
 import { SessionViewerHost, useSessionViewerHost } from "./session-viewer-host"
 
 // Both viewers reach the runtime provider tree / the conversation API. Stub
@@ -277,6 +278,37 @@ describe("SessionViewerHost", () => {
       screen.getByText("open file").click()
     })
     expect(screen.queryByTestId("delegation-viewer")).not.toBeInTheDocument()
+    expect(screen.getByTestId("file-viewer")).toBeInTheDocument()
+  })
+
+  it("hides a file preview when the conversation is backgrounded, without closing it", async () => {
+    const { rerender } = render(
+      <OverlayHostHiddenProvider hidden={false}>
+        <Harness>
+          <FileOpener />
+        </Harness>
+      </OverlayHostHiddenProvider>
+    )
+    act(() => {
+      screen.getByText("open file").click()
+    })
+    expect(screen.getByTestId("file-viewer")).toBeInTheDocument()
+
+    rerender(
+      <OverlayHostHiddenProvider hidden>
+        <Harness>
+          <FileOpener />
+        </Harness>
+      </OverlayHostHiddenProvider>
+    )
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const viewport = document.querySelector("[data-slot=drawer-viewport]")
+    expect(viewport).toHaveClass("invisible")
+    expect(viewport).toHaveAttribute("inert")
+    // Still mounted: switching back must find the same preview.
     expect(screen.getByTestId("file-viewer")).toBeInTheDocument()
   })
 

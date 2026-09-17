@@ -1228,6 +1228,23 @@ pub async fn get_by_delegation_call_id(
     Ok(conv.map(conv_to_summary))
 }
 
+/// Newest top-level conversation in a folder by last activity (`updated_at`).
+/// Skips deleted rows, delegation children, and loop-workbench sessions.
+pub async fn latest_top_level_in_folder(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+) -> Result<Option<conversation::Model>, DbError> {
+    Ok(conversation::Entity::find()
+        .filter(conversation::Column::FolderId.eq(folder_id))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .filter(conversation::Column::ParentId.is_null())
+        .filter(conversation::Column::Kind.eq(ConversationKind::Regular))
+        .order_by_desc(conversation::Column::UpdatedAt)
+        .order_by_desc(conversation::Column::Id)
+        .one(conn)
+        .await?)
+}
+
 pub async fn list_by_folder(
     conn: &DatabaseConnection,
     folder_id: i32,

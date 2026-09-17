@@ -23,6 +23,14 @@ pub const MAX_TURNS_KEY: &str = "CODEG_AGENT_MAX_TURNS";
 /// `CODEG_AGENT_API_*` keys without this marker must not authenticate.
 pub const PROVIDER_BOUND_KEY: &str = "CODEG_AGENT_PROVIDER_BOUND";
 const PROVIDER_BOUND_VALUE: &str = "1";
+/// Inject top-level `AGENTS.md` into the main agent preamble.
+/// 首期只实现主 agent 注入、以及一级目录的扫描。
+pub const INJECT_AGENTS_MD_KEY: &str = "CODEG_AGENT_INJECT_AGENTS_MD";
+/// Inject top-level `CLAUDE.md` into the main agent preamble.
+/// 首期只实现主 agent 注入、以及一级目录的扫描。
+pub const INJECT_CLAUDE_MD_KEY: &str = "CODEG_AGENT_INJECT_CLAUDE_MD";
+/// Inject a max-3-level workspace tree into the main agent and subagents.
+pub const INJECT_TREE_KEY: &str = "CODEG_AGENT_INJECT_TREE";
 
 pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4096;
 pub const DEFAULT_COMPACT_SOFT_PERCENT: u8 = 80;
@@ -34,14 +42,37 @@ pub const LOCAL_API_KEY: &str = "local";
 pub const OUTPUT_SAFETY_MARGIN: u32 = 1024;
 
 /// L2 LLM compact instruction when `CODEG_AGENT_COMPACT_PROMPT` is empty.
-pub const DEFAULT_COMPACT_PROMPT: &str = "You are compacting context for an ongoing coding session. \
-Produce a concise, resumable summary that lets the next model continue the current work immediately. \
-Preserve the current work goal and acceptance criteria, user constraints, decisions, relevant files and paths, \
-commands and verification results, unfinished tool calls, failures, and concrete next steps. \
-Distinguish completed, in-progress, and blocked work; never claim an unverified result. \
-If the context contains independent workstreams or details too large for the summary, include focused Markdown files \
-for the session work directory in the response envelope. Return JSON only with {\"summary\":\"...\",\"files\":[{\"path\":\"topic.md\",\"content\":\"...\"}]}; \
-use an empty files array when no file is needed. Do not replay evicted turns.";
+///
+/// Must stay byte-identical to `CODEG_BUILTIN_COMPACT_PROMPT` in
+/// `src/lib/codeg-agent-prompts.ts`. Built-in compact agent-loop; Markdown handoff.
+pub const DEFAULT_COMPACT_PROMPT: &str = concat!(
+    "You are a built-in context-compression agent for an ongoing Codeg Agent session. You run as a tool loop, not a one-shot completion.\n",
+    "\n",
+    "Produce a resumable Markdown handoff so the parent agent can continue the current work immediately.\n",
+    "\n",
+    "Preserve, in terse bullets: the current work goal and acceptance criteria; user constraints; decisions; relevant files and paths; commands and verification results; unfinished tool calls; failures; and concrete next steps. Distinguish completed, in-progress, and blocked work. Never claim an unverified result. Keep exact paths and identifiers.\n",
+    "\n",
+    "How you work:\n",
+    "- The user message contains the previous summary and the evicted turns. Use glob and read_file only for Markdown files in this session directory.\n",
+    "- If independent workstreams or evidence are too large for the handoff, write focused Markdown files with write_file. Paths are relative to this session's global context directory (your working directory). Only .md files. write_file cannot leave this directory.\n",
+    "- Your last message is the entire handoff for the parent agent: one Markdown document. Link any files you wrote by path. Do not wrap the handoff in JSON.\n",
+    "\n",
+    "Do not continue the user's task, do not answer questions from the evicted turns, and do not replay evicted turns. Match the language of the conversation."
+);
+
+/// Workspace context injected at session start.
+///
+/// 首期只实现主 agent 注入、以及一级目录的扫描（`AGENTS.md` / `CLAUDE.md`）。
+/// The workspace tree is injected into the main agent and subagents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ContextInject {
+    /// Phase 1: main agent only; working-directory top-level `AGENTS.md`.
+    pub agents_md: bool,
+    /// Phase 1: main agent only; working-directory top-level `CLAUDE.md`.
+    pub claude_md: bool,
+    /// Workspace tree (max 3 levels) for the main agent and subagents.
+    pub tree: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundProvider {
@@ -73,6 +104,7 @@ pub struct EffectiveNativeConfig {
     pub protocol: CodegProtocol,
     /// Last successful auto-detect result. Ignored unless `protocol` is Auto.
     pub resolved_protocol: Option<WireProtocol>,
+    pub context_inject: ContextInject,
 }
 
 /// How the bound provider wants the request layer to talk to the gateway.
@@ -169,9 +201,7 @@ impl NativeConfigError {
                     .into()
             }
             Self::EmptyApiKey => "Bound model provider has an empty API key".into(),
-            Self::InvalidApiUrl => {
-                "Bound model provider URL must be an http(s) endpoint".into()
-            }
+            Self::InvalidApiUrl => "Bound model provider URL must be an http(s) endpoint".into(),
             Self::MissingModelId => "Bound model provider has no default model".into(),
             Self::InvalidContextWindows => {
                 "CODEG_AGENT_CONTEXT_WINDOWS must be JSON of model id → positive integer window"
@@ -183,10 +213,7 @@ impl NativeConfigError {
             Self::InvalidMaxOutputTokens => {
                 "CODEG_AGENT_MAX_OUTPUT_TOKENS must be a positive integer".into()
             }
-            Self::OutputExceedsWindow {
-                max_output,
-                window,
-            } => format!(
+            Self::OutputExceedsWindow { max_output, window } => format!(
                 "Max output {max_output} does not fit in window {window} after a {OUTPUT_SAFETY_MARGIN}-token safety margin"
             ),
         }
@@ -229,7 +256,8 @@ pub fn project_bound_provider_catalog(
             }
         }
         None => {
-            env.remove(PROTOCOL_KEY);
+            // Plain slugs / Claude JSON have no catalog protocol. Keep a
+            // bind-time lock already written to env.
             env.remove(RESOLVED_PROTOCOL_KEY);
         }
     }
@@ -362,6 +390,7 @@ pub fn resolve_codeg_agent_config(
     };
 
     let mut env = agent_env.clone();
+    project_bound_provider_catalog(&mut env, provider);
     overlay_bound_provider(&mut env, provider);
 
     let api_base_url = env
@@ -425,6 +454,11 @@ pub fn resolve_codeg_agent_config(
         ),
         protocol: CodegProtocol::parse(env.get(PROTOCOL_KEY).map(String::as_str)),
         resolved_protocol: WireProtocol::parse(env.get(RESOLVED_PROTOCOL_KEY).map(String::as_str)),
+        context_inject: ContextInject {
+            agents_md: parse_flag(env.get(INJECT_AGENTS_MD_KEY).map(String::as_str)),
+            claude_md: parse_flag(env.get(INJECT_CLAUDE_MD_KEY).map(String::as_str)),
+            tree: parse_flag(env.get(INJECT_TREE_KEY).map(String::as_str)),
+        },
     })
 }
 
@@ -493,6 +527,13 @@ fn parse_percent(raw: Option<&str>, default: u8) -> u8 {
         .ok()
         .filter(|v| (1..=100).contains(v))
         .unwrap_or(default)
+}
+
+fn parse_flag(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
 }
 
 fn parse_positive_u32(raw: Option<&str>, default: u32) -> u32 {
@@ -669,6 +710,34 @@ mod tests {
     }
 
     #[test]
+    fn compact_prompt_is_markdown_handoff_with_session_write_file() {
+        assert!(
+            !DEFAULT_COMPACT_PROMPT.contains("{\"summary\""),
+            "{DEFAULT_COMPACT_PROMPT}"
+        );
+        assert!(
+            !DEFAULT_COMPACT_PROMPT.contains("Return JSON"),
+            "{DEFAULT_COMPACT_PROMPT}"
+        );
+        assert!(
+            DEFAULT_COMPACT_PROMPT.contains("current work goal"),
+            "{DEFAULT_COMPACT_PROMPT}"
+        );
+        assert!(
+            DEFAULT_COMPACT_PROMPT.contains("write_file"),
+            "{DEFAULT_COMPACT_PROMPT}"
+        );
+        assert!(
+            DEFAULT_COMPACT_PROMPT.contains("tool loop"),
+            "{DEFAULT_COMPACT_PROMPT}"
+        );
+        assert!(
+            DEFAULT_COMPACT_PROMPT.contains("Markdown"),
+            "{DEFAULT_COMPACT_PROMPT}"
+        );
+    }
+
+    #[test]
     fn empty_prompts_trim_to_builtin_default() {
         let mut env = env_with_windows("m", 128000);
         env.insert(SYSTEM_PROMPT_KEY.into(), "   ".into());
@@ -695,6 +764,23 @@ mod tests {
             effective_compact_prompt(cfg.compact_prompt.as_deref()),
             "Keep paths; no replay."
         );
+    }
+
+    #[test]
+    fn context_inject_flags_parse_true_and_default_off() {
+        let env = env_with_windows("m", 128000);
+        let p = provider("https://gw.example/v1", "sk", "m");
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
+        assert_eq!(cfg.context_inject, ContextInject::default());
+
+        let mut env = env_with_windows("m", 128000);
+        env.insert(INJECT_AGENTS_MD_KEY.into(), "true".into());
+        env.insert(INJECT_CLAUDE_MD_KEY.into(), "1".into());
+        env.insert(INJECT_TREE_KEY.into(), "yes".into());
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
+        assert!(cfg.context_inject.agents_md);
+        assert!(cfg.context_inject.claude_md);
+        assert!(cfg.context_inject.tree);
     }
 
     #[test]
@@ -753,6 +839,20 @@ mod tests {
         assert_eq!(cfg.model_id, "b");
         assert_eq!(cfg.context_windows.get("a"), Some(&32000));
         assert_eq!(cfg.context_windows.get("b"), Some(&64000));
+    }
+
+    #[test]
+    fn missing_catalog_keeps_bind_locked_protocol() {
+        let mut env = BTreeMap::new();
+        env.insert(PROTOCOL_KEY.into(), "responses".into());
+        let p = BoundProvider {
+            api_url: "https://gw.example/v1".into(),
+            api_key: "sk".into(),
+            model: Some("gpt-4.1".into()),
+        };
+        project_bound_provider_catalog(&mut env, &p);
+        overlay_bound_provider(&mut env, &p);
+        assert_eq!(env.get(PROTOCOL_KEY).map(String::as_str), Some("responses"));
     }
 
     #[test]

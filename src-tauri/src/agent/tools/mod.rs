@@ -40,7 +40,7 @@ pub use plan::UpdatePlanTool;
 pub use plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
 pub use recall::RecallTool;
 pub use search::{GlobTool, GrepTool};
-pub use skill::{SkillCatalog, SkillTool};
+pub use skill::{LoadedSkills, SkillCatalog, SkillTool};
 pub use subagent::{
     attach_subagent_extra_context, NativeInject, SubagentTable, SubagentTool, SUBAGENT_SPEC_ID,
 };
@@ -57,6 +57,8 @@ pub struct NativeToolCtx {
     pub session_id: String,
     /// Session-local directory for spilled tool output (`recall`).
     pub spill_dir: PathBuf,
+    /// Skills already injected into this session's model context.
+    pub loaded_skills: Arc<Mutex<LoadedSkills>>,
 }
 
 impl NativeToolCtx {
@@ -258,6 +260,7 @@ pub(crate) fn test_tool_ctx(
         )),
         session_id: "s".into(),
         spill_dir: dir.join("spills"),
+        loaded_skills: LoadedSkills::shared(),
     }
 }
 

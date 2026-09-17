@@ -156,6 +156,14 @@ describe("ConversationDetailPanel new conversation layout", () => {
     )
   })
 
+  it("scopes the file preview column to the active conversation tab", () => {
+    // The file column is workspace-global; without this, a preview opened in
+    // conversation A stays on screen after switching to B.
+    expect(source).toContain(
+      "useConversationScopedFileWorkspace(activeTabId, liveTabIds)"
+    )
+  })
+
   it("does not render a decorative welcome backdrop", () => {
     expect(welcomeHeroSource).not.toContain("export function WelcomeBackdrop")
     expect(welcomeHeroSource).not.toContain("bg-gradient-to-r")

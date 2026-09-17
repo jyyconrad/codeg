@@ -46,8 +46,8 @@ describe("the canvas file card", () => {
     expect(card).toContain("reloadOpenFileBackground")
     expect(card).not.toContain("reload: true")
     // …and the button is hidden rather than dead when there is nothing safe to
-    // re-read (an office tab holds a live watch, not bytes).
-    expect(card).toContain('tab.language !== "office"')
+    // re-read (binary preview tabs hold no text buffer).
+    expect(card).toContain("isBinaryPreviewable")
     expect(card).toContain("tab.isDirty !== true")
   })
 
@@ -74,13 +74,7 @@ describe("the canvas file card", () => {
     // copy of that branch is how two surfaces end up disagreeing about, say,
     // whether a .docx is text.
     const shared = read(SHARED_VIEW)
-    for (const marker of [
-      'tab.language === "image"',
-      'tab.language === "office"',
-      "isHtmlPreviewable(tab.path)",
-      'tab.language === "markdown"',
-      "<SourceView",
-    ]) {
+    for (const marker of ["<FilePreview", "shouldUseFilePreview", "<SourceView"]) {
       expect(shared).toContain(marker)
     }
     expect(read(CARD)).toContain("<FileDocumentView")

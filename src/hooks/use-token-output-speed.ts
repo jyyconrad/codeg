@@ -6,11 +6,11 @@ import type { LiveMessage } from "@/contexts/acp-connections-context"
 import { TokenCountAccumulator, TokenSpeedTracker } from "@/lib/token-speed"
 
 /**
- * Sample period. One timer does all three jobs the reading needs — take a
- * measurement, repaint, and decay through a silent gap — so the gauge ticks at
- * a steady 2 Hz whether or not the wire is busy. Without a clock of its own the
- * reading would freeze rather than fall through a quiet long-running tool, a
- * retry backoff, or a permission / question prompt blocking the turn.
+ * Sample period. One timer takes a measurement and repaints at a steady 2 Hz
+ * whether or not the wire is busy. Silent gaps (tools, retries, permission
+ * prompts) hold the last generation rate — they must not be averaged in as
+ * 0 tok/s, or the row that already shows elapsed wall-clock would read as a
+ * slow model.
  *
  * The connection dispatches far more often than this (once per wire envelope),
  * but the smoother is time-constant based rather than per-event, so a coarser

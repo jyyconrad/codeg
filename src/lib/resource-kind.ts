@@ -27,17 +27,39 @@ export type ResourceKind = "file" | "web" | "email" | "phone"
 const WINDOWS_ABSOLUTE_PATH = /^[a-zA-Z]:[\\/]/
 const URL_SCHEME = /^([a-zA-Z][a-zA-Z\d+\-.]*):/
 
+function hasFilenameExtension(path: string): boolean {
+  const base = path.split(/[\\/]/).pop() ?? ""
+  return /\.[A-Za-z0-9]{1,10}$/.test(base)
+}
+
+function isDocumentFilename(path: string): boolean {
+  const base = path.split(/[\\/]/).pop() ?? ""
+  return /\.(pdf|docx|xlsx|xls|pptx|csv|md|markdown|txt|html|htm)$/i.test(base)
+}
+
 function isLocalPathLike(path: string): boolean {
   // Mirrors link-safety.tsx: forward-slash "//host/…" is protocol-relative
   // (web); backslash "\\server\share" is a local UNC path.
-  return (
+  if (
     (path.startsWith("/") && !path.startsWith("//")) ||
     path.startsWith("\\\\") ||
     path.startsWith("./") ||
     path.startsWith("../") ||
     path.startsWith("~/") ||
     WINDOWS_ABSOLUTE_PATH.test(path)
-  )
+  ) {
+    return true
+  }
+  // Workspace-relative file: docs/手册.docx. Bare `www.example.com` stays web.
+  // Protocol-relative `//host/file.js` is already classified as web above.
+  if (path.startsWith("//")) return false
+  if (
+    hasFilenameExtension(path) &&
+    (path.includes("/") || path.includes("\\"))
+  ) {
+    return true
+  }
+  return isDocumentFilename(path) && !path.includes("://")
 }
 
 export function classifyResourceKind(rawUrl: string): ResourceKind | null {

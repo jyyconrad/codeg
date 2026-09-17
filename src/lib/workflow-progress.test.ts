@@ -8,6 +8,8 @@ import {
   phaseDisplayText,
   phaseProgress,
   upsertWorkflow,
+  visibleWorkflows,
+  workflowResultText,
 } from "./workflow-progress"
 import type { WorkflowDelta, WorkflowRun } from "@/lib/types"
 
@@ -75,6 +77,46 @@ describe("upsertWorkflow", () => {
     expect(next.agents).toHaveLength(1)
     expect(next.agents[0].label).toBe("planner")
   })
+
+  it("keeps a terminal result and ignores blank summary corrections", () => {
+    const completed = upsertWorkflow(
+      [run()],
+      delta({
+        state: "completed",
+        result_summary: "# Finished\n\nAll checks passed.",
+      })
+    )
+    expect(completed[0].result_summary).toBe(
+      "# Finished\n\nAll checks passed."
+    )
+
+    const preserved = upsertWorkflow(
+      completed,
+      delta({ state: "completed", result_summary: "  \n" })
+    )
+    expect(preserved[0].result_summary).toBe(
+      "# Finished\n\nAll checks passed."
+    )
+  })
+
+  it("rejects stale and equal provider revisions", () => {
+    const current = run({
+      state: "completed",
+      revision: 4,
+      result_summary: "new result",
+    })
+    const stale = upsertWorkflow(
+      [current],
+      delta({ revision: 3, state: "running", result_summary: "old result" })
+    )
+    expect(stale[0]).toEqual(current)
+
+    const equal = upsertWorkflow(
+      stale,
+      delta({ revision: 4, state: "failed", result_summary: "same revision" })
+    )
+    expect(equal[0]).toEqual(current)
+  })
 })
 
 describe("liveWorkflows", () => {
@@ -85,6 +127,31 @@ describe("liveWorkflows", () => {
         run({ run_id: "wf_2", state: "running" }),
       ]).map((r) => r.run_id)
     ).toEqual(["wf_2"])
+  })
+})
+
+describe("workflow display helpers", () => {
+  it("keeps terminal rows available alongside live rows", () => {
+    expect(
+      visibleWorkflows([
+        run({ state: "completed" }),
+        run({ run_id: "wf_2", state: "running" }),
+      ]).map((r) => r.run_id)
+    ).toEqual(["wf_1", "wf_2"])
+  })
+
+  it("prefers a non-blank result, then event detail", () => {
+    expect(
+      workflowResultText(
+        run({ result_summary: "  final report  ", last_event_detail: "event" })
+      )
+    ).toBe("final report")
+    expect(
+      workflowResultText(
+        run({ result_summary: "  ", last_event_detail: "event detail" })
+      )
+    ).toBe("event detail")
+    expect(workflowResultText(run({ result_summary: "  " }))).toBeNull()
   })
 })
 

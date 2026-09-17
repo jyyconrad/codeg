@@ -169,20 +169,25 @@ describe("TokenSpeedTracker", () => {
     expect(first as number).toBeLessThan(rate * 1.15)
   })
 
-  it("smooths a burst followed by silence", () => {
+  it("holds the last generation rate through a silent gap", () => {
+    // The live row shows elapsed wall-clock next to tok/s. Feeding zeros into
+    // the EWMA during a tool / permission pause drags a 100 tok/s stream down
+    // to ~10 after a few seconds, which reads as "the model is slow".
     const tracker = new TokenSpeedTracker()
     tracker.observe(0, 0)
-    tracker.observe(200, 1000)
-    const rate = tracker.observe(200, 2000)
-    expect(rate).toBeGreaterThan(0)
-    expect(rate as number).toBeLessThan(200)
+    const generating = tracker.observe(100, 1000)
+    expect(generating).toBeCloseTo(100)
+    const paused = tracker.observe(100, 4000)
+    expect(paused).toBeCloseTo(generating as number)
   })
 
-  it("decays toward zero over a long pause", () => {
+  it("measures the next burst over its own window after a pause", () => {
     const tracker = new TokenSpeedTracker()
     tracker.observe(0, 0)
     tracker.observe(100, 1000)
-    expect(tracker.observe(100, 10_000)).toBeLessThan(1)
+    tracker.observe(100, 4000)
+    // 50 new tokens in 500ms = 100 tok/s, not 50 / 3.5s of pause+burst.
+    expect(tracker.observe(150, 4500)).toBeCloseTo(100)
   })
 
   it("ignores non-positive time deltas", () => {

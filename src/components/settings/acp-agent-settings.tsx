@@ -110,6 +110,8 @@ import {
   codexRequestDeviceCode,
   listModelProviders,
   opencodeProviderCatalog,
+  acpProbeCodegProtocol,
+  updateModelProvider,
 } from "@/lib/api"
 import type {
   AcpAgentInfo,
@@ -142,6 +144,7 @@ import {
   CODEG_MAX_TURNS_KEY,
   CODEG_WINDOW_INPUT_ID,
   bindCodegProviderEnv,
+  bindCodegProviderWithProbe,
   codegDraftFromEnv,
   codegEnvInt,
   codegMaxOutputTokens,
@@ -150,6 +153,7 @@ import {
   patchCodegEnvInt,
   patchCodegMaxOutputTokens,
 } from "@/lib/codeg-agent-env"
+import { serializeCodegAgentCatalog } from "@/lib/codeg-agent-catalog"
 import {
   modelProviderOptionLabel,
   modelProvidersForAgent,
@@ -158,6 +162,7 @@ import { envMapToText, parseEnvText, patchEnvText } from "@/lib/env-text"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
 import {
   CodegAgentCompactModelField,
+  CodegAgentContextFields,
   CodegAgentPromptEditors,
 } from "@/components/settings/codeg-agent-fields"
 import { CodegAgentProviderManager } from "@/components/settings/codeg-agent-provider-manager"
@@ -5999,7 +6004,7 @@ export function AcpAgentSettings() {
   )
 
   const handleModelProviderSelect = useCallback(
-    (providerIdStr: string) => {
+    (providerIdStr: string, options?: { probe?: boolean }) => {
       if (!selectedAgent || !selectedDraft) return
       const providerId = providerIdStr ? Number(providerIdStr) : null
       const provider = providerId
@@ -6204,6 +6209,45 @@ export function AcpAgentSettings() {
           }
         })
       } else if (agentType === "codeg_agent") {
+        if (options?.probe && provider) {
+          void (async () => {
+            try {
+              const result = await bindCodegProviderWithProbe(
+                selectedDraft.envText,
+                provider,
+                acpProbeCodegProtocol
+              )
+              if (result.catalog && provider.agent_type === "codeg_agent") {
+                try {
+                  const { provider: updated } = await updateModelProvider({
+                    id: provider.id,
+                    model: serializeCodegAgentCatalog(result.catalog),
+                  })
+                  setModelProviders((rows) =>
+                    rows.map((row) => (row.id === updated.id ? updated : row))
+                  )
+                } catch (err) {
+                  toast.error(toErrorMessage(err))
+                }
+              }
+              updateSelectedDraft((current) => ({
+                ...current,
+                modelProviderId: provider.id,
+                apiBaseUrl: provider.api_url,
+                apiKey: provider.api_key,
+                model: result.model,
+                envText: result.envText,
+              }))
+            } catch (err) {
+              toast.error(
+                t("codegAgent.protocolDetectFailed", {
+                  message: toErrorMessage(err),
+                })
+              )
+            }
+          })()
+          return
+        }
         updateSelectedDraft((current) => {
           const bound = bindCodegProviderEnv(current.envText, provider ?? null)
           return {
@@ -6222,7 +6266,7 @@ export function AcpAgentSettings() {
         }))
       }
     },
-    [selectedAgent, selectedDraft, modelProviders, updateSelectedDraft]
+    [selectedAgent, selectedDraft, modelProviders, updateSelectedDraft, t]
   )
 
   useEffect(() => {
@@ -8142,7 +8186,8 @@ export function AcpAgentSettings() {
                           onSelectProvider={setCodegPanelProviderId}
                           onBindProvider={(provider) => {
                             handleModelProviderSelect(
-                              provider ? String(provider.id) : ""
+                              provider ? String(provider.id) : "",
+                              { probe: true }
                             )
                           }}
                           bindSwitchId={CODEG_BIND_SELECT_ID}
@@ -8286,6 +8331,16 @@ export function AcpAgentSettings() {
                             updateSelectedDraft((current) => ({
                               ...current,
                               codegCompactPrompt: value,
+                            }))
+                          }
+                          density="compact"
+                        />
+                        <CodegAgentContextFields
+                          envText={selectedDraft.envText}
+                          onEnvTextChange={(envText) =>
+                            updateSelectedDraft((current) => ({
+                              ...current,
+                              envText,
                             }))
                           }
                           density="compact"

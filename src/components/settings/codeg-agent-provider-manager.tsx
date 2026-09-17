@@ -153,7 +153,9 @@ export function CodegAgentProviderManager({
   boundProviderId: number | null
   selectedProviderId: number | null
   onSelectProvider: (id: number) => void
-  onBindProvider: (provider: ModelProviderInfo | null) => void
+  onBindProvider: (
+    provider: ModelProviderInfo | null
+  ) => void | Promise<void>
   onProvidersChanged: (
     providers: ModelProviderInfo[],
     touched?: ModelProviderInfo
@@ -171,6 +173,7 @@ export function CodegAgentProviderManager({
   )
   const [saving, setSaving] = useState(false)
   const [detecting, setDetecting] = useState(false)
+  const [binding, setBinding] = useState(false)
   const [draftName, setDraftName] = useState("")
   const [draftUrl, setDraftUrl] = useState("")
   const [draftKey, setDraftKey] = useState("")
@@ -478,9 +481,17 @@ export function CodegAgentProviderManager({
                   <Switch
                     id={bindSwitchId}
                     checked={bound}
-                    onCheckedChange={(checked) =>
-                      onBindProvider(checked ? selected : null)
-                    }
+                    disabled={binding}
+                    onCheckedChange={(checked) => {
+                      void (async () => {
+                        setBinding(true)
+                        try {
+                          await onBindProvider(checked ? selected : null)
+                        } finally {
+                          setBinding(false)
+                        }
+                      })()
+                    }}
                     aria-label={t("bindThisProvider")}
                   />
                 </div>

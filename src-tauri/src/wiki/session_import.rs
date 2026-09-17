@@ -354,11 +354,12 @@ async fn import_directory_files(
                 filename: filename.clone(),
                 mime: None,
                 bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                original_path: Some(path.to_string_lossy().into_owned()),
             }],
             material_role: Some("reference".into()),
             personal_role: None,
             title: None,
-            source_url: None,
+            source_url: Some(path.to_string_lossy().into_owned()),
             author: None,
             batch_id: Some(request_id.to_string()),
             project_ids: None,
@@ -443,23 +444,26 @@ async fn import_one_session(
             .await
             .map_err(|e| AppCommandError::io_error(e.to_string()))?
             .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
-    let markdown = session_detail_to_markdown(&detail);
-    if markdown.trim().is_empty() {
-        return Err(AppCommandError::invalid_input("session produced no text"));
-    }
     let title = detail
         .summary
         .title
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| Some(format!("{agent} session")));
+        .unwrap_or_else(|| format!("{agent} session"));
+    let folder = detail
+        .summary
+        .folder_path
+        .as_deref()
+        .map(|path| format!("Folder: {path}\n"))
+        .unwrap_or_default();
+    let index = format!("# {title}\n\nAgent: {agent}\n{folder}Session: {external_id}\n");
     let req = session_request_id(agent, external_id);
     let imported = import::import_text(
         conn,
         ImportTextParams {
             request_id: req,
-            text: markdown,
-            title,
+            text: index,
+            title: Some(title),
             source_url: None,
             author: None,
             material_role: Some("reference".into()),
@@ -469,6 +473,19 @@ async fn import_one_session(
         },
     )
     .await?;
+    let _ = crate::wiki::locator::write_locator(
+        &crate::wiki::paths::resolve_state_root(),
+        &crate::wiki::locator::SourceLocator {
+            source_id: imported.source.id.clone(),
+            kind: "local-session".into(),
+            conversation_id: None,
+            run_id: None,
+            agent_type: Some(agent.as_wire().to_string()),
+            session_id: Some(external_id.to_string()),
+            original_path: None,
+            title: imported.source.source_title.clone(),
+        },
+    );
     Ok(imported)
 }
 

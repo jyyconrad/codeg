@@ -59,11 +59,15 @@ function watchCodeOf(err: unknown): string | null {
 export function OfficePreview({
   rootPath,
   relPath,
+  onNotInstalled,
 }: {
   // Backend watch target as a (directory, relative file) pair — the file
   // tab's absolute path split by the panel. No workspace folder needed.
   rootPath: string | null
   relPath: string | null
+  /** When set, a missing officecli falls through to the frontend preview
+   *  instead of showing the install hint. */
+  onNotInstalled?: () => void
 }) {
   const t = useTranslations("Folder.fileWorkspacePanel")
   const [port, setPort] = useState<number | null>(null)
@@ -145,6 +149,12 @@ export function OfficePreview({
     setRetryKey((k) => k + 1)
   }
 
+  useEffect(() => {
+    if (errorCode === NOT_INSTALLED && onNotInstalled) {
+      onNotInstalled()
+    }
+  }, [errorCode, onNotInstalled])
+
   if (remoteDesktop) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -160,6 +170,14 @@ export function OfficePreview({
   }
 
   if (errorCode === NOT_INSTALLED) {
+    if (onNotInstalled) {
+      return (
+        <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {t("loading")}
+        </div>
+      )
+    }
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <FileWarning className="h-8 w-8 text-muted-foreground" />

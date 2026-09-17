@@ -3,6 +3,7 @@
 import type { ReactNode } from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 import { Copy, Download, X } from "lucide-react"
+import { useOverlayHostHidden } from "@/components/ui/overlay-host-hidden"
 import { cn } from "@/lib/utils"
 
 interface ImagePreviewDialogProps {
@@ -38,6 +39,15 @@ function ImagePreviewDialog({
   copyLabel,
   renderImage,
 }: ImagePreviewDialogProps) {
+  // Conversation tabs stay mounted when backgrounded. This dialog portals to
+  // the body, so the host's `invisible` never reaches it — same class of
+  // problem as the session-viewer drawers. Hide without closing: parent state
+  // (which picture is open) lives in the keep-alive tab, and switching back
+  // restores it. Swallowing `onOpenChange` while hidden is load-bearing —
+  // programmatically passing `open={false}` would otherwise clear that state.
+  const hostHidden = useOverlayHostHidden()
+  const visible = open && !hostHidden
+
   const image = src ? (
     /* eslint-disable-next-line @next/next/no-img-element */
     <img
@@ -48,7 +58,13 @@ function ImagePreviewDialog({
     />
   ) : null
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+    <DialogPrimitive.Root
+      open={visible}
+      onOpenChange={(next) => {
+        if (hostHidden) return
+        onOpenChange(next)
+      }}
+    >
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay
           className={cn(

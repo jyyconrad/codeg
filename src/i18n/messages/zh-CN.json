@@ -1621,7 +1621,8 @@
       "noSandbox": "没有操作系统级沙箱。写文件和 bash 仅在每次调用获准后执行。工作区文件系统策略不是 shell 隔离。",
       "recovery": "崩溃恢复不会自动重放工具。已开始但未确认结束的调用会恢复为 unknown。",
       "contextWindowsHint": "绑定模型渠道时会写入可编辑窗口（默认 128000；若渠道已有窗口则沿用）。未写入窗口的模型无法启动。",
-      "protocol": "v1 默认使用 OpenAI Chat Completions。Responses 在会话开始时按绑定供应商选择。",
+      "protocol": "绑定渠道时锁定 Chat Completions 或 Responses。会话直接使用该协议。",
+      "protocolDetectFailed": "无法探测请求协议：{message}",
       "modelSelectorHint": "会话模型选择器只列出窗口映射中的 id。未知 id 会被拒绝。",
       "usageLastRequest": "上下文圆环显示的是最后一次模型请求占用的已配置窗口，不是整轮累计 token。若网关未报告输入用量，则显示估算值。",
       "envWindowsHint": "环境变量是绑定渠道与配置卡窗口、最大输出的投影。可选的 CODEG_AGENT_MAX_OUTPUT_TOKENS 默认 4096，且必须小于窗口减去安全余量后的值。",
@@ -1635,7 +1636,7 @@
       "contextWindow": "上下文窗口",
       "maxOutput": "最大输出 token",
       "systemPrompt": "系统提示词",
-      "systemPromptHint": "留空使用内置默认。仍会追加工作目录与技能目录。",
+      "systemPromptHint": "留空使用内置默认。运行环境、当前时间、工作目录、全局存储目录与技能目录仍会自动追加。",
       "compactPrompt": "上下文压缩提示词（L2）",
       "compactPromptHint": "仅用于同一会话的第二次压缩。留空使用内置模板。",
       "save": "保存",
@@ -1666,6 +1667,14 @@
     "presetHint": "云端、本地与自定义渠道的绑定方式相同。本地回环服务可以不填 API Key。",
     "promptsTitle": "提示词",
     "promptsDescription": "以下是内置智能体实际使用的提示词。可编辑；点恢复默认即可回到内置正文。",
+    "contextTitle": "上下文",
+    "contextDescription": "会话启动时注入。规范文件仅注入主智能体；目录树同时注入主智能体与子智能体。",
+    "injectConstraints": "注入规范约束",
+    "injectConstraintsHint": "勾选后，启动时读取工作目录顶层对应文件并注入主智能体。首期只扫描一级目录。",
+    "injectAgentsMd": "AGENTS.md",
+    "injectClaudeMd": "CLAUDE.md",
+    "injectTree": "结构信息",
+    "injectTreeHint": "勾选后，启动时扫描工作目录最多 3 层的目录与文件，以 Markdown 树注入主智能体和子智能体。更深路径会省略。",
     "compressionTitle": "上下文压缩",
     "compressionDescription": "占用超过软阈值时会摘要较早轮次，最近若干轮保持原样。",
     "compactSoftPercent": "软压缩阈值（%）",
@@ -1720,7 +1729,8 @@
     "preset": "平台",
     "creating": "创建中…",
     "requestProtocol": "请求协议",
-    "requestProtocolHint": "一场会话只用一种协议。自动探测先走 Chat Completions，仅在该路径 404 时改用 Responses。",
+    "requestProtocolHint": "绑定渠道时自动探测：先试 Chat Completions，路径不存在或失败再试 Responses，并锁定结果。会话直接使用锁定的协议。",
+    "protocolDetectFailed": "无法探测请求协议：{message}",
     "protocolChatCompletions": "Chat Completions",
     "protocolResponses": "Responses",
     "protocolAuto": "自动"
@@ -1892,10 +1902,15 @@
       "notifyChannels": "通知渠道…",
       "notifyChannelsDialog": {
         "title": "通知渠道",
-        "description": "该文件夹中的对话结束时，将最终消息发送到所选渠道。",
+        "description": "该文件夹中的对话结束时，将最终消息发送到所选渠道。可为每个渠道填写会话 ID；留空则使用渠道默认会话。",
         "empty": "还没有聊天渠道。请先在设置中添加。",
         "loadFailed": "加载渠道失败：{message}",
-        "saveFailed": "保存渠道绑定失败：{message}"
+        "saveFailed": "保存渠道绑定失败：{message}",
+        "sessionId": "会话 ID",
+        "sessionIdForChannel": "{name} 的会话 ID",
+        "sessionIdHint": "留空则使用该渠道的默认会话。",
+        "sessionIdPlaceholder": "默认",
+        "sessionIdPlaceholderWithDefault": "默认：{chatId}"
       },
       "error": "错误：{message}",
       "completeAllSessions": "完成全部会话",
@@ -1944,6 +1959,8 @@
       "statusRunningBadge": "运行中",
       "runningCountBadge": "{count} 个会话进行中",
       "statusCancelledBadge": "已取消",
+      "statusUnreadCompletedBadge": "未查看的已完成",
+      "statusUnreadFailedBadge": "未查看的异常",
       "worktreeRemovedBadge": "源 worktree 已删除",
       "conversationCountUnit": "{count} 条",
       "emptyFolderHint": "暂无会话",
@@ -2422,7 +2439,19 @@
       "officeWatchFailed": "无法启动实时预览",
       "officeWatchRetry": "重试",
       "officeServerInstallHint": "OfficeCLI 需安装在服务器主机上。请在服务器上运行以下命令后重试：",
-      "officeRemoteDesktopUnsupported": "远程桌面窗口暂不支持实时预览。请在服务器的 Web 界面中打开此工作区来预览 Office 文件。"
+      "officeRemoteDesktopUnsupported": "远程桌面窗口暂不支持实时预览。请在服务器的 Web 界面中打开此工作区来预览 Office 文件。",
+      "spreadsheetSheet": "工作表",
+      "spreadsheetRows": "第 {from}–{to} 行 / 共 {total} 行",
+      "spreadsheetPrevPage": "上一页",
+      "spreadsheetNextPage": "下一页",
+      "spreadsheetPrevCols": "上一组列",
+      "spreadsheetNextCols": "下一组列",
+      "spreadsheetPageSize": "每页行数",
+      "spreadsheetEmpty": "此工作表为空",
+      "spreadsheetLoadFailed": "无法加载表格",
+      "spreadsheetRetry": "重试",
+      "officeJsPreviewFailed": "无法预览此文件",
+      "officeJsPreviewRetry": "重试"
     },
     "fileViewer": {
       "title": "文件预览",
@@ -3383,6 +3412,7 @@
       },
       "linkSafety": {
         "errorCannotOpen": "无法打开本地文件",
+        "errorFileNotFound": "该文件不存在。",
         "errorNoWorkspace": "当前没有活跃的工作区文件夹。",
         "errorFailedOpen": "打开本地文件失败",
         "errorFailedLink": "打开链接失败",
@@ -3980,6 +4010,12 @@
     },
     "toasts": {
       "cloneFailed": "克隆仓库失败"
+    },
+    "fileOpen": {
+      "open": "打开",
+      "defaultApp": "默认程序",
+      "folder": "文件夹",
+      "failed": "无法打开文件"
     }
   },
   "ProjectBoot": {
@@ -4248,6 +4284,15 @@
       "fr": "法语",
       "pt": "葡萄牙语",
       "ar": "阿拉伯语"
+    },
+    "folderInbound": {
+      "title": "文件夹会话复用",
+      "description": "绑定了文件夹的渠道收到未引用的消息时：若该文件夹最新对话的活动时间在此分钟数内，则继续该对话；否则自动新开对话。设为 0 则总是新开。",
+      "minutesLabel": "分钟",
+      "saved": "复用窗口已保存。",
+      "saveFailed": "保存复用窗口失败。",
+      "invalid": "请输入 0 到 10080 的整数。",
+      "save": "保存"
     }
   },
   "ModelProviderSettings": {
@@ -6310,13 +6355,13 @@
     "excludeFoldersHint": "跳过这些项目目录。可用列表或逗号分隔的 id。",
     "excludeFoldersPlaceholder": "例如 12, 34",
     "unknownFolder": "文件夹 {id}",
-    "restoreBuiltinPrompt": "恢复内置",
+    "restoreBuiltinPrompt": "恢复内置技能",
     "turnSummaryTitle": "回合摘要",
     "turnSummaryDescription": "每一轮成功的 ACP 结束后写成可读记忆：改了什么、实现了什么。模型 id 为空时使用绑定的默认模型。",
     "turnSummaryModel": "回合摘要模型 id",
     "turnSummaryModelHint": "此处选择将应用于 Wiki 的各处理阶段。保存后独立于聊天设置，高级设置可分别指定各阶段模型。",
     "turnSummaryModelPlaceholder": "绑定默认",
-    "turnSummaryPrompt": "回合摘要提示词",
+    "turnSummaryPrompt": "回合摘要技能（SKILL.md）",
     "turnSummaryPromptPlaceholder": "完整回合摘要技能。宿主仍校验页面身份，且不能扩大读取范围。",
     "turnSummaryPromptBuiltinHint": "这里是完整的回合摘要技能，可以直接修改。恢复内置后会跟随后续技能更新。",
     "sessionRollupTitle": "对话汇总",
@@ -6324,7 +6369,7 @@
     "sessionRollupModel": "对话汇总模型 id",
     "sessionRollupModelHint": "此处选择将应用于 Wiki 的各处理阶段。保存后独立于聊天设置，高级设置可分别指定各阶段模型。",
     "sessionRollupModelPlaceholder": "绑定默认",
-    "sessionRollupPrompt": "对话汇总提示词",
+    "sessionRollupPrompt": "对话汇总技能（SKILL.md）",
     "sessionRollupPromptPlaceholder": "完整对话汇总技能。宿主仍校验页面身份，且不能扩大读取范围。",
     "sessionRollupPromptBuiltinHint": "这里是完整的对话汇总技能，可以直接修改。恢复内置后会跟随后续技能更新。",
     "synthesizeTitle": "工作归纳",
@@ -6335,7 +6380,7 @@
     "synthesizeModel": "归纳模型 id",
     "synthesizeModelHint": "此处选择将应用于 Wiki 的各处理阶段。保存后独立于聊天设置，高级设置可分别指定各阶段模型。",
     "synthesizeModelPlaceholder": "绑定默认",
-    "synthesizePrompt": "归纳提示词",
+    "synthesizePrompt": "工作归纳技能（SKILL.md）",
     "synthesizePromptPlaceholder": "完整工作归纳技能。宿主仍校验出处，且不能编造主张。",
     "synthesizePromptBuiltinHint": "这里是完整的工作归纳技能，可以直接修改。恢复内置后会跟随后续技能更新。"
   },
@@ -6669,7 +6714,10 @@
       "storageHint": "更改位置不会搬移已有文件，请先暂停处理再切换。",
       "capture": "记录会话",
       "captureHint": "成功完成会话轮次后保存材料，委托的子会话不采集。",
-      "promptBoundary": "自定义提示词不能扩大读取范围、跳过出处核验或覆盖写入保护。",
+      "promptBoundary": "自定义技能不能扩大读取范围、跳过出处核验或覆盖写入保护。",
+      "skillHint": "这里编辑长期工作方法与判断规则，具体文件和本次任务由系统运行时提供。恢复内置后会跟随后续技能更新。",
+      "builtinTask": "内置任务指令",
+      "builtinTaskHint": "用于启动本阶段的用户消息模板，仅供查看。运行时由系统填入来源文件、Wiki 目录、本次任务信息与执行要求。",
       "unsaved": "有未保存的修改",
       "discard": "放弃修改",
       "reasons": {
@@ -6682,12 +6730,14 @@
       "navigation": "概览",
       "sourceSections": "资料信息",
       "stages": {
-        "turn_summary": "单轮记录",
-        "session_rollup": "对话总结",
-        "synthesize": "立即整理"
+        "turn_summary": "回合摘要",
+        "session_rollup": "对话汇总",
+        "synthesize": "工作归纳"
       },
       "library": {
         "directory": "目录",
+        "expandDirectory": "展开 {name}",
+        "collapseDirectory": "折叠 {name}",
         "home": "Wiki 首页",
         "backHome": "返回 Wiki 首页",
         "location": "Wiki 文件夹",

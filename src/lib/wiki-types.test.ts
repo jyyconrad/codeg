@@ -64,6 +64,22 @@ describe("wiki settings prompts", () => {
     expect(effectiveWikiPrompt("# custom", "# builtin turn")).toBe("# custom")
   })
 
+  it("keeps built-in task templates in the view without persisting them", () => {
+    const templates = {
+      turn_summary_builtin_task: "Read {source_path} and summarize the turn.",
+      session_rollup_builtin_task: "Review {memory_paths} for this session.",
+      synthesize_builtin_task: "Update the notes in {wiki_root}.",
+    }
+    const view = normalizeWikiSettings(templates)
+    expect(view).toMatchObject(templates)
+    const payload = wikiSettingsPayload(view)
+    const fallback = normalizeWikiSettings(null)
+    for (const key of Object.keys(templates) as (keyof typeof templates)[]) {
+      expect(payload).not.toHaveProperty(key)
+      expect(fallback[key]).toBe("")
+    }
+  })
+
   it("does not retain retired settings or let them disable the new schedule", () => {
     const legacy = JSON.parse(
       '{"ingest":{"model_id":"old"},"compile":{"enabled":false}}'

@@ -18,6 +18,7 @@ type MdastNodeLike = {
   type: string
   url?: unknown
   identifier?: unknown
+  value?: unknown
   children?: unknown
 }
 
@@ -79,6 +80,69 @@ function walk(node: MdastNodeLike, fn: (n: MdastNodeLike) => void): void {
     for (const child of children) {
       walk(child as MdastNodeLike, fn)
     }
+  }
+}
+
+const FILE_EXT = /\.[A-Za-z0-9]{1,10}$/
+const DOCUMENT_EXT = /\.(pdf|docx|xlsx|xls|pptx|csv|md|markdown|txt|html|htm)$/i
+
+/**
+ * True when inline code is a local file path with a filename extension —
+ * absolute, `file://`, workspace-relative (`docs/手册.docx`), or a document
+ * filename. Bare identifiers (`app.ts`) and extension-less directories
+ * (`/usr/bin`) stay code.
+ */
+function inlineCodeToFileHref(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed || /\s/.test(trimmed)) return null
+  const base = trimmed.split(/[\\/]/).pop() ?? ""
+  if (!FILE_EXT.test(base)) return null
+  const looksLocal =
+    trimmed.startsWith("~/") ||
+    (trimmed.startsWith("/") && !trimmed.startsWith("//")) ||
+    WINDOWS_DRIVE_PATH.test(trimmed) ||
+    trimmed.startsWith("file://") ||
+    trimmed.startsWith("\\\\") ||
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    DOCUMENT_EXT.test(base)
+  if (!looksLocal) return null
+  return rewriteLocalFileUrl(trimmed) ?? trimmed
+}
+
+/**
+ * Promote backtick-wrapped absolute file paths to markdown links so
+ * MarkdownLink / openFilePreview can open them. Existing links are left
+ * alone; fenced code blocks are not visited as inlineCode.
+ */
+export function remarkAutolinkInlineFilePaths() {
+  return (tree: MdastNodeLike) => {
+    visitReplaceInlineCode(tree, false)
+  }
+}
+
+function visitReplaceInlineCode(node: MdastNodeLike, insideLink: boolean): void {
+  const children = node.children
+  if (!Array.isArray(children)) return
+  const nestedLink = insideLink || node.type === "link"
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i] as MdastNodeLike
+    if (
+      !nestedLink &&
+      child.type === "inlineCode" &&
+      typeof child.value === "string"
+    ) {
+      const href = inlineCodeToFileHref(child.value)
+      if (href) {
+        children[i] = {
+          type: "link",
+          url: href,
+          children: [{ type: "text", value: child.value.trim() }],
+        }
+        continue
+      }
+    }
+    visitReplaceInlineCode(child, nestedLink)
   }
 }
 

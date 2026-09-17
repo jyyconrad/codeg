@@ -51,6 +51,8 @@ mod m20260912_000002_wiki_import;
 mod m20260914_000001_wiki_v2_reset;
 mod m20260914_000002_wiki_pipeline;
 mod m20260914_000003_wiki_attempts;
+mod m20260915_000001_folder_chat_channel_chat_id;
+mod m20260915_000002_chat_channel_message_map;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -108,6 +110,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20260914_000001_wiki_v2_reset::Migration),
             Box::new(m20260914_000002_wiki_pipeline::Migration),
             Box::new(m20260914_000003_wiki_attempts::Migration),
+            Box::new(m20260915_000001_folder_chat_channel_chat_id::Migration),
+            Box::new(m20260915_000002_chat_channel_message_map::Migration),
         ]
     }
 }

@@ -151,6 +151,21 @@ export function wikiSourceLineExcerpt(
   }
 }
 
+const FOLDER_LANDING_NAMES = ["index.md", "README.md", "readme.md"]
+
+/** GitHub-style folder landing: index.md, then README.md. */
+export function wikiFolderLandingPath(
+  path: string,
+  children?: { name: string; path: string; is_dir: boolean }[]
+): string | null {
+  if (!path || !children) return null
+  for (const name of FOLDER_LANDING_NAMES) {
+    const hit = children.find((child) => !child.is_dir && child.name === name)
+    if (hit) return hit.path
+  }
+  return null
+}
+
 /** 阅读器已经显示文档标题，正文中相同的首个标题不重复展示。 */
 export function wikiBodyForReading(body: string, title: string): string {
   const heading = /^\s*# ([^\n]+)\r?\n/.exec(body)

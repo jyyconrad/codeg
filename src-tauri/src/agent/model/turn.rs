@@ -5,6 +5,7 @@ use rig::agent::MultiTurnStreamItem;
 use rig::client::AgentClientExt;
 use rig::completion::Message;
 use rig::tool::DynamicTool;
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::hook::CodegHook;
@@ -78,6 +79,7 @@ pub struct NativeTurnRequest {
     pub model_id: String,
     pub preamble: String,
     pub prompt: Message,
+    pub additional_params: Option<Value>,
     pub tools: NativeTurnTools,
     pub hook: CodegHook,
     pub cancel: CancellationToken,
@@ -95,6 +97,7 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
         model_id,
         preamble,
         prompt,
+        additional_params,
         tools,
         hook,
         cancel,
@@ -105,12 +108,30 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
         stream = async {
             match client {
                 CodegLlmClient::Completions(client) => {
-                    assemble_and_stream(client, model_id, preamble, prompt, tools, hook, max_turns)
-                        .await
+                    assemble_and_stream(
+                        client,
+                        model_id,
+                        preamble,
+                        prompt,
+                        additional_params,
+                        tools,
+                        hook,
+                        max_turns,
+                    )
+                    .await
                 }
                 CodegLlmClient::Responses(client) => {
-                    assemble_and_stream(client, model_id, preamble, prompt, tools, hook, max_turns)
-                        .await
+                    assemble_and_stream(
+                        client,
+                        model_id,
+                        preamble,
+                        prompt,
+                        additional_params,
+                        tools,
+                        hook,
+                        max_turns,
+                    )
+                    .await
                 }
             }
         } => stream,
@@ -123,6 +144,7 @@ async fn assemble_and_stream<C>(
     model_id: String,
     preamble: String,
     prompt: Message,
+    additional_params: Option<Value>,
     tools: NativeTurnTools,
     hook: CodegHook,
     max_turns: usize,
@@ -195,6 +217,11 @@ where
     }
     let builder = if let Some(echo) = echo {
         builder.tool(echo)
+    } else {
+        builder
+    };
+    let builder = if let Some(params) = additional_params {
+        builder.additional_params(params)
     } else {
         builder
     };

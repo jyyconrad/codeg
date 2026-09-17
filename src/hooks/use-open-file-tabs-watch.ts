@@ -35,7 +35,8 @@ import {
   normalizeAbsPath,
   splitAbsPath,
 } from "@/lib/file-open-target"
-import { isImageFile, isOfficePreviewable } from "@/lib/language-detect"
+import { isImageFile } from "@/lib/language-detect"
+import { isBinaryPreviewable } from "@/lib/file-preview-kind"
 import { getWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import type { FileEditContent } from "@/lib/types"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
@@ -463,9 +464,9 @@ export function useOpenFileTabsWatch({
     if (!isTransition) return
     if (tab.loading || tab.saveState === "saving") return
     // Text files only: image tabs carry no etag (the resolver would
-    // misread a fine image as "missing"), and office tabs are refreshed
-    // by their own officecli watch.
-    if (isImageFile(tab.path) || isOfficePreviewable(tab.path)) return
+    // misread a fine image as "missing"), and binary preview tabs are
+    // refreshed by FilePreview's own path listener.
+    if (isImageFile(tab.path) || isBinaryPreviewable(tab.path)) return
     if (findOwningFolder(tab.path, allFolders)) return
     const io = splitAbsPath(tab.path)
     if (!io) return

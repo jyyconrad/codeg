@@ -194,7 +194,7 @@ pub async fn run_compile_job(
             "schema":SYNTHESIZE_CONTRACT_VERSION,"job_id":job.id,"attempt":job.attempt,
             "source_references":sources,
             "project_metadata":project_metadata,
-            "instruction":"Read source files as needed and organize Wiki notes. Return page_proposals with title, type, body and input_rels. The host adds source metadata; hashes and line evidence are not required.",
+            "batch_id":batch_id,
             "index":index_payload(&index),
             "vault_abs":vault.to_string_lossy(),"staging_abs":staging.to_string_lossy(),
             "max_turns":crate::agent::model::WIKI_COMPILE_MAX_TURNS,

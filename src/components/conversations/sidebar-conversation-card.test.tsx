@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi, beforeEach } from "vitest"
 
 import { SidebarConversationCard } from "./sidebar-conversation-card"
 import { formatRelative } from "./sidebar-conversation-grouping"
+import { resetConversationAttention } from "@/lib/conversation-attention"
 import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
@@ -216,6 +217,117 @@ describe("SidebarConversationCard pin action", () => {
 // context-menu items, which are matched by getByText. CSS hides them until
 // hover, but fireEvent dispatches directly on the node regardless of
 // pointer-events, so the wiring is testable without a real pointer.
+describe("SidebarConversationCard status badge", () => {
+  beforeEach(() => {
+    resetConversationAttention()
+    onSelect.mockClear()
+  })
+
+  function renderCard(
+    c: DbConversationSummary,
+    { selected = false }: { selected?: boolean } = {}
+  ) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={selected}
+        timeLabel="5m"
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  it("shows a blue unread pip for a finished conversation that has not been opened", () => {
+    const { getByTitle, getByText } = renderCard({
+      ...conv(1),
+      status: "pending_review",
+    })
+    expect(getByTitle("Unread completed")).toBeTruthy()
+    expect(getByText("5m")).toBeTruthy()
+  })
+
+  it("clears the blue unread pip after the row is clicked", () => {
+    const { getByText, getByTitle, queryByTitle } = renderCard({
+      ...conv(1),
+      status: "completed",
+    })
+    expect(getByTitle("Unread completed")).toBeTruthy()
+    fireEvent.click(getByText("conv-1"))
+    expect(onSelect).toHaveBeenCalledWith(1, "claude_code", 1)
+    expect(queryByTitle("Unread completed")).toBeNull()
+  })
+
+  it("keeps the blue pip cleared after leaving a conversation that was opened", () => {
+    const done: DbConversationSummary = { ...conv(1), status: "completed" }
+    const { rerender, queryByTitle } = renderCard(done, { selected: true })
+    expect(queryByTitle("Unread completed")).toBeNull()
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SidebarConversationCard
+          conversation={done}
+          isSelected={false}
+          timeLabel="5m"
+          onSelect={onSelect}
+          onDoubleClick={onDoubleClick}
+          onRename={onRename}
+          onDelete={onDelete}
+          onStatusChange={onStatusChange}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(queryByTitle("Unread completed")).toBeNull()
+  })
+
+  it("shows a red unread pip plus the cancelled icon for an unopened failure", () => {
+    const { getByTitle } = renderCard({ ...conv(2), status: "cancelled" })
+    expect(getByTitle("Unread failed")).toBeTruthy()
+    expect(getByTitle("Cancelled")).toBeTruthy()
+  })
+
+  it("clears the red unread pip after a failed conversation is clicked, keeping the X", () => {
+    const { getByText, getByTitle, queryByTitle } = renderCard({
+      ...conv(2),
+      status: "cancelled",
+    })
+    fireEvent.click(getByText("conv-2"))
+    expect(queryByTitle("Unread failed")).toBeNull()
+    expect(getByTitle("Cancelled")).toBeTruthy()
+  })
+
+  it("shows the running spinner instead of X and red when a failed conversation restarts", () => {
+    const failed: DbConversationSummary = { ...conv(3), status: "cancelled" }
+    const { rerender, getByTitle, queryByTitle } = renderCard(failed)
+    expect(getByTitle("Unread failed")).toBeTruthy()
+    expect(getByTitle("Cancelled")).toBeTruthy()
+
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <SidebarConversationCard
+          conversation={{
+            ...failed,
+            status: "in_progress",
+            updated_at: new Date(NOW).toISOString(),
+          }}
+          isSelected={false}
+          timeLabel="5m"
+          onSelect={onSelect}
+          onDoubleClick={onDoubleClick}
+          onRename={onRename}
+          onDelete={onDelete}
+          onStatusChange={onStatusChange}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(queryByTitle("Unread failed")).toBeNull()
+    expect(queryByTitle("Cancelled")).toBeNull()
+    expect(getByTitle("Running")).toBeTruthy()
+  })
+})
+
 describe("SidebarConversationCard hover quick actions", () => {
   beforeEach(() => {
     onTogglePin.mockClear()

@@ -33,7 +33,10 @@ import { maskLiteralSpans } from "./markdown-mask"
 import { mermaidComponents } from "./mermaid-block"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
-import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
+import {
+  remarkAutolinkInlineFilePaths,
+  remarkRewriteFileUriLinks,
+} from "./remark-file-uri-links"
 import { remarkRestoreWindowsPaths } from "./remark-windows-paths"
 import { remarkLocalImages } from "./remark-local-images"
 import { markdownLocalImageComponents } from "./markdown-local-image"
@@ -471,6 +474,7 @@ const remarkPlugins = [
   remarkRestoreWindowsPaths,
   remarkLocalImages,
   remarkRewriteFileUriLinks,
+  remarkAutolinkInlineFilePaths,
   remarkTrimCjkAutolinkTail,
 ]
 

@@ -5,8 +5,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import Link from "next/link"
-import { Search, Settings } from "lucide-react"
+import { Search } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { WorkbenchPageTitle } from "@/components/workbench/workbench-page-title"
 import { Button } from "@/components/ui/button"
@@ -106,12 +105,6 @@ function WikiPageContent() {
           </nav>
           <div className="ms-auto flex flex-wrap gap-2">
             <WikiImportButton />
-            <Button asChild variant="ghost" size="sm">
-              <Link href="/settings/wiki?from=wiki">
-                <Settings className="size-4" />
-                {t("settings")}
-              </Link>
-            </Button>
             <Button
               size="sm"
               variant="ghost"

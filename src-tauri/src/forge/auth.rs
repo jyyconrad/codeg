@@ -3,8 +3,9 @@
 //! Reads the same `github_accounts` app-metadata blob the settings UI writes
 //! (`commands/version_control.rs`) — that reader is desktop-gated, this one is
 //! mode-agnostic because the forge paths run in both binaries. Tokens come
-//! from `keyring_store` (OS keyring on desktop, hardened `tokens.json` on the
-//! server). Every downstream call derives its identity scope from the
+//! from `keyring_store` (`tokens.json` under the data dir; desktop also
+//! migrates leftover OS-keyring items into that file on first read).
+//! Every downstream call derives its identity scope from the
 //! resolved `(server_host, api_base, account_id)` triple — never from "the
 //! current default account" at call time, so a later `is_default` flip cannot
 //! silently change which identity a task writes with.

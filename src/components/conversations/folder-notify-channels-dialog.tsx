@@ -10,6 +10,7 @@ import {
 } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import type { ChatChannelInfo } from "@/lib/types"
+import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -20,8 +21,31 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
+
+function channelSupportsSessionId(channel: ChatChannelInfo): boolean {
+  return channel.channel_type === "telegram" || channel.channel_type === "lark"
+}
+
+function channelDefaultChatId(channel: ChatChannelInfo): string | null {
+  try {
+    const config = JSON.parse(channel.config_json || "{}") as {
+      chat_id?: unknown
+    }
+    return typeof config.chat_id === "string" && config.chat_id.trim()
+      ? config.chat_id.trim()
+      : null
+  } catch {
+    return null
+  }
+}
+
+function normalizeSessionId(value: string | undefined): string | null {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : null
+}
 
 export function FolderNotifyChannelsDialog({
   folderId,
@@ -36,6 +60,7 @@ export function FolderNotifyChannelsDialog({
   const tCommon = useTranslations("Folder.common")
   const [channels, setChannels] = useState<ChatChannelInfo[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [sessionIds, setSessionIds] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [loaded, setLoaded] = useState(false)
@@ -53,10 +78,19 @@ export function FolderNotifyChannelsDialog({
       .then(([listed, bound]) => {
         if (cancelled) return
         const enabled = listed.filter((channel) => channel.enabled)
+        const nextSelected = new Set<number>()
+        const nextSessionIds: Record<number, string> = {}
+        for (const binding of bound) {
+          if (!enabled.some((channel) => channel.id === binding.channel_id)) {
+            continue
+          }
+          nextSelected.add(binding.channel_id)
+          const chatId = binding.chat_id?.trim()
+          if (chatId) nextSessionIds[binding.channel_id] = chatId
+        }
         setChannels(enabled)
-        setSelected(
-          new Set(bound.filter((id) => enabled.some((c) => c.id === id)))
-        )
+        setSelected(nextSelected)
+        setSessionIds(nextSessionIds)
         setLoaded(true)
       })
       .catch((err) => {
@@ -85,14 +119,23 @@ export function FolderNotifyChannelsDialog({
     })
   }, [])
 
+  const handleSessionIdChange = useCallback((id: number, value: string) => {
+    setSessionIds((prev) => ({ ...prev, [id]: value }))
+  }, [])
+
   const handleSave = async () => {
     if (!loaded || saving) return
     setSaving(true)
-    const channelIds = channels
+    const channelsToSave = channels
       .filter((channel) => selected.has(channel.id))
-      .map((channel) => channel.id)
+      .map((channel) => ({
+        channel_id: channel.id,
+        chat_id: channelSupportsSessionId(channel)
+          ? normalizeSessionId(sessionIds[channel.id])
+          : null,
+      }))
     try {
-      await setFolderChatChannels(folderId, channelIds)
+      await setFolderChatChannels(folderId, channelsToSave)
       onOpenChange(false)
     } catch (err) {
       toast.error(t("saveFailed", { message: toErrorMessage(err) }))
@@ -102,7 +145,7 @@ export function FolderNotifyChannelsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[28rem]">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{t("title")}</DialogTitle>
           <DialogDescription>{t("description")}</DialogDescription>
@@ -116,25 +159,67 @@ export function FolderNotifyChannelsDialog({
         ) : channels.length === 0 ? (
           <p className="text-sm text-muted-foreground">{t("empty")}</p>
         ) : (
-          <ScrollArea className="max-h-64">
+          <ScrollArea className="max-h-80">
             <div className="flex flex-col gap-2 py-1 pr-3">
               {channels.map((channel) => {
-                const inputId = `folder-notify-channel-${channel.id}`
+                const checkboxId = `folder-notify-channel-${channel.id}`
+                const sessionInputId = `folder-notify-session-${channel.id}`
+                const checked = selected.has(channel.id)
+                const defaultChatId = channelDefaultChatId(channel)
                 return (
-                  <Label
+                  <div
                     key={channel.id}
-                    htmlFor={inputId}
-                    className="font-normal"
+                    className={cn(
+                      "rounded-xl border border-border/70 p-3",
+                      checked && "bg-muted/30"
+                    )}
                   >
-                    <Checkbox
-                      id={inputId}
-                      checked={selected.has(channel.id)}
-                      onCheckedChange={(value) =>
-                        toggleChannel(channel.id, value === true)
-                      }
-                    />
-                    <span className="min-w-0 truncate">{channel.name}</span>
-                  </Label>
+                    <Label htmlFor={checkboxId} className="font-normal">
+                      <Checkbox
+                        id={checkboxId}
+                        checked={checked}
+                        onCheckedChange={(value) =>
+                          toggleChannel(channel.id, value === true)
+                        }
+                      />
+                      <span className="min-w-0 truncate">{channel.name}</span>
+                    </Label>
+                    {checked && channelSupportsSessionId(channel) ? (
+                      <div className="mt-3 space-y-1.5 pl-6">
+                        <label
+                          htmlFor={sessionInputId}
+                          className="text-xs font-medium"
+                        >
+                          {t("sessionId")}
+                        </label>
+                        <Input
+                          id={sessionInputId}
+                          value={sessionIds[channel.id] ?? ""}
+                          onChange={(event) =>
+                            handleSessionIdChange(
+                              channel.id,
+                              event.target.value
+                            )
+                          }
+                          aria-label={t("sessionIdForChannel", {
+                            name: channel.name,
+                          })}
+                          placeholder={
+                            defaultChatId
+                              ? t("sessionIdPlaceholderWithDefault", {
+                                  chatId: defaultChatId,
+                                })
+                              : t("sessionIdPlaceholder")
+                          }
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          {t("sessionIdHint")}
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
                 )
               })}
             </div>

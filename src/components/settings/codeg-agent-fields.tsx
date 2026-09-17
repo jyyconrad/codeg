@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl"
 
 import { SettingCard, SettingRow } from "@/components/shared/setting-card"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select,
   SelectContent,
@@ -14,8 +15,13 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { catalogFromProviderModel } from "@/lib/codeg-agent-catalog"
 import {
+  CODEG_INJECT_AGENTS_MD_KEY,
+  CODEG_INJECT_CLAUDE_MD_KEY,
+  CODEG_INJECT_TREE_KEY,
   codegCompactModel,
+  codegFlag,
   patchCodegCompactModel,
+  patchCodegFlag,
 } from "@/lib/codeg-agent-env"
 import {
   CODEG_BUILTIN_COMPACT_PROMPT,
@@ -203,5 +209,133 @@ export function CodegAgentCompactModelField({
     <SettingRow title={t("compactModel")} description={t("compactModelHint")}>
       {select}
     </SettingRow>
+  )
+}
+
+function InjectFileCheckbox({
+  id,
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  id: string
+  label: string
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <label
+      htmlFor={id}
+      className="flex cursor-pointer items-center gap-2 text-sm"
+    >
+      <Checkbox
+        id={id}
+        checked={checked}
+        aria-label={label}
+        onCheckedChange={(value) => onCheckedChange(value === true)}
+      />
+      <span className="font-mono text-xs">{label}</span>
+    </label>
+  )
+}
+
+export function CodegAgentContextFields({
+  envText,
+  onEnvTextChange,
+  density = "comfortable",
+}: {
+  envText: string
+  onEnvTextChange: (envText: string) => void
+  density?: "comfortable" | "compact"
+}) {
+  const t = useTranslations("CodegAgentSettings")
+  const agentsMd = codegFlag(envText, CODEG_INJECT_AGENTS_MD_KEY)
+  const claudeMd = codegFlag(envText, CODEG_INJECT_CLAUDE_MD_KEY)
+  const tree = codegFlag(envText, CODEG_INJECT_TREE_KEY)
+  const fileChecks = (
+    <div className="flex flex-wrap gap-x-4 gap-y-2">
+      <InjectFileCheckbox
+        id="codeg-inject-agents-md"
+        label={t("injectAgentsMd")}
+        checked={agentsMd}
+        onCheckedChange={(checked) =>
+          onEnvTextChange(
+            patchCodegFlag(envText, CODEG_INJECT_AGENTS_MD_KEY, checked)
+          )
+        }
+      />
+      <InjectFileCheckbox
+        id="codeg-inject-claude-md"
+        label={t("injectClaudeMd")}
+        checked={claudeMd}
+        onCheckedChange={(checked) =>
+          onEnvTextChange(
+            patchCodegFlag(envText, CODEG_INJECT_CLAUDE_MD_KEY, checked)
+          )
+        }
+      />
+    </div>
+  )
+  const treeCheckbox = (
+    <Checkbox
+      id="codeg-inject-tree"
+      checked={tree}
+      onCheckedChange={(value) =>
+        onEnvTextChange(
+          patchCodegFlag(envText, CODEG_INJECT_TREE_KEY, value === true)
+        )
+      }
+      aria-label={t("injectTree")}
+    />
+  )
+
+  if (density === "compact") {
+    return (
+      <div className="space-y-3">
+        <div className="space-y-1.5">
+          <label className="text-2xs text-muted-foreground">
+            {t("injectConstraints")}
+          </label>
+          {fileChecks}
+          <p className="text-2xs text-muted-foreground">
+            {t("injectConstraintsHint")}
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <label
+            htmlFor="codeg-inject-tree"
+            className="flex cursor-pointer items-start gap-2 text-2xs text-muted-foreground"
+          >
+            <span className="mt-0.5 inline-flex">{treeCheckbox}</span>
+            <span className="min-w-0">
+              <span className="block">{t("injectTree")}</span>
+              <span className="mt-1 block">{t("injectTreeHint")}</span>
+            </span>
+          </label>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <SettingCard>
+      <SettingRow
+        title={t("injectConstraints")}
+        description={t("injectConstraintsHint")}
+      >
+        {fileChecks}
+      </SettingRow>
+      <SettingRow title={t("injectTree")}>
+        <label
+          htmlFor="codeg-inject-tree"
+          className="flex cursor-pointer items-start gap-2"
+        >
+          <span className="mt-0.5 inline-flex shrink-0">{treeCheckbox}</span>
+          <span className="min-w-0 text-xs leading-5 text-muted-foreground">
+            {t("injectTreeHint")}
+          </span>
+        </label>
+      </SettingRow>
+    </SettingCard>
   )
 }

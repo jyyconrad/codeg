@@ -4,6 +4,7 @@ pub mod command_handlers;
 pub mod error;
 pub mod event_filter;
 pub mod event_subscriber;
+pub mod folder_inbound;
 pub mod i18n;
 pub mod manager;
 pub mod message_formatter;

@@ -73,9 +73,56 @@ describe("WorkflowProgressOverlay", () => {
     vi.useRealTimers()
   })
 
-  it("renders nothing once every run has settled", () => {
-    const { container } = renderOverlay([run({ state: "completed" })])
-    expect(container).toBeEmptyDOMElement()
+  it("keeps a completed run visible with its result and frozen elapsed time", () => {
+    renderOverlay([
+      run({
+        state: "completed",
+        elapsed_ms: 5_000,
+        result_summary: "# Finished\n\n- All checks passed.",
+      }),
+    ])
+    expect(screen.getByTestId("workflow-terminal-card")).toBeInTheDocument()
+    expect(screen.getByText("deep-research")).toBeInTheDocument()
+    expect(screen.getByText("Completed")).toBeInTheDocument()
+    expect(screen.getByText("Finished")).toBeInTheDocument()
+    expect(screen.getByText("All checks passed.")).toBeInTheDocument()
+    expect(screen.getByText("5s")).toBeInTheDocument()
+  })
+
+  it.each([
+    ["failed", "Failed"],
+    ["stopped", "Stopped"],
+  ] as const)("localizes the %s terminal state", (state, label) => {
+    renderOverlay([run({ state, elapsed_ms: 2_000 })])
+    expect(screen.getByText(label)).toBeInTheDocument()
+  })
+
+  it("falls back from an empty result to event detail and then localized empty text", () => {
+    const { unmount } = renderOverlay([
+      run({ state: "failed", result_summary: "  ", last_event_detail: "Timed out" }),
+    ])
+    expect(screen.getByText("Timed out")).toBeInTheDocument()
+    unmount()
+
+    renderOverlay([run({ state: "failed", result_summary: "  " })])
+    expect(screen.getByText("Execution summary was not returned.")).toBeInTheDocument()
+  })
+
+  it("shows live and terminal runs together", () => {
+    renderOverlay([
+      run({
+        state: "completed",
+        result_summary: "terminal summary",
+      }),
+      run({
+        run_id: "wf_2",
+        name: "follow-up",
+        current_phase: "Research",
+      }),
+    ])
+    expect(screen.getByText("terminal summary")).toBeInTheDocument()
+    expect(screen.getByText("research-planner")).toBeInTheDocument()
+    expect(screen.getByText("follow-up")).toBeInTheDocument()
   })
 
   it("renders nothing for the composer placement while docked as overlay", () => {

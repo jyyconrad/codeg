@@ -7,7 +7,9 @@ use crate::db::service::{
     chat_channel_message_log_service, chat_channel_service, folder_chat_channel_service,
 };
 use crate::db::AppDatabase;
-use crate::models::chat_channel::{ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo};
+use crate::models::chat_channel::{
+    ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo, FolderChatChannelBinding,
+};
 
 // ---------------------------------------------------------------------------
 // Shared core functions (used by both Tauri commands and web handlers)
@@ -284,6 +286,44 @@ pub async fn set_chat_message_language_core(
     Ok(())
 }
 
+const FOLDER_INBOUND_IDLE_KEY: &str = crate::chat_channel::folder_inbound::FOLDER_INBOUND_IDLE_KEY;
+
+pub async fn get_chat_folder_inbound_idle_minutes_core(
+    db: &AppDatabase,
+) -> Result<i32, AppCommandError> {
+    let val =
+        crate::db::service::app_metadata_service::get_value(&db.conn, FOLDER_INBOUND_IDLE_KEY)
+            .await
+            .map_err(AppCommandError::from)?;
+    Ok(
+        crate::chat_channel::folder_inbound::parse_folder_inbound_idle_minutes(val.as_deref())
+            as i32,
+    )
+}
+
+pub async fn set_chat_folder_inbound_idle_minutes_core(
+    db: &AppDatabase,
+    minutes: i32,
+) -> Result<(), AppCommandError> {
+    let minutes = minutes as i64;
+    if !(0..=crate::chat_channel::folder_inbound::MAX_FOLDER_INBOUND_IDLE_MINUTES)
+        .contains(&minutes)
+    {
+        return Err(AppCommandError::invalid_input(format!(
+            "Idle minutes must be an integer from 0 to {}",
+            crate::chat_channel::folder_inbound::MAX_FOLDER_INBOUND_IDLE_MINUTES
+        )));
+    }
+    crate::db::service::app_metadata_service::upsert_value(
+        &db.conn,
+        FOLDER_INBOUND_IDLE_KEY,
+        &minutes.to_string(),
+    )
+    .await
+    .map_err(AppCommandError::from)?;
+    Ok(())
+}
+
 const EVENT_FILTER_KEY: &str = "chat_event_filter";
 
 pub async fn get_chat_event_filter_core(
@@ -456,22 +496,42 @@ pub async fn weixin_check_qrcode_core(
     })
 }
 
+fn to_folder_binding(
+    binding: folder_chat_channel_service::FolderChannelBinding,
+) -> FolderChatChannelBinding {
+    FolderChatChannelBinding {
+        channel_id: binding.channel_id,
+        chat_id: binding.chat_id,
+    }
+}
+
 pub async fn list_folder_chat_channels_core(
     db: &AppDatabase,
     folder_id: i32,
-) -> Result<Vec<i32>, AppCommandError> {
-    folder_chat_channel_service::list_channel_ids(&db.conn, folder_id)
+) -> Result<Vec<FolderChatChannelBinding>, AppCommandError> {
+    folder_chat_channel_service::list_bindings(&db.conn, folder_id)
         .await
+        .map(|rows| rows.into_iter().map(to_folder_binding).collect())
         .map_err(AppCommandError::from)
 }
 
 pub async fn set_folder_chat_channels_core(
     db: &AppDatabase,
     folder_id: i32,
-    channel_ids: Vec<i32>,
-) -> Result<Vec<i32>, AppCommandError> {
-    folder_chat_channel_service::set_channel_ids(&db.conn, folder_id, &channel_ids)
+    channels: Vec<FolderChatChannelBinding>,
+) -> Result<Vec<FolderChatChannelBinding>, AppCommandError> {
+    let bindings: Vec<folder_chat_channel_service::FolderChannelBinding> = channels
+        .into_iter()
+        .map(
+            |channel| folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.channel_id,
+                chat_id: channel.chat_id,
+            },
+        )
+        .collect();
+    folder_chat_channel_service::set_bindings(&db.conn, folder_id, &bindings)
         .await
+        .map(|rows| rows.into_iter().map(to_folder_binding).collect())
         .map_err(AppCommandError::from)
 }
 
@@ -684,6 +744,23 @@ pub async fn set_chat_message_language(
 
 #[cfg(feature = "tauri-runtime")]
 #[tauri::command]
+pub async fn get_chat_folder_inbound_idle_minutes(
+    db: tauri::State<'_, AppDatabase>,
+) -> Result<i32, AppCommandError> {
+    get_chat_folder_inbound_idle_minutes_core(&db).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
+pub async fn set_chat_folder_inbound_idle_minutes(
+    db: tauri::State<'_, AppDatabase>,
+    minutes: i32,
+) -> Result<(), AppCommandError> {
+    set_chat_folder_inbound_idle_minutes_core(&db, minutes).await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[tauri::command]
 pub async fn weixin_get_qrcode() -> Result<WeixinQrcodeInfo, AppCommandError> {
     weixin_get_qrcode_core().await
 }
@@ -703,7 +780,7 @@ pub async fn weixin_check_qrcode(
 pub async fn list_folder_chat_channels(
     db: tauri::State<'_, AppDatabase>,
     folder_id: i32,
-) -> Result<Vec<i32>, AppCommandError> {
+) -> Result<Vec<FolderChatChannelBinding>, AppCommandError> {
     list_folder_chat_channels_core(&db, folder_id).await
 }
 
@@ -712,9 +789,9 @@ pub async fn list_folder_chat_channels(
 pub async fn set_folder_chat_channels(
     db: tauri::State<'_, AppDatabase>,
     folder_id: i32,
-    channel_ids: Vec<i32>,
-) -> Result<Vec<i32>, AppCommandError> {
-    set_folder_chat_channels_core(&db, folder_id, channel_ids).await
+    channels: Vec<FolderChatChannelBinding>,
+) -> Result<Vec<FolderChatChannelBinding>, AppCommandError> {
+    set_folder_chat_channels_core(&db, folder_id, channels).await
 }
 
 #[cfg(test)]
@@ -816,6 +893,44 @@ mod tests {
         assert_eq!(stored, "zh-cn");
 
         assert!(set_chat_message_language_core(&db, "klingon".to_string())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn folder_inbound_idle_minutes_default_is_30() {
+        let db = fresh_in_memory_db().await;
+        let minutes = get_chat_folder_inbound_idle_minutes_core(&db)
+            .await
+            .expect("get");
+        assert_eq!(minutes, 30);
+    }
+
+    #[tokio::test]
+    async fn folder_inbound_idle_minutes_roundtrip_and_rejects_out_of_range() {
+        let db = fresh_in_memory_db().await;
+        set_chat_folder_inbound_idle_minutes_core(&db, 5)
+            .await
+            .expect("set");
+        assert_eq!(
+            get_chat_folder_inbound_idle_minutes_core(&db)
+                .await
+                .expect("get"),
+            5
+        );
+        set_chat_folder_inbound_idle_minutes_core(&db, 0)
+            .await
+            .expect("set zero");
+        assert_eq!(
+            get_chat_folder_inbound_idle_minutes_core(&db)
+                .await
+                .expect("get zero"),
+            0
+        );
+        assert!(set_chat_folder_inbound_idle_minutes_core(&db, -1)
+            .await
+            .is_err());
+        assert!(set_chat_folder_inbound_idle_minutes_core(&db, 10081)
             .await
             .is_err());
     }

@@ -1,3 +1,4 @@
+mod config;
 mod prompt;
 mod supervisor;
 mod turn;
@@ -185,6 +186,7 @@ mod tests {
                 max_turns: 40,
                 protocol: crate::acp::native_config::CodegProtocol::ChatCompletions,
                 resolved_protocol: None,
+                context_inject: Default::default(),
             },
             preferred_config_values: BTreeMap::new(),
             owner_window_label: "main".into(),
@@ -399,6 +401,87 @@ mod tests {
             assert_eq!(ids, vec!["code", "plan"]);
             assert!(!ids.contains(&"explore"));
         }
+        h.shutdown.signal_shutdown();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spawn_publishes_model_and_thought_level() {
+        let (base, _) = spawn_completions(vec![json!({"kind":"text","text":"hi"})]).await;
+        let mut h = spawn_session(&base, false, None).await;
+        wait_started(&mut h).await;
+        {
+            let s = h.state.read().await;
+            let opts = s.config_options.as_ref().expect("config options");
+            let ids: Vec<_> = opts.iter().map(|o| o.id.as_str()).collect();
+            assert_eq!(ids, vec!["permission", "mode", "model", "thought_level"]);
+            let thought = opts
+                .iter()
+                .find(|o| o.id == "thought_level")
+                .expect("thought");
+            assert_eq!(thought.name, "Thinking");
+            match &thought.kind {
+                crate::acp::types::SessionConfigKindInfo::Select(select) => {
+                    assert_eq!(select.current_value, "off");
+                    assert!(select.options.iter().any(|o| o.value == "high"));
+                }
+                other => panic!("expected select, got {other:?}"),
+            }
+        }
+        h.shutdown.signal_shutdown();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn thought_level_high_is_sent_as_reasoning_effort() {
+        let (base, bodies) = spawn_completions(vec![json!({"kind":"text","text":"ok"})]).await;
+        let mut h = spawn_session(&base, false, None).await;
+        wait_started(&mut h).await;
+        h.cmd_tx
+            .send(ConnectionCommand::SetConfigOption {
+                config_id: "thought_level".into(),
+                value_id: "high".into(),
+            })
+            .await
+            .expect("set thought");
+        wait_event(&mut h.events, |e| {
+            matches!(
+                e,
+                AcpEvent::SessionConfigOptions { config_options }
+                    if config_options.iter().any(|o| {
+                        o.id == "thought_level"
+                            && matches!(
+                                &o.kind,
+                                crate::acp::types::SessionConfigKindInfo::Select(s)
+                                    if s.current_value == "high"
+                            )
+                    })
+            )
+        })
+        .await;
+        h.cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text {
+                    text: "say ok".into(),
+                }],
+                user_message: None,
+            })
+            .await
+            .expect("prompt");
+        wait_event(&mut h.events, |e| {
+            matches!(e, AcpEvent::TurnComplete { stop_reason, .. } if stop_reason == "end_turn")
+        })
+        .await;
+        let dumped = bodies
+            .lock()
+            .expect("bodies")
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            dumped.contains(r#""reasoning_effort":"high""#)
+                || dumped.contains(r#""reasoning_effort": "high""#),
+            "high thinking must send reasoning_effort: {dumped}"
+        );
         h.shutdown.signal_shutdown();
     }
 

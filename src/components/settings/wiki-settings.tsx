@@ -1,5 +1,5 @@
 /**
- * 个人 Wiki 设置页，编辑捕获范围、存储目录、模型绑定、提示词和整理日程。
+ * 个人 Wiki 设置页，编辑捕获范围、存储目录、模型绑定、阶段技能和整理日程。
  * Wiki 专用 API 读写配置；模型和文件夹选项来自通用接口，表单转换只提交可持久化字段。
  */
 "use client"
@@ -85,9 +85,7 @@ function ModelChoice({
       <label className="space-y-1 text-sm">
         <span className="text-muted-foreground">{t("provider")}</span>
         <Select
-          value={
-            slot.provider_id != null ? String(slot.provider_id) : NONE
-          }
+          value={slot.provider_id != null ? String(slot.provider_id) : NONE}
           onValueChange={(value) => {
             if (value === NONE) {
               onChange({ provider_id: null, model_id: null })
@@ -484,8 +482,15 @@ export function WikiSettings() {
                 </SettingRow>
               </SettingCard>
               {slots.map((slot) => (
-                <section key={slot} className="space-y-3">
-                  <h2 className="text-sm font-semibold">
+                <section
+                  key={slot}
+                  aria-labelledby={`wiki-${slot}-heading`}
+                  className="space-y-3"
+                >
+                  <h2
+                    id={`wiki-${slot}-heading`}
+                    className="text-sm font-semibold"
+                  >
                     {t(`stages.${slot}`)}
                   </h2>
                   <ModelChoice
@@ -502,7 +507,8 @@ export function WikiSettings() {
                   <label className="block space-y-2 text-sm">
                     <span>{old(`${sectionKey[slot]}Prompt`)}</span>
                     <Textarea
-                      className="min-h-48 font-mono text-xs"
+                      aria-describedby={`wiki-${slot}-skill-hint`}
+                      className="max-h-96 min-h-48 font-mono text-xs"
                       value={effectiveWikiPrompt(
                         draft[slot].prompt,
                         draft[`${slot}_builtin_prompt`]
@@ -518,6 +524,12 @@ export function WikiSettings() {
                       }
                     />
                   </label>
+                  <p
+                    id={`wiki-${slot}-skill-hint`}
+                    className="text-xs leading-5 text-muted-foreground"
+                  >
+                    {t("skillHint")}
+                  </p>
                   <p className="text-xs leading-5 text-muted-foreground">
                     {t("promptBoundary")}
                   </p>
@@ -534,6 +546,28 @@ export function WikiSettings() {
                   >
                     {old("restoreBuiltinPrompt")}
                   </Button>
+                  {draft[`${slot}_builtin_task`] && (
+                    <details className="rounded-xl border p-3">
+                      <summary className="cursor-pointer text-sm font-medium">
+                        {t("builtinTask")}
+                      </summary>
+                      <div className="mt-3 space-y-2">
+                        <p
+                          id={`wiki-${slot}-task-hint`}
+                          className="text-xs leading-5 text-muted-foreground"
+                        >
+                          {t("builtinTaskHint")}
+                        </p>
+                        <Textarea
+                          aria-label={t("builtinTask")}
+                          aria-describedby={`wiki-${slot}-task-hint`}
+                          className="max-h-96 min-h-48 font-mono text-xs"
+                          readOnly
+                          value={draft[`${slot}_builtin_task`]}
+                        />
+                      </div>
+                    </details>
+                  )}
                 </section>
               ))}
             </div>

@@ -1,3 +1,16 @@
+//! Token store for GitHub accounts and chat-channel secrets.
+//!
+//! Primary storage is `tokens.json` under `CODEG_DATA_DIR` (mode 0600).
+//! macOS Keychain items created by `keyring` are ACL-bound to the current
+//! app signature, so replacing the `.app` (ad-hoc or a new package) prompts
+//! for the login password on every install — including the git credential
+//! helper, which is a second process of the same binary. File storage
+//! survives replacement. Desktop builds still *read* leftover Keychain
+//! items once and copy them into the file so existing tokens keep working.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 #[cfg(feature = "tauri-runtime")]
 const SERVICE_NAME: &str = "codeg";
 
@@ -9,38 +22,21 @@ fn channel_token_key(channel_id: i32) -> String {
     format!("chat-channel:{}", channel_id)
 }
 
-// ── Tauri mode: OS keyring ──
-
-#[cfg(feature = "tauri-runtime")]
-pub fn set_token(account_id: &str, token: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE_NAME, &token_key(account_id))
-        .map_err(|e| format!("keyring init error: {e}"))?;
-    entry
-        .set_password(token)
-        .map_err(|e| format!("keyring set error: {e}"))
+fn default_data_dir() -> PathBuf {
+    // Desktop identifier-derived folder vs server `codeg/`. Production
+    // always pins `CODEG_DATA_DIR` at startup, so this is the no-env
+    // fallback (tests, and a helper invoked without `--data-dir`).
+    let name = if cfg!(feature = "tauri-runtime") {
+        "app.codeg"
+    } else {
+        "codeg"
+    };
+    dirs::data_dir()
+        .map(|d| d.join(name))
+        .unwrap_or_else(|| PathBuf::from(".codeg-data"))
 }
 
-#[cfg(feature = "tauri-runtime")]
-pub fn get_token(account_id: &str) -> Option<String> {
-    let entry = keyring::Entry::new(SERVICE_NAME, &token_key(account_id)).ok()?;
-    entry.get_password().ok()
-}
-
-#[cfg(feature = "tauri-runtime")]
-pub fn delete_token(account_id: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE_NAME, &token_key(account_id))
-        .map_err(|e| format!("keyring init error: {e}"))?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(format!("keyring delete error: {e}")),
-    }
-}
-
-// ── Server mode: file-based token store ──
-
-#[cfg(not(feature = "tauri-runtime"))]
-fn tokens_file_path() -> std::path::PathBuf {
+fn tokens_file_path() -> PathBuf {
     tokens_file_path_for(std::env::var("CODEG_DATA_DIR").ok().as_deref())
 }
 
@@ -51,18 +47,14 @@ fn tokens_file_path() -> std::path::PathBuf {
 /// don't end up looking for `tokens.json` in the user's repo. Factored
 /// out so tests can exercise path resolution without poking at process
 /// env state.
-#[cfg(not(feature = "tauri-runtime"))]
-fn tokens_file_path_for(env_value: Option<&str>) -> std::path::PathBuf {
-    let dir = env_value.map(std::path::PathBuf::from).unwrap_or_else(|| {
-        dirs::data_dir()
-            .map(|d| d.join("codeg"))
-            .unwrap_or_else(|| std::path::PathBuf::from(".codeg-data"))
-    });
+fn tokens_file_path_for(env_value: Option<&str>) -> PathBuf {
+    let dir = env_value
+        .map(PathBuf::from)
+        .unwrap_or_else(default_data_dir);
     crate::git_credential::absolutize(&dir).join("tokens.json")
 }
 
-#[cfg(not(feature = "tauri-runtime"))]
-fn read_tokens() -> std::collections::HashMap<String, String> {
+fn read_tokens() -> HashMap<String, String> {
     read_tokens_at(&tokens_file_path())
 }
 
@@ -73,8 +65,7 @@ fn read_tokens() -> std::collections::HashMap<String, String> {
 /// code path ever handles token bytes from a world-readable file it could have
 /// fixed. Best-effort: if chmod fails the read will usually fail too, and a
 /// read-only mount is not made worse by proceeding.
-#[cfg(not(feature = "tauri-runtime"))]
-fn read_tokens_at(path: &std::path::Path) -> std::collections::HashMap<String, String> {
+fn read_tokens_at(path: &Path) -> HashMap<String, String> {
     #[cfg(unix)]
     if path.exists() {
         use std::os::unix::fs::PermissionsExt;
@@ -93,8 +84,7 @@ fn read_tokens_at(path: &std::path::Path) -> std::collections::HashMap<String, S
         .unwrap_or_default()
 }
 
-#[cfg(not(feature = "tauri-runtime"))]
-fn write_tokens(tokens: &std::collections::HashMap<String, String>) -> Result<(), String> {
+fn write_tokens(tokens: &HashMap<String, String>) -> Result<(), String> {
     write_tokens_at(&tokens_file_path(), tokens)
 }
 
@@ -105,11 +95,7 @@ fn write_tokens(tokens: &std::collections::HashMap<String, String>) -> Result<()
 /// then atomically renamed over the store. The explicit `set_permissions`
 /// after creation pins the bits exactly even under an exotic umask (umask can
 /// only clear bits at open time; chmod is not masked).
-#[cfg(not(feature = "tauri-runtime"))]
-fn write_tokens_at(
-    path: &std::path::Path,
-    tokens: &std::collections::HashMap<String, String>,
-) -> Result<(), String> {
+fn write_tokens_at(path: &Path, tokens: &HashMap<String, String>) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "token store path has no parent directory".to_string())?;
@@ -158,47 +144,16 @@ fn write_tokens_at(
     }
 }
 
-#[cfg(not(feature = "tauri-runtime"))]
-pub fn set_token(account_id: &str, token: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.insert(token_key(account_id), token.to_string());
-    write_tokens(&tokens)
-}
-
-#[cfg(not(feature = "tauri-runtime"))]
-pub fn get_token(account_id: &str) -> Option<String> {
-    read_tokens().get(&token_key(account_id)).cloned()
-}
-
-#[cfg(not(feature = "tauri-runtime"))]
-pub fn delete_token(account_id: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.remove(&token_key(account_id));
-    write_tokens(&tokens)
-}
-
-// ── Chat channel token helpers ──
-// Reuse the same storage mechanism (keyring or file) with a different key prefix.
-
 #[cfg(feature = "tauri-runtime")]
-pub fn set_channel_token(channel_id: i32, token: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE_NAME, &channel_token_key(channel_id))
-        .map_err(|e| format!("keyring init error: {e}"))?;
-    entry
-        .set_password(token)
-        .map_err(|e| format!("keyring set error: {e}"))
-}
-
-#[cfg(feature = "tauri-runtime")]
-pub fn get_channel_token(channel_id: i32) -> Option<String> {
-    let entry = keyring::Entry::new(SERVICE_NAME, &channel_token_key(channel_id)).ok()?;
+fn keyring_get(key: &str) -> Option<String> {
+    let entry = keyring::Entry::new(SERVICE_NAME, key).ok()?;
     entry.get_password().ok()
 }
 
 #[cfg(feature = "tauri-runtime")]
-pub fn delete_channel_token(channel_id: i32) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE_NAME, &channel_token_key(channel_id))
-        .map_err(|e| format!("keyring init error: {e}"))?;
+fn keyring_delete(key: &str) -> Result<(), String> {
+    let entry =
+        keyring::Entry::new(SERVICE_NAME, key).map_err(|e| format!("keyring init error: {e}"))?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
@@ -206,26 +161,76 @@ pub fn delete_channel_token(channel_id: i32) -> Result<(), String> {
     }
 }
 
-#[cfg(not(feature = "tauri-runtime"))]
+fn get_secret(key: &str) -> Option<String> {
+    if let Some(value) = read_tokens().get(key).cloned() {
+        return Some(value);
+    }
+    #[cfg(feature = "tauri-runtime")]
+    {
+        // One-shot migration: copy a pre-file Keychain item into tokens.json
+        // so later reads (and later app replacements) never touch Keychain.
+        if let Some(value) = keyring_get(key) {
+            let mut tokens = read_tokens();
+            tokens.insert(key.to_string(), value.clone());
+            if let Err(err) = write_tokens(&tokens) {
+                tracing::warn!(
+                    "[tokens] migrated keyring entry but failed to persist {key}: {err}"
+                );
+            } else {
+                tracing::info!("[tokens] migrated keyring entry {key} to tokens.json");
+            }
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn set_secret(key: &str, value: &str) -> Result<(), String> {
+    let mut tokens = read_tokens();
+    tokens.insert(key.to_string(), value.to_string());
+    write_tokens(&tokens)
+}
+
+fn delete_secret(key: &str) -> Result<(), String> {
+    let mut tokens = read_tokens();
+    tokens.remove(key);
+    write_tokens(&tokens)?;
+    #[cfg(feature = "tauri-runtime")]
+    {
+        // Best-effort: leftover Keychain items would otherwise be migrated
+        // back onto the next get after a file delete.
+        if let Err(err) = keyring_delete(key) {
+            tracing::warn!("[tokens] failed to delete keyring leftover {key}: {err}");
+        }
+    }
+    Ok(())
+}
+
+pub fn set_token(account_id: &str, token: &str) -> Result<(), String> {
+    set_secret(&token_key(account_id), token)
+}
+
+pub fn get_token(account_id: &str) -> Option<String> {
+    get_secret(&token_key(account_id))
+}
+
+pub fn delete_token(account_id: &str) -> Result<(), String> {
+    delete_secret(&token_key(account_id))
+}
+
 pub fn set_channel_token(channel_id: i32, token: &str) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.insert(channel_token_key(channel_id), token.to_string());
-    write_tokens(&tokens)
+    set_secret(&channel_token_key(channel_id), token)
 }
 
-#[cfg(not(feature = "tauri-runtime"))]
 pub fn get_channel_token(channel_id: i32) -> Option<String> {
-    read_tokens().get(&channel_token_key(channel_id)).cloned()
+    get_secret(&channel_token_key(channel_id))
 }
 
-#[cfg(not(feature = "tauri-runtime"))]
 pub fn delete_channel_token(channel_id: i32) -> Result<(), String> {
-    let mut tokens = read_tokens();
-    tokens.remove(&channel_token_key(channel_id));
-    write_tokens(&tokens)
+    delete_secret(&channel_token_key(channel_id))
 }
 
-#[cfg(all(test, not(feature = "tauri-runtime")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -334,5 +339,18 @@ mod tests {
         let tokens = read_tokens_at(&path);
         assert_eq!(tokens.get("github-token:c").unwrap(), "s3");
         assert_eq!(mode_bits(&path), 0o600);
+    }
+
+    #[test]
+    fn file_store_round_trips_account_and_channel_tokens() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let mut tokens = HashMap::new();
+        tokens.insert(token_key("acct-1"), "ghp_secret".to_string());
+        tokens.insert(channel_token_key(9), "lark-secret".to_string());
+        write_tokens_at(&path, &tokens).expect("write");
+        let loaded = read_tokens_at(&path);
+        assert_eq!(loaded.get(&token_key("acct-1")).unwrap(), "ghp_secret");
+        assert_eq!(loaded.get(&channel_token_key(9)).unwrap(), "lark-secret");
     }
 }

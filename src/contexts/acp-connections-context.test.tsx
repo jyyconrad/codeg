@@ -13,6 +13,7 @@ import {
 } from "@/lib/constants"
 import { parsePermissionToolCall } from "@/lib/permission-request"
 import { subscribe } from "@/lib/platform"
+import { notifyDesktop } from "@/lib/desktop-notification"
 import { saveConfigPreference } from "@/lib/selector-prefs-storage"
 import type { AttachHandlers } from "@/lib/transport/types"
 import type {
@@ -916,6 +917,64 @@ describe("AcpConnectionsProvider workflow runs", () => {
     })
     return latestAttachHandlers()
   }
+
+  it("notifies once when a watched workflow settles and retains late report updates", async () => {
+    const handlers = await connectOwner()
+    h.notifyDesktop.mockClear()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "workflow",
+      delta: {
+        run_id: "wf_1",
+        spawned: true,
+        name: "Research",
+        state: "running",
+      },
+    })
+    for (const seq of [2, 3]) {
+      emitAcpEvent(handlers, {
+        seq,
+        connection_id: "spawned-conn",
+        type: "workflow",
+        delta: {
+          run_id: "wf_1",
+          spawned: false,
+          state: "completed",
+          result_summary: "# Findings\n\n" + "Result ".repeat(seq * 100),
+        },
+      })
+    }
+    expect(h.notifyDesktop).toHaveBeenCalledTimes(1)
+    const [kind, notification] = vi.mocked(notifyDesktop).mock.calls[0]
+    expect(kind).toBe("background_task")
+    expect(notification.body).toContain("Research")
+    expect(notification.body.length).toBeLessThan(300)
+    expect(notification.redactedBody).not.toContain("Findings")
+    const stored = h.store!.getConnection(TAB)?.workflows ?? []
+    expect(stored).toHaveLength(1)
+    expect(stored[0].result_summary).toContain("Result ".repeat(300))
+  })
+
+  it("shows an already finished workflow without a new completion notification", async () => {
+    const handlers = await connectOwner()
+    h.notifyDesktop.mockClear()
+    emitAcpEvent(handlers, {
+      seq: 1,
+      connection_id: "spawned-conn",
+      type: "workflow",
+      delta: {
+        run_id: "wf_1",
+        spawned: true,
+        state: "completed",
+        result_summary: "Report",
+      },
+    })
+    expect(h.store!.getConnection(TAB)?.workflows[0].result_summary).toBe(
+      "Report"
+    )
+    expect(h.notifyDesktop).not.toHaveBeenCalled()
+  })
 
   it("merges adapted workflow deltas and refuses to create from a progress tick", async () => {
     const handlers = await connectOwner()

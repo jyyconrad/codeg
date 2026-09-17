@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use sea_orm::{DatabaseConnection, EntityTrait};
 
+use super::folder_inbound::remember_sent_message;
 use super::i18n::{self, Lang};
 use super::manager::ChatChannelManager;
 use super::types::{ChannelMessageTarget, RichMessage};
@@ -73,7 +74,10 @@ pub async fn publish_run_terminal_message(
     let mut sent = 0usize;
     for target in targets {
         match manager.send_to_target(&target, message).await {
-            Ok(_) => sent += 1,
+            Ok(id) => {
+                remember_sent_message(db, &target, &id.0, conversation_id).await;
+                sent += 1;
+            }
             Err(e) => {
                 tracing::warn!(
                     conversation_id,
@@ -111,6 +115,13 @@ fn target_from_binding(binding: &chat_channel_thread_binding::Model) -> ChannelM
             .provider_payload_json
             .as_deref()
             .and_then(|json| serde_json::from_str(json).ok()),
+    }
+}
+
+fn target_from_folder_binding(channel_id: i32, chat_id: Option<&str>) -> ChannelMessageTarget {
+    match nonempty_trimmed(chat_id) {
+        Some(chat_id) => ChannelMessageTarget::with_chat_id(channel_id, chat_id),
+        None => ChannelMessageTarget::channel(channel_id),
     }
 }
 
@@ -160,12 +171,15 @@ async fn collect_terminal_targets(
         .one(db)
         .await
     {
-        Ok(Some(conv)) => match folder_chat_channel_service::list_channel_ids(db, conv.folder_id)
-            .await
-        {
-            Ok(channel_ids) => {
-                let bindings =
-                    match thread_binding_service::list_by_conversation(db, conversation_id).await {
+        Ok(Some(conv)) => {
+            match folder_chat_channel_service::list_bindings(db, conv.folder_id).await {
+                Ok(folder_bindings) => {
+                    let bindings = match thread_binding_service::list_by_conversation(
+                        db,
+                        conversation_id,
+                    )
+                    .await
+                    {
                         Ok(bindings) => bindings,
                         Err(e) => {
                             tracing::warn!(
@@ -176,27 +190,34 @@ async fn collect_terminal_targets(
                             Vec::new()
                         }
                     };
-                for channel_id in channel_ids {
-                    if let Some(binding) = bindings.iter().find(|b| b.channel_id == channel_id) {
-                        push_unique(&mut targets, &mut seen, target_from_binding(binding));
-                    } else {
-                        push_unique(
-                            &mut targets,
-                            &mut seen,
-                            ChannelMessageTarget::channel(channel_id),
-                        );
+                    for folder_binding in folder_bindings {
+                        if let Some(binding) = bindings
+                            .iter()
+                            .find(|b| b.channel_id == folder_binding.channel_id)
+                        {
+                            push_unique(&mut targets, &mut seen, target_from_binding(binding));
+                        } else {
+                            push_unique(
+                                &mut targets,
+                                &mut seen,
+                                target_from_folder_binding(
+                                    folder_binding.channel_id,
+                                    folder_binding.chat_id.as_deref(),
+                                ),
+                            );
+                        }
                     }
                 }
+                Err(e) => {
+                    tracing::warn!(
+                        conversation_id,
+                        folder_id = conv.folder_id,
+                        error = %e,
+                        "[ChatChannel] failed to list folder channels for terminal fan-out"
+                    );
+                }
             }
-            Err(e) => {
-                tracing::warn!(
-                    conversation_id,
-                    folder_id = conv.folder_id,
-                    error = %e,
-                    "[ChatChannel] failed to list folder channels for terminal fan-out"
-                );
-            }
-        },
+        }
         Ok(None) => {
             tracing::warn!(
                 conversation_id,
@@ -301,5 +322,19 @@ mod tests {
         push_unique(&mut targets, &mut seen, ChannelMessageTarget::channel(1));
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].chat_id.as_deref(), Some("-100123"));
+    }
+
+    #[test]
+    fn folder_binding_uses_chat_id_override_or_channel_default() {
+        let override_target = target_from_folder_binding(7, Some("-100999"));
+        assert_eq!(override_target.channel_id, 7);
+        assert_eq!(override_target.chat_id.as_deref(), Some("-100999"));
+
+        let default_target = target_from_folder_binding(7, Some("  "));
+        assert_eq!(default_target, ChannelMessageTarget::channel(7));
+        assert_eq!(
+            target_from_folder_binding(7, None),
+            ChannelMessageTarget::channel(7)
+        );
     }
 }

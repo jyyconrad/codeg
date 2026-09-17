@@ -10,8 +10,9 @@ use crate::db::error::DbError;
 use crate::db::service::wiki_service::{InsertedSource, NewAcpSource};
 use crate::db::service::{conversation_service, folder_service, wiki_service};
 use crate::wiki::filter::{self, FilterContext};
+use crate::wiki::locator::{self, SourceLocator};
 use crate::wiki::paths::{resolve_state_root, resolve_vault_path};
-use crate::wiki::raw::{self, RawSessionMeta, RawWriteOutcome};
+use crate::wiki::raw::{self, RawSessionMeta};
 use crate::wiki::redact;
 use crate::wiki::settings;
 use crate::wiki::snapshot::WikiTurnSnapshot;
@@ -41,6 +42,7 @@ pub async fn persist_acp_turn(
         git_branch,
         model: conv_model,
         title: conv_title,
+        external_id,
     } = enrich_from_db(conn, &snap).await?;
 
     let ctx = FilterContext {
@@ -111,7 +113,7 @@ pub async fn persist_acp_turn(
     let needs_raw = inserted.created
         || inserted
             .source
-            .raw_path
+            .raw_hash
             .as_deref()
             .map(str::trim)
             .unwrap_or("")
@@ -140,7 +142,17 @@ pub async fn persist_acp_turn(
         root_folder_id,
         model_fallback,
     };
-    if let Err(e) = freeze_raw_and_log(conn, &vault_path, &snap, &inserted, meta).await {
+    if let Err(e) = freeze_raw_and_log(
+        conn,
+        &state_root,
+        &snap,
+        &inserted,
+        meta,
+        conv_title.as_deref(),
+        external_id.as_deref(),
+    )
+    .await
+    {
         let msg = e.to_string();
         if let Some(job) = inserted.job.as_ref() {
             let _ = wiki_service::mark_job(conn, &job.id, "failed", Some("raw_write"), Some(&msg))
@@ -164,35 +176,40 @@ pub async fn persist_acp_turn(
 
 async fn freeze_raw_and_log(
     conn: &DatabaseConnection,
-    vault_path: &std::path::Path,
+    state_root: &std::path::Path,
     snap: &WikiTurnSnapshot,
     inserted: &InsertedSource,
     meta: RawSessionMeta<'_>,
+    title: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<(), DbError> {
     let (doc, hash) = raw::render_session_raw(snap, &meta);
-    let path = raw::raw_session_path(vault_path, &inserted.source.id);
-    match raw::write_raw_exclusive(&path, &doc, &hash).map_err(DbError::from)? {
-        RawWriteOutcome::Created { .. } | RawWriteOutcome::Identical { .. } => {}
-        RawWriteOutcome::Conflict {
-            existing_hash,
-            new_hash,
-            ..
-        } => {
-            return Err(DbError::Conflict(format!(
-                "raw path exists with hash {existing_hash}, new hash {new_hash}"
-            )));
-        }
-    }
-    let rel = format!("raw/sessions/{}.md", inserted.source.id);
-    wiki_service::mark_source_raw(conn, &inserted.source.id, &rel, &hash, "ready").await?;
+    locator::write_locator(
+        state_root,
+        &SourceLocator {
+            source_id: inserted.source.id.clone(),
+            kind: "acp-turn".into(),
+            conversation_id: snap.conversation_id,
+            run_id: Some(snap.run_id.clone()),
+            agent_type: Some(snap.agent_type.clone()),
+            session_id: session_id.map(str::to_string),
+            original_path: None,
+            title: title
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        },
+    )
+    .map_err(DbError::from)?;
+    wiki_service::mark_source_raw(conn, &inserted.source.id, "", &hash, "ready").await?;
     if let Some(job) = inserted.job.as_ref() {
         let key = crate::wiki::turn_summary::dedupe_key(&inserted.source.id, &hash);
         let manifest = serde_json::json!({
             "source_id": inserted.source.id,
             "raw_hash": hash,
-            "raw_path": rel,
             "conversation_id": snap.conversation_id,
             "rel": crate::wiki::turn_summary::page_rel(&inserted.source.id),
+            "material_markdown": doc,
         })
         .to_string();
         wiki_service::set_job_dedupe_and_manifest(conn, &job.id, &key, &manifest).await?;
@@ -211,6 +228,7 @@ struct CaptureContext {
     git_branch: Option<String>,
     model: Option<String>,
     title: Option<String>,
+    external_id: Option<String>,
 }
 
 async fn enrich_from_db(
@@ -241,6 +259,7 @@ async fn enrich_from_db(
         git_branch: conv.git_branch,
         model: conv.model,
         title: conv.title,
+        external_id: conv.external_id,
     })
 }
 
@@ -536,6 +555,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persist_indexes_turn_without_copying_session_into_vault() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/wiki-index").await;
+        let cid = seed_conversation(&db, folder, AgentType::ClaudeCode).await;
+        let dir = tempdir().unwrap();
+        let home = dir.path().to_string_lossy().to_string();
+        temp_env::async_with_vars(
+            [
+                ("CODEG_HOME", Some(home.as_str())),
+                ("CODEG_DATA_DIR", None::<&str>),
+            ],
+            async {
+                enable_wiki(&db.conn, dir.path()).await;
+                let out = persist_acp_turn(&db.conn, snap_for("run-idx", cid, folder))
+                    .await
+                    .unwrap();
+                assert!(out.created);
+                let src = wiki_service::get_source(&db.conn, &out.source_id)
+                    .await
+                    .unwrap();
+                assert!(src.raw_path.is_none() || src.raw_path.as_deref() == Some(""));
+                assert!(src.raw_hash.is_some());
+                assert!(!dir
+                    .path()
+                    .join("raw/sessions")
+                    .join(format!("{}.md", src.id))
+                    .exists());
+                let locator = dir
+                    .path()
+                    .join("wiki-state/sources")
+                    .join(format!("{}.json", src.id));
+                let text = std::fs::read_to_string(&locator).unwrap();
+                assert!(text.contains(&src.id));
+                assert!(text.contains("acp-turn"));
+                assert!(!text.contains("please fix the bug"));
+                assert!(!text.contains("patched src/lib.rs"));
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn persist_redacts_secrets_in_raw_file() {
         let db = fresh_in_memory_db().await;
         let folder = seed_folder(&db, "/tmp/wiki-redact").await;
@@ -551,8 +612,11 @@ mod tests {
             .await
             .unwrap();
         assert!(src.redacted);
-        let path = dir.path().join(src.raw_path.as_ref().unwrap());
-        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(src.raw_path.is_none());
+        let job = wiki_service::get_job_model(&db.conn, &out.job_id)
+            .await
+            .unwrap();
+        let raw = job.input_manifest.unwrap_or_default();
         assert!(!raw.contains("sk-live-999"));
         assert!(!raw.contains("tok_abc"));
         assert!(!raw.contains("u:p@"));

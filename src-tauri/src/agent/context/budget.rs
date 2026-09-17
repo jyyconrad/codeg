@@ -123,18 +123,30 @@ pub fn estimate_request(
         .saturating_add(MESSAGE_WRAP)
 }
 
-/// Truncate a tool presentation to 32KiB and the remaining input budget.
+/// Truncate a tool presentation to 32KiB at a line/char boundary.
+///
+/// Overall request budget is [`project_view`]'s job. Shrinking a single page
+/// to the leftover input bytes ate continuation hints (`pass offset=N`) and
+/// told the model the rest of the file was gone.
 pub fn truncate_presentation(raw: &str, remaining_input_bytes: u64) -> (String, bool) {
-    let cap = MAX_TOOL_PRESENTATION_BYTES.min(remaining_input_bytes as usize);
+    let _ = remaining_input_bytes;
+    let cap = MAX_TOOL_PRESENTATION_BYTES;
     if raw.len() <= cap {
         return (raw.to_string(), false);
     }
-    let keep = cap.saturating_sub(80);
-    let omitted = raw.len().saturating_sub(keep);
+    let keep = cap.saturating_sub(160);
+    let mut end = keep.min(raw.len());
+    while end > 0 && !raw.is_char_boundary(end) {
+        end -= 1;
+    }
+    if let Some(i) = raw[..end].rfind('\n') {
+        end = i;
+    }
+    let omitted = raw.len().saturating_sub(end);
     (
         format!(
-            "{}\n[truncated: {omitted} bytes omitted; remaining output unavailable]",
-            &raw[..keep]
+            "{}\n[truncated: {omitted} bytes omitted; recall this tool_call_id or re-read with a higher offset to continue]",
+            &raw[..end]
         ),
         true,
     )
@@ -249,7 +261,39 @@ mod tests {
         let (shown, truncated) = truncate_presentation(&raw, 50_000);
         assert!(truncated);
         assert!(shown.len() < 40_000);
-        assert!(shown.contains("remaining output unavailable"));
+        assert!(
+            shown.contains("recall") || shown.contains("pass offset="),
+            "truncation must tell the model how to get the rest: {shown}"
+        );
+        assert!(
+            !shown.contains("remaining output unavailable"),
+            "must not claim the rest of the output is gone: {shown}"
+        );
+    }
+
+    #[test]
+    fn a_read_page_under_32kib_is_not_eaten_by_a_tight_remaining_budget() {
+        let mut raw = String::from("# f.rs (lines 1-400)\n");
+        raw.push_str(&"line-body\n".repeat(400));
+        raw.push_str("[truncated: showing 400 lines; pass offset=401 to continue from this path]");
+        assert!(raw.len() < MAX_TOOL_PRESENTATION_BYTES);
+        let (shown, truncated) = truncate_presentation(&raw, 1024);
+        assert!(
+            !truncated,
+            "32KiB page must survive a tight remaining budget"
+        );
+        assert_eq!(shown, raw);
+        assert!(shown.contains("pass offset=401"), "{shown}");
+        assert!(!shown.contains("remaining output unavailable"), "{shown}");
+    }
+
+    #[test]
+    fn truncate_presentation_stays_on_a_char_boundary() {
+        let raw = format!("a{}", "你".repeat(20_000));
+        let (shown, truncated) = truncate_presentation(&raw, 1024);
+        assert!(truncated);
+        assert!(shown.is_char_boundary(shown.len()), "len {}", shown.len());
+        assert!(!shown.contains("remaining output unavailable"), "{shown}");
     }
 
     #[tokio::test]

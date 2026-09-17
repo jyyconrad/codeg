@@ -335,6 +335,12 @@ impl ChatChannelBackend for TelegramBackend {
                                                     callback_data: None,
                                                     target,
                                                     metadata: update.clone(),
+                                                    quoted_message_id: message
+                                                        .pointer("/reply_to_message/message_id")
+                                                        .and_then(json_scalar_to_string),
+                                                    provider_message_id: message
+                                                        .get("message_id")
+                                                        .and_then(json_scalar_to_string),
                                                 })
                                                 .await;
                                             if let Err(e) = send_result {
@@ -396,6 +402,10 @@ impl ChatChannelBackend for TelegramBackend {
                                                 callback_data: Some(data.to_string()),
                                                 target,
                                                 metadata: update.clone(),
+                                                quoted_message_id: None,
+                                                provider_message_id: message
+                                                    .get("message_id")
+                                                    .and_then(json_scalar_to_string),
                                             })
                                             .await;
                                         if let Err(e) = send_result {

@@ -137,6 +137,7 @@ import type {
   DirectoryItem,
   UploadAttachmentResult,
   FilePreviewContent,
+  SpreadsheetPreviewPage,
   FileEditContent,
   FileSaveResult,
   WorkspaceSnapshotResponse,
@@ -166,6 +167,7 @@ import type {
   McpMarketplaceItem,
   McpMarketplaceServerDetail,
   ChatChannelInfo,
+  FolderChatChannelBinding,
   ChannelStatusInfo,
   ChatChannelMessageLog,
   WebhookConfig,
@@ -752,6 +754,19 @@ export async function acpFetchKimiModels(params: {
   return getTransport().call("acp_fetch_kimi_models", {
     baseUrl: params.baseUrl,
     apiKey: params.apiKey,
+  })
+}
+
+/** Completions-first protocol probe used when binding a Codeg Agent channel. */
+export async function acpProbeCodegProtocol(params: {
+  baseUrl: string
+  apiKey: string
+  modelId: string
+}): Promise<"chat_completions" | "responses"> {
+  return getTransport().call("acp_probe_codeg_protocol", {
+    baseUrl: params.baseUrl,
+    apiKey: params.apiKey,
+    modelId: params.modelId,
   })
 }
 
@@ -4485,6 +4500,24 @@ export async function readFilePreview(
   return getTransport().call("read_file_preview", { rootPath, path })
 }
 
+/** True when `path` is a regular file on the workspace host. Missing paths
+ *  return false rather than throwing. */
+export async function pathExists(path: string): Promise<boolean> {
+  return getTransport().call("path_exists", { path })
+}
+
+export async function readSpreadsheetPreview(params: {
+  rootPath: string
+  path: string
+  sheet?: string | null
+  rowOffset: number
+  rowLimit: number
+  colOffset: number
+  colLimit: number
+}): Promise<SpreadsheetPreviewPage> {
+  return getTransport().call("read_spreadsheet_preview", params)
+}
+
 export async function readFileForEdit(
   rootPath: string,
   path: string
@@ -4754,17 +4787,17 @@ export async function listChatChannels(): Promise<ChatChannelInfo[]> {
 
 export async function listFolderChatChannels(
   folderId: number
-): Promise<number[]> {
+): Promise<FolderChatChannelBinding[]> {
   return getTransport().call("list_folder_chat_channels", { folderId })
 }
 
 export async function setFolderChatChannels(
   folderId: number,
-  channelIds: number[]
-): Promise<number[]> {
+  channels: FolderChatChannelBinding[]
+): Promise<FolderChatChannelBinding[]> {
   return getTransport().call("set_folder_chat_channels", {
     folderId,
-    channelIds,
+    channels,
   })
 }
 
@@ -4889,6 +4922,18 @@ export async function getChatMessageLanguage(): Promise<string> {
 
 export async function setChatMessageLanguage(language: string): Promise<void> {
   return getTransport().call("set_chat_message_language", { language })
+}
+
+export async function getChatFolderInboundIdleMinutes(): Promise<number> {
+  return getTransport().call("get_chat_folder_inbound_idle_minutes")
+}
+
+export async function setChatFolderInboundIdleMinutes(
+  minutes: number
+): Promise<void> {
+  return getTransport().call("set_chat_folder_inbound_idle_minutes", {
+    minutes,
+  })
 }
 
 // ─── WeChat QR Code Auth ───

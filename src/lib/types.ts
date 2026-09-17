@@ -3114,6 +3114,10 @@ export interface WorkflowAgent {
 export interface WorkflowRun {
   run_id: string
   name: string
+  /** Final workflow report, kept separately from progress labels. */
+  result_summary?: string | null
+  /** Provider revision when available; absent on AIR workflows. */
+  revision?: number | null
   objective?: string | null
   state: string
   phases: WorkflowPhase[]
@@ -3133,6 +3137,8 @@ export interface WorkflowRun {
 export interface WorkflowDelta {
   run_id: string
   spawned: boolean
+  result_summary?: string | null
+  revision?: number | null
   name?: string | null
   objective?: string | null
   state?: string | null
@@ -4287,6 +4293,27 @@ export interface FilePreviewContent {
   content: string
 }
 
+export interface SpreadsheetSheetInfo {
+  name: string
+  rowCount: number
+  columnCount: number
+}
+
+export interface SpreadsheetPreviewPage {
+  path: string
+  sheets: SpreadsheetSheetInfo[]
+  sheet: string
+  header: string[]
+  rowOffset: number
+  rowLimit: number
+  colOffset: number
+  colLimit: number
+  totalRows: number
+  totalColumns: number
+  rows: string[][]
+  eof: boolean
+}
+
 export interface FileEditContent {
   path: string
   content: string
@@ -4552,6 +4579,11 @@ export type ChannelConnectionStatus =
   | "connecting"
   | "disconnected"
   | "error"
+
+export interface FolderChatChannelBinding {
+  channel_id: number
+  chat_id: string | null
+}
 
 export interface ChatChannelInfo {
   id: number

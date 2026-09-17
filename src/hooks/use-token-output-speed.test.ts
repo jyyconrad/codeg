@@ -152,9 +152,7 @@ describe("useTokenOutputSpeed", () => {
     expect(result.current).toBeCloseTo(200)
   })
 
-  it("decays through a silent gap instead of freezing the reading", () => {
-    // No new content at all — a quiet long-running tool, a retry backoff, or a
-    // permission prompt blocking the turn. The reading has to fall.
+  it("holds the last generation rate through a silent gap", () => {
     const { result, rerender } = mount(
       msg([{ type: "text", text: "a".repeat(80) }])
     )
@@ -164,7 +162,7 @@ describe("useTokenOutputSpeed", () => {
     expect(result.current).toBeCloseTo(100)
 
     for (let i = 0; i < 20; i++) tick()
-    expect(result.current as number).toBeLessThan(5)
+    expect(result.current).toBeCloseTo(100)
   })
 
   it("repaints on its own cadence, not on every delta", () => {

@@ -149,9 +149,18 @@ pub fn attach_subagent_extra_context(patch: RequestPatch, tool_schemas: &[Value]
     }
 }
 
-pub fn subagent_preamble(parent: &str, thoroughness: &str, skill_body: Option<&str>) -> String {
+pub fn subagent_preamble(
+    parent: &str,
+    thoroughness: &str,
+    skill_body: Option<&str>,
+    tree: Option<&str>,
+) -> String {
     let parent = truncate_to_bytes(parent, SUBAGENT_PARENT_PREAMBLE_MAX);
     let mut text = format!("{EXPLORE_PREAMBLE_INTRO}\nThoroughness: {thoroughness}.\n\n{parent}");
+    if let Some(tree) = tree.map(str::trim).filter(|s| !s.is_empty()) {
+        text.push_str("\n\n");
+        text.push_str(tree);
+    }
     if let Some(body) = skill_body.map(str::trim).filter(|s| !s.is_empty()) {
         text.push_str("\n\n# Preloaded explore skill\n\n");
         text.push_str(body);
@@ -185,6 +194,7 @@ pub struct SubagentTool {
     artifacts_dir: PathBuf,
     owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
     lsp_pool: Option<Arc<LspPool>>,
+    workspace_tree: Option<String>,
 }
 
 impl SubagentTool {
@@ -211,7 +221,13 @@ impl SubagentTool {
             artifacts_dir,
             owners: None,
             lsp_pool: None,
+            workspace_tree: None,
         }
+    }
+
+    pub fn with_workspace_tree(mut self, tree: Option<String>) -> Self {
+        self.workspace_tree = tree;
+        self
     }
 
     pub fn with_owners(mut self, owners: Arc<Mutex<ProcessOwnerRegistry>>) -> Self {
@@ -364,6 +380,7 @@ impl Tool for SubagentTool {
             thoroughness,
             owners: self.owners.clone(),
             lsp_pool: self.lsp_pool.clone(),
+            workspace_tree: self.workspace_tree.clone(),
         };
         let handle = tokio::spawn(run_inner_and_inject(spawn));
         self.table
@@ -396,6 +413,7 @@ struct InnerSpawn {
     thoroughness: String,
     owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
     lsp_pool: Option<Arc<LspPool>>,
+    workspace_tree: Option<String>,
 }
 
 async fn run_inner_and_inject(spawn: InnerSpawn) {
@@ -419,6 +437,7 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
         thoroughness,
         owners,
         lsp_pool,
+        workspace_tree,
     } = spawn;
 
     let (outcome, text) = tokio::select! {
@@ -439,6 +458,7 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
             thoroughness,
             owners,
             lsp_pool,
+            workspace_tree,
         ) => result,
     };
 
@@ -557,6 +577,7 @@ async fn run_inner_subagent(
     thoroughness: String,
     owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
     lsp_pool: Option<Arc<LspPool>>,
+    workspace_tree: Option<String>,
 ) -> (NativeTurnOutcome, String) {
     let identity = Arc::new(CallIdentityBridge::new());
     let store = Arc::new(Mutex::new(ContextStore::new(format!("sub:{session_id}"))));
@@ -570,6 +591,7 @@ async fn run_inner_subagent(
         fs,
         session_id,
         spill_dir: PathBuf::new(),
+        loaded_skills: crate::agent::tools::LoadedSkills::shared_with(["using-plan-explore"]),
     };
     let intel = load_code_intel_config();
     let resolved = resolve_codegraph_binary(&intel.codegraph);
@@ -582,7 +604,12 @@ async fn run_inner_subagent(
     let skill = SkillTool::new(inner_ctx.clone(), catalog.clone());
     let write_explore = WriteExploreReportTool::new(inner_ctx, artifacts_dir);
     let skill_body = catalog.skill_body("explore");
-    let preamble = subagent_preamble(&parent_preamble, &thoroughness, skill_body.as_deref());
+    let preamble = subagent_preamble(
+        &parent_preamble,
+        &thoroughness,
+        skill_body.as_deref(),
+        workspace_tree.as_deref(),
+    );
     let tool_schemas = inner_tool_schemas(
         &read,
         &recall,
@@ -849,10 +876,22 @@ mod tests {
     #[test]
     fn parent_preamble_is_truncated_to_2kib() {
         let parent = "x".repeat(4096);
-        let text = subagent_preamble(&parent, "medium", None);
+        let text = subagent_preamble(&parent, "medium", None, None);
         assert!(text.starts_with(EXPLORE_PREAMBLE_INTRO));
         assert!(text.contains("Thoroughness: medium"));
         assert!(text.len() <= EXPLORE_PREAMBLE_INTRO.len() + 64 + SUBAGENT_PARENT_PREAMBLE_MAX);
+    }
+
+    #[test]
+    fn subagent_preamble_appends_workspace_tree() {
+        let text = subagent_preamble(
+            "parent",
+            "quick",
+            None,
+            Some("Workspace tree (max 3 levels injected; deeper paths omitted):\n```\n.\n└── src/\n```"),
+        );
+        assert!(text.contains("max 3 levels injected"), "{text}");
+        assert!(text.contains("src/"), "{text}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -9,6 +9,9 @@ pub struct Model {
     pub id: i32,
     pub folder_id: i32,
     pub channel_id: i32,
+    /// Optional destination chat/session id for this folder on this channel.
+    /// `None` (or blank) uses the channel's configured default.
+    pub chat_id: Option<String>,
     pub created_at: DateTimeUtc,
 }
 

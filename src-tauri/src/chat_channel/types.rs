@@ -57,6 +57,28 @@ pub struct IncomingCommand {
     pub callback_data: Option<String>,
     pub target: ChannelMessageTarget,
     pub metadata: serde_json::Value,
+    pub quoted_message_id: Option<String>,
+    pub provider_message_id: Option<String>,
+}
+
+impl IncomingCommand {
+    pub fn plain(
+        channel_id: i32,
+        sender_id: impl Into<String>,
+        text: impl Into<String>,
+        target: ChannelMessageTarget,
+    ) -> Self {
+        Self {
+            channel_id,
+            sender_id: sender_id.into(),
+            command_text: text.into(),
+            callback_data: None,
+            target,
+            metadata: serde_json::Value::Null,
+            quoted_message_id: None,
+            provider_message_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,6 +95,16 @@ impl ChannelMessageTarget {
         Self {
             channel_id,
             chat_id: None,
+            thread_key: None,
+            thread_kind: None,
+            provider_payload: None,
+        }
+    }
+
+    pub fn with_chat_id(channel_id: i32, chat_id: impl Into<String>) -> Self {
+        Self {
+            channel_id,
+            chat_id: Some(chat_id.into()),
             thread_key: None,
             thread_kind: None,
             provider_payload: None,

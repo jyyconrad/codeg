@@ -105,7 +105,9 @@ impl Tool for GrepTool {
 
     fn description(&self) -> String {
         "Search file contents with a regex. Each opened file is gated by the same \
-         canonical read check as read_file (symlink targets included)."
+         canonical read check as read_file (symlink targets included). Truncated \
+         to 100 matches by default; if truncated, raise max_results or refine the \
+         path/pattern."
             .to_string()
     }
 
@@ -116,7 +118,7 @@ impl Tool for GrepTool {
                 "pattern": { "type": "string", "description": "Rust regex" },
                 "path": { "type": "string", "description": "File or directory to search" },
                 "glob": { "type": "string", "description": "Optional filename glob filter" },
-                "max_results": { "type": "integer", "description": "Maximum matches (default 100)" }
+                "max_results": { "type": "integer", "description": "Maximum matches (default 100). If truncated, double this value for more." }
             },
             "required": ["pattern"]
         })
@@ -431,7 +433,10 @@ fn format_grep_results(hits: Vec<GrepHit>, max: usize) -> Result<String, ToolExe
     }
     let truncated = hits.len() >= max;
     let mut out = if truncated {
-        format!("# showing {max} matches (more omitted)\n")
+        format!(
+            "# showing {max} matches ({max} matches limit reached. Use max_results={} for more, or refine path/pattern)\n",
+            max.saturating_mul(2).min(GREP_MAX_RESULTS)
+        )
     } else {
         format!("# {} matches\n", hits.len())
     };
@@ -558,5 +563,61 @@ mod tests {
             !grep.contains("TOP SECRET") && !grep.contains("escape.txt"),
             "grep must not follow the symlink: {grep}"
         );
+    }
+
+    #[tokio::test]
+    async fn grep_raises_max_results_to_see_more() {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut body = String::new();
+        for i in 1..=20 {
+            body.push_str(&format!("hit-{i:02} needle\n"));
+        }
+        fs::write(dir.path().join("hits.txt"), body).unwrap();
+
+        let ctx = test_tool_ctx(dir.path(), "grep", "call_g1");
+        let mut tctx = ToolContext::new();
+        let first = GrepTool::new(ctx.clone())
+            .call(
+                &mut tctx,
+                GrepArgs {
+                    pattern: "needle".into(),
+                    path: None,
+                    glob: None,
+                    max_results: Some(6),
+                },
+            )
+            .await
+            .expect("capped");
+        assert!(first.contains("hit-01"), "{first}");
+        assert!(first.contains("hit-06"), "{first}");
+        assert!(!first.contains("hit-07"), "{first}");
+        assert!(
+            first.contains("max_results=12"),
+            "Pi-style: raise limit, do not page with offset: {first}"
+        );
+        assert!(!first.contains("pass offset="), "{first}");
+
+        ctx.identity.set(CallIdentity {
+            turn_id: 1,
+            turn_key: "s:1".into(),
+            tool_call_id: "call_g2".into(),
+            function_name: "grep".into(),
+        });
+        let second = GrepTool::new(ctx)
+            .call(
+                &mut tctx,
+                GrepArgs {
+                    pattern: "needle".into(),
+                    path: None,
+                    glob: None,
+                    max_results: Some(12),
+                },
+            )
+            .await
+            .expect("raised limit");
+        assert!(second.contains("hit-01"), "{second}");
+        assert!(second.contains("hit-12"), "{second}");
+        assert!(!second.contains("hit-13"), "{second}");
+        assert!(second.contains("max_results=24"), "{second}");
     }
 }

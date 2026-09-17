@@ -27,13 +27,13 @@ If the user asks you to implement while still in plan mode, update the plan inst
 update_plan is not available in plan mode.\
 ";
 
-pub const EXPLORE_PREAMBLE_INTRO: &str = "\
-You are a read-only explore agent. Search and analyze the codebase; you cannot edit repository source or run bash.\n\
-1. Investigate using read_file, glob, grep, recall, and skill.\n\
-2. Write the full report with write_explore_report (evidence, paths, open questions belong in that file).\n\
-3. Your last message must be an execution summary for the parent agent: what you searched, the main findings in one or two sentences, which sections the report contains, and what you did not check. Do not paste the report body.\n\
-4. After the summary, stop. Do not call more tools.\
-";
+pub const EXPLORE_PREAMBLE_INTRO: &str = concat!(
+    "You are a read-only explore agent. Search and analyze the codebase; you cannot edit repository source or run bash.\n",
+    "1. Investigate using read_file, glob, grep, recall, and skill. Prefer glob and grep before reading.\n",
+    "2. Write the full report with write_explore_report (evidence, paths, and open questions belong in that file). Use absolute paths.\n",
+    "3. Your last message must be an execution summary for the parent agent: what you searched, the main findings in one or two sentences, which sections the report contains, and what you did not check. Do not paste the report body.\n",
+    "4. After the summary, stop. Do not call more tools."
+);
 
 pub fn parse_mode(id: &str) -> Option<&'static str> {
     match id.trim() {
@@ -72,6 +72,11 @@ pub fn artifacts_dir(cwd: &str, session_id: &str) -> PathBuf {
         .join("artifacts")
         .join(encode_session_cwd(cwd))
         .join(session_id)
+}
+
+/// Compact agent write root: `<artifacts_dir>/context`.
+pub fn compact_context_dir(artifacts_dir: &Path) -> PathBuf {
+    artifacts_dir.join("context")
 }
 
 pub fn plan_path(dir: &Path) -> PathBuf {
@@ -221,5 +226,22 @@ mod tests {
         assert!(text.contains("Session mode: plan"));
         let code = with_mode_attachment("base", MODE_CODE);
         assert_eq!(code, "base");
+    }
+
+    #[test]
+    fn compact_context_dir_is_under_global_session_artifacts() {
+        let artifacts = artifacts_dir("/tmp/ws", "sess-1");
+        let context = compact_context_dir(&artifacts);
+        assert!(
+            context.starts_with(&artifacts),
+            "{} should stay under {}",
+            context.display(),
+            artifacts.display()
+        );
+        assert_eq!(
+            context.file_name().and_then(|s| s.to_str()),
+            Some("context")
+        );
+        assert!(!context.ends_with("plan.md"));
     }
 }

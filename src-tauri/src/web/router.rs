@@ -492,6 +492,11 @@ pub fn build_router(
             "/read_file_preview",
             post(handlers::files::read_file_preview),
         )
+        .route("/path_exists", post(handlers::files::path_exists))
+        .route(
+            "/read_spreadsheet_preview",
+            post(handlers::files::read_spreadsheet_preview),
+        )
         .route("/read_file_base64", post(handlers::files::read_file_base64))
         .route(
             "/read_workspace_file_base64",
@@ -846,6 +851,10 @@ pub fn build_router(
         .route(
             "/acp_fetch_kimi_models",
             post(handlers::acp::acp_fetch_kimi_models),
+        )
+        .route(
+            "/acp_probe_codeg_protocol",
+            post(handlers::acp::acp_probe_codeg_protocol),
         )
         .route(
             "/acp_update_pi_config",
@@ -1302,6 +1311,14 @@ pub fn build_router(
         .route(
             "/set_chat_message_language",
             post(handlers::chat_channel::set_chat_message_language),
+        )
+        .route(
+            "/get_chat_folder_inbound_idle_minutes",
+            post(handlers::chat_channel::get_chat_folder_inbound_idle_minutes),
+        )
+        .route(
+            "/set_chat_folder_inbound_idle_minutes",
+            post(handlers::chat_channel::set_chat_folder_inbound_idle_minutes),
         )
         .route(
             "/weixin_get_qrcode",

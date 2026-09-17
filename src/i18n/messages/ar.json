@@ -1621,7 +1621,8 @@
       "noSandbox": "لا توجد بيئة عزل على مستوى نظام التشغيل. تُنفَّذ كتابة الملفات وbash فقط بعد إذن لكل استدعاء. سياسة نظام الملفات لمساحة العمل ليست عزلًا للقشرة.",
       "recovery": "لا تعيد الاستعادة بعد الانهيار تشغيل الأدوات تلقائيًا. الاستدعاءات التي بدأت دون نهاية مؤكدة تُستأنف كـ unknown.",
       "contextWindowsHint": "ربط قناة نموذج يكتب CODEG_AGENT_CONTEXT_WINDOWS قابلاً للتحرير (128000 ما لم يكن للمزوّد نافذة). نموذج بلا نافذة لا يبدأ.",
-      "protocol": "الإصدار الأول يستخدم OpenAI Chat Completions فقط ولا يستخدم Responses API.",
+      "protocol": "Chat Completions or Responses is locked when you bind a provider. Sessions use that protocol.",
+      "protocolDetectFailed": "Could not detect request protocol: {message}",
       "modelSelectorHint": "يعرض منتقي نموذج الجلسة فقط المعرّفات الموجودة في CODEG_AGENT_CONTEXT_WINDOWS. تُرفض المعرّفات المجهولة.",
       "usageLastRequest": "حلقة السياق تعرض إشغال آخر طلب للنموذج من النافذة المضبوطة، وليس مجموع رموز التشغيل. إذا أغفل البوابة استخدام الإدخال تُقدَّر القيمة.",
       "envWindowsHint": "متغيرات البيئة إسقاط للمزوّد المرتبط ولحقلي النافذة وأقصى إخراج في هذه البطاقة. CODEG_AGENT_MAX_OUTPUT_TOKENS اختياري وقيمته الافتراضية 4096 ويجب أن يبقى أقل من النافذة بعد طرح هامش الأمان.",
@@ -1635,7 +1636,7 @@
       "contextWindow": "نافذة السياق",
       "maxOutput": "أقصى رموز إخراج",
       "systemPrompt": "موجه النظام",
-      "systemPromptHint": "الفراغ يستخدم القيمة المدمجة. ما زال يُضاف دليل العمل وفهرس المهارات.",
+      "systemPromptHint": "الفراغ يستخدم القيمة المدمجة. ما زال يُضاف بيئة التشغيل والوقت الحالي ودليل العمل والتخزين العام وفهرس المهارات.",
       "compactPrompt": "موجه ضغط السياق (L2)",
       "compactPromptHint": "يُستخدم فقط عند الضغط الثاني في الجلسة. الفراغ يستخدم القالب المدمج.",
       "save": "حفظ",
@@ -1666,6 +1667,14 @@
     "presetHint": "السحابة والمحلي والمخصص تُربط بالطريقة نفسها. خوادم الاسترجاع المحلي قد تستغني عن مفتاح API.",
     "promptsTitle": "المطالبات",
     "promptsDescription": "تجاوزات اختيارية. الحقول الفارغة تبقي القيم المدمجة.",
+    "contextTitle": "السياق",
+    "contextDescription": "يُحقَن عند بدء الجلسة. ملفات التعليمات للوكيل الرئيسي فقط؛ وشجرة المجلدات للوكيل الرئيسي والوكلاء الفرعيين.",
+    "injectConstraints": "حقن تعليمات المشروع",
+    "injectConstraintsHint": "عند التحديد يُحقَن ملف المستوى الأعلى في دليل العمل في الوكيل الرئيسي عند البدء. المرحلة الأولى تمسح المستوى الأول فقط.",
+    "injectAgentsMd": "AGENTS.md",
+    "injectClaudeMd": "CLAUDE.md",
+    "injectTree": "معلومات البنية",
+    "injectTreeHint": "عند التحديد يُمسَح دليل العمل حتى 3 مستويات عند البدء وتُحقَن شجرة Markdown في الوكيل الرئيسي والوكلاء الفرعيين. تُحذف المسارات الأعمق.",
     "compressionTitle": "ضغط السياق",
     "compressionDescription": "عند تجاوز الإشغال العتبة المرنة تُلخَّص الجولات الأقدم، وتبقى الأحدث كما هي.",
     "compactSoftPercent": "عتبة الضغط المرنة (%)",
@@ -1720,7 +1729,8 @@
     "preset": "Platform",
     "creating": "Creating…",
     "requestProtocol": "Request protocol",
-    "requestProtocolHint": "One session uses one protocol. Auto probes Chat Completions first and falls back to Responses only if that path 404s.",
+    "requestProtocolHint": "Binding a provider probes Chat Completions first, then Responses if that path is missing or fails. The result is locked; sessions use it directly.",
+    "protocolDetectFailed": "Could not detect request protocol: {message}",
     "protocolChatCompletions": "Chat Completions",
     "protocolResponses": "Responses",
     "protocolAuto": "Auto"
@@ -1892,10 +1902,15 @@
       "notifyChannels": "قنوات الإشعار…",
       "notifyChannelsDialog": {
         "title": "قنوات الإشعار",
-        "description": "عند انتهاء تشغيل في هذا المجلد، أرسل الرسالة النهائية إلى كل قناة محددة.",
+        "description": "عند انتهاء تشغيل في هذا المجلد، أرسل الرسالة النهائية إلى كل قناة محددة. يمكنك تعيين معرّف جلسة لكل قناة؛ اتركه فارغًا لاستخدام الافتراضي.",
         "empty": "لا توجد قنوات دردشة بعد. أضف واحدة من الإعدادات.",
         "loadFailed": "تعذر تحميل القنوات: {message}",
-        "saveFailed": "تعذر حفظ ربط القنوات: {message}"
+        "saveFailed": "تعذر حفظ ربط القنوات: {message}",
+        "sessionId": "معرّف الجلسة",
+        "sessionIdForChannel": "معرّف جلسة {name}",
+        "sessionIdHint": "اتركه فارغًا لاستخدام محادثة القناة الافتراضية.",
+        "sessionIdPlaceholder": "الافتراضي",
+        "sessionIdPlaceholderWithDefault": "الافتراضي: {chatId}"
       },
       "error": "خطأ: {message}",
       "completeAllSessions": "إكمال جميع الجلسات",
@@ -1944,6 +1959,8 @@
       "statusRunningBadge": "قيد التشغيل",
       "runningCountBadge": "{count} جلسة قيد التشغيل",
       "statusCancelledBadge": "ملغى",
+      "statusUnreadCompletedBadge": "مكتمل غير مقروء",
+      "statusUnreadFailedBadge": "فشل غير مقروء",
       "worktreeRemovedBadge": "تمت إزالة شجرة العمل الأصلية",
       "conversationCountUnit": "{count} محادثة",
       "emptyFolderHint": "لا توجد محادثات",
@@ -2422,7 +2439,19 @@
       "officeWatchFailed": "تعذّر بدء المعاينة المباشرة",
       "officeWatchRetry": "إعادة المحاولة",
       "officeServerInstallHint": "يجب تثبيت OfficeCLI على مضيف الخادم. شغّل هذا الأمر هناك ثم أعد المحاولة:",
-      "officeRemoteDesktopUnsupported": "المعاينة المباشرة غير متاحة في نافذة سطح المكتب البعيد. افتح مساحة العمل هذه في واجهة الويب الخاصة بالخادم لمعاينة ملفات Office."
+      "officeRemoteDesktopUnsupported": "المعاينة المباشرة غير متاحة في نافذة سطح المكتب البعيد. افتح مساحة العمل هذه في واجهة الويب الخاصة بالخادم لمعاينة ملفات Office.",
+      "spreadsheetSheet": "Sheet",
+      "spreadsheetRows": "Rows {from}–{to} of {total}",
+      "spreadsheetPrevPage": "Previous page",
+      "spreadsheetNextPage": "Next page",
+      "spreadsheetPrevCols": "Previous columns",
+      "spreadsheetNextCols": "Next columns",
+      "spreadsheetPageSize": "Rows per page",
+      "spreadsheetEmpty": "This sheet is empty",
+      "spreadsheetLoadFailed": "Couldn't load the spreadsheet",
+      "spreadsheetRetry": "Retry",
+      "officeJsPreviewFailed": "Couldn't preview this file",
+      "officeJsPreviewRetry": "Retry"
     },
     "fileViewer": {
       "title": "معاينة الملف",
@@ -3383,6 +3412,7 @@
       },
       "linkSafety": {
         "errorCannotOpen": "تعذر فتح الملف المحلي",
+        "errorFileNotFound": "This file does not exist.",
         "errorNoWorkspace": "لا يوجد مجلد مساحة عمل نشط حالياً.",
         "errorFailedOpen": "فشل فتح الملف المحلي",
         "errorFailedLink": "فشل فتح الرابط",
@@ -3980,6 +4010,12 @@
     },
     "toasts": {
       "cloneFailed": "فشل استنساخ المستودع"
+    },
+    "fileOpen": {
+      "open": "Open",
+      "defaultApp": "Default app",
+      "folder": "Folder",
+      "failed": "Couldn't open the file"
     }
   },
   "ProjectBoot": {
@@ -4236,6 +4272,15 @@
       "fr": "الفرنسية",
       "pt": "البرتغالية",
       "ar": "العربية"
+    },
+    "folderInbound": {
+      "title": "إعادة استخدام جلسة المجلد",
+      "description": "عندما يرسل محادثة مرتبطة بمجلد رسالة دون اقتباس، تُستأنف أحدث محادثة في المجلد إذا كانت نشطة خلال هذه الدقائق. وإلا تُبدأ محادثة جديدة. 0 يبدأ دائماً محادثة جديدة.",
+      "minutesLabel": "دقائق",
+      "saved": "تم حفظ نافذة إعادة الاستخدام.",
+      "saveFailed": "فشل حفظ نافذة إعادة الاستخدام.",
+      "invalid": "أدخل عدداً صحيحاً من 0 إلى 10080.",
+      "save": "حفظ"
     }
   },
   "ModelProviderSettings": {
@@ -6310,13 +6355,13 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "المجلد {id}",
-    "restoreBuiltinPrompt": "Restore built-in",
+    "restoreBuiltinPrompt": "استعادة المهارة المدمجة",
     "turnSummaryTitle": "ملخص الدورة",
     "turnSummaryDescription": "بعد كل دورة ACP ناجحة تُكتب ذكرى مقروءة عما تغيّر وما نُفِّذ. معرّف النموذج الفارغ يستخدم الافتراضي المرتبط.",
     "turnSummaryModel": "معرّف نموذج ملخص الدورة",
     "turnSummaryModelHint": "يُطبق هذا الاختيار على جميع مراحل الويكي. وهو مستقل عن إعدادات الدردشة؛ ويمكن تخصيص كل مرحلة في الإعدادات المتقدمة.",
     "turnSummaryModelPlaceholder": "الافتراضي المرتبط",
-    "turnSummaryPrompt": "موجّه ملخص الدورة",
+    "turnSummaryPrompt": "مهارة ملخص الجولة (SKILL.md)",
     "turnSummaryPromptPlaceholder": "مهارة ملخص الدورة كاملة. المضيف ما زال يتحقق من هوية الصفحة ولا يمكنه توسيع نطاق القراءة.",
     "turnSummaryPromptBuiltinHint": "هذه مهارة ملخص الدورة كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا.",
     "sessionRollupTitle": "تجميع المحادثة",
@@ -6324,7 +6369,7 @@
     "sessionRollupModel": "معرّف نموذج تجميع المحادثة",
     "sessionRollupModelHint": "يُطبق هذا الاختيار على جميع مراحل الويكي. وهو مستقل عن إعدادات الدردشة؛ ويمكن تخصيص كل مرحلة في الإعدادات المتقدمة.",
     "sessionRollupModelPlaceholder": "الافتراضي المرتبط",
-    "sessionRollupPrompt": "موجّه تجميع المحادثة",
+    "sessionRollupPrompt": "مهارة تجميع المحادثة (SKILL.md)",
     "sessionRollupPromptPlaceholder": "مهارة تجميع المحادثة كاملة. المضيف ما زال يتحقق من هوية الصفحة ولا يمكنه توسيع نطاق القراءة.",
     "sessionRollupPromptBuiltinHint": "هذه مهارة تجميع المحادثة كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا.",
     "synthesizeTitle": "تنظيم العمل",
@@ -6335,7 +6380,7 @@
     "synthesizeModel": "معرّف نموذج التنظيم",
     "synthesizeModelHint": "يُطبق هذا الاختيار على جميع مراحل الويكي. وهو مستقل عن إعدادات الدردشة؛ ويمكن تخصيص كل مرحلة في الإعدادات المتقدمة.",
     "synthesizeModelPlaceholder": "الافتراضي المرتبط",
-    "synthesizePrompt": "موجّه التنظيم",
+    "synthesizePrompt": "مهارة تلخيص العمل (SKILL.md)",
     "synthesizePromptPlaceholder": "مهارة التنظيم كاملة. المضيف ما زال يتحقق من المراجع ولا يمكنه اختراع ادّعاءات.",
     "synthesizePromptBuiltinHint": "هذه مهارة التنظيم كاملة. عدّلها هنا. الاستعادة المدمجة تتبع تحديثات المهارة لاحقًا."
   },
@@ -6669,7 +6714,10 @@
       "storageHint": "تغيير الموقع لا ينقل الملفات الحالية. أوقف المعالجة مؤقتًا قبل التبديل.",
       "capture": "تسجيل المحادثات",
       "captureHint": "احفظ المواد بعد جولات المحادثة الناجحة؛ تُستثنى المحادثات الفرعية المفوّضة.",
-      "promptBoundary": "لا يمكن للتعليمات المخصصة توسيع الوصول للملفات أو تجاوز التحقق من المصادر أو حماية الكتابة.",
+      "promptBoundary": "لا يمكن للمهارات المخصصة توسيع الوصول إلى الملفات أو تجاوز التحقق من المصادر أو حماية الكتابة.",
+      "skillHint": "عدّل أساليب العمل وقواعد اتخاذ القرار الدائمة. يوفّر النظام الملفات المحددة والمهمة الحالية وقت التنفيذ. استعادة المهارة المدمجة تتيح تلقي التحديثات المستقبلية.",
+      "builtinTask": "تعليمات المهمة المدمجة",
+      "builtinTaskHint": "قالب للقراءة فقط لرسالة المستخدم التي تبدأ هذه المرحلة. يملأ النظام وقت التنفيذ ملفات المصدر ومجلد Wiki وتفاصيل المهمة الحالية ومتطلبات التنفيذ.",
       "unsaved": "تغييرات غير محفوظة",
       "discard": "تجاهل التغييرات",
       "reasons": {
@@ -6682,12 +6730,14 @@
       "navigation": "نظرة عامة",
       "sourceSections": "معلومات المادة",
       "stages": {
-        "turn_summary": "سجل الجولة",
-        "session_rollup": "ملخص المحادثة",
-        "synthesize": "نظّم الآن"
+        "turn_summary": "ملخص الجولة",
+        "session_rollup": "تجميع المحادثة",
+        "synthesize": "تلخيص العمل"
       },
       "library": {
         "directory": "الدليل",
+        "expandDirectory": "توسيع {name}",
+        "collapseDirectory": "طي {name}",
         "home": "صفحة Wiki الرئيسية",
         "backHome": "العودة إلى صفحة Wiki الرئيسية",
         "location": "مجلد Wiki",

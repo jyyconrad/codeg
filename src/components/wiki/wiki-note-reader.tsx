@@ -130,7 +130,7 @@ export function WikiNoteReader({
     }
   }, [data, anchor])
   return (
-    <article className="mx-auto w-full max-w-[840px] p-4 pb-12 sm:p-6">
+    <article className="mx-auto w-full min-w-0 max-w-[840px] p-4 pb-12 sm:p-6">
       <div className="mb-5 flex flex-wrap items-center gap-2">
         <Button
           size="sm"
@@ -218,7 +218,7 @@ export function WikiNoteReader({
           >
             {data.note.title || t("untitled")}
           </h1>
-          {data.note.summary && (
+          {data.note.summary && data.note.type !== "index" && (
             <p className="mt-3 text-base leading-7 text-muted-foreground">
               {data.note.summary}
             </p>
@@ -239,30 +239,32 @@ export function WikiNoteReader({
               </a>
             </div>
           )}
-          {!sourceMode && data.headings.length > 2 && (
-            <details className="my-5 rounded-lg border p-3 text-sm">
-              <summary className="cursor-pointer font-medium">
-                {t("contents")}
-              </summary>
-              <ul className="mt-2 space-y-2">
-                {data.headings.map((heading) => (
-                  <li
-                    key={heading.id}
-                    style={{
-                      paddingInlineStart: Math.max(0, heading.level - 1) * 12,
-                    }}
-                  >
-                    <a
-                      href={`#${encodeURIComponent(heading.id)}`}
-                      className="text-muted-foreground hover:text-foreground"
+          {!sourceMode &&
+            data.note.type !== "index" &&
+            data.headings.length > 2 && (
+              <details className="my-5 rounded-lg border p-3 text-sm">
+                <summary className="cursor-pointer font-medium">
+                  {t("contents")}
+                </summary>
+                <ul className="mt-2 space-y-2">
+                  {data.headings.map((heading) => (
+                    <li
+                      key={heading.id}
+                      style={{
+                        paddingInlineStart: Math.max(0, heading.level - 1) * 12,
+                      }}
                     >
-                      {heading.title}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
+                      <a
+                        href={`#${encodeURIComponent(heading.id)}`}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        {heading.title}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           {excerpt && (
             <section
               id={anchor.replace(/^#/, "").toLowerCase()}
@@ -304,56 +306,50 @@ export function WikiNoteReader({
             <h2 className="mb-3 text-base font-semibold">{t("viewSources")}</h2>
             {data.sources.length ? (
               <ul className="space-y-3">
-                {data.sources.map((source, index) => (
-                  <li key={`${source.path}:${index}`}>
-                    <button
-                      type="button"
-                      className="text-start text-sm text-primary underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
-                      disabled={source.availability === "missing"}
-                      onClick={() => {
-                        const anchor = source.start_line
-                          ? `L${source.start_line}-L${source.end_line ?? source.start_line}`
-                          : ""
-                        if (source.source_id) {
-                          navigate({
-                            view: "sources",
-                            source: source.source_id,
-                            path: null,
-                          })
-                          if (anchor) window.location.hash = anchor
-                        } else void openLink(source.path, anchor)
-                      }}
-                    >
-                      {source.title || t("untitled")}
-                    </button>
-                    {source.availability && (
-                      <Badge variant="outline" className="ms-2">
-                        {t(`sourceAvailability.${source.availability}`)}
-                      </Badge>
-                    )}
-                    {source.start_line && (
-                      <span className="ms-2 text-xs text-muted-foreground">
-                        {t("lines", {
-                          start: source.start_line,
-                          end: source.end_line ?? source.start_line,
-                        })}
-                      </span>
-                    )}
-                    <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
-                      {source.path}
-                    </p>
-                    {source.source_url && (
-                      <p className="mt-1 break-all text-xs text-muted-foreground">
-                        {source.source_url}
-                      </p>
-                    )}
-                    {source.excerpt && (
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        {source.excerpt}
-                      </p>
-                    )}
-                  </li>
-                ))}
+                {data.sources.map((source, index) => {
+                  const dump = source.path.startsWith("raw/")
+                  return (
+                    <li key={`${source.path}:${index}`}>
+                      <button
+                        type="button"
+                        className="text-start text-sm text-primary underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                        disabled={source.availability === "missing"}
+                        onClick={() => {
+                          const anchor = source.start_line
+                            ? `L${source.start_line}-L${source.end_line ?? source.start_line}`
+                            : ""
+                          if (source.source_id) {
+                            navigate({
+                              view: "sources",
+                              source: source.source_id,
+                              path: null,
+                            })
+                            if (anchor) window.location.hash = anchor
+                          } else if (!dump) void openLink(source.path, anchor)
+                        }}
+                      >
+                        {source.title || t("untitled")}
+                      </button>
+                      {source.availability === "missing" && (
+                        <Badge variant="outline" className="ms-2">
+                          {t(`sourceAvailability.${source.availability}`)}
+                        </Badge>
+                      )}
+                      {!dump && source.path && (
+                        <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                          {source.path}
+                        </p>
+                      )}
+                      {!dump &&
+                        source.source_url &&
+                        source.source_url !== source.path && (
+                          <p className="mt-1 break-all text-xs text-muted-foreground">
+                            {source.source_url}
+                          </p>
+                        )}
+                    </li>
+                  )
+                })}
               </ul>
             ) : (
               <p className="text-sm text-muted-foreground">{t("noSources")}</p>

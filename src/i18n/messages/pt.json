@@ -1621,7 +1621,8 @@
       "noSandbox": "Sem sandbox de sistema operacional. Gravações e bash só correm após permissão por chamada. A política FS do espaço de trabalho não isola o shell.",
       "recovery": "A recuperação após falha não reproduz ferramentas. Chamadas iniciadas sem término confirmado retomam como unknown.",
       "contextWindowsHint": "Ao vincular um canal de modelo, um CODEG_AGENT_CONTEXT_WINDOWS editável é gravado (128000, salvo se o provedor já tiver janela). Um modelo sem janela não inicia.",
-      "protocol": "v1 usa apenas OpenAI Chat Completions; não usa a Responses API.",
+      "protocol": "Chat Completions or Responses is locked when you bind a provider. Sessions use that protocol.",
+      "protocolDetectFailed": "Could not detect request protocol: {message}",
       "modelSelectorHint": "O seletor de modelo da sessão lista só os ids em CODEG_AGENT_CONTEXT_WINDOWS. Ids desconhecidos são recusados.",
       "usageLastRequest": "O anel de contexto mostra a ocupação do último pedido ao modelo na janela configurada, não o acumulado da execução. Se o gateway omitir o uso de entrada, o valor é estimado.",
       "envWindowsHint": "As variáveis de ambiente são uma projeção do provedor vinculado e da janela e saída máxima deste cartão. CODEG_AGENT_MAX_OUTPUT_TOKENS é opcional, vale 4096 por padrão e deve ficar abaixo da janela menos uma margem de segurança.",
@@ -1635,7 +1636,7 @@
       "contextWindow": "Janela de contexto",
       "maxOutput": "Tokens máximos de saída",
       "systemPrompt": "Prompt de sistema",
-      "systemPromptHint": "Vazio usa o padrão interno. O diretório de trabalho e o catálogo de skills ainda são acrescentados.",
+      "systemPromptHint": "Vazio usa o padrão interno. O ambiente (SO, hora), o diretório de trabalho, o armazenamento global e o catálogo de skills ainda são acrescentados.",
       "compactPrompt": "Prompt de compactação (L2)",
       "compactPromptHint": "Usado só na segunda compactação da sessão. Vazio usa o modelo interno.",
       "save": "Salvar",
@@ -1666,6 +1667,14 @@
     "presetHint": "Nuvem, local e personalizado vinculam da mesma forma. Servidores de loopback local podem omitir a chave de API.",
     "promptsTitle": "Prompts",
     "promptsDescription": "Substituições opcionais. Campos vazios mantêm os padrões internos.",
+    "contextTitle": "Contexto",
+    "contextDescription": "Injetado ao iniciar a sessão. Arquivos de instrução vão para o agente principal; a árvore de diretórios vai para o principal e os subagentes.",
+    "injectConstraints": "Injetar instruções do projeto",
+    "injectConstraintsHint": "Se marcado, o arquivo no nível superior do diretório de trabalho é injetado no agente principal na inicialização. A fase 1 varre só o primeiro nível.",
+    "injectAgentsMd": "AGENTS.md",
+    "injectClaudeMd": "CLAUDE.md",
+    "injectTree": "Informação de estrutura",
+    "injectTreeHint": "Se marcado, na inicialização no máximo 3 níveis de diretórios são injetados como árvore Markdown no agente principal e nos subagentes. Caminhos mais profundos são omitidos.",
     "compressionTitle": "Compactação de contexto",
     "compressionDescription": "Quando a ocupação cruza o limite suave, turnos mais antigos são resumidos. Os mais recentes permanecem.",
     "compactSoftPercent": "Limite suave de compactação (%)",
@@ -1720,7 +1729,8 @@
     "preset": "Platform",
     "creating": "Creating…",
     "requestProtocol": "Request protocol",
-    "requestProtocolHint": "One session uses one protocol. Auto probes Chat Completions first and falls back to Responses only if that path 404s.",
+    "requestProtocolHint": "Binding a provider probes Chat Completions first, then Responses if that path is missing or fails. The result is locked; sessions use it directly.",
+    "protocolDetectFailed": "Could not detect request protocol: {message}",
     "protocolChatCompletions": "Chat Completions",
     "protocolResponses": "Responses",
     "protocolAuto": "Auto"
@@ -1892,10 +1902,15 @@
       "notifyChannels": "Canais de notificação…",
       "notifyChannelsDialog": {
         "title": "Canais de notificação",
-        "description": "Quando uma execução nesta pasta terminar, envie a mensagem final para cada canal selecionado.",
+        "description": "Quando uma execução nesta pasta terminar, envie a mensagem final para cada canal selecionado. Você pode definir um ID de sessão por canal; deixe vazio para usar o padrão.",
         "empty": "Ainda não há canais de chat. Adicione um nas Configurações.",
         "loadFailed": "Falha ao carregar canais: {message}",
-        "saveFailed": "Falha ao salvar os canais: {message}"
+        "saveFailed": "Falha ao salvar os canais: {message}",
+        "sessionId": "ID da sessão",
+        "sessionIdForChannel": "ID da sessão de {name}",
+        "sessionIdHint": "Deixe vazio para usar o chat padrão deste canal.",
+        "sessionIdPlaceholder": "Padrão",
+        "sessionIdPlaceholderWithDefault": "Padrão: {chatId}"
       },
       "error": "Erro: {message}",
       "completeAllSessions": "Concluir todas as sessões",
@@ -1944,6 +1959,8 @@
       "statusRunningBadge": "Executando",
       "runningCountBadge": "{count, plural, one {# sessão em execução} other {# sessões em execução}}",
       "statusCancelledBadge": "Cancelado",
+      "statusUnreadCompletedBadge": "Concluído não visto",
+      "statusUnreadFailedBadge": "Falha não vista",
       "worktreeRemovedBadge": "Worktree de origem removida",
       "conversationCountUnit": "{count, plural, one {# conversa} other {# conversas}}",
       "emptyFolderHint": "Sem conversas",
@@ -2422,7 +2439,19 @@
       "officeWatchFailed": "Não foi possível iniciar a visualização ao vivo",
       "officeWatchRetry": "Tentar novamente",
       "officeServerInstallHint": "O OfficeCLI precisa estar instalado no host do servidor. Execute este comando lá e tente novamente:",
-      "officeRemoteDesktopUnsupported": "A pré-visualização ao vivo não está disponível em uma janela de área de trabalho remota. Abra este espaço de trabalho na interface web do servidor para visualizar arquivos do Office."
+      "officeRemoteDesktopUnsupported": "A pré-visualização ao vivo não está disponível em uma janela de área de trabalho remota. Abra este espaço de trabalho na interface web do servidor para visualizar arquivos do Office.",
+      "spreadsheetSheet": "Sheet",
+      "spreadsheetRows": "Rows {from}–{to} of {total}",
+      "spreadsheetPrevPage": "Previous page",
+      "spreadsheetNextPage": "Next page",
+      "spreadsheetPrevCols": "Previous columns",
+      "spreadsheetNextCols": "Next columns",
+      "spreadsheetPageSize": "Rows per page",
+      "spreadsheetEmpty": "This sheet is empty",
+      "spreadsheetLoadFailed": "Couldn't load the spreadsheet",
+      "spreadsheetRetry": "Retry",
+      "officeJsPreviewFailed": "Couldn't preview this file",
+      "officeJsPreviewRetry": "Retry"
     },
     "fileViewer": {
       "title": "Pré-visualização do ficheiro",
@@ -3383,6 +3412,7 @@
       },
       "linkSafety": {
         "errorCannotOpen": "Não é possível abrir o arquivo local",
+        "errorFileNotFound": "This file does not exist.",
         "errorNoWorkspace": "Nenhuma pasta de espaço de trabalho está ativa no momento.",
         "errorFailedOpen": "Falha ao abrir o arquivo local",
         "errorFailedLink": "Falha ao abrir o link",
@@ -3980,6 +4010,12 @@
     },
     "toasts": {
       "cloneFailed": "Falha ao clonar o repositório"
+    },
+    "fileOpen": {
+      "open": "Open",
+      "defaultApp": "Default app",
+      "folder": "Folder",
+      "failed": "Couldn't open the file"
     }
   },
   "ProjectBoot": {
@@ -4236,6 +4272,15 @@
       "fr": "Francês",
       "pt": "Português",
       "ar": "Árabe"
+    },
+    "folderInbound": {
+      "title": "Reutilizar sessão da pasta",
+      "description": "Quando um chat vinculado a uma pasta envia uma mensagem sem citar outra, a conversa mais recente da pasta é reutilizada se esteve ativa nestes minutos. Caso contrário, uma nova é iniciada. 0 sempre inicia uma nova.",
+      "minutesLabel": "minutos",
+      "saved": "Janela de reutilização salva.",
+      "saveFailed": "Falha ao salvar a janela de reutilização.",
+      "invalid": "Informe um inteiro de 0 a 10080.",
+      "save": "Salvar"
     }
   },
   "ModelProviderSettings": {
@@ -6310,13 +6355,13 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "Pasta {id}",
-    "restoreBuiltinPrompt": "Restore built-in",
+    "restoreBuiltinPrompt": "Restaurar habilidade integrada",
     "turnSummaryTitle": "Resumo do turno",
     "turnSummaryDescription": "Após cada turno ACP bem-sucedido, escreve uma memória legível do que mudou e do que foi implementado. Um id de modelo vazio usa o predefinido do agente vinculado.",
     "turnSummaryModel": "Id do modelo de resumo do turno",
     "turnSummaryModelHint": "A seleção vale para todas as etapas do Wiki. É independente do chat; as configurações avançadas permitem escolhas por etapa.",
     "turnSummaryModelPlaceholder": "Predefinição vinculada",
-    "turnSummaryPrompt": "Prompt de resumo do turno",
+    "turnSummaryPrompt": "Habilidade de resumo do turno (SKILL.md)",
     "turnSummaryPromptPlaceholder": "Skill completo de resumo de turno. O anfitrião continua a validar a identidade da página e não pode alargar o âmbito de leitura.",
     "turnSummaryPromptBuiltinHint": "Este é o skill completo de resumo de turno. Edite-o aqui. Restaurar o integrado segue atualizações futuras.",
     "sessionRollupTitle": "Resumo da conversa",
@@ -6324,7 +6369,7 @@
     "sessionRollupModel": "Id do modelo de resumo da conversa",
     "sessionRollupModelHint": "A seleção vale para todas as etapas do Wiki. É independente do chat; as configurações avançadas permitem escolhas por etapa.",
     "sessionRollupModelPlaceholder": "Predefinição vinculada",
-    "sessionRollupPrompt": "Prompt de resumo da conversa",
+    "sessionRollupPrompt": "Habilidade de síntese da conversa (SKILL.md)",
     "sessionRollupPromptPlaceholder": "Skill completo de resumo da conversa. O anfitrião continua a validar a identidade da página e não pode alargar o âmbito de leitura.",
     "sessionRollupPromptBuiltinHint": "Este é o skill completo de resumo da conversa. Edite-o aqui. Restaurar o integrado segue atualizações futuras.",
     "synthesizeTitle": "Organizar",
@@ -6335,7 +6380,7 @@
     "synthesizeModel": "Id do modelo de organizar",
     "synthesizeModelHint": "A seleção vale para todas as etapas do Wiki. É independente do chat; as configurações avançadas permitem escolhas por etapa.",
     "synthesizeModelPlaceholder": "Predefinição vinculada",
-    "synthesizePrompt": "Prompt de organizar",
+    "synthesizePrompt": "Habilidade de síntese do trabalho (SKILL.md)",
     "synthesizePromptPlaceholder": "Skill completo de sintetizar. O anfitrião continua a validar localizadores e não pode inventar afirmações.",
     "synthesizePromptBuiltinHint": "Este é o skill completo de organizar. Edite-o aqui. Restaurar o integrado segue atualizações futuras."
   },
@@ -6669,7 +6714,10 @@
       "storageHint": "Mudar o local não move arquivos existentes. Pause o processamento antes de trocar.",
       "capture": "Registrar conversas",
       "captureHint": "Salve materiais após turnos bem-sucedidos; conversas delegadas são excluídas.",
-      "promptBoundary": "Instruções personalizadas não ampliam o acesso a arquivos nem ignoram validação de fontes ou proteção de escrita.",
+      "promptBoundary": "Habilidades personalizadas não ampliam o acesso a arquivos nem ignoram a validação de fontes ou a proteção de escrita.",
+      "skillHint": "Edite os métodos de trabalho e critérios de decisão permanentes. O sistema fornece os arquivos específicos e a tarefa atual durante a execução. Restaurar a habilidade integrada permite receber futuras atualizações.",
+      "builtinTask": "Instruções de tarefa integradas",
+      "builtinTaskHint": "Modelo somente leitura da mensagem do usuário que inicia esta etapa. Durante a execução, o sistema preenche os arquivos de origem, o diretório Wiki, os detalhes da tarefa atual e os requisitos de execução.",
       "unsaved": "Alterações não salvas",
       "discard": "Descartar alterações",
       "reasons": {
@@ -6682,12 +6730,14 @@
       "navigation": "Visão geral",
       "sourceSections": "Informações do material",
       "stages": {
-        "turn_summary": "Registro de turno",
-        "session_rollup": "Resumo da conversa",
-        "synthesize": "Organizar agora"
+        "turn_summary": "Resumo do turno",
+        "session_rollup": "Síntese da conversa",
+        "synthesize": "Síntese do trabalho"
       },
       "library": {
         "directory": "Diretório",
+        "expandDirectory": "Expandir {name}",
+        "collapseDirectory": "Recolher {name}",
         "home": "Início do Wiki",
         "backHome": "Voltar ao início do Wiki",
         "location": "Pasta do Wiki",

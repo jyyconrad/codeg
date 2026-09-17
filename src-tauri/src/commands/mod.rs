@@ -39,6 +39,7 @@ pub mod remote_proxy;
 pub mod remote_workspace;
 pub mod science;
 pub mod session_info;
+pub mod spreadsheet_preview;
 pub mod system_settings;
 pub mod terminal;
 pub mod token_usage;

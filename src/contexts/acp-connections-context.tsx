@@ -90,6 +90,7 @@ import {
 } from "@/lib/async-tasks"
 import {
   adoptUnknownWorkflows,
+  isWorkflowTerminal,
   liveWorkflows,
   mergeWorkflows,
   upsertWorkflow,
@@ -4213,11 +4214,46 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           break
         }
         case "workflow": {
+          const previous = storeRef.current.connections
+            .get(contextKey)
+            ?.workflows.find((run) => run.run_id === e.delta.run_id)
           dispatch({
             type: "WORKFLOW",
             contextKey,
             delta: e.delta,
           })
+          const conn = storeRef.current.connections.get(contextKey)
+          const settled = conn?.workflows.find(
+            (run) => run.run_id === e.delta.run_id
+          )
+          // Only a completion we watched happen earns a cue. A terminal row
+          // first seen on attach, or a repeated/late result, is display-only.
+          // The attach replay wrapper suppresses historical notifications too.
+          if (
+            !echo &&
+            previous &&
+            !isWorkflowTerminal(previous) &&
+            settled &&
+            isWorkflowTerminal(settled)
+          ) {
+            const preview = (
+              settled.result_summary?.trim() ||
+              settled.last_event_detail?.trim() ||
+              tChat("backgroundTasks.settledFallback", {
+                status: settled.state,
+              })
+            )
+              .replace(/\s+/g, " ")
+              .slice(0, 240)
+            const fn = folderNameRef.current
+            void notifyDesktop("background_task", {
+              title: fn ? `${fn} - Codeg` : "Codeg",
+              body: `${settled.name.slice(0, 40)}: ${preview}`,
+              redactedBody: tChat("backgroundTasks.notifySettledOne", {
+                agent: conn ? getAgentLabel(conn.agentType) : "Agent",
+              }),
+            })
+          }
           break
         }
         case "turn_retrying": {

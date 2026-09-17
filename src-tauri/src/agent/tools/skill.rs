@@ -3,11 +3,11 @@
 //! Discovery stays in `commands/acp.rs`. This module does not scan SKILL.md
 //! directories itself.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::Deserialize;
@@ -15,7 +15,7 @@ use serde_json::json;
 
 use super::NativeToolCtx;
 use crate::acp::types::{AgentSkillItem, AgentSkillScope};
-use crate::agent::context::{OutputLocator, MAX_TOOL_PRESENTATION_BYTES};
+use crate::agent::context::OutputLocator;
 use crate::commands::acp::{
     list_skills_from_dir, parse_frontmatter_scalar, scoped_skill_dirs, skill_content_path,
     skill_storage_spec,
@@ -81,8 +81,9 @@ impl SkillCatalog {
         if lines.is_empty() {
             return None;
         }
-        let mut section =
-            String::from("Available skills (call the skill tool with `name` to load SKILL.md):\n");
+        let mut section = String::from(
+            "Available skills (call the skill tool with `name` to load SKILL.md into context):\n",
+        );
         section.push_str(&lines.join("\n"));
         Some(section)
     }
@@ -173,6 +174,63 @@ fn disable_model_invocation(content_path: &Path) -> bool {
     false
 }
 
+/// Session-scoped set of skills already injected into model context.
+#[derive(Clone, Debug, Default)]
+pub struct LoadedSkills {
+    names: BTreeSet<String>,
+}
+
+impl LoadedSkills {
+    pub fn shared() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self::default()))
+    }
+
+    pub fn shared_with(names: impl IntoIterator<Item = impl Into<String>>) -> Arc<Mutex<Self>> {
+        let mut loaded = Self::default();
+        for name in names {
+            loaded.insert(&name.into());
+        }
+        Arc::new(Mutex::new(loaded))
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        let needle = name.trim();
+        !needle.is_empty() && self.names.contains(needle)
+    }
+
+    pub fn insert(&mut self, name: &str) {
+        let needle = name.trim();
+        if !needle.is_empty() {
+            self.names.insert(needle.to_string());
+        }
+    }
+}
+
+/// Drop a leading YAML `---` / `...` frontmatter block. Body is unchanged
+/// when the file has no frontmatter.
+pub(crate) fn strip_yaml_frontmatter(content: &str) -> &str {
+    let Some(first) = content.lines().next() else {
+        return content;
+    };
+    if first.trim_end() != "---" {
+        return content;
+    }
+    let mut consumed = 0usize;
+    let mut started = false;
+    for line in content.split_inclusive('\n') {
+        consumed += line.len();
+        if !started {
+            started = true;
+            continue;
+        }
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if trimmed == "---" || trimmed == "..." {
+            return content.get(consumed..).unwrap_or("").trim_start();
+        }
+    }
+    content
+}
+
 #[derive(Clone)]
 pub struct SkillTool {
     ctx: NativeToolCtx,
@@ -197,8 +255,11 @@ impl Tool for SkillTool {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Load a skill by name from the session catalog. Returns SKILL.md with the \
-         real file path and line range; use read_file with offset to continue if truncated."
+        "Load a specialized skill when the task matches one listed in the system \
+         prompt. Injects the skill's SKILL.md instructions (frontmatter stripped) \
+         and sampled files from the skill directory. Relative paths (scripts/, \
+         reference/) are relative to that directory. If the skill is already in \
+         context, returns that it is loaded instead of dumping the body again."
             .to_string()
     }
 
@@ -219,7 +280,7 @@ impl Tool for SkillTool {
     ) -> Result<Self::Output, Self::Error> {
         let raw = json!({ "name": args.name });
         let mut fact = self.ctx.begin(Self::NAME, raw).await?;
-        match load_skill(&self.catalog, &args.name) {
+        match load_skill(&self.catalog, &self.ctx.loaded_skills, &args.name) {
             Ok(loaded) => {
                 fact.truncated = loaded.truncated;
                 fact.output_locator = Some(loaded.locator);
@@ -236,7 +297,11 @@ struct LoadedSkill {
     locator: OutputLocator,
 }
 
-fn load_skill(catalog: &SkillCatalog, name: &str) -> Result<LoadedSkill, ToolExecutionError> {
+fn load_skill(
+    catalog: &SkillCatalog,
+    loaded: &Mutex<LoadedSkills>,
+    name: &str,
+) -> Result<LoadedSkill, ToolExecutionError> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(
@@ -245,88 +310,145 @@ fn load_skill(catalog: &SkillCatalog, name: &str) -> Result<LoadedSkill, ToolExe
         );
     }
     let item = catalog.get(trimmed).ok_or_else(|| {
-        ToolExecutionError::not_found(format!("skill not found: {trimmed}"))
-            .with_model_feedback(format!("skill not found: {trimmed}"))
+        let available = catalog
+            .items()
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>();
+        let listed = if available.is_empty() {
+            "none".to_string()
+        } else {
+            available.join(", ")
+        };
+        let msg = format!("Skill \"{trimmed}\" not found. Available skills: {listed}");
+        ToolExecutionError::not_found(msg.clone()).with_model_feedback(msg)
     })?;
     let path = skill_md_path(item);
+    let already = {
+        let guard = loaded.lock().expect("loaded skills");
+        guard.contains(&item.id) || guard.contains(&item.name) || guard.contains(trimmed)
+    };
+    if already {
+        return Ok(already_loaded_skill(&item.name, &path));
+    }
     let content = read_skill_text(&path)?;
-    Ok(present_skill_markdown(
-        &path,
-        &content,
-        MAX_TOOL_PRESENTATION_BYTES,
-    ))
+    let files = sample_skill_files(&path, 10);
+    let loaded_skill = present_skill_markdown(&item.name, &path, &content, &files);
+    if let Ok(mut guard) = loaded.lock() {
+        guard.insert(&item.id);
+        guard.insert(&item.name);
+    }
+    Ok(loaded_skill)
 }
 
 fn read_skill_text(path: &Path) -> Result<String, ToolExecutionError> {
-    let file = fs::File::open(path).map_err(|_| {
+    fs::read_to_string(path).map_err(|_| {
         ToolExecutionError::not_found(format!("skill file not found: {}", path.display()))
             .with_model_feedback(format!("skill file not found: {}", path.display()))
-    })?;
-    let mut limited = file.take(MAX_TOOL_PRESENTATION_BYTES as u64 + 4096);
-    let mut buf = String::new();
-    limited.read_to_string(&mut buf).map_err(|_| {
-        ToolExecutionError::invalid_args(format!(
-            "skill file is not valid UTF-8: {}",
-            path.display()
-        ))
-        .with_model_feedback(format!("skill file is not valid UTF-8: {}", path.display()))
-    })?;
-    Ok(buf)
+    })
 }
 
-fn present_skill_markdown(path: &Path, content: &str, max_bytes: usize) -> LoadedSkill {
-    let (body, truncated) = truncate_at_line_boundary(content, max_bytes);
-    let shown_lines = if body.is_empty() {
-        0
-    } else {
-        body.lines().count() as u32
-    };
-    let start = 1u32;
-    let end = if shown_lines == 0 {
-        0
-    } else {
-        start.saturating_add(shown_lines.saturating_sub(1))
-    };
-    let next = end.saturating_add(1).max(1);
-    let mut presentation = format!("# {} (lines {start}-{end})\n{body}", path.display());
-    if truncated {
-        if !presentation.ends_with('\n') {
-            presentation.push('\n');
-        }
-        presentation.push_str(&format!(
-            "[truncated: showing {shown_lines} lines; pass offset={next} to continue from this path]"
-        ));
-    }
+fn skill_base_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(path)
+}
+
+fn already_loaded_skill(name: &str, path: &Path) -> LoadedSkill {
+    let base = skill_base_dir(path);
     LoadedSkill {
-        presentation,
-        truncated,
+        presentation: format!(
+            "Skill `{name}` is already loaded in the context.\n\
+             Base directory for this skill: {}\n\
+             Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.",
+            base.display()
+        ),
+        truncated: false,
         locator: OutputLocator {
             path: Some(path.to_string_lossy().into_owned()),
-            line: if truncated { Some(next) } else { Some(start) },
+            line: Some(1),
         },
     }
 }
 
-fn truncate_at_line_boundary(content: &str, max_bytes: usize) -> (&str, bool) {
-    if content.len() <= max_bytes {
-        return (content, false);
+fn sample_skill_files(skill_md: &Path, max: usize) -> Vec<PathBuf> {
+    if max == 0 {
+        return Vec::new();
     }
-    let mut end = max_bytes.min(content.len());
-    while end > 0 && !content.is_char_boundary(end) {
-        end -= 1;
+    if skill_md.file_name().and_then(|n| n.to_str()) != Some("SKILL.md") {
+        return Vec::new();
     }
-    let prefix = &content[..end];
-    if let Some(i) = prefix.rfind('\n') {
-        (&content[..i], true)
-    } else {
-        (prefix, true)
+    let dir = skill_base_dir(skill_md);
+    let mut out = Vec::new();
+    let mut queue = VecDeque::from([dir.to_path_buf()]);
+    while let Some(cur) = queue.pop_front() {
+        let Ok(entries) = fs::read_dir(&cur) else {
+            continue;
+        };
+        let mut ents: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+        ents.sort_by_key(|e| e.file_name());
+        for ent in ents {
+            if out.len() >= max {
+                return out;
+            }
+            let name = ent.file_name();
+            if name == ".git" {
+                continue;
+            }
+            let path = ent.path();
+            let Ok(ft) = ent.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                queue.push_back(path);
+            } else if ft.is_file() && name != "SKILL.md" {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+fn present_skill_markdown(
+    name: &str,
+    path: &Path,
+    content: &str,
+    files: &[PathBuf],
+) -> LoadedSkill {
+    let body = strip_yaml_frontmatter(content).trim();
+    let base = skill_base_dir(path);
+    let mut blocks = vec![
+        format!("<skill_content name=\"{name}\">"),
+        format!("# Skill: {name}"),
+        String::new(),
+        body.to_string(),
+        String::new(),
+        format!("Base directory for this skill: {}", base.display()),
+        "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory."
+            .to_string(),
+        "Note: file list is sampled.".to_string(),
+        String::new(),
+        "<skill_files>".to_string(),
+    ];
+    for file in files {
+        blocks.push(format!("<file>{}</file>", file.display()));
+    }
+    blocks.push("</skill_files>".to_string());
+    blocks.push("</skill_content>".to_string());
+    LoadedSkill {
+        presentation: blocks.join("\n"),
+        truncated: false,
+        locator: OutputLocator {
+            path: Some(path.to_string_lossy().into_owned()),
+            line: Some(1),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::context::{CallIdentity, ToolOutcome};
+    use crate::agent::context::{CallIdentity, ToolOutcome, MAX_TOOL_PRESENTATION_BYTES};
     use crate::agent::tools::test_tool_ctx;
     use crate::commands::acp::{list_skills_from_dir, SkillStorageKind};
     use rig::tool::Tool;
@@ -397,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn truncated_skill_returns_real_path_and_line() {
+    fn skill_presentation_strips_frontmatter_and_keeps_full_body() {
         let mut body = String::from("---\nname: big\ndescription: large\n---\n");
         for i in 0..2500 {
             body.push_str(&format!("line-{i:04} {}\n", "x".repeat(24)));
@@ -405,41 +527,56 @@ mod tests {
         assert!(body.len() > MAX_TOOL_PRESENTATION_BYTES);
 
         let path = PathBuf::from("/tmp/codeg-agent-skills/big/SKILL.md");
-        let loaded = present_skill_markdown(&path, &body, MAX_TOOL_PRESENTATION_BYTES);
-        assert!(loaded.truncated);
+        let extra = PathBuf::from("/tmp/codeg-agent-skills/big/scripts/run.sh");
+        let loaded = present_skill_markdown("big", &path, &body, &[extra.clone()]);
+        assert!(!loaded.truncated);
+        assert!(
+            loaded.presentation.contains("<skill_content name=\"big\">"),
+            "{}",
+            loaded.presentation
+        );
+        assert!(
+            loaded.presentation.contains("# Skill: big"),
+            "{}",
+            loaded.presentation
+        );
         assert!(
             loaded
                 .presentation
-                .contains("/tmp/codeg-agent-skills/big/SKILL.md"),
+                .contains("Base directory for this skill: /tmp/codeg-agent-skills/big"),
             "{}",
             loaded.presentation
         );
         assert!(
-            loaded.presentation.contains("(lines 1-"),
+            loaded
+                .presentation
+                .contains("<file>/tmp/codeg-agent-skills/big/scripts/run.sh</file>"),
             "{}",
             loaded.presentation
         );
         assert!(
-            loaded.presentation.contains("pass offset="),
+            loaded.presentation.contains("line-0000"),
             "{}",
             loaded.presentation
         );
         assert!(
-            loaded.presentation.contains("to continue from this path"),
+            loaded.presentation.contains("line-2499"),
             "{}",
             loaded.presentation
         );
-        let locator = loaded.locator;
+        assert!(
+            !loaded.presentation.contains("description: large"),
+            "YAML frontmatter must not be in the body:\n{}",
+            loaded.presentation
+        );
+        assert!(
+            !loaded.presentation.contains("pass offset="),
+            "{}",
+            loaded.presentation
+        );
         assert_eq!(
-            locator.path.as_deref(),
+            loaded.locator.path.as_deref(),
             Some("/tmp/codeg-agent-skills/big/SKILL.md")
-        );
-        let next = locator.line.expect("next line");
-        assert!(next > 1, "continuation line {next}");
-        assert!(
-            loaded.presentation.contains(&format!("pass offset={next}")),
-            "{}",
-            loaded.presentation
         );
     }
 
@@ -452,6 +589,9 @@ mod tests {
             "outside",
             "---\nname: outside\ndescription: from catalog\n---\nhello skill\n",
         );
+        let script = md.parent().expect("dir").join("scripts").join("run.sh");
+        fs::create_dir_all(script.parent().expect("scripts")).expect("scripts dir");
+        fs::write(&script, "echo hi\n").expect("script");
         let listed = list_skills_from_dir(
             AgentSkillScope::Global,
             skills.path(),
@@ -471,7 +611,18 @@ mod tests {
             .await
             .expect("skill");
         assert!(out.contains("hello skill"), "{out}");
-        assert!(out.contains(&md.to_string_lossy().into_owned()), "{out}");
+        assert!(out.contains("<skill_content name=\"outside\">"), "{out}");
+        assert!(
+            out.contains(&format!("<file>{}</file>", script.display())),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!(
+                "Base directory for this skill: {}",
+                md.parent().expect("skill dir").display()
+            )),
+            "{out}"
+        );
         let fact = ctx
             .recorder
             .store()
@@ -490,14 +641,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skill_tool_truncated_body_keeps_real_path_and_line() {
+    async fn skill_tool_returns_full_body_then_already_loaded() {
         let launch = tempfile::tempdir().expect("cwd");
         let skills = tempfile::tempdir().expect("skills");
-        let mut body = String::from("---\nname: big\ndescription: large\n---\n");
+        let mut body = String::from("---\nname: big\ndescription: large\n---\n# Big skill\n");
         for i in 0..2500 {
             body.push_str(&format!("line-{i:04} {}\n", "x".repeat(24)));
         }
-        let md = write_skill(skills.path(), "big", &body);
+        let _md = write_skill(skills.path(), "big", &body);
         let listed = list_skills_from_dir(
             AgentSkillScope::Global,
             skills.path(),
@@ -507,15 +658,17 @@ mod tests {
         let catalog = SkillCatalog::from_items(listed);
         let ctx = test_tool_ctx(launch.path(), "skill", "call_s");
         let mut tctx = ToolContext::new();
-        let out = SkillTool::new(ctx.clone(), catalog)
+        let out = SkillTool::new(ctx.clone(), catalog.clone())
             .call(&mut tctx, SkillArgs { name: "big".into() })
             .await
             .expect("skill");
-        let path = md.to_string_lossy();
-        assert!(out.contains(path.as_ref()), "{out}");
-        assert!(out.contains("(lines 1-"), "{out}");
-        assert!(out.contains("pass offset="), "{out}");
-        assert!(out.contains("to continue from this path"), "{out}");
+        assert!(out.contains("<skill_content name=\"big\">"), "{out}");
+        assert!(out.contains("# Skill: big"), "{out}");
+        assert!(out.contains("Base directory for this skill:"), "{out}");
+        assert!(out.contains("# Big skill"), "{out}");
+        assert!(out.contains("line-2499"), "{out}");
+        assert!(!out.contains("name: big"), "{out}");
+        assert!(!out.contains("pass offset="), "{out}");
         let fact = ctx
             .recorder
             .store()
@@ -524,18 +677,24 @@ mod tests {
             .fact("call_s")
             .cloned()
             .expect("fact");
-        assert!(fact.truncated);
-        assert_eq!(
-            fact.output_locator.as_ref().and_then(|l| l.path.as_deref()),
-            Some(path.as_ref())
-        );
+        assert!(!fact.truncated);
+
+        ctx.identity.set(CallIdentity {
+            turn_id: 1,
+            turn_key: "s:1".into(),
+            tool_call_id: "call_s2".into(),
+            function_name: "skill".into(),
+        });
+        let again = SkillTool::new(ctx, catalog)
+            .call(&mut tctx, SkillArgs { name: "big".into() })
+            .await
+            .expect("already loaded");
         assert!(
-            fact.output_locator
-                .as_ref()
-                .and_then(|l| l.line)
-                .unwrap_or(0)
-                > 1
+            again.contains("already loaded"),
+            "repeat load must not dump the body again: {again}"
         );
+        assert!(again.contains("Base directory for this skill:"), "{again}");
+        assert!(!again.contains("line-2499"), "{again}");
     }
 
     #[tokio::test]
@@ -561,7 +720,7 @@ mod tests {
         assert!(
             err.model_feedback()
                 .unwrap_or_default()
-                .contains("skill not found: missing"),
+                .contains("Skill \"missing\" not found"),
             "{err:?}"
         );
     }

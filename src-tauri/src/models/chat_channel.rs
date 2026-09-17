@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FolderChatChannelBinding {
+    #[serde(alias = "channelId")]
+    pub channel_id: i32,
+    #[serde(alias = "chatId", default)]
+    pub chat_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChannelInfo {
     pub id: i32,

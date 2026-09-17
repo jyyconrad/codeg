@@ -706,6 +706,11 @@ impl ChatChannelBackend for WeixinBackend {
                                             callback_data: None,
                                             target: ChannelMessageTarget::channel(channel_id),
                                             metadata: msg.clone(),
+                                            quoted_message_id: None,
+                                            provider_message_id: msg
+                                                .get("msg_id")
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_string),
                                         })
                                         .await;
                                     if let Err(e) = send_result {

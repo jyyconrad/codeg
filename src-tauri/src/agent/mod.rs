@@ -7,6 +7,7 @@ pub mod mode;
 pub mod model;
 pub mod session;
 pub mod tools;
+pub mod workspace_context;
 
 pub use hook::CodegHook;
 pub use model::{

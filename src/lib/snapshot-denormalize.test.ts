@@ -64,14 +64,16 @@ describe("denormalizeSnapshot — workflows", () => {
     expect(denormalizeSnapshot(snap).workflows).toEqual([])
   })
 
-  it("carries workflow runs through to the patch", () => {
+  it("restores completed workflow reports from a connection snapshot", () => {
     const patch = denormalizeSnapshot(
       baseSnapshot({
         workflows: [
           {
             run_id: "wf_1",
             name: "deep-research",
-            state: "running",
+            state: "completed",
+            result_summary: "# Findings\n\nThe report survives reconnect.",
+            revision: 55,
             phases: [{ title: "Plan", state: "active" }],
             agents: [],
             agents_done: 0,
@@ -84,6 +86,11 @@ describe("denormalizeSnapshot — workflows", () => {
     )
     expect(patch.workflows).toHaveLength(1)
     expect(patch.workflows[0].name).toBe("deep-research")
+    expect(patch.workflows[0]).toMatchObject({
+      state: "completed",
+      result_summary: "# Findings\n\nThe report survives reconnect.",
+      revision: 55,
+    })
   })
 })
 

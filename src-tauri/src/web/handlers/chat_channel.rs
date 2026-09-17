@@ -8,7 +8,9 @@ use crate::app_state::AppState;
 use crate::chat_channel::backends::weixin::{WeixinQrcodeInfo, WeixinQrcodeStatusPublic};
 use crate::chat_channel::webhook::WebhookConfig;
 use crate::commands::chat_channel as cc_commands;
-use crate::models::chat_channel::{ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo};
+use crate::models::chat_channel::{
+    ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo, FolderChatChannelBinding,
+};
 
 // ---------------------------------------------------------------------------
 // Param structs
@@ -270,6 +272,27 @@ pub async fn set_chat_message_language(
     Ok(Json(()))
 }
 
+pub async fn get_chat_folder_inbound_idle_minutes(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<i32>, AppCommandError> {
+    let result = cc_commands::get_chat_folder_inbound_idle_minutes_core(&state.db).await?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetFolderInboundIdleMinutesParams {
+    pub minutes: i32,
+}
+
+pub async fn set_chat_folder_inbound_idle_minutes(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<SetFolderInboundIdleMinutesParams>,
+) -> Result<Json<()>, AppCommandError> {
+    cc_commands::set_chat_folder_inbound_idle_minutes_core(&state.db, params.minutes).await?;
+    Ok(Json(()))
+}
+
 // ---------------------------------------------------------------------------
 // WeChat QR code auth
 // ---------------------------------------------------------------------------
@@ -305,13 +328,13 @@ pub struct FolderIdParams {
 #[serde(rename_all = "camelCase")]
 pub struct SetFolderChatChannelsParams {
     pub folder_id: i32,
-    pub channel_ids: Vec<i32>,
+    pub channels: Vec<FolderChatChannelBinding>,
 }
 
 pub async fn list_folder_chat_channels(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<FolderIdParams>,
-) -> Result<Json<Vec<i32>>, AppCommandError> {
+) -> Result<Json<Vec<FolderChatChannelBinding>>, AppCommandError> {
     let result = cc_commands::list_folder_chat_channels_core(&state.db, params.folder_id).await?;
     Ok(Json(result))
 }
@@ -319,9 +342,9 @@ pub async fn list_folder_chat_channels(
 pub async fn set_folder_chat_channels(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<SetFolderChatChannelsParams>,
-) -> Result<Json<Vec<i32>>, AppCommandError> {
+) -> Result<Json<Vec<FolderChatChannelBinding>>, AppCommandError> {
     let result =
-        cc_commands::set_folder_chat_channels_core(&state.db, params.folder_id, params.channel_ids)
+        cc_commands::set_folder_chat_channels_core(&state.db, params.folder_id, params.channels)
             .await?;
     Ok(Json(result))
 }

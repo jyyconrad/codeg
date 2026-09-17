@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{map_fs_error, NativeToolCtx};
+use crate::agent::context::MAX_TOOL_PRESENTATION_BYTES;
 
 const DEFAULT_READ_LIMIT: u32 = 2000;
 
@@ -74,7 +75,8 @@ impl Tool for ReadFileTool {
 
     fn description(&self) -> String {
         "Read a text file. Paths may be relative to the session working directory. \
-         Use offset (1-based line) and limit to page through large files."
+         Truncated to 2000 lines or 32KB, whichever is hit first. Use offset/limit \
+         for large files; if the result says `pass offset=N`, continue from there."
             .to_string()
     }
 
@@ -84,7 +86,7 @@ impl Tool for ReadFileTool {
             "properties": {
                 "path": { "type": "string", "description": "File path" },
                 "offset": { "type": "integer", "description": "1-based starting line" },
-                "limit": { "type": "integer", "description": "Maximum lines to return" }
+                "limit": { "type": "integer", "description": "Maximum lines to return (default 2000)" }
             },
             "required": ["path"]
         })
@@ -202,28 +204,71 @@ async fn read_file(ctx: &NativeToolCtx, args: ReadFileArgs) -> Result<String, To
     let mut request = ReadTextFileRequest::new(ctx.session_id.clone(), &path).line(offset);
     request = request.limit(limit);
     let response = ctx.fs.read_text_file(request).await.map_err(map_fs_error)?;
-    let shown_lines = if response.content.is_empty() {
+    Ok(format_read_page(
+        &path,
+        offset,
+        limit,
+        &response.content,
+        MAX_TOOL_PRESENTATION_BYTES,
+    ))
+}
+
+fn format_read_page(
+    path: &std::path::Path,
+    offset: u32,
+    limit: u32,
+    content: &str,
+    max_bytes: usize,
+) -> String {
+    let header_budget = format!("# {} (lines {offset}-999999)\n", path.display()).len();
+    let footer_budget = 96;
+    let body_budget = max_bytes
+        .saturating_sub(header_budget)
+        .saturating_sub(footer_budget)
+        .max(1);
+    let (body, byte_capped) = take_lines_upto_bytes(content, body_budget);
+    let shown_lines = if body.is_empty() {
         0
     } else {
-        response.content.lines().count() as u32
+        body.lines().count() as u32
     };
     let end = if shown_lines == 0 {
         offset.saturating_sub(1)
     } else {
         offset.saturating_add(shown_lines.saturating_sub(1))
     };
-    let mut out = format!(
-        "# {} (lines {offset}-{end})\n{}",
-        path.display(),
-        response.content
-    );
-    if shown_lines >= limit {
+    let mut out = format!("# {} (lines {offset}-{end})\n{body}", path.display());
+    let more = byte_capped || shown_lines >= limit;
+    if more && shown_lines > 0 {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
         out.push_str(&format!(
-            "\n[truncated: showing {shown_lines} lines; pass offset={} to continue from this path]",
+            "[truncated: showing {shown_lines} lines; pass offset={} to continue from this path]",
             offset.saturating_add(shown_lines)
         ));
     }
-    Ok(out)
+    out
+}
+
+fn take_lines_upto_bytes(content: &str, max_bytes: usize) -> (&str, bool) {
+    if content.len() <= max_bytes {
+        return (content, false);
+    }
+    let mut end = max_bytes.min(content.len());
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    let prefix = &content[..end];
+    if let Some(i) = prefix.rfind('\n') {
+        return (&content[..=i], true);
+    }
+    // A single line is larger than the page: keep it whole so offset still
+    // advances, even if this page exceeds the byte budget.
+    if let Some(i) = content.find('\n') {
+        return (&content[..=i], true);
+    }
+    (content, false)
 }
 
 async fn write_file(
@@ -453,5 +498,79 @@ mod tests {
             "{err:?}"
         );
         assert!(!outside.path().join("x.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn read_file_pages_past_the_byte_cap_with_offset() {
+        let dir = temp_dir();
+        let mut body = String::new();
+        for i in 1..=800 {
+            body.push_str(&format!("LINE-{i:04} {}\n", "x".repeat(80)));
+        }
+        fs::write(dir.path().join("big.txt"), &body).expect("seed");
+
+        let ctx = test_tool_ctx(dir.path(), "read_file", "call_r1");
+        let mut tctx = ToolContext::new();
+        let first = ReadFileTool::new(ctx.clone())
+            .call(
+                &mut tctx,
+                ReadFileArgs {
+                    path: "big.txt".into(),
+                    offset: Some(1),
+                    limit: Some(2000),
+                },
+            )
+            .await
+            .expect("first page");
+        assert!(first.contains("LINE-0001"), "{first}");
+        assert!(
+            first.contains("pass offset="),
+            "byte-capped page must say how to continue: {first}"
+        );
+        assert!(
+            !first.contains("LINE-0800"),
+            "first page must not include the tail: {first}"
+        );
+        let next = first
+            .rsplit_once("pass offset=")
+            .and_then(|(_, rest)| {
+                rest.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse::<u32>()
+                    .ok()
+            })
+            .expect("offset in continuation hint");
+        assert!(next > 1, "next offset {next}");
+
+        ctx.identity.set(CallIdentity {
+            turn_id: 1,
+            turn_key: "s:1".into(),
+            tool_call_id: "call_r2".into(),
+            function_name: "read_file".into(),
+        });
+        let second = ReadFileTool::new(ctx)
+            .call(
+                &mut tctx,
+                ReadFileArgs {
+                    path: "big.txt".into(),
+                    offset: Some(next),
+                    limit: Some(2000),
+                },
+            )
+            .await
+            .expect("second page");
+        assert!(
+            second.contains(&format!("LINE-{next:04}")),
+            "second page must start at the continuation line: {second}"
+        );
+        assert!(
+            !second.contains("LINE-0001"),
+            "second page must not repeat the first line: {second}"
+        );
+        assert!(
+            second.contains("LINE-0800") || second.contains("pass offset="),
+            "second page must reach the tail or offer another offset: {second}"
+        );
     }
 }

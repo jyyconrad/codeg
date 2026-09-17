@@ -26,6 +26,9 @@ describe("classifyResourceKind", () => {
     ["./relative.md", "file"],
     ["../up/one.md", "file"],
     ["~/home/config.toml", "file"],
+    ["docs/使用手册.docx", "file"],
+    ["src/main.rs", "file"],
+    ["README.md", "file"],
     // Protocol-relative URLs resolve against the page protocol — link-safety
     // routes them to the browser, so the web icon matches that behavior.
     ["//cdn.example.com/app.js", "web"],
@@ -48,9 +51,7 @@ describe("classifyResourceKind", () => {
     ["streamdown:incomplete-link"],
     // in-page fragment
     ["#section"],
-    // bare-relative targets the click handler can't resolve
-    ["src/main.rs"],
-    ["README.md"],
+    // host-like targets stay untagged
     ["www.example.com"],
     // "name.ext:line" parses as a (bogus) scheme, matching link-safety which
     // also declines to open it

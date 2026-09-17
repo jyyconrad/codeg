@@ -35,7 +35,8 @@ pub(crate) fn distill_tool_result(
     kind: DistillKind,
 ) -> String {
     match name {
-        "read_file" | "skill" => distill_read(name, fact, text, kind),
+        "skill" => text.to_string(),
+        "read_file" => distill_read(fact, text, kind),
         "write_file" => distill_write(fact, text),
         "edit_file" => distill_edit(fact, text),
         "bash" => distill_bash(fact, text, kind),
@@ -50,6 +51,9 @@ pub(crate) fn hard_clear_tool_result(
     fact: Option<&ExecutionFact>,
     text: &str,
 ) -> String {
+    if name == "skill" {
+        return text.to_string();
+    }
     if tool_skips_hard_clear(name) {
         return distill_tool_result(name, fact, text, DistillKind::Summarize);
     }
@@ -80,7 +84,7 @@ pub(crate) fn hard_clear_tool_result(
     }
 }
 
-fn distill_read(name: &str, fact: Option<&ExecutionFact>, text: &str, kind: DistillKind) -> String {
+fn distill_read(fact: Option<&ExecutionFact>, text: &str, kind: DistillKind) -> String {
     let keep = keep_chars(kind, LIVE_READ_KEEP_CHARS);
     let chars = text.chars().count();
     if chars <= keep {
@@ -88,13 +92,8 @@ fn distill_read(name: &str, fact: Option<&ExecutionFact>, text: &str, kind: Dist
     }
     let path = tool_path(fact, text);
     let (head, tail) = excerpt_sizes(kind);
-    let verb = if name == "skill" {
-        "Loaded skill"
-    } else {
-        "Read"
-    };
     format!(
-        "{verb} {path} complete ({chars} chars). Start/end excerpt; re-read the file for full contents:\n{}\n...\n{}",
+        "Read {path} complete ({chars} chars). Start/end excerpt; re-read the file for full contents:\n{}\n...\n{}",
         prefix_chars(text, head),
         suffix_chars(text, tail),
     )
@@ -268,6 +267,19 @@ mod tests {
             reason: None,
             turn_id: "s:1".into(),
         }
+    }
+
+    #[test]
+    fn skill_live_projection_keeps_the_full_body() {
+        let body = format!(
+            "Skill `demo` loaded into context.\nBase directory for this skill: /s/demo\n\n# /s/demo/SKILL.md\n\n{}",
+            "step\n".repeat(400)
+        );
+        let item = fact("skill", json!({"name": "demo"}), &body);
+        let out = distill_tool_result("skill", Some(&item), &body, DistillKind::Live);
+        assert_eq!(out, body);
+        let cleared = hard_clear_tool_result("skill", Some(&item), &body);
+        assert_eq!(cleared, body);
     }
 
     #[test]

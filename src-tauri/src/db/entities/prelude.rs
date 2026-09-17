@@ -7,6 +7,7 @@ pub use super::automation_run::Entity as AutomationRun;
 pub use super::canvas_node::Entity as CanvasNode;
 pub use super::chat_channel::Entity as ChatChannel;
 pub use super::chat_channel_message_log::Entity as ChatChannelMessageLog;
+pub use super::chat_channel_message_map::Entity as ChatChannelMessageMap;
 pub use super::chat_channel_sender_context::Entity as ChatChannelSenderContext;
 pub use super::chat_channel_thread_binding::Entity as ChatChannelThreadBinding;
 pub use super::conversation::Entity as Conversation;

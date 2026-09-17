@@ -122,6 +122,12 @@ pub struct WikiSettingsView {
     #[serde(default)]
     pub synthesize_builtin_prompt: String,
     #[serde(default)]
+    pub turn_summary_builtin_task: String,
+    #[serde(default)]
+    pub session_rollup_builtin_task: String,
+    #[serde(default)]
+    pub synthesize_builtin_task: String,
+    #[serde(default)]
     pub resolved_vault_path: String,
 }
 
@@ -242,7 +248,12 @@ mod tests {
         assert!(WIKI_TURN_SUMMARY_BUILTIN.contains("name: wiki-turn-summary"));
         assert!(WIKI_SESSION_ROLLUP_BUILTIN.contains("name: wiki-session-rollup"));
         assert!(WIKI_SYNTHESIZE_BUILTIN.contains("name: wiki-synthesize"));
-        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("codeg.wiki.synthesize.v2"));
+        assert!(WIKI_TURN_SUMMARY_BUILTIN.contains("阅读"));
+        assert!(WIKI_SESSION_ROLLUP_BUILTIN.contains("阅读"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("阅读"));
+        assert!(!WIKI_TURN_SUMMARY_BUILTIN.contains("codeg.wiki.turn_summary.v2"));
+        assert!(!WIKI_SESSION_ROLLUP_BUILTIN.contains("codeg.wiki.session_rollup.v2"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("codeg.wiki.synthesize.v2"));
     }
 
     #[test]

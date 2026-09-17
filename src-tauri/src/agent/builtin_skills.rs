@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use rig::agent::RequestPatch;
 use rig::completion::Document;
 
+use crate::agent::tools::skill::strip_yaml_frontmatter;
 use crate::paths::codeg_agent_dir;
 
 pub const USING_PLAN_EXPLORE_ID: &str = "using-plan-explore";
@@ -54,9 +55,15 @@ pub fn ensure_installed() -> io::Result<PathBuf> {
 }
 
 pub fn using_plan_explore_document() -> Document {
+    let dir = using_plan_explore_dir();
+    let body = strip_yaml_frontmatter(USING_PLAN_EXPLORE_SKILL).trim();
     Document {
         id: USING_PLAN_EXPLORE_DOC_ID.to_string(),
-        text: USING_PLAN_EXPLORE_SKILL.to_string(),
+        text: format!(
+            "# Skill: {USING_PLAN_EXPLORE_ID}\n\n{body}\n\n\
+             Base directory for this skill: {}",
+            dir.display()
+        ),
         additional_props: Default::default(),
     }
 }
@@ -141,7 +148,17 @@ mod tests {
         let patch = attach_using_plan_explore(per_call_patch(Vec::new(), Some(128)));
         assert_eq!(patch.extra_context.len(), 1);
         assert_eq!(patch.extra_context[0].id, USING_PLAN_EXPLORE_DOC_ID);
+        assert!(patch.extra_context[0]
+            .text
+            .contains("# Skill: using-plan-explore"));
         assert!(patch.extra_context[0].text.contains("enter_plan_mode"));
+        assert!(
+            !patch.extra_context[0]
+                .text
+                .contains("disable-model-invocation"),
+            "{}",
+            patch.extra_context[0].text
+        );
     }
 
     #[test]

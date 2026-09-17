@@ -7,18 +7,19 @@ use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use super::folder_inbound::remember_sent_message;
 use super::i18n::{self, Lang};
 use super::manager::ChatChannelManager;
 use super::message_formatter;
 use super::session_bridge::SessionBridge;
-use super::types::RichMessage;
+use super::types::{ChannelMessageTarget, RichMessage};
 use crate::acp::internal_bus::InternalEventBus;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::types::{AcpEvent, EventEnvelope};
 use crate::db::entities::conversation::ConversationKind;
 use crate::db::service::{
     app_metadata_service, chat_channel_message_log_service, chat_channel_service,
-    conversation_service,
+    conversation_service, folder_chat_channel_service,
 };
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 
@@ -354,6 +355,11 @@ async fn process_envelope(
         "permission_request" | "user_prompt_sent" | "question_request"
     );
 
+    let folder_chat_ids =
+        folder_chat_overrides(db_conn, &envelope.connection_id, conn_mgr.as_ref()).await;
+    let conversation_id =
+        envelope_conversation_id(&envelope.connection_id, conn_mgr.as_ref()).await;
+
     for ch in &config.enabled_channels {
         // Per-channel event filter
         if let Some(filter_json) = &ch.event_filter_json {
@@ -376,8 +382,20 @@ async fn process_envelope(
             }
         }
 
-        // Send
-        let send_result = manager.send_to_channel(ch.id, &msg).await;
+        // Folder notify-channel session id overrides the channel default chat.
+        let (send_result, target) = match folder_chat_ids.get(&ch.id) {
+            Some(chat_id) => {
+                let target = ChannelMessageTarget::with_chat_id(ch.id, chat_id.clone());
+                (manager.send_to_target(&target, &msg).await, target)
+            }
+            None => (
+                manager.send_to_channel(ch.id, &msg).await,
+                ChannelMessageTarget::channel(ch.id),
+            ),
+        };
+        if let (Ok(sent), Some(conversation_id)) = (&send_result, conversation_id) {
+            remember_sent_message(db_conn, &target, &sent.0, conversation_id).await;
+        }
         let (status, error_detail) = match &send_result {
             Ok(_) => {
                 // Only update the debounce timestamp on success, and only for
@@ -400,6 +418,53 @@ async fn process_envelope(
             error_detail,
         )
         .await;
+    }
+}
+
+async fn envelope_conversation_id(
+    connection_id: &str,
+    conn_mgr: Option<&ConnectionManager>,
+) -> Option<i32> {
+    let state = conn_mgr?.get_state(connection_id).await?;
+    let conversation_id = state.read().await.conversation_id;
+    conversation_id
+}
+
+/// Per-channel chat/session id from the conversation's folder notify bindings.
+/// Empty `chat_id` on a binding is omitted so the channel default is used.
+async fn folder_chat_overrides(
+    db: &DatabaseConnection,
+    connection_id: &str,
+    conn_mgr: Option<&ConnectionManager>,
+) -> HashMap<i32, String> {
+    let Some(mgr) = conn_mgr else {
+        return HashMap::new();
+    };
+    let Some(state) = mgr.get_state(connection_id).await else {
+        return HashMap::new();
+    };
+    let conversation_id = state.read().await.conversation_id;
+    let Some(conversation_id) = conversation_id else {
+        return HashMap::new();
+    };
+    drop(state);
+    let Ok(row) = conversation_service::get_by_id(db, conversation_id).await else {
+        return HashMap::new();
+    };
+    match folder_chat_channel_service::list_bindings(db, row.folder_id).await {
+        Ok(bindings) => bindings
+            .into_iter()
+            .filter_map(|binding| binding.chat_id.map(|chat_id| (binding.channel_id, chat_id)))
+            .collect(),
+        Err(e) => {
+            tracing::warn!(
+                conversation_id,
+                folder_id = row.folder_id,
+                error = %e,
+                "[ChatChannel] failed to list folder chat ids for event push"
+            );
+            HashMap::new()
+        }
     }
 }
 
@@ -599,6 +664,7 @@ mod permission_push_tests {
     #[derive(Clone, Default)]
     struct Recorder {
         msgs: Arc<Mutex<Vec<String>>>,
+        chat_ids: Arc<Mutex<Vec<Option<String>>>>,
     }
     struct RecordingBackend {
         rec: Recorder,
@@ -620,6 +686,7 @@ mod permission_push_tests {
         }
         async fn send_message(&self, text: &str) -> Result<SentMessageId, ChatChannelError> {
             self.rec.msgs.lock().await.push(text.to_string());
+            self.rec.chat_ids.lock().await.push(None);
             Ok(SentMessageId("1".into()))
         }
         async fn send_rich_message(
@@ -627,6 +694,16 @@ mod permission_push_tests {
             message: &RichMessage,
         ) -> Result<SentMessageId, ChatChannelError> {
             self.rec.msgs.lock().await.push(message.to_plain_text());
+            self.rec.chat_ids.lock().await.push(None);
+            Ok(SentMessageId("1".into()))
+        }
+        async fn send_rich_message_to(
+            &self,
+            message: &RichMessage,
+            target: &crate::chat_channel::types::ChannelMessageTarget,
+        ) -> Result<SentMessageId, ChatChannelError> {
+            self.rec.msgs.lock().await.push(message.to_plain_text());
+            self.rec.chat_ids.lock().await.push(target.chat_id.clone());
             Ok(SentMessageId("1".into()))
         }
         async fn test_connection(&self) -> Result<(), ChatChannelError> {
@@ -793,6 +870,10 @@ mod permission_push_tests {
 
     async fn sent(rec: &Recorder) -> Vec<String> {
         rec.msgs.lock().await.clone()
+    }
+
+    async fn sent_chat_ids(rec: &Recorder) -> Vec<Option<String>> {
+        rec.chat_ids.lock().await.clone()
     }
 
     /// A permission request from a NON-bridged (desktop / web) connection is
@@ -1063,6 +1144,87 @@ mod permission_push_tests {
         );
     }
 
+    /// Outbound event cards (开始任务 / 完成) must be mapped so a Feishu
+    /// quote/reply can continue that conversation instead of the folder's
+    /// latest desktop session.
+    #[tokio::test]
+    async fn event_push_remembers_provider_message_id() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::db::service::{
+            chat_channel_message_map_service, chat_channel_service, conversation_service,
+        };
+        use crate::web::event_bridge::EventEmitter;
+        use std::path::PathBuf;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-map").await;
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("hi".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "lark".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_default" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let (chat, _rec) = manager_with_recorder(channel.id).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live(
+                "c-map",
+                AgentType::Grok,
+                Some(PathBuf::from("/tmp/event-map")),
+                EventEmitter::Noop,
+            )
+            .await;
+        {
+            let state = conn_mgr.get_state("c-map").await.unwrap();
+            let mut snap = state.write().await;
+            snap.conversation_id = Some(conv.id);
+        }
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut last_push = HashMap::new();
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "c-map".into(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "s".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "Grok".into(),
+                    run_id: None,
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config_all_on(channel.id),
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        assert_eq!(
+            chat_channel_message_map_service::conversation_id_for(&db.conn, channel.id, "1")
+                .await
+                .unwrap(),
+            Some(conv.id)
+        );
+    }
+
     /// With a live connection, the Events card carries last-message, the
     /// truncated session title, and changed-file paths.
     #[tokio::test]
@@ -1211,6 +1373,84 @@ mod permission_push_tests {
             msgs[0].contains("你好"),
             "body must be the prompt, got {:?}",
             msgs[0]
+        );
+    }
+
+    /// A folder notify-channel session id must win over the channel default
+    /// chat when pushing desktop/web session events.
+    #[tokio::test]
+    async fn event_push_uses_folder_chat_id_override() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::db::service::{chat_channel_service, folder_chat_channel_service};
+        use crate::web::event_bridge::EventEmitter;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-folder-chat").await;
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "Daimeng".to_string(),
+            "lark".to_string(),
+            serde_json::json!({ "chat_id": "oc_default" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .expect("seed chat channel");
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            folder_id,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_fe68230be88f670a68432db911f78a68".into()),
+            }],
+        )
+        .await
+        .expect("bind folder chat id");
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("Fix tools".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (chat, rec) = manager_with_recorder(channel.id).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live("c1", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        conn_mgr
+            .get_state("c1")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(conv.id);
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut config = config_all_on(channel.id);
+        config.lang = Lang::ZhCn;
+        config.global_filter = Some(vec!["user_prompt_sent".to_string()]);
+        let mut last_push = HashMap::new();
+        process_envelope(
+            &user_prompt_envelope("c1", "开始"),
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        assert_eq!(sent(&rec).await.len(), 1);
+        assert_eq!(
+            sent_chat_ids(&rec).await,
+            vec![Some("oc_fe68230be88f670a68432db911f78a68".to_string())]
         );
     }
 

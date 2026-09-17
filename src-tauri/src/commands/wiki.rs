@@ -69,6 +69,9 @@ async fn wiki_settings_view(conn: &DatabaseConnection) -> Result<WikiSettingsVie
         turn_summary_builtin_prompt: settings::WIKI_TURN_SUMMARY_BUILTIN.to_string(),
         session_rollup_builtin_prompt: settings::WIKI_SESSION_ROLLUP_BUILTIN.to_string(),
         synthesize_builtin_prompt: settings::WIKI_SYNTHESIZE_BUILTIN.to_string(),
+        turn_summary_builtin_task: crate::wiki::prompts::builtin_task_template("turn_summary"),
+        session_rollup_builtin_task: crate::wiki::prompts::builtin_task_template("session_rollup"),
+        synthesize_builtin_task: crate::wiki::prompts::builtin_task_template("synthesize"),
         resolved_vault_path,
     })
 }

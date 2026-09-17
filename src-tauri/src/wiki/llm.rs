@@ -147,33 +147,89 @@ impl ProductionWikiLlm {
 }
 
 /// User-edited prompt replaces the built-in skill body. Empty/whitespace
-/// falls back to the built-in skill. Host schema reminder is always appended.
+/// falls back to the built-in skill. The prompt is work guidance only; the
+/// host still validates the job JSON independently.
 pub fn resolve_wiki_preamble(builtin: &str, user_prompt: Option<&str>) -> String {
-    let body = user_prompt
+    user_prompt
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(builtin);
-    format!("{body}\n\nReturn ONLY JSON. No markdown fence. The host validates the schema.\n")
+        .unwrap_or(builtin)
+        .to_string()
 }
 
-/// Contract comes from the shipped skill, independently of user prose. A
-/// custom prompt may change editorial preference but cannot remove host fields.
+/// Stage-specific builtin text is already passed as `builtin`. A custom
+/// prompt replaces it wholesale.
 pub fn resolve_wiki_stage_preamble(
-    stage: &str,
+    _stage: &str,
     builtin: &str,
     user_prompt: Option<&str>,
 ) -> String {
-    let contract_source = match stage {
-        "turn_summary" => include_str!("../../agent-skills/wiki-turn-summary/SKILL.md"),
-        "session_rollup" => include_str!("../../agent-skills/wiki-session-rollup/SKILL.md"),
-        _ => include_str!("../../agent-skills/wiki-synthesize/SKILL.md"),
+    resolve_wiki_preamble(builtin, user_prompt)
+}
+
+/// Keep the host's wire format with the task, separate from editable agent guidance.
+/// These fields describe the existing stage validators, not additional write permissions.
+fn wiki_task_message(stage: &str, input: &Value) -> String {
+    let contract = match stage {
+        "turn_summary" | "session_rollup" => {
+            let (schema, identity) = if stage == "turn_summary" {
+                (TURN_SUMMARY_CONTRACT_VERSION, "source_id")
+            } else {
+                (SESSION_ROLLUP_CONTRACT_VERSION, "conversation_id")
+            };
+            let mut example = serde_json::json!({
+                "schema": schema,
+                "title": "<概括实际工作的标题>",
+                "body": "<有实质内容的 Markdown 正文>",
+                "nothing_to_summarize": false,
+                "reason_code": null,
+                "warnings": []
+            });
+            example[identity] = input[identity].clone();
+            format!(
+                "有内容时的结果形状（替换占位文字）：\n{example}\n\
+                 schema 必须为 {schema}；{identity} 必须原样使用本次任务信息中的值和类型。\n\
+                 nothing_to_summarize 必须为布尔值。有内容时为 false，title 与 body 非空；\
+                 标题应描述工作，不得使用来源 ID 或 ACP turn: 前缀，正文不能只有标题或链接。\n\
+                 确实没有持久内容时，将 nothing_to_summarize 设为 true、title 和 body 设为空字符串，\
+                 reason_code 只能为 empty_input、fully_redacted 或 no_durable_content。\
+                 读取失败应在 warnings 中说明，不得以 empty_input 掩盖。"
+            )
+        }
+        "synthesize" => {
+            let example = serde_json::json!({
+                "schema": SYNTHESIZE_CONTRACT_VERSION,
+                "page_proposals": [{
+                    "proposal_key": "<本次结果中唯一的提案标识>",
+                    "op": "create",
+                    "type": "method",
+                    "title": "<具体主题>",
+                    "summary": "<一句话摘要>",
+                    "body": "<有实质内容的 Markdown 正文>",
+                    "input_rels": ["<本批材料清单中实际使用的 rel>"]
+                }],
+                "warnings": []
+            });
+            let types = crate::wiki::compile::DOMAIN_TYPES.join("、");
+            format!(
+                "结果形状（示例为新建方法页，按实际内容替换）：\n{example}\n\
+                 schema 必须为 {SYNTHESIZE_CONTRACT_VERSION}，page_proposals 必须是数组。\n\
+                 每项必须有唯一非空 proposal_key，以及 op、type、单行非空 title、实质 Markdown body；\
+                 summary 可省略。type 只能为：{types}。\n\
+                 op 为 create 时不要提供 existing_note_id；为 update 或 supersede 时，\
+                 existing_note_id 必须来自已有页面索引 index，type 必须与原页一致，每个原页最多一个提案。\n\
+                 update 的 body 是更新后的完整正文，保留仍有效的旧内容，不能只给补丁。\n\
+                 input_rels 填本批材料清单中实际关联的 rel；省略或为空时宿主会关联本批全部来源。\
+                 related_proposal_keys 可关联同次结果中其他新提案的 proposal_key，不得引用自身或未知标识。\n\
+                 supersede 必须且只能指定一个替代目标：来自 index 的 replacement_note_id，\
+                 或来自本次提案的 replacement_proposal_key；不可替代自身。宿主保留旧正文和替代链接，\
+                 此时 body 说明替代原因。其他 op 不得包含 replacement 字段，不支持删除。\n\
+                 没有实质增量时返回空 page_proposals 数组，读取限制或未解决冲突写入 warnings。"
+            )
+        }
+        _ => "返回与本次任务相符的 JSON 对象。".to_string(),
     };
-    let contract = contract_source
-        .split_once("## Return value")
-        .map(|(_, section)| section.split("## Failure").next().unwrap_or(section))
-        .unwrap_or(contract_source);
-    let output_rule = "Generated output must have a substantive body. The host records source links; line evidence and read receipts are not required.";
-    format!("{}\nHost output contract for {stage} (mandatory):\n{contract}\nUse source_references to read the material needed for the Wiki. Record unavailable sources in warnings and use the available material; do not invent source contents. {output_rule}\n", resolve_wiki_preamble(builtin, user_prompt))
+    super::prompts::task_message(stage, input, &contract)
 }
 
 #[async_trait]
@@ -181,7 +237,7 @@ impl WikiLlm for ProductionWikiLlm {
     async fn complete_json(&self, stage: &str, input: Value) -> Result<WikiLlmRun, WikiLlmError> {
         let preamble =
             resolve_wiki_stage_preamble(stage, &self.skill, self.extra_prompt.as_deref());
-        let user = format!("stage={stage}\ninput={input}\n");
+        let user = wiki_task_message(stage, &input);
         let vault = input
             .get("vault_abs")
             .and_then(|v| v.as_str())
@@ -209,9 +265,13 @@ impl WikiLlm for ProductionWikiLlm {
                 .unwrap_or("attempt"),
             input.get("attempt").and_then(Value::as_i64).unwrap_or(1)
         );
+        let extra = staging
+            .as_ref()
+            .map(|path| extra_read_roots(&input, path))
+            .unwrap_or_default();
         let (text, trace) = tokio::select! {
             _ = self.cancel.cancelled() => return Err(WikiLlmError::Cancelled),
-            result = one_shot(&self.bound, &preamble, &user, workspace, max_turns, &session, self.cancel.clone()) => result?,
+            result = one_shot(&self.bound, &preamble, &user, workspace, max_turns, &session, self.cancel.clone(), &extra) => result?,
         };
         self.check_cancelled()?;
         let mut output = parse_json_object(&text)?;
@@ -244,7 +304,45 @@ impl WikiLlm for ProductionWikiLlm {
 }
 
 pub fn wiki_fs_policy(vault: &Path, staging: &Path) -> FsAccessPolicy {
-    FsAccessPolicy::wiki_worker_with_extra_reads(vault, staging, &[staging.to_path_buf()])
+    wiki_fs_policy_with_reads(vault, staging, &[])
+}
+
+pub fn wiki_fs_policy_with_reads(
+    vault: &Path,
+    staging: &Path,
+    extra_read_roots: &[PathBuf],
+) -> FsAccessPolicy {
+    let mut extra = vec![staging.to_path_buf()];
+    extra.extend(extra_read_roots.iter().cloned());
+    FsAccessPolicy::wiki_worker_with_extra_reads(vault, staging, &extra)
+}
+
+fn extra_read_roots(input: &Value, staging: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![staging.to_path_buf()];
+    if let Some(paths) = input.get("original_paths").and_then(Value::as_array) {
+        for path in paths.iter().filter_map(Value::as_str) {
+            let path = PathBuf::from(path);
+            if let Some(parent) = path.parent() {
+                if parent != Path::new("") {
+                    roots.push(parent.to_path_buf());
+                }
+            }
+        }
+    }
+    if let Some(refs) = input.get("source_references").and_then(Value::as_array) {
+        for rel in refs
+            .iter()
+            .filter_map(|item| item.get("rel").and_then(Value::as_str))
+        {
+            let path = PathBuf::from(rel);
+            if path.is_absolute() {
+                if let Some(parent) = path.parent() {
+                    roots.push(parent.to_path_buf());
+                }
+            }
+        }
+    }
+    roots
 }
 
 fn wiki_tool_ctx(
@@ -252,6 +350,7 @@ fn wiki_tool_ctx(
     staging: &Path,
     session: &str,
     cancel: CancellationToken,
+    extra_read_roots: &[PathBuf],
 ) -> NativeToolCtx {
     let store = Arc::new(Mutex::new(ContextStore::new(session)));
     let recorder =
@@ -262,11 +361,14 @@ fn wiki_tool_ctx(
         recorder,
         cancel,
         launch_cwd: vault.to_path_buf(),
-        fs: Arc::new(FileSystemRuntime::with_policy(wiki_fs_policy(
-            vault, staging,
+        fs: Arc::new(FileSystemRuntime::with_policy(wiki_fs_policy_with_reads(
+            vault,
+            staging,
+            extra_read_roots,
         ))),
         session_id: session.into(),
         spill_dir: staging.join("spills"),
+        loaded_skills: crate::agent::tools::LoadedSkills::shared(),
     }
 }
 
@@ -278,6 +380,7 @@ async fn one_shot(
     max_turns: usize,
     session: &str,
     cancel: CancellationToken,
+    extra_read_roots: &[PathBuf],
 ) -> Result<(String, crate::agent::hook::HookTrace), WikiLlmError> {
     use crate::agent::hook::CodegHook;
     use crate::agent::hook::HookTrace;
@@ -286,8 +389,9 @@ async fn one_shot(
     use rig::completion::Message;
 
     let trace = HookTrace::new();
-    let context =
-        workspace.map(|(vault, staging)| wiki_tool_ctx(vault, staging, session, cancel.clone()));
+    let context = workspace.map(|(vault, staging)| {
+        wiki_tool_ctx(vault, staging, session, cancel.clone(), extra_read_roots)
+    });
     let hook = context
         .clone()
         .map(|ctx| CodegHook::auto_allow_with_tools(trace.clone(), ctx))
@@ -627,6 +731,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn production_runner_sends_output_contract_with_task_not_custom_system_prompt() {
+        for (stage, schema, identity, fields) in [
+            (
+                "turn_summary",
+                "codeg.wiki.turn_summary.v2",
+                serde_json::json!({"source_id":"source-1"}),
+                vec![
+                    "source_id",
+                    "title",
+                    "body",
+                    "nothing_to_summarize",
+                    "reason_code",
+                ],
+            ),
+            (
+                "session_rollup",
+                "codeg.wiki.session_rollup.v2",
+                serde_json::json!({"conversation_id":42}),
+                vec![
+                    "conversation_id",
+                    "title",
+                    "body",
+                    "nothing_to_summarize",
+                    "reason_code",
+                ],
+            ),
+            (
+                "synthesize",
+                "codeg.wiki.synthesize.v2",
+                serde_json::json!({}),
+                vec![
+                    "page_proposals",
+                    "proposal_key",
+                    "existing_note_id",
+                    "input_rels",
+                ],
+            ),
+        ] {
+            let (bound, requests) = scripted_model(vec![
+                serde_json::json!({"delta":{"role":"assistant","content":"{}"}}),
+            ])
+            .await;
+            let model = ProductionWikiLlm::new(
+                bound,
+                "Built-in guidance".into(),
+                Some("Custom organization guidance".into()),
+            );
+            // Deliberately omit schema: the host owns the stage's output protocol.
+            model.complete_json(stage, identity).await.unwrap();
+            let observed = requests.lock().unwrap();
+            let messages = observed[0]["messages"].as_array().unwrap();
+            let system = messages.iter().find(|m| m["role"] == "system").unwrap();
+            let user = messages.iter().find(|m| m["role"] == "user").unwrap();
+            let system_text = system["content"].to_string();
+            let task_text = user["content"].to_string();
+            assert!(system_text.contains("Custom organization guidance"));
+            assert!(!system_text.contains("Built-in guidance"));
+            assert!(!system_text.contains(schema));
+            assert!(task_text.contains(schema), "missing {stage} output schema");
+            for field in fields {
+                assert!(task_text.contains(field), "missing {stage} field {field}");
+            }
+            assert!(task_text.contains("warnings"));
+        }
+    }
+
+    #[tokio::test]
+    async fn production_runner_task_lists_readable_paths_and_preserves_source_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("personal wiki");
+        let staging = dir.path().join("job staging");
+        std::fs::create_dir_all(vault.join("work/turns")).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        let (bound, requests) = scripted_model(vec![
+            serde_json::json!({"delta":{"role":"assistant","content":"{}"}}),
+        ])
+        .await;
+        let model = ProductionWikiLlm::new(bound, "Organize this conversation".into(), None);
+        model
+            .complete_json(
+                "session_rollup",
+                serde_json::json!({
+                    "schema":"codeg.wiki.session_rollup.v2",
+                    "job_id":"job-42", "attempt":2, "conversation_id":42,
+                    "vault_abs":vault, "staging_abs":staging, "max_turns":16,
+                    "rel":"work/sessions/c42.md",
+                    "turn_rels":["work/turns/first.md"],
+                    "source_references":[{"rel":"work/turns/first.md","source_ids":["source-1"]}]
+                }),
+            )
+            .await
+            .unwrap();
+        let observed = requests.lock().unwrap();
+        let messages = observed[0]["messages"].as_array().unwrap();
+        let user = messages.iter().find(|m| m["role"] == "user").unwrap();
+        let text = user["content"].to_string();
+        assert!(text.contains(vault.join("work/turns/first.md").to_str().unwrap()));
+        assert!(text.contains("work/turns/first.md"));
+        assert!(text.contains("source-1"));
+        assert!(text.contains(vault.join("work/sessions/c42.md").to_str().unwrap()));
+        assert!(text.contains(staging.to_str().unwrap()));
+        assert!(!text.contains("stage=session_rollup"));
+        assert!(!text.contains("input={"));
+    }
+
+    #[tokio::test]
     async fn production_runner_delivers_required_file_to_model() {
         let dir = tempfile::tempdir().unwrap();
         let vault = dir.path().join("vault");
@@ -740,26 +950,25 @@ mod tests {
     }
 
     #[test]
-    fn custom_prompt_cannot_remove_stage_schema_or_source_contract() {
+    fn wiki_preamble_is_work_guidance_not_a_json_form() {
         for stage in ["turn_summary", "session_rollup", "synthesize"] {
-            let preamble = resolve_wiki_stage_preamble(
-                stage,
-                "editorial instructions",
-                Some("Write briefly."),
-            );
-            assert!(preamble.starts_with("Write briefly."));
-            assert!(preamble.contains("\"schema\""));
-            assert!(preamble.contains("source_references"));
-            assert!(!preamble.contains("Read every required input completely"));
+            let preamble = resolve_wiki_stage_preamble(stage, "inspect the wiki", None);
+            assert!(preamble.starts_with("inspect the wiki"));
+            assert!(!preamble.contains("\"schema\""));
+            assert!(!preamble.contains("Return only JSON"));
+            assert!(!preamble.contains("Return ONLY JSON"));
+            assert!(!preamble.contains("## Return value"));
+            assert!(!preamble.contains("Host output contract"));
         }
     }
 
     #[test]
     fn user_prompt_replaces_builtin_skill() {
         let preamble = resolve_wiki_preamble("# builtin\nnever invent", Some("# custom\nbe terse"));
-        assert!(preamble.starts_with("# custom\nbe terse"));
+        assert_eq!(preamble, "# custom\nbe terse");
         assert!(!preamble.contains("never invent"));
-        assert!(preamble.contains("Return ONLY JSON"));
+        assert!(!preamble.contains("read_file"));
+        assert!(!preamble.contains("Return ONLY JSON"));
     }
 
     #[test]

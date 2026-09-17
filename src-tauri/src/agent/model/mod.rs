@@ -4,8 +4,8 @@ mod turn;
 
 use rig::providers::openai::CompletionsClient;
 
-pub use client::{resolve_session_wire_protocol, CodegLlmClient};
-pub use preamble::session_preamble;
+pub use client::{probe_wire_protocol, resolve_session_wire_protocol, CodegLlmClient};
+pub use preamble::{live_session_preamble, session_preamble, PreambleSpec};
 pub use turn::{
     run_native_turn, NativeTurnOutcome, NativeTurnRequest, NativeTurnTools, WIKI_COMPILE_MAX_TURNS,
 };

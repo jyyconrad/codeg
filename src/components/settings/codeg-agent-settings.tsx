@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Cpu,
+  FolderTree,
   Loader2,
   MessageSquareText,
   Save,
@@ -19,6 +20,7 @@ import {
 } from "@/components/shared/settings-section"
 import {
   CodegAgentCompactModelField,
+  CodegAgentContextFields,
   CodegAgentPromptEditors,
 } from "@/components/settings/codeg-agent-fields"
 import { CodegAgentProviderManager } from "@/components/settings/codeg-agent-provider-manager"
@@ -29,8 +31,10 @@ import { toErrorMessage } from "@/lib/app-error"
 import {
   acpListAgents,
   acpPreflight,
+  acpProbeCodegProtocol,
   acpUpdateAgentEnv,
   listModelProviders,
+  updateModelProvider,
 } from "@/lib/api"
 import {
   CODEG_BIND_SELECT_ID,
@@ -42,6 +46,7 @@ import {
   CODEG_MAX_TURNS_KEY,
   CODEG_WINDOW_INPUT_ID,
   bindCodegProviderEnv,
+  bindCodegProviderWithProbe,
   codegDraftFromEnv,
   codegEnvInt,
   codegMaxOutputTokens,
@@ -50,6 +55,7 @@ import {
   patchCodegMaxOutputTokens,
   persistThenRunPreflight,
 } from "@/lib/codeg-agent-env"
+import { serializeCodegAgentCatalog } from "@/lib/codeg-agent-catalog"
 import { modelProvidersForAgent } from "@/lib/codeg-agent-providers"
 import {
   CODEG_BUILTIN_COMPACT_PROMPT,
@@ -152,10 +158,40 @@ export function CodegAgentSettings() {
     load().catch(console.error)
   }, [load])
 
-  const bindProvider = useCallback((provider: ModelProviderInfo | null) => {
-    setEnvText((current) => bindCodegProviderEnv(current, provider).envText)
-    setModelProviderId(provider?.id ?? null)
-  }, [])
+  const bindProvider = useCallback(
+    async (provider: ModelProviderInfo | null) => {
+      if (!provider) {
+        setEnvText((current) => bindCodegProviderEnv(current, null).envText)
+        setModelProviderId(null)
+        return
+      }
+      try {
+        const result = await bindCodegProviderWithProbe(
+          envText,
+          provider,
+          acpProbeCodegProtocol
+        )
+        if (result.catalog && provider.agent_type === "codeg_agent") {
+          try {
+            const { provider: updated } = await updateModelProvider({
+              id: provider.id,
+              model: serializeCodegAgentCatalog(result.catalog),
+            })
+            setProviders((rows) =>
+              rows.map((row) => (row.id === updated.id ? updated : row))
+            )
+          } catch (err) {
+            toast.error(toErrorMessage(err))
+          }
+        }
+        setEnvText(result.envText)
+        setModelProviderId(provider.id)
+      } catch (err) {
+        toast.error(t("protocolDetectFailed", { message: toErrorMessage(err) }))
+      }
+    },
+    [envText, t]
+  )
 
   const persist = useCallback(async () => {
     const env = overlayCodegPromptEnv(
@@ -251,7 +287,9 @@ export function CodegAgentSettings() {
             if (touched) {
               setSelectedProviderId(touched.id)
               if (modelProviderId === touched.id) {
-                bindProvider(touched)
+                setEnvText((current) =>
+                  bindCodegProviderEnv(current, touched).envText
+                )
               }
             }
           }}
@@ -267,6 +305,17 @@ export function CodegAgentSettings() {
             compactPrompt={compactPrompt}
             onSystemPromptChange={setSystemPrompt}
             onCompactPromptChange={setCompactPrompt}
+          />
+        </SettingsSection>
+
+        <SettingsSection
+          icon={FolderTree}
+          title={t("contextTitle")}
+          description={t("contextDescription")}
+        >
+          <CodegAgentContextFields
+            envText={envText}
+            onEnvTextChange={setEnvText}
           />
         </SettingsSection>
 

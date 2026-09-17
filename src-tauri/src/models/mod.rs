@@ -21,7 +21,9 @@ pub use automation::{
 };
 pub use canvas::{CanvasMutation, CanvasNode, CanvasSnapshot};
 #[allow(unused_imports)]
-pub use chat_channel::{ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo};
+pub use chat_channel::{
+    ChannelStatusInfo, ChatChannelInfo, ChatChannelMessageLogInfo, FolderChatChannelBinding,
+};
 pub use conversation::{
     AgentConversationCount, AgentStats, ConversationDetail, ConversationSummary,
     ConversationTurnsPage, DbConversationDetail, DbConversationSummary, FolderInfo,

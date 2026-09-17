@@ -3,6 +3,7 @@ import {
   prepareWikiMarkdown,
   resolveWikiLink,
   wikiBodyForReading,
+  wikiFolderLandingPath,
 } from "./wiki-content"
 
 describe("Wiki reading contract", () => {
@@ -57,6 +58,26 @@ it("reads evidence line ranges against the original document including YAML", as
     )
   ).toEqual({ start: 4, end: 5, text: "First body line\nSecond body line" })
   expect(wikiSourceLineExcerpt("one\ntwo", "#L99-L100")).toBeNull()
+})
+
+it("opens a folder at index.md or README.md when those files exist", () => {
+  expect(
+    wikiFolderLandingPath("work", [
+      { name: "index.md", path: "work/index.md", is_dir: false },
+      { name: "records", path: "work/records", is_dir: true },
+    ])
+  ).toBe("work/index.md")
+  expect(
+    wikiFolderLandingPath("docs", [
+      { name: "README.md", path: "docs/README.md", is_dir: false },
+    ])
+  ).toBe("docs/README.md")
+  expect(
+    wikiFolderLandingPath("raw", [
+      { name: "a.md", path: "raw/a.md", is_dir: false },
+    ])
+  ).toBeNull()
+  expect(wikiFolderLandingPath("knowledge")).toBeNull()
 })
 
 it("shows the title once while retaining other headings and code", () => {

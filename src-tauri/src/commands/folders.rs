@@ -4450,7 +4450,7 @@ fn sync_directory(_path: &Path) -> Result<(), AppCommandError> {
     Ok(())
 }
 
-async fn run_file_io<T, F>(f: F) -> Result<T, AppCommandError>
+pub(crate) async fn run_file_io<T, F>(f: F) -> Result<T, AppCommandError>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, AppCommandError> + Send + 'static,
@@ -5229,6 +5229,15 @@ pub async fn read_workspace_file_base64(
         Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
     })
     .await
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn path_exists(path: String) -> Result<bool, AppCommandError> {
+    let trimmed = path.trim().to_string();
+    if trimmed.is_empty() {
+        return Ok(false);
+    }
+    run_file_io(move || Ok(PathBuf::from(&trimmed).is_file())).await
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -9191,7 +9200,29 @@ mod workspace_confinement_tests {
         crate::folder_links::unregister(root.path(), &canonical_target);
     }
 
-    /// The strict rule now guards only the non-user-driven surfaces (HTML
+    #[tokio::test]
+    async fn path_exists_is_true_only_for_regular_files() {
+        let dir = tempfile::tempdir().expect("dir");
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"x").expect("write");
+        assert!(path_exists(file.to_string_lossy().into_owned())
+            .await
+            .expect("exists"));
+        assert!(!path_exists(dir.path().to_string_lossy().into_owned())
+            .await
+            .expect("dir"));
+        assert!(!path_exists(
+            dir.path()
+                .join("missing.txt")
+                .to_string_lossy()
+                .into_owned()
+        )
+        .await
+        .expect("missing"));
+        assert!(!path_exists("  ".into()).await.expect("blank"));
+    }
+
+    /// The strict rule now guards only the non-user-driven surfaces (HTML)
     /// preview sub-resource inlining, the web upload chain) — see
     /// `is_within_workspace`. User-navigated reads go through
     /// `ensure_user_navigable_path` and are covered separately.

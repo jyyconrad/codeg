@@ -219,8 +219,10 @@ impl LarkBackend {
         &self,
         msg_type: &str,
         content: &str,
+        receive_id: Option<&str>,
     ) -> Result<SentMessageId, ChatChannelError> {
         let token = self.get_tenant_access_token().await?;
+        let receive_id = lark_receive_id(&self.chat_id, receive_id);
 
         let resp = self
             .client
@@ -230,7 +232,7 @@ impl LarkBackend {
             ))
             .header("Authorization", format!("Bearer {}", token))
             .json(&SendMessageRequest {
-                receive_id: self.chat_id.clone(),
+                receive_id: receive_id.to_string(),
                 msg_type: msg_type.to_string(),
                 content: content.to_string(),
             })
@@ -252,6 +254,24 @@ impl LarkBackend {
 
         let message_id = result.data.and_then(|d| d.message_id).unwrap_or_default();
         Ok(SentMessageId(message_id))
+    }
+
+    async fn send_rich_message_with_receive_id(
+        &self,
+        message: &RichMessage,
+        receive_id: Option<&str>,
+    ) -> Result<SentMessageId, ChatChannelError> {
+        let post = build_lark_post(message);
+        let content = serde_json::to_string(&post)
+            .map_err(|e| ChatChannelError::SendFailed(e.to_string()))?;
+        match self.send_lark_message("post", &content, receive_id).await {
+            Ok(id) => Ok(id),
+            Err(e) => {
+                tracing::warn!("[Lark] post markdown send failed: {e}, retrying as plain text");
+                let text = serde_json::json!({ "text": message.to_plain_text() }).to_string();
+                self.send_lark_message("text", &text, receive_id).await
+            }
+        }
     }
 
     async fn start_ws_receiver(
@@ -502,6 +522,29 @@ async fn handle_lark_event(
             .unwrap_or("unknown")
             .to_string();
 
+        let chat_id = event
+            .pointer("/event/message/chat_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let provider_message_id = event
+            .pointer("/event/message/message_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let quoted_message_id = event
+            .pointer("/event/message/parent_id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        let target = match chat_id {
+            Some(chat_id) => ChannelMessageTarget::with_chat_id(channel_id, chat_id),
+            None => ChannelMessageTarget::channel(channel_id),
+        };
+
         // Keep a safe breadcrumb (who sent it) at the default level; the message
         // body itself only logs at debug so it never lands on disk by default.
         tracing::info!("[Lark] incoming message from {sender_id}");
@@ -513,8 +556,10 @@ async fn handle_lark_event(
                 sender_id,
                 command_text: clean_text,
                 callback_data: None,
-                target: ChannelMessageTarget::channel(channel_id),
+                target,
                 metadata: event.clone(),
+                quoted_message_id,
+                provider_message_id,
             })
             .await;
     }
@@ -605,29 +650,36 @@ impl ChatChannelBackend for LarkBackend {
 
     async fn send_message(&self, text: &str) -> Result<SentMessageId, ChatChannelError> {
         let content = serde_json::json!({ "text": text }).to_string();
-        self.send_lark_message("text", &content).await
+        self.send_lark_message("text", &content, None).await
     }
 
     async fn send_rich_message(
         &self,
         message: &RichMessage,
     ) -> Result<SentMessageId, ChatChannelError> {
-        let post = build_lark_post(message);
-        let content = serde_json::to_string(&post)
-            .map_err(|e| ChatChannelError::SendFailed(e.to_string()))?;
-        match self.send_lark_message("post", &content).await {
-            Ok(id) => Ok(id),
-            Err(e) => {
-                tracing::warn!("[Lark] post markdown send failed: {e}, retrying as plain text");
-                self.send_message(&message.to_plain_text()).await
-            }
-        }
+        self.send_rich_message_with_receive_id(message, None).await
+    }
+
+    async fn send_rich_message_to(
+        &self,
+        message: &RichMessage,
+        target: &ChannelMessageTarget,
+    ) -> Result<SentMessageId, ChatChannelError> {
+        self.send_rich_message_with_receive_id(message, target.chat_id.as_deref())
+            .await
     }
 
     async fn test_connection(&self) -> Result<(), ChatChannelError> {
         self.get_tenant_access_token().await?;
         Ok(())
     }
+}
+
+fn lark_receive_id<'a>(default: &'a str, override_id: Option<&'a str>) -> &'a str {
+    override_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
 }
 
 /// Feishu `post` + `md` tag: CommonMark 0.31 + GFM, no colored card header.
@@ -707,5 +759,15 @@ mod tests {
         assert!(text.contains("**Operation**"), "got {text}");
         assert!(text.contains("[x](http://e.test)"), "got {text}");
         assert!(text.contains("**b**"), "got {text}");
+    }
+
+    #[test]
+    fn receive_id_prefers_nonempty_override() {
+        assert_eq!(
+            lark_receive_id("oc_default", Some("oc_folder")),
+            "oc_folder"
+        );
+        assert_eq!(lark_receive_id("oc_default", Some("  ")), "oc_default");
+        assert_eq!(lark_receive_id("oc_default", None), "oc_default");
     }
 }

@@ -26,11 +26,8 @@ import {
   useWorkspaceFileTabs,
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
-import { ImagePreview } from "@/components/files/image-preview"
-import { HtmlPreview } from "@/components/files/html-preview"
-import { MarkdownDocumentPreview } from "@/components/files/markdown-document-preview"
-import { OfficePreview } from "@/components/files/office-preview"
-import { isHtmlPreviewable, isOfficePreviewable } from "@/lib/language-detect"
+import { FilePreview } from "@/components/files/file-preview"
+import { shouldUseFilePreview } from "@/lib/file-preview-kind"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { ImageDiffView } from "@/components/diff/image-diff-view"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
@@ -1810,12 +1807,13 @@ export function FileWorkspacePanel() {
     )
   }
 
-  // Preview mode for markdown files
-  const isPreviewMode =
+  const isFilePreview =
     isFileTab &&
-    activeFileTab &&
-    previewFileTabIds.has(activeFileTab.id) &&
-    activeFileTab.language === "markdown"
+    activeFileTab?.path != null &&
+    shouldUseFilePreview(
+      activeFileTab.path,
+      previewFileTabIds.has(activeFileTab.id)
+    )
 
   // Diff overview list view (commit / directory)
   if (diffListContext && diffOutline) {
@@ -1889,43 +1887,8 @@ export function FileWorkspacePanel() {
     )
   }
 
-  // Image preview
-  if (isFileTab && activeFileTab && activeFileTab.language === "image") {
-    return <ImagePreview key={activeFileTab.id} tab={activeFileTab} />
-  }
-
-  // Office preview (.docx/.xlsx/.pptx → OfficeCLI HTML → sandboxed iframe).
-  // Preview-only: these are binary OpenXML files with no text editor view, so
-  // it renders unconditionally (not gated on the editor/preview toggle).
-  if (isFileTab && activeFileTab && isOfficePreviewable(activeFileTab.path)) {
-    return (
-      <OfficePreview
-        key={activeFileTab.id}
-        rootPath={activeIo?.rootPath ?? null}
-        relPath={activeIo?.ioPath ?? null}
-      />
-    )
-  }
-
-  // HTML preview (sandboxed iframe)
-  if (
-    isFileTab &&
-    activeFileTab &&
-    previewFileTabIds.has(activeFileTab.id) &&
-    isHtmlPreviewable(activeFileTab.path)
-  ) {
-    return (
-      <HtmlPreview
-        key={activeFileTab.id}
-        tab={activeFileTab}
-        rootPath={previewRoot}
-      />
-    )
-  }
-
-  if (isPreviewMode && activeFileTab) {
-    const markdownColdLoad =
-      activeFileTab.loading && !hasTabContent(activeFileTab)
+  if (isFilePreview && activeFileTab?.path) {
+    const coldLoad = activeFileTab.loading && !hasTabContent(activeFileTab)
     return (
       <div className="h-full relative">
         {activeFileTab.loading && (
@@ -1933,18 +1896,23 @@ export function FileWorkspacePanel() {
             {t("loading")}
           </div>
         )}
-        {markdownColdLoad ? (
+        {coldLoad ? (
           <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
             {t("loading")}
           </div>
         ) : (
-          <MarkdownDocumentPreview
+          <FilePreview
+            key={activeFileTab.id}
+            path={activeFileTab.path}
             content={renderedContent}
-            // The tab path is absolute, so the document directory is too —
-            // every local reference resolves to an absolute filesystem path.
-            fileDir={activeIo?.rootPath ?? null}
-            previewRoot={previewRoot}
+            rootPath={activeIo?.rootPath ?? null}
+            relPath={activeIo?.ioPath ?? null}
+            language={activeFileTab.language}
+            isPreview={previewFileTabIds.has(activeFileTab.id)}
+            loading={activeFileTab.loading}
             openFilePreview={openFilePreview}
+            previewRoot={previewRoot}
+            tab={activeFileTab}
           />
         )}
       </div>

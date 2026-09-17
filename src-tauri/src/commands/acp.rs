@@ -11873,6 +11873,31 @@ pub async fn acp_fetch_kimi_models(
     acp_fetch_kimi_models_core(&base_url, &api_key).await
 }
 
+pub(crate) async fn acp_probe_codeg_protocol_core(
+    base_url: &str,
+    api_key: &str,
+    model_id: &str,
+) -> Result<String, AcpError> {
+    if base_url.trim().is_empty() {
+        return Err(AcpError::protocol(
+            "base URL is required to probe request protocol",
+        ));
+    }
+    let wire = crate::agent::model::probe_wire_protocol(base_url, api_key, model_id).await;
+    Ok(wire.as_str().to_string())
+}
+
+/// Completions-first protocol probe. Bind locks this onto the Codeg catalog.
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_probe_codeg_protocol(
+    base_url: String,
+    api_key: String,
+    model_id: String,
+) -> Result<String, AcpError> {
+    acp_probe_codeg_protocol_core(&base_url, &api_key, &model_id).await
+}
+
 /// Apply a structured Pi config update, writing pi's native `settings.json`
 /// (provider/model/thinking level) and `auth.json` (when an API key is given).
 /// Desktop command; the web handler calls `acp_update_pi_config_core` directly.

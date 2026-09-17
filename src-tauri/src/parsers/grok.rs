@@ -329,6 +329,11 @@ impl GrokParser {
             parsed.context_tokens,
             context_window,
         );
+        // Workflow terminal reports are persisted as extension notifications,
+        // outside the normal user/assistant turn stream. Add them only after
+        // model/duration/stat aggregation so the synthesized assistant text
+        // carries no fabricated model, usage, or duration metadata.
+        append_workflow_result_turns(&mut parsed);
         let summary = self.summary_from(session_id, &meta, &parsed);
 
         ConversationDetail {
@@ -624,6 +629,24 @@ struct ParsedUpdates {
     /// because the two measure different things — occupancy is what currently
     /// sits in the window, `usage` is what the turn spent getting there.
     context_tokens: Option<u64>,
+    /// Terminal Grok workflow reports, deduplicated by run id while parsing.
+    workflow_results: Vec<GrokWorkflowResult>,
+}
+
+/// A terminal workflow result recovered from Grok's `workflow_updated` stream.
+/// This is deliberately separate from the live [`WorkflowRun`] projection: the
+/// parser turns it into one ordinary assistant text turn for historical display.
+#[derive(Default)]
+struct GrokWorkflowResult {
+    run_id: String,
+    revision: Option<u64>,
+    name: Option<String>,
+    status: String,
+    result_summary: Option<String>,
+    last_event_detail: Option<String>,
+    /// First terminal event's own timestamp. Replayed frames may have a newer
+    /// outer JSONL timestamp, but must not move the historical result.
+    timestamp: DateTime<Utc>,
 }
 
 /// One subagent's lifecycle, folded from the parent-stream extension
@@ -2035,6 +2058,174 @@ mod tests {
             ContentBlock::ToolResult { output_preview, is_error, .. }
                 if output_preview.as_deref() == Some("Background task term_x started") && !*is_error
         ));
+    }
+
+    fn workflow_update(
+        run_id: &str,
+        revision: u64,
+        status: &str,
+        name: &str,
+        result_summary: Option<&str>,
+        last_event_detail: Option<&str>,
+        timestamp: &str,
+    ) -> String {
+        let mut update = serde_json::json!({
+            "sessionUpdate": "workflow_updated",
+            "run_id": run_id,
+            "revision": revision,
+            "name": name,
+            "objective": "background objective",
+            "status": status,
+            "last_event": format!("workflow_{status}"),
+            "last_event_timestamp": timestamp,
+            "phases": [],
+            "agents": [],
+        });
+        if let Some(summary) = result_summary {
+            update["result_summary"] = serde_json::Value::String(summary.to_string());
+        }
+        if let Some(detail) = last_event_detail {
+            update["last_event_detail"] = serde_json::Value::String(detail.to_string());
+        }
+        serde_json::to_string(&serde_json::json!({
+            "method": "_x.ai/session/update",
+            "params": {"sessionId": "s", "update": update},
+            "timestamp": 1783584030,
+        }))
+        .unwrap()
+    }
+
+    fn workflow_fixture(extra_updates: &[String]) -> (tempfile::TempDir, PathBuf) {
+        let mut updates = UPDATES.trim_end().to_string();
+        for event in extra_updates {
+            updates.push('\n');
+            updates.push_str(event);
+        }
+        fixture(SUMMARY, &updates)
+    }
+
+    fn workflow_result_turn<'a>(detail: &'a ConversationDetail, run_id: &str) -> &'a MessageTurn {
+        detail
+            .turns
+            .iter()
+            .find(|turn| turn.id == format!("grok-workflow-result:{run_id}"))
+            .expect("workflow result turn")
+    }
+
+    #[test]
+    fn restores_complete_workflow_report_as_stable_assistant_turn() {
+        let run_id = "wf_complete_report";
+        let report = "# Workflow report\n\n- built package\n- verified tests";
+        let (_tmp, sessions) = workflow_fixture(&[workflow_update(
+            run_id,
+            7,
+            "complete",
+            "deep-research",
+            Some(report),
+            None,
+            "2026-07-09T08:02:30Z",
+        )]);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        let turn = workflow_result_turn(&detail, run_id);
+        assert!(matches!(turn.role, TurnRole::Assistant));
+        assert_eq!(turn.model, None);
+        assert_eq!(turn.usage, None);
+        assert_eq!(turn.duration_ms, None);
+        assert_eq!(turn.agent_message_id, None);
+        assert!(matches!(&turn.blocks[..], [ContentBlock::Text { text }] if
+            text.contains("deep-research") && text.contains("complete") && text.contains(report)));
+    }
+
+    #[test]
+    fn deduplicates_workflow_replays_and_preserves_summary_across_sparse_updates() {
+        let run_id = "wf_replayed";
+        let (_tmp, sessions) = workflow_fixture(&[
+            workflow_update(
+                run_id,
+                8,
+                "complete",
+                "research",
+                Some("authoritative report"),
+                None,
+                "2026-07-09T08:03:00Z",
+            ),
+            // A stale replay must not replace a newer result.
+            workflow_update(
+                run_id,
+                7,
+                "complete",
+                "research",
+                Some("stale report"),
+                None,
+                "2026-07-09T08:02:00Z",
+            ),
+            // The newer sparse terminal frame must not clear the saved result.
+            workflow_update(
+                run_id,
+                9,
+                "complete",
+                "research",
+                None,
+                None,
+                "2026-07-09T08:03:01Z",
+            ),
+        ]);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        let results: Vec<_> = detail
+            .turns
+            .iter()
+            .filter(|turn| turn.id == format!("grok-workflow-result:{run_id}"))
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert!(matches!(&results[0].blocks[..], [ContentBlock::Text { text }] if
+            text.contains("authoritative report") && !text.contains("stale report")));
+    }
+
+    #[test]
+    fn failed_and_cancelled_workflows_show_reason_without_polluting_assistant_stats() {
+        let failed = "wf_failed";
+        let cancelled = "wf_cancelled";
+        let (_tmp, sessions) = workflow_fixture(&[
+            workflow_update(
+                failed,
+                2,
+                "failed",
+                "build",
+                None,
+                Some("command exited with code 1"),
+                "2026-07-09T08:04:00Z",
+            ),
+            workflow_update(
+                cancelled,
+                3,
+                "cancelled",
+                "review",
+                None,
+                Some("user stopped the workflow"),
+                "2026-07-09T08:05:00Z",
+            ),
+        ]);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        let failed_turn = workflow_result_turn(&detail, failed);
+        let cancelled_turn = workflow_result_turn(&detail, cancelled);
+        assert!(matches!(&failed_turn.blocks[..], [ContentBlock::Text { text }] if
+            text.contains("failed") && text.contains("command exited with code 1")));
+        assert!(matches!(&cancelled_turn.blocks[..], [ContentBlock::Text { text }] if
+            text.contains("cancelled") && text.contains("user stopped the workflow")));
+        // UPDATES has one assistant turn with no usage; synthesized results must
+        // never manufacture usage and alter the session aggregate.
+        assert!(detail.session_stats.as_ref().is_none_or(|stats| stats.total_usage.is_none()));
+        assert!(detail
+            .turns
+            .iter()
+            .filter(|turn| turn.id.starts_with("grok-workflow-result:"))
+            .all(|turn| turn.model.is_none() && turn.usage.is_none() && turn.duration_ms.is_none()));
     }
 
     /// A `get_command_or_subagent_output` poll carries its whole result in

@@ -22,6 +22,20 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
 })
+it("does not render a settings link that would replace the workspace window", async () => {
+  window.history.replaceState({}, "", "/?wikiView=overview")
+  await act(async () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <WikiPage />
+      </NextIntlClientProvider>
+    )
+  })
+  expect(
+    screen.queryByRole("link", { name: messages.Wiki.v2.settings })
+  ).toBeNull()
+})
+
 it("searches after typing settles and submits immediately with Enter", async () => {
   vi.useFakeTimers()
   window.history.replaceState({}, "", "/?wikiView=overview")

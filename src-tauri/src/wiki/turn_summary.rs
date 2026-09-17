@@ -131,13 +131,6 @@ pub fn wrap_memory_page(fields: MemoryPageFields<'_>) -> String {
         for id in source_ids {
             yaml.push_str(&format!("  - {}\n", yaml_quote(id)));
         }
-        yaml.push_str("sources:\n");
-        for source in fields.source_references {
-            yaml.push_str(&format!(
-                "  - {}\n",
-                yaml_quote(&format!("[[{}]]", source.rel.trim_end_matches(".md")))
-            ));
-        }
     }
     yaml.push_str("---\n\n");
     yaml.push_str(CONTENT_START);
@@ -146,20 +139,6 @@ pub fn wrap_memory_page(fields: MemoryPageFields<'_>) -> String {
     yaml.push_str(body);
     if !body.ends_with('\n') {
         yaml.push('\n');
-    }
-    if !fields.source_references.is_empty() {
-        yaml.push_str("\n## 来源\n\n");
-        for source in fields.source_references {
-            let title = if source.rel.starts_with("raw/") {
-                "原始记录"
-            } else {
-                "相关记录"
-            };
-            yaml.push_str(&format!(
-                "- [[{}|{title}]]\n",
-                source.rel.trim_end_matches(".md")
-            ));
-        }
     }
     yaml.push_str(CONTENT_END);
     yaml.push('\n');
@@ -243,12 +222,6 @@ pub async fn run_turn_summary_job(
     if source.vault_id != job.vault_id {
         return Err(WikiLlmError::InvalidOutput("source belongs to another vault".into()).into());
     }
-    let raw_rel = source
-        .raw_path
-        .as_deref()
-        .ok_or_else(|| WikiLlmError::SourceMissing(source.id.clone()))?;
-    let required = source_inputs(&[(raw_rel.to_string(), vec![source.id.clone()])])?;
-    let source_references = source_references(&required);
     let rel = page_rel(&source.id);
     let existing = read_existing(vault, &rel)?;
     let staging = state_root
@@ -256,16 +229,23 @@ pub async fn run_turn_summary_job(
         .join(&job.id)
         .join(job.attempt.to_string());
     fs::create_dir_all(&staging).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    let material = material_markdown_for_source(job, &source, vault)?;
+    let staging_source = staging.join("source.md");
+    fs::write(&staging_source, &material).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    let required = source_inputs(&[(format!("source:{}", source.id), vec![source.id.clone()])])?;
+    let source_references = vec![crate::wiki::llm::SourceReference {
+        rel: staging_source.to_string_lossy().into_owned(),
+        source_ids: vec![source.id.clone()],
+    }];
     let input = json!({
         "schema": crate::wiki::llm::TURN_SUMMARY_CONTRACT_VERSION,
         "job_id": job.id, "attempt": job.attempt,
         "source_id": source.id, "source_kind": source.source_kind,
-        "raw_path": raw_rel,
+        "source_title": source.source_title, "occurred_at": source.occurred_at,
         "conversation_id": source.conversation_id, "rel": rel,
         "source_references": source_references,
         "vault_abs": vault, "staging_abs": staging,
         "max_turns": WIKI_TURN_SUMMARY_MAX_TURNS,
-        "instruction": "Read source_references as needed and organize this turn into a readable Wiki note. Return schema, source_id, title, body, nothing_to_summarize, reason_code and warnings. No YAML or line evidence is required; the host adds source metadata. Do not invent success when a read fails.",
     });
     let run = llm.complete_json(KIND, input).await?;
     let parsed = validate_turn_summary(&run.output, &source.id)?;
@@ -399,7 +379,8 @@ pub(crate) fn source_inputs(
     paths
         .iter()
         .map(|(rel, source_ids)| {
-            if !crate::wiki::paths::is_safe_vault_relative(rel) {
+            let indexed = rel.starts_with("source:");
+            if !indexed && !crate::wiki::paths::is_safe_vault_relative(rel) {
                 return Err(WikiLlmError::SourceReadFailed("unsafe source path".into()).into());
             }
             Ok(WikiInput {
@@ -411,14 +392,33 @@ pub(crate) fn source_inputs(
         .collect()
 }
 
-pub(crate) fn source_references(inputs: &[WikiInput]) -> Vec<SourceReference> {
-    inputs
-        .iter()
-        .map(|input| SourceReference {
-            rel: input.rel.clone(),
-            source_ids: input.source_ids.clone(),
-        })
-        .collect()
+fn material_markdown_for_source(
+    job: &wiki_job::Model,
+    source: &crate::db::entities::wiki_source::Model,
+    vault: &Path,
+) -> Result<String, WorkerError> {
+    if let Some(manifest) = job.input_manifest.as_deref() {
+        if let Ok(value) = serde_json::from_str::<Value>(manifest) {
+            if let Some(markdown) = value
+                .get("material_markdown")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Ok(markdown.to_string());
+            }
+        }
+    }
+    if let Some(rel) = source
+        .raw_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return fs::read_to_string(vault.join(rel))
+            .map_err(|_| WikiLlmError::SourceMissing(source.id.clone()).into());
+    }
+    Err(WikiLlmError::SourceMissing(source.id.clone()).into())
 }
 
 pub(crate) struct ParsedTurn {
@@ -575,6 +575,29 @@ mod tests {
     }
 
     #[test]
+    fn wrap_records_source_ids_without_dump_wikilinks() {
+        let refs = [crate::wiki::llm::SourceReference {
+            rel: "raw/sessions/src-1.md".into(),
+            source_ids: vec!["src-1".into()],
+        }];
+        let page = wrap_memory_page(MemoryPageFields {
+            title: "Fixed pagination",
+            page_type: PAGE_TYPE,
+            note_id: "note-1",
+            source_id: Some("src-1"),
+            conversation_id: Some(9),
+            occurred_at: None,
+            project_binding_id: None,
+            turn_rels: &[],
+            body: "Edited list.rs.",
+            source_references: &refs,
+        });
+        assert!(page.contains("source_ids:\n  - \"src-1\""));
+        assert!(!page.contains("[[raw/sessions/src-1]]"));
+        assert!(!page.contains("## 来源"));
+    }
+
+    #[test]
     fn page_rel_is_stable_per_source_id() {
         assert_eq!(page_rel("abc"), "work/turns/abc.md");
         assert_eq!(dedupe_key("abc", "hash"), "turn_summary:abc:hash");
@@ -710,7 +733,8 @@ mod tests {
             .unwrap();
         assert_eq!(out["outcome"], "generated");
         let note = fs::read_to_string(vault.join("work/turns/src-turn-1.md")).unwrap();
-        assert!(note.contains("[[raw/sessions/src-turn-1]]"));
+        assert!(note.contains("codeg_source_id: \"src-turn-1\""));
+        assert!(!note.contains("[[raw/sessions/src-turn-1]]"));
         assert!(!note.contains("start_line:"));
         let current = wiki_service::get_job_model(&db.conn, &job.id)
             .await
@@ -775,7 +799,8 @@ mod tests {
         assert_eq!(out["outputs"][0]["path"], "work/sessions/c3.md");
         let text = fs::read_to_string(vault.join("work/sessions/c3.md")).unwrap();
         assert!(text.contains("type: session-summary"));
-        assert!(text.contains("[[raw/sessions/src-turn-1]]"));
+        assert!(text.contains("codeg_source_id:") || text.contains("source_ids:"));
+        assert!(!text.contains("[[raw/sessions/src-turn-1]]"));
         let contributions = wiki_service::list_contributions_for_source(&db.conn, &sid)
             .await
             .unwrap();

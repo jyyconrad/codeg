@@ -28,7 +28,10 @@ import { markdownLinkComponents } from "./markdown-link"
 import { mermaidComponents } from "./mermaid-block"
 import { normalizeMathDelimiters } from "./message"
 import { remarkTrimCjkAutolinkTail } from "./remark-cjk-autolink-tail"
-import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
+import {
+  remarkAutolinkInlineFilePaths,
+  remarkRewriteFileUriLinks,
+} from "./remark-file-uri-links"
 import { remarkRestoreWindowsPaths } from "./remark-windows-paths"
 import { useStreamdownPlugins } from "./streamdown-plugins"
 
@@ -234,6 +237,7 @@ const remarkPlugins = [
   // Before remarkRewriteFileUriLinks, which reshapes a drive path's url.
   remarkRestoreWindowsPaths,
   remarkRewriteFileUriLinks,
+  remarkAutolinkInlineFilePaths,
   remarkTrimCjkAutolinkTail,
 ]
 

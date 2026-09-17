@@ -1,7 +1,11 @@
 import {
   catalogFromProviderModel,
   codegWindowsFromCatalog,
+  serializeCodegAgentCatalog,
+  type CodegAgentCatalog,
+  type CodegRequestProtocol,
 } from "@/lib/codeg-agent-catalog"
+import { isLoopbackHttpUrl } from "@/lib/codeg-agent-providers"
 import {
   CODEG_BUILTIN_COMPACT_PROMPT,
   CODEG_BUILTIN_SYSTEM_PROMPT,
@@ -26,6 +30,9 @@ export const CODEG_MAX_TURNS_KEY = "CODEG_AGENT_MAX_TURNS"
 export const CODEG_DEFAULT_COMPACT_SOFT_PERCENT = "80"
 export const CODEG_DEFAULT_COMPACT_RECENT_TURNS = "6"
 export const CODEG_DEFAULT_MAX_TURNS = "40"
+export const CODEG_INJECT_AGENTS_MD_KEY = "CODEG_AGENT_INJECT_AGENTS_MD"
+export const CODEG_INJECT_CLAUDE_MD_KEY = "CODEG_AGENT_INJECT_CLAUDE_MD"
+export const CODEG_INJECT_TREE_KEY = "CODEG_AGENT_INJECT_TREE"
 
 /**
  * Parse `CODEG_AGENT_CONTEXT_WINDOWS` JSON. Invalid JSON yields `{}` so the
@@ -116,6 +123,21 @@ export function patchCodegEnvInt(
   return patchEnvText(envText, {
     [key]: trimmed || fallback,
   })
+}
+
+/** Matches Rust `parse_flag`: 1 / true / yes / on. Missing or other values are off. */
+export function codegFlag(envText: string, key: string): boolean {
+  const raw = parseEnvText(envText)[key]?.trim().toLowerCase()
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on"
+}
+
+/** On writes `1`; off deletes the key so spawn keeps the default (off). */
+export function patchCodegFlag(
+  envText: string,
+  key: string,
+  on: boolean
+): string {
+  return patchEnvText(envText, { [key]: on ? "1" : "" })
 }
 
 function promptOverrideOrDelete(value: string, builtin: string): string | null {
@@ -259,6 +281,58 @@ export function bindCodegProviderEnv(
     next = patchCodegCompactModel(next, "")
   }
   return { model, envText: next }
+}
+
+export type CodegProtocolProbe = (params: {
+  baseUrl: string
+  apiKey: string
+  modelId: string
+}) => Promise<Exclude<CodegRequestProtocol, "auto">>
+
+/** Bind a provider after probing Completions vs Responses. Locks the winner. */
+export async function bindCodegProviderWithProbe(
+  envText: string,
+  provider: {
+    api_url: string
+    api_key: string
+    agent_type: string
+    model?: string | null
+  } | null,
+  probe: CodegProtocolProbe
+): Promise<{
+  envText: string
+  model: string
+  protocol: Exclude<CodegRequestProtocol, "auto"> | ""
+  catalog: CodegAgentCatalog | null
+}> {
+  if (!provider) {
+    const bound = bindCodegProviderEnv(envText, null)
+    return { ...bound, protocol: "", catalog: null }
+  }
+  const model = completionsModelIdFromProvider(provider)
+  const apiKey =
+    provider.api_key.trim() ||
+    (isLoopbackHttpUrl(provider.api_url) ? "local" : "")
+  const protocol = await probe({
+    baseUrl: provider.api_url.trim(),
+    apiKey,
+    modelId: model,
+  })
+  const catalog = catalogFromProviderModel(provider.model)
+  const nextCatalog = catalog ? { ...catalog, protocol } : null
+  let bound = bindCodegProviderEnv(envText, {
+    ...provider,
+    model: nextCatalog
+      ? serializeCodegAgentCatalog(nextCatalog)
+      : provider.model,
+  })
+  bound = {
+    ...bound,
+    envText: patchEnvText(bound.envText, {
+      [CODEG_PROTOCOL_KEY]: protocol,
+    }),
+  }
+  return { ...bound, protocol, catalog: nextCatalog }
 }
 
 export function codegDraftFromEnv(env: Record<string, string>): {

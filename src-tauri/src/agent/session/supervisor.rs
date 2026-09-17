@@ -8,6 +8,12 @@ use serde_json::json;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 
+use super::config::{
+    canonical_permission, canonical_thought_level, native_session_config_options,
+    permission_is_full_access, resolve_session_mode, resolve_session_permission,
+    resolve_session_thought_level, thought_level_additional_params, MODEL_OPTION_ID,
+    MODE_OPTION_ID, PERMISSION_OPTION_ID, THOUGHT_LEVEL_OPTION_ID,
+};
 use super::prompt::native_prompt_store_text;
 use super::{assemble_native_prompt, inspect_native_prompt, NativeSessionArgs, TurnCoordinator};
 use crate::acp::agent_mentions::append_agent_routes;
@@ -19,8 +25,7 @@ use crate::acp::session_state::SessionState;
 use crate::acp::terminal_runtime::TerminalRuntime;
 use crate::acp::types::{
     AcpEvent, ConnectionStatus, PermissionOptionInfo, PromptCapabilitiesInfo, PromptInputBlock,
-    SessionConfigKindInfo, SessionConfigOptionInfo, SessionConfigSelectInfo,
-    SessionConfigSelectOptionInfo, UserMessageBlock,
+    UserMessageBlock,
 };
 use crate::acp_transcript::{now_epoch_ms, record_header_critical_in, TranscriptHeader};
 use crate::agent::code_intel::{
@@ -34,7 +39,7 @@ use crate::agent::context::{
 use crate::agent::hook::{CodegHook, HookTrace, HostBridge, NativeRunState, PendingPermission};
 use crate::agent::mode::{self, MODE_PLAN};
 use crate::agent::model::{
-    resolve_session_wire_protocol, run_native_turn, session_preamble, CodegLlmClient,
+    live_session_preamble, resolve_session_wire_protocol, run_native_turn, CodegLlmClient,
     NativeTurnOutcome, NativeTurnRequest, NativeTurnTools,
 };
 use crate::agent::tools::codegraph::should_inject_codegraph;
@@ -154,6 +159,8 @@ async fn run_session(
             Ok(id) => id,
             Err(message) => return SessionOutcome { err: Some(message) },
         };
+    let mut thought_level = resolve_session_thought_level(&args.preferred_config_values);
+    let mut permission = resolve_session_permission(&args.preferred_config_values);
 
     let companion = if let Some(inj) = args.delegation_injection.as_ref() {
         let flags = snapshot_companion_features(
@@ -240,7 +247,9 @@ async fn run_session(
     let mut artifacts_dir =
         crate::agent::mode::artifacts_dir(&args.launch_cwd.to_string_lossy(), &session_id);
     let _ = std::fs::create_dir_all(&artifacts_dir);
-    let initial_mode = crate::agent::mode::load_persisted_mode(&artifacts_dir);
+    let initial_mode = resolve_session_mode(&args.preferred_config_values)
+        .unwrap_or_else(|| crate::agent::mode::load_persisted_mode(&artifacts_dir));
+    crate::agent::mode::persist_mode(&artifacts_dir, &initial_mode);
     let session_mode = Arc::new(tokio::sync::RwLock::new(initial_mode.clone()));
     let pending_continue = Arc::new(Mutex::new(None::<String>));
     let fs = Arc::new(FileSystemRuntime::with_policy(
@@ -296,6 +305,9 @@ async fn run_session(
         &args.emitter,
         &args.effective_config,
         &model_id,
+        &thought_level,
+        &initial_mode,
+        &permission,
     )
     .await;
     emit_with_state(
@@ -328,7 +340,7 @@ async fn run_session(
         Err(err) => {
             return SessionOutcome {
                 err: Some(err.to_string()),
-            }
+            };
         }
     };
     let workspace = args
@@ -346,10 +358,11 @@ async fn run_session(
         });
     let _ = crate::agent::builtin_skills::ensure_installed();
     let catalog = SkillCatalog::load(args.agent_type, workspace.as_deref());
-    let preamble = session_preamble(
+    let preamble = live_session_preamble(
         &args.launch_cwd,
         catalog.preamble_section().as_deref(),
         args.effective_config.system_prompt.as_deref(),
+        args.effective_config.context_inject,
     );
     let coordinator = Arc::new(TurnCoordinator::new());
     let intel_lease =
@@ -488,6 +501,8 @@ async fn run_session(
                             other,
                             true,
                             &mut model_id,
+                            &mut thought_level,
+                            &mut permission,
                             args,
                             &session_id,
                             &session_mode,
@@ -565,6 +580,8 @@ async fn run_session(
                 &client,
                 &preamble,
                 &model_id,
+                thought_level_additional_params(&thought_level, wire),
+                permission_is_full_access(&permission),
                 args,
                 &session_id,
                 blocks,
@@ -640,6 +657,8 @@ async fn run_session(
                                 &client,
                                 &preamble,
                                 &model_id,
+                                thought_level_additional_params(&thought_level, wire),
+                                permission_is_full_access(&permission),
                                 args,
                                 &session_id,
                                 blocks,
@@ -728,6 +747,8 @@ async fn run_session(
                             other,
                             false,
                             &mut model_id,
+                            &mut thought_level,
+                            &mut permission,
                             args,
                             &session_id,
                             &session_mode,
@@ -886,6 +907,8 @@ async fn start_prompt(
     client: &CodegLlmClient,
     preamble: &str,
     model_id: &str,
+    additional_params: Option<serde_json::Value>,
+    auto_allow_tools: bool,
     args: &NativeSessionArgs,
     session_id: &str,
     blocks: Vec<PromptInputBlock>,
@@ -964,6 +987,9 @@ async fn start_prompt(
         fs,
         session_id: session_id.to_string(),
         spill_dir: recorder.spill_dir(),
+        loaded_skills: crate::agent::tools::LoadedSkills::shared_with([
+            crate::agent::builtin_skills::USING_PLAN_EXPLORE_ID,
+        ]),
     };
     let mode = session_mode.read().await.clone();
     let in_plan = mode == MODE_PLAN;
@@ -1023,6 +1049,11 @@ async fn start_prompt(
             Arc::clone(&pending_continue),
         )
     });
+    let workspace_tree = args
+        .effective_config
+        .context_inject
+        .tree
+        .then(|| crate::agent::workspace_context::workspace_tree_markdown(&args.launch_cwd));
     let mut subagent_tool = SubagentTool::new(
         tool_ctx.clone(),
         client.clone(),
@@ -1037,6 +1068,7 @@ async fn start_prompt(
         inject_tx,
         artifacts_dir.clone(),
     )
+    .with_workspace_tree(workspace_tree)
     .with_owners(args.shutdown.owners());
     if let Some(pool) = lsp_pool.as_ref() {
         subagent_tool = subagent_tool.with_lsp_pool(Arc::clone(pool));
@@ -1165,7 +1197,8 @@ async fn start_prompt(
                 compact_prompt,
                 max_output.min(L2_MAX_TOKENS),
             )
-            .with_workspace(args.launch_cwd.clone()),
+            .with_artifacts(artifacts_dir.clone())
+            .with_cancel(cancel.clone()),
         ),
     };
     let (perm_tx, perm_rx) = mpsc::channel(8);
@@ -1175,8 +1208,15 @@ async fn start_prompt(
         turn: Arc::clone(&coordinator),
         turn_id,
     };
-    let hook =
-        CodegHook::for_session(HookTrace::new(), perm_tx, cancel.clone(), host).with_native(native);
+    let hook = {
+        let hook = CodegHook::for_session(HookTrace::new(), perm_tx, cancel.clone(), host)
+            .with_native(native);
+        if auto_allow_tools {
+            hook.auto_allow_permissions()
+        } else {
+            hook
+        }
+    };
 
     // Build the runner on the worker so the command loop keeps polling
     // `cmd_rx` during the first HTTP round-trip (K25).
@@ -1192,6 +1232,7 @@ async fn start_prompt(
             model_id,
             preamble,
             prompt,
+            additional_params,
             tools: NativeTurnTools {
                 read,
                 recall,
@@ -1431,6 +1472,8 @@ async fn handle_control_command(
     cmd: ConnectionCommand,
     in_turn: bool,
     model_id: &mut String,
+    thought_level: &mut String,
+    permission: &mut String,
     args: &mut NativeSessionArgs,
     _session_id: &str,
     session_mode: &Arc<tokio::sync::RwLock<String>>,
@@ -1440,8 +1483,179 @@ async fn handle_control_command(
         ConnectionCommand::SetConfigOption {
             config_id,
             value_id,
-        } => {
-            if config_id != "model" {
+        } => match config_id.as_str() {
+            MODEL_OPTION_ID => {
+                if in_turn {
+                    emit_with_state(
+                        &args.session_state,
+                        &args.emitter,
+                        AcpEvent::ConfigOptionRejected {
+                            config_id,
+                            option_name: "Model".into(),
+                            requested: value_id,
+                            actual: model_id.clone(),
+                        },
+                    )
+                    .await;
+                    return;
+                }
+                match resolve_session_model(
+                    &args.effective_config,
+                    &BTreeMap::from([(MODEL_OPTION_ID.into(), value_id.clone())]),
+                ) {
+                    Ok(next) => {
+                        *model_id = next;
+                        refresh_session_config(
+                            args,
+                            model_id,
+                            thought_level,
+                            session_mode,
+                            permission,
+                        )
+                        .await;
+                    }
+                    Err(_) => {
+                        emit_with_state(
+                            &args.session_state,
+                            &args.emitter,
+                            AcpEvent::ConfigOptionRejected {
+                                config_id,
+                                option_name: "Model".into(),
+                                requested: value_id,
+                                actual: model_id.clone(),
+                            },
+                        )
+                        .await;
+                    }
+                }
+            }
+            THOUGHT_LEVEL_OPTION_ID => {
+                if in_turn {
+                    emit_with_state(
+                        &args.session_state,
+                        &args.emitter,
+                        AcpEvent::ConfigOptionRejected {
+                            config_id,
+                            option_name: "Thinking".into(),
+                            requested: value_id,
+                            actual: thought_level.clone(),
+                        },
+                    )
+                    .await;
+                    return;
+                }
+                match canonical_thought_level(&value_id) {
+                    Some(next) => {
+                        *thought_level = next;
+                        refresh_session_config(
+                            args,
+                            model_id,
+                            thought_level,
+                            session_mode,
+                            permission,
+                        )
+                        .await;
+                    }
+                    None => {
+                        emit_with_state(
+                            &args.session_state,
+                            &args.emitter,
+                            AcpEvent::ConfigOptionRejected {
+                                config_id,
+                                option_name: "Thinking".into(),
+                                requested: value_id,
+                                actual: thought_level.clone(),
+                            },
+                        )
+                        .await;
+                    }
+                }
+            }
+            PERMISSION_OPTION_ID => {
+                if in_turn {
+                    emit_with_state(
+                        &args.session_state,
+                        &args.emitter,
+                        AcpEvent::ConfigOptionRejected {
+                            config_id,
+                            option_name: "Permission".into(),
+                            requested: value_id,
+                            actual: permission.clone(),
+                        },
+                    )
+                    .await;
+                    return;
+                }
+                match canonical_permission(&value_id) {
+                    Some(next) => {
+                        *permission = next;
+                        refresh_session_config(
+                            args,
+                            model_id,
+                            thought_level,
+                            session_mode,
+                            permission,
+                        )
+                        .await;
+                    }
+                    None => {
+                        emit_with_state(
+                            &args.session_state,
+                            &args.emitter,
+                            AcpEvent::ConfigOptionRejected {
+                                config_id,
+                                option_name: "Permission".into(),
+                                requested: value_id,
+                                actual: permission.clone(),
+                            },
+                        )
+                        .await;
+                    }
+                }
+            }
+            MODE_OPTION_ID => {
+                if in_turn {
+                    let actual = session_mode.read().await.clone();
+                    emit_with_state(
+                        &args.session_state,
+                        &args.emitter,
+                        AcpEvent::ConfigOptionRejected {
+                            config_id,
+                            option_name: "Mode".into(),
+                            requested: value_id,
+                            actual,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+                let Some(mode) = mode::parse_mode(&value_id) else {
+                    let actual = session_mode.read().await.clone();
+                    emit_with_state(
+                        &args.session_state,
+                        &args.emitter,
+                        AcpEvent::ConfigOptionRejected {
+                            config_id,
+                            option_name: "Mode".into(),
+                            requested: value_id,
+                            actual,
+                        },
+                    )
+                    .await;
+                    return;
+                };
+                mode::apply_mode(
+                    &args.session_state,
+                    &args.emitter,
+                    session_mode,
+                    artifacts_dir,
+                    mode,
+                )
+                .await;
+                refresh_session_config(args, model_id, thought_level, session_mode, permission)
+                    .await;
+            }
+            _ => {
                 emit_with_state(
                     &args.session_state,
                     &args.emitter,
@@ -1454,51 +1668,8 @@ async fn handle_control_command(
                     },
                 )
                 .await;
-                return;
             }
-            if in_turn {
-                emit_with_state(
-                    &args.session_state,
-                    &args.emitter,
-                    AcpEvent::ConfigOptionRejected {
-                        config_id,
-                        option_name: "Model".into(),
-                        requested: value_id,
-                        actual: model_id.clone(),
-                    },
-                )
-                .await;
-                return;
-            }
-            match resolve_session_model(
-                &args.effective_config,
-                &BTreeMap::from([("model".into(), value_id.clone())]),
-            ) {
-                Ok(next) => {
-                    *model_id = next;
-                    emit_session_config(
-                        &args.session_state,
-                        &args.emitter,
-                        &args.effective_config,
-                        model_id,
-                    )
-                    .await;
-                }
-                Err(_) => {
-                    emit_with_state(
-                        &args.session_state,
-                        &args.emitter,
-                        AcpEvent::ConfigOptionRejected {
-                            config_id,
-                            option_name: "Model".into(),
-                            requested: value_id,
-                            actual: model_id.clone(),
-                        },
-                    )
-                    .await;
-                }
-            }
-        }
+        },
         ConnectionCommand::SetMode { mode_id } => {
             if in_turn {
                 emit_with_state(
@@ -1538,6 +1709,7 @@ async fn handle_control_command(
                 mode,
             )
             .await;
+            refresh_session_config(args, model_id, thought_level, session_mode, permission).await;
         }
         ConnectionCommand::GoalControl {
             reply: Some(reply), ..
@@ -1592,47 +1764,44 @@ async fn emit_session_config(
     emitter: &EventEmitter,
     config: &EffectiveNativeConfig,
     model_id: &str,
+    thought_level: &str,
+    mode: &str,
+    permission: &str,
 ) {
     emit_with_state(
         state,
         emitter,
         AcpEvent::SessionConfigOptions {
-            config_options: vec![native_session_model_option(config, model_id)],
+            config_options: native_session_config_options(
+                config,
+                model_id,
+                thought_level,
+                mode,
+                permission,
+            ),
         },
     )
     .await;
 }
 
-/// Session model picker: only ids with an explicit window. Unknown ids are
-/// rejected at SetConfigOption; windows are never assumed to be 128k.
-pub(crate) fn native_session_model_option(
-    config: &EffectiveNativeConfig,
+async fn refresh_session_config(
+    args: &NativeSessionArgs,
     model_id: &str,
-) -> SessionConfigOptionInfo {
-    let options: Vec<SessionConfigSelectOptionInfo> = config
-        .context_windows
-        .iter()
-        .map(|(id, window)| SessionConfigSelectOptionInfo {
-            value: id.clone(),
-            name: id.clone(),
-            description: Some(format!("{window}-token window")),
-        })
-        .collect();
-    SessionConfigOptionInfo {
-        id: "model".into(),
-        name: "Model".into(),
-        description: Some(
-            "Ids from CODEG_AGENT_CONTEXT_WINDOWS. Unknown models cannot start; \
-             windows are not assumed to be 128k."
-                .into(),
-        ),
-        category: None,
-        kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
-            current_value: model_id.to_string(),
-            options,
-            groups: Vec::new(),
-        }),
-    }
+    thought_level: &str,
+    session_mode: &Arc<tokio::sync::RwLock<String>>,
+    permission: &str,
+) {
+    let mode = session_mode.read().await.clone();
+    emit_session_config(
+        &args.session_state,
+        &args.emitter,
+        &args.effective_config,
+        model_id,
+        thought_level,
+        &mode,
+        permission,
+    )
+    .await;
 }
 
 pub(crate) struct NativeDropGuard {
@@ -1650,58 +1819,6 @@ impl Drop for NativeDropGuard {
             } else {
                 self.shutdown.mark_complete();
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::acp::native_config::EffectiveNativeConfig;
-
-    #[test]
-    fn model_picker_lists_configured_windows_only() {
-        let mut windows = BTreeMap::new();
-        windows.insert("gateway-model".into(), 128000);
-        windows.insert("small".into(), 8192);
-        let config = EffectiveNativeConfig {
-            api_base_url: "https://example.test/v1".into(),
-            api_key: "sk".into(),
-            model_id: "gateway-model".into(),
-            context_windows: windows,
-            max_output_tokens: 4096,
-            system_prompt: None,
-            compact_prompt: None,
-            compact_soft_percent: 80,
-            compact_recent_turns: 6,
-            compact_model_id: None,
-            max_turns: 40,
-            protocol: crate::acp::native_config::CodegProtocol::ChatCompletions,
-            resolved_protocol: None,
-        };
-        let option = native_session_model_option(&config, "gateway-model");
-        assert_eq!(option.id, "model");
-        let description = option.description.expect("window copy");
-        assert!(description.contains("CODEG_AGENT_CONTEXT_WINDOWS"));
-        assert!(description.contains("128k"));
-        match option.kind {
-            SessionConfigKindInfo::Select(select) => {
-                assert_eq!(select.current_value, "gateway-model");
-                assert_eq!(select.options.len(), 2);
-                let small = select
-                    .options
-                    .iter()
-                    .find(|o| o.value == "small")
-                    .expect("small");
-                assert_eq!(small.description.as_deref(), Some("8192-token window"));
-                let large = select
-                    .options
-                    .iter()
-                    .find(|o| o.value == "gateway-model")
-                    .expect("gateway");
-                assert_eq!(large.description.as_deref(), Some("128000-token window"));
-            }
-            other => panic!("expected select, got {other:?}"),
         }
     }
 }

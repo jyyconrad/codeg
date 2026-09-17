@@ -1621,7 +1621,8 @@
       "noSandbox": "Pas de bac à sable OS. Les écritures et bash ne s'exécutent qu'après une autorisation par appel. La politique FS de l'espace de travail n'isole pas le shell.",
       "recovery": "La reprise après crash ne relance pas les outils. Les appels commencés sans fin confirmée reprennent comme unknown.",
       "contextWindowsHint": "Lier un canal modèle écrit une entrée CODEG_AGENT_CONTEXT_WINDOWS modifiable (128000, sauf si le fournisseur a déjà une fenêtre). Un modèle sans fenêtre ne démarre pas.",
-      "protocol": "v1 n'utilise que OpenAI Chat Completions, pas l'API Responses.",
+      "protocol": "Chat Completions or Responses is locked when you bind a provider. Sessions use that protocol.",
+      "protocolDetectFailed": "Could not detect request protocol: {message}",
       "modelSelectorHint": "Le sélecteur de modèle de session n'affiche que les id présents dans CODEG_AGENT_CONTEXT_WINDOWS. Les id inconnus sont refusés.",
       "usageLastRequest": "L'anneau de contexte montre l'occupation de la dernière requête modèle dans la fenêtre configurée, pas le cumul du run. Si la passerelle omet l'usage d'entrée, la valeur est estimée.",
       "envWindowsHint": "Les variables d'environnement projettent le fournisseur lié ainsi que la fenêtre et la sortie max de cette carte. CODEG_AGENT_MAX_OUTPUT_TOKENS est optionnel, vaut 4096 par défaut et doit rester sous la fenêtre moins une marge de sécurité.",
@@ -1635,7 +1636,7 @@
       "contextWindow": "Fenêtre de contexte",
       "maxOutput": "Jetons de sortie max",
       "systemPrompt": "Invite système",
-      "systemPromptHint": "Vide = valeur intégrée. Le répertoire de travail et le catalogue de skills sont toujours ajoutés.",
+      "systemPromptHint": "Vide = valeur intégrée. L’environnement (OS, heure), le répertoire de travail, le stockage global et le catalogue de skills sont toujours ajoutés.",
       "compactPrompt": "Invite de compactage (L2)",
       "compactPromptHint": "Utilisée seulement à la deuxième compression d'une session. Vide = modèle intégré.",
       "save": "Enregistrer",
@@ -1666,6 +1667,14 @@
     "presetHint": "Cloud, local et personnalisé se lient de la même façon. Les serveurs en boucle locale peuvent omettre la clé API.",
     "promptsTitle": "Invites",
     "promptsDescription": "Remplacements facultatifs. Les champs vides conservent les valeurs intégrées.",
+    "contextTitle": "Contexte",
+    "contextDescription": "Injecté au démarrage de la session. Les fichiers d’instructions vont à l’agent principal ; l’arborescence va à l’agent principal et aux sous-agents.",
+    "injectConstraints": "Injecter les instructions du projet",
+    "injectConstraintsHint": "Si coché, le fichier à la racine du répertoire de travail est injecté dans l’agent principal au démarrage. La phase 1 ne scanne que le premier niveau.",
+    "injectAgentsMd": "AGENTS.md",
+    "injectClaudeMd": "CLAUDE.md",
+    "injectTree": "Informations de structure",
+    "injectTreeHint": "Si coché, au plus 3 niveaux de répertoires sont injectés au démarrage sous forme d’arbre Markdown dans l’agent principal et les sous-agents. Les chemins plus profonds sont omis.",
     "compressionTitle": "Compactage du contexte",
     "compressionDescription": "Quand l'occupation dépasse le seuil souple, les tours plus anciens sont résumés. Les plus récents restent intacts.",
     "compactSoftPercent": "Seuil souple de compactage (%)",
@@ -1720,7 +1729,8 @@
     "preset": "Platform",
     "creating": "Creating…",
     "requestProtocol": "Request protocol",
-    "requestProtocolHint": "One session uses one protocol. Auto probes Chat Completions first and falls back to Responses only if that path 404s.",
+    "requestProtocolHint": "Binding a provider probes Chat Completions first, then Responses if that path is missing or fails. The result is locked; sessions use it directly.",
+    "protocolDetectFailed": "Could not detect request protocol: {message}",
     "protocolChatCompletions": "Chat Completions",
     "protocolResponses": "Responses",
     "protocolAuto": "Auto"
@@ -1892,10 +1902,15 @@
       "notifyChannels": "Canaux de notification…",
       "notifyChannelsDialog": {
         "title": "Canaux de notification",
-        "description": "Quand une exécution se termine dans ce dossier, le message final est envoyé à chaque canal sélectionné.",
+        "description": "Quand une exécution se termine dans ce dossier, le message final est envoyé à chaque canal sélectionné. Vous pouvez indiquer un ID de session par canal ; laissez vide pour le défaut du canal.",
         "empty": "Aucun canal de discussion. Ajoutez-en un dans les paramètres.",
         "loadFailed": "Échec du chargement des canaux : {message}",
-        "saveFailed": "Échec de l'enregistrement des canaux : {message}"
+        "saveFailed": "Échec de l'enregistrement des canaux : {message}",
+        "sessionId": "ID de session",
+        "sessionIdForChannel": "ID de session pour {name}",
+        "sessionIdHint": "Laissez vide pour utiliser le chat par défaut de ce canal.",
+        "sessionIdPlaceholder": "Par défaut",
+        "sessionIdPlaceholderWithDefault": "Par défaut : {chatId}"
       },
       "error": "Erreur : {message}",
       "completeAllSessions": "Terminer toutes les sessions",
@@ -1944,6 +1959,8 @@
       "statusRunningBadge": "En cours",
       "runningCountBadge": "{count, plural, one {# session en cours} other {# sessions en cours}}",
       "statusCancelledBadge": "Annulé",
+      "statusUnreadCompletedBadge": "Terminé non consulté",
+      "statusUnreadFailedBadge": "Échec non consulté",
       "worktreeRemovedBadge": "Worktree d'origine supprimé",
       "conversationCountUnit": "{count, plural, one {# conversation} other {# conversations}}",
       "emptyFolderHint": "Aucune conversation",
@@ -2422,7 +2439,19 @@
       "officeWatchFailed": "Impossible de démarrer l'aperçu en direct",
       "officeWatchRetry": "Réessayer",
       "officeServerInstallHint": "OfficeCLI doit être installé sur l'hôte du serveur. Exécutez cette commande là-bas, puis réessayez :",
-      "officeRemoteDesktopUnsupported": "L'aperçu en direct n'est pas disponible dans une fenêtre de bureau à distance. Ouvrez cet espace de travail dans l'interface web du serveur pour prévisualiser les fichiers Office."
+      "officeRemoteDesktopUnsupported": "L'aperçu en direct n'est pas disponible dans une fenêtre de bureau à distance. Ouvrez cet espace de travail dans l'interface web du serveur pour prévisualiser les fichiers Office.",
+      "spreadsheetSheet": "Sheet",
+      "spreadsheetRows": "Rows {from}–{to} of {total}",
+      "spreadsheetPrevPage": "Previous page",
+      "spreadsheetNextPage": "Next page",
+      "spreadsheetPrevCols": "Previous columns",
+      "spreadsheetNextCols": "Next columns",
+      "spreadsheetPageSize": "Rows per page",
+      "spreadsheetEmpty": "This sheet is empty",
+      "spreadsheetLoadFailed": "Couldn't load the spreadsheet",
+      "spreadsheetRetry": "Retry",
+      "officeJsPreviewFailed": "Couldn't preview this file",
+      "officeJsPreviewRetry": "Retry"
     },
     "fileViewer": {
       "title": "Aperçu du fichier",
@@ -3383,6 +3412,7 @@
       },
       "linkSafety": {
         "errorCannotOpen": "Impossible d'ouvrir le fichier local",
+        "errorFileNotFound": "This file does not exist.",
         "errorNoWorkspace": "Aucun dossier d'espace de travail n'est actuellement actif.",
         "errorFailedOpen": "Échec de l'ouverture du fichier local",
         "errorFailedLink": "Échec de l'ouverture du lien",
@@ -3980,6 +4010,12 @@
     },
     "toasts": {
       "cloneFailed": "Échec du clonage du dépôt"
+    },
+    "fileOpen": {
+      "open": "Open",
+      "defaultApp": "Default app",
+      "folder": "Folder",
+      "failed": "Couldn't open the file"
     }
   },
   "ProjectBoot": {
@@ -4236,6 +4272,15 @@
       "fr": "Français",
       "pt": "Portugais",
       "ar": "Arabe"
+    },
+    "folderInbound": {
+      "title": "Réutilisation de session du dossier",
+      "description": "Lorsqu’un chat lié à un dossier envoie un message sans citation, la dernière conversation du dossier est reprise si elle a été active dans ce délai (minutes). Sinon une nouvelle conversation est créée. 0 démarre toujours une nouvelle conversation.",
+      "minutesLabel": "minutes",
+      "saved": "Fenêtre de réutilisation enregistrée.",
+      "saveFailed": "Échec de l’enregistrement de la fenêtre de réutilisation.",
+      "invalid": "Saisissez un entier entre 0 et 10080.",
+      "save": "Enregistrer"
     }
   },
   "ModelProviderSettings": {
@@ -6310,13 +6355,13 @@
     "excludeFoldersHint": "Skip these project folders. Use the list or comma-separated ids.",
     "excludeFoldersPlaceholder": "e.g. 12, 34",
     "unknownFolder": "Dossier {id}",
-    "restoreBuiltinPrompt": "Restore built-in",
+    "restoreBuiltinPrompt": "Restaurer la compétence intégrée",
     "turnSummaryTitle": "Résumé de tour",
     "turnSummaryDescription": "Après chaque tour ACP réussi, écrire une mémoire lisible de ce qui a changé et de ce qui a été implémenté. Un identifiant de modèle vide utilise le modèle lié par défaut.",
     "turnSummaryModel": "Id de modèle du résumé de tour",
     "turnSummaryModelHint": "Ce choix s’applique à toutes les étapes du Wiki. Il reste indépendant du chat ; les paramètres avancés permettent des choix par étape.",
     "turnSummaryModelPlaceholder": "Défaut lié",
-    "turnSummaryPrompt": "Invite du résumé de tour",
+    "turnSummaryPrompt": "Compétence de résumé de tour (SKILL.md)",
     "turnSummaryPromptPlaceholder": "Skill complet de résumé de tour. L'hôte valide toujours l'identité de la page et ne peut pas élargir la lecture.",
     "turnSummaryPromptBuiltinHint": "Ceci est le skill complet de résumé de tour. Modifiez-le ici. Restaurer l'intégré suit les mises à jour futures.",
     "sessionRollupTitle": "Synthèse de conversation",
@@ -6324,7 +6369,7 @@
     "sessionRollupModel": "Id de modèle de la synthèse de conversation",
     "sessionRollupModelHint": "Ce choix s’applique à toutes les étapes du Wiki. Il reste indépendant du chat ; les paramètres avancés permettent des choix par étape.",
     "sessionRollupModelPlaceholder": "Défaut lié",
-    "sessionRollupPrompt": "Invite de la synthèse de conversation",
+    "sessionRollupPrompt": "Compétence de synthèse de conversation (SKILL.md)",
     "sessionRollupPromptPlaceholder": "Skill complet de synthèse de conversation. L'hôte valide toujours l'identité de la page et ne peut pas élargir la lecture.",
     "sessionRollupPromptBuiltinHint": "Ceci est le skill complet de synthèse de conversation. Modifiez-le ici. Restaurer l'intégré suit les mises à jour futures.",
     "synthesizeTitle": "Organiser",
@@ -6335,7 +6380,7 @@
     "synthesizeModel": "Id de modèle d'organisation",
     "synthesizeModelHint": "Ce choix s’applique à toutes les étapes du Wiki. Il reste indépendant du chat ; les paramètres avancés permettent des choix par étape.",
     "synthesizeModelPlaceholder": "Défaut lié",
-    "synthesizePrompt": "Invite d'organisation",
+    "synthesizePrompt": "Compétence de synthèse du travail (SKILL.md)",
     "synthesizePromptPlaceholder": "Skill complet de synthèse. L'hôte valide toujours les localisateurs et ne peut pas inventer d'affirmations.",
     "synthesizePromptBuiltinHint": "Ceci est le skill complet d'organisation. Modifiez-le ici. Restaurer l'intégré suit les mises à jour futures."
   },
@@ -6669,7 +6714,10 @@
       "storageHint": "Changer l’emplacement ne déplace pas les fichiers existants. Suspendez le traitement avant de changer.",
       "capture": "Enregistrer les conversations",
       "captureHint": "Enregistrez les documents après les échanges réussis ; les conversations déléguées sont exclues.",
-      "promptBoundary": "Les instructions personnalisées ne peuvent étendre l’accès aux fichiers ni contourner la validation des sources ou la protection en écriture.",
+      "promptBoundary": "Les compétences personnalisées ne peuvent étendre l’accès aux fichiers ni contourner la validation des sources ou la protection en écriture.",
+      "skillHint": "Modifiez les méthodes de travail et les critères de décision durables. Le système fournit les fichiers précis et la tâche courante lors de l’exécution. La compétence intégrée reçoit les mises à jour futures.",
+      "builtinTask": "Instructions de tâche intégrées",
+      "builtinTaskHint": "Modèle en lecture seule du message utilisateur qui lance cette étape. Lors de l’exécution, le système renseigne les fichiers sources, le répertoire Wiki, les détails de la tâche courante et les exigences d’exécution.",
       "unsaved": "Modifications non enregistrées",
       "discard": "Annuler les modifications",
       "reasons": {
@@ -6682,12 +6730,14 @@
       "navigation": "Vue d’ensemble",
       "sourceSections": "Informations du document",
       "stages": {
-        "turn_summary": "Trace d’échange",
-        "session_rollup": "Résumé de conversation",
-        "synthesize": "Organiser maintenant"
+        "turn_summary": "Résumé de tour",
+        "session_rollup": "Synthèse de conversation",
+        "synthesize": "Synthèse du travail"
       },
       "library": {
         "directory": "Répertoire",
+        "expandDirectory": "Développer {name}",
+        "collapseDirectory": "Réduire {name}",
         "home": "Accueil du Wiki",
         "backHome": "Retour à l’accueil du Wiki",
         "location": "Dossier du Wiki",

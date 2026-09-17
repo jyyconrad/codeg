@@ -32,6 +32,24 @@ pub struct ReadFilePreviewParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PathExistsParams {
+    pub path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadSpreadsheetPreviewParams {
+    pub root_path: String,
+    pub path: String,
+    pub sheet: Option<String>,
+    pub row_offset: u32,
+    pub row_limit: u32,
+    pub col_offset: u32,
+    pub col_limit: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReadFileBase64Params {
     pub path: String,
     pub max_bytes: Option<usize>,
@@ -109,6 +127,29 @@ pub async fn read_file_preview(
     Json(params): Json<ReadFilePreviewParams>,
 ) -> Result<Json<folder_commands::FilePreviewContent>, AppCommandError> {
     let result = folder_commands::read_file_preview(params.root_path, params.path).await?;
+    Ok(Json(result))
+}
+
+pub async fn path_exists(
+    Json(params): Json<PathExistsParams>,
+) -> Result<Json<bool>, AppCommandError> {
+    let result = folder_commands::path_exists(params.path).await?;
+    Ok(Json(result))
+}
+
+pub async fn read_spreadsheet_preview(
+    Json(params): Json<ReadSpreadsheetPreviewParams>,
+) -> Result<Json<crate::spreadsheet_preview::SpreadsheetPreviewPage>, AppCommandError> {
+    let result = crate::commands::spreadsheet_preview::read_spreadsheet_preview(
+        params.root_path,
+        params.path,
+        params.sheet,
+        params.row_offset,
+        params.row_limit,
+        params.col_offset,
+        params.col_limit,
+    )
+    .await?;
     Ok(Json(result))
 }
 

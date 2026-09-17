@@ -4,7 +4,7 @@ import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import enMessages from "@/i18n/messages/en.json"
-import type { ChatChannelInfo } from "@/lib/types"
+import type { ChannelType, ChatChannelInfo } from "@/lib/types"
 
 const api = vi.hoisted(() => ({
   listChatChannels: vi.fn(),
@@ -20,13 +20,24 @@ vi.mock("sonner", () => ({
 
 import { FolderNotifyChannelsDialog } from "./folder-notify-channels-dialog"
 
-function channel(id: number, name: string, enabled = true): ChatChannelInfo {
+function channel(
+  id: number,
+  name: string,
+  {
+    enabled = true,
+    type = "telegram",
+    chatId,
+  }: { enabled?: boolean; type?: ChannelType; chatId?: string } = {}
+): ChatChannelInfo {
   return {
     id,
     name,
-    channel_type: "telegram",
+    channel_type: type,
     enabled,
-    config_json: "{}",
+    config_json:
+      type === "weixin"
+        ? JSON.stringify({ base_url: "https://example.test" })
+        : JSON.stringify({ chat_id: chatId ?? `-100${id}` }),
     event_filter_json: null,
     daily_report_enabled: false,
     daily_report_time: null,
@@ -50,13 +61,13 @@ describe("FolderNotifyChannelsDialog", () => {
     api.setFolderChatChannels.mockReset()
     api.listChatChannels.mockResolvedValue([
       channel(2, "Telegram"),
-      channel(3, "Lark"),
+      channel(3, "Lark", { type: "lark", chatId: "oc_default" }),
     ])
     api.listFolderChatChannels.mockResolvedValue([])
-    api.setFolderChatChannels.mockResolvedValue([2, 3])
+    api.setFolderChatChannels.mockResolvedValue([])
   })
 
-  it("saves the checked channel ids", async () => {
+  it("saves checked channels with empty session ids as the channel default", async () => {
     const user = userEvent.setup()
     renderDialog()
 
@@ -65,17 +76,70 @@ describe("FolderNotifyChannelsDialog", () => {
     await user.click(screen.getByRole("button", { name: /save/i }))
 
     await waitFor(() =>
-      expect(api.setFolderChatChannels).toHaveBeenCalledWith(
-        1,
-        expect.arrayContaining([2, 3])
-      )
+      expect(api.setFolderChatChannels).toHaveBeenCalledWith(1, [
+        { channel_id: 2, chat_id: null },
+        { channel_id: 3, chat_id: null },
+      ])
     )
+  })
+
+  it("saves a folder-specific session id for the selected channel", async () => {
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(await screen.findByRole("checkbox", { name: "Telegram" }))
+    await user.type(
+      screen.getByRole("textbox", { name: /session id for telegram/i }),
+      "-100999"
+    )
+    await user.click(screen.getByRole("button", { name: /save/i }))
+
+    await waitFor(() =>
+      expect(api.setFolderChatChannels).toHaveBeenCalledWith(1, [
+        { channel_id: 2, chat_id: "-100999" },
+      ])
+    )
+  })
+
+  it("loads an existing session id into the input", async () => {
+    api.listFolderChatChannels.mockResolvedValue([
+      { channel_id: 2, chat_id: "-100888" },
+    ])
+    renderDialog()
+
+    const checkbox = await screen.findByRole("checkbox", { name: "Telegram" })
+    expect(checkbox).toBeChecked()
+    expect(
+      screen.getByRole("textbox", { name: /session id for telegram/i })
+    ).toHaveValue("-100888")
+  })
+
+  it("hides the session id field until a channel is selected", async () => {
+    renderDialog()
+
+    await screen.findByRole("checkbox", { name: "Telegram" })
+    expect(
+      screen.queryByRole("textbox", { name: /session id/i })
+    ).not.toBeInTheDocument()
+  })
+
+  it("does not show a session id field for weixin", async () => {
+    api.listChatChannels.mockResolvedValue([
+      channel(4, "Weixin", { type: "weixin" }),
+    ])
+    const user = userEvent.setup()
+    renderDialog()
+
+    await user.click(await screen.findByRole("checkbox", { name: "Weixin" }))
+    expect(
+      screen.queryByRole("textbox", { name: /session id/i })
+    ).not.toBeInTheDocument()
   })
 
   it("omits disabled channels", async () => {
     api.listChatChannels.mockResolvedValue([
-      channel(2, "Telegram", true),
-      channel(3, "Lark", false),
+      channel(2, "Telegram", { enabled: true }),
+      channel(3, "Lark", { enabled: false, type: "lark" }),
     ])
     renderDialog()
 

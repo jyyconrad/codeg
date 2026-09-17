@@ -23,7 +23,10 @@ import {
 } from "@/contexts/workspace-context"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import { findOwningFolder, splitAbsPath } from "@/lib/file-open-target"
-import { isHtmlPreviewable } from "@/lib/language-detect"
+import {
+  hasSourcePreviewToggle,
+  isBinaryPreviewable,
+} from "@/lib/file-preview-kind"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import {
   FILE_CARD_MIN_HEIGHT,
@@ -118,8 +121,7 @@ export const FileNode = memo(function FileNode({
 
   const isPreview = tabId ? previewFileTabIds.has(tabId) : false
   const canTogglePreview =
-    tab?.kind === "file" &&
-    (tab.language === "markdown" || isHtmlPreviewable(tab.path))
+    tab?.kind === "file" && hasSourcePreviewToggle(tab.path)
 
   const openInWorkspace = useCallback(() => {
     if (!tabId) return
@@ -144,7 +146,9 @@ export const FileNode = memo(function FileNode({
   // office tab holds no bytes at all, just a live officecli watch that pushes
   // its own refreshes, so re-reading a .docx as text would reject the tab.
   const canReload =
-    tab != null && tab.language !== "office" && tab.isDirty !== true
+    tab != null &&
+    !isBinaryPreviewable(tab.path) &&
+    tab.isDirty !== true
   const reload = useCallback(() => {
     if (!path) return
     void reloadOpenFileBackground(path).catch(() => {})

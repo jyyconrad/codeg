@@ -51,7 +51,7 @@ describe("MarkdownLink", () => {
     expect(button.querySelector("svg")).not.toBeNull()
   })
 
-  it.each([["#section"], ["src/main.rs"], ["vscode://file/repo/src/app.ts"]])(
+  it.each([["#section"], ["vscode://file/repo/src/app.ts"]])(
     "renders %s without a type icon",
     (href) => {
       render(<MarkdownLink href={href}>{href}</MarkdownLink>)
@@ -61,6 +61,13 @@ describe("MarkdownLink", () => {
       expect(button.querySelector("svg")).toBeNull()
     }
   )
+
+  it("renders a workspace-relative file path with the file icon", () => {
+    render(<MarkdownLink href="src/main.rs">src/main.rs</MarkdownLink>)
+    const button = screen.getByRole("button")
+    expect(button).toHaveAttribute("data-resource-kind", "file")
+    expect(button.querySelector("svg")).not.toBeNull()
+  })
 
   it("opens an approved external link inside the click's own call stack", () => {
     mocks.onLinkCheck.mockReturnValue(true)

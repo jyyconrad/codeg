@@ -29,7 +29,6 @@ use crate::web::event_bridge::EventEmitter;
 use super::manager::ChatChannelManager;
 
 const FLUSH_INTERVAL_SECS: u64 = 10;
-const BUFFER_FLUSH_THRESHOLD: usize = 500;
 const MESSAGE_LANGUAGE_KEY: &str = "chat_message_language";
 const COMMAND_PREFIX_KEY: &str = "chat_command_prefix";
 const DEFAULT_COMMAND_PREFIX: &str = "/";
@@ -130,6 +129,11 @@ async fn handle_acp_envelope(
 ) {
     let connection_id = envelope.connection_id.as_str();
 
+    // IM cards for chat channels are the Events-tab set only:
+    // user_prompt_sent, turn_complete, error, permission_request,
+    // question_request (see `event_subscriber` + Settings → 消息渠道 → 事件).
+    // This relay keeps session bookkeeping and the interactive permission
+    // card for bridged connections; it does not stream tools or token progress.
     match &envelope.payload {
         AcpEvent::SessionStarted { session_id } => {
             let mut guard = bridge.lock().await;
@@ -317,37 +321,9 @@ async fn handle_acp_envelope(
             if parent_tool_use_id.is_some() {
                 return;
             }
-            // Collect flush info under the lock, then release before any IO.
-            let flush_info: Option<(ChannelMessageTarget, String, Option<String>)> = {
-                let mut guard = bridge.lock().await;
-                match guard.get_mut(connection_id) {
-                    Some(session) => {
-                        session.content_buffer.push_str(text);
-                        if session.content_buffer.len() >= BUFFER_FLUSH_THRESHOLD
-                            && session.last_flushed.elapsed() >= Duration::from_secs(2)
-                        {
-                            session.last_flushed = Instant::now();
-                            Some((
-                                session.target.clone(),
-                                session.agent_type.to_string(),
-                                session.tool_calls.last().cloned(),
-                            ))
-                        } else {
-                            None
-                        }
-                    }
-                    None => None,
-                }
-            };
-
-            if let Some((target, agent_label, last_tool)) = flush_info {
-                let lang = get_lang(db).await;
-                let mut status = super::i18n::agent_responding(lang, &agent_label);
-                if let Some(tool) = last_tool {
-                    status.push_str(&format!(" | {tool}"));
-                }
-                let msg = RichMessage::info(status);
-                let _ = manager.send_to_target(&target, &msg).await;
+            let mut guard = bridge.lock().await;
+            if let Some(session) = guard.get_mut(connection_id) {
+                session.content_buffer.push_str(text);
             }
         }
 
@@ -357,32 +333,13 @@ async fn handle_acp_envelope(
             raw_input,
             ..
         } => {
-            // Emit a "delegation started" placeholder to the channel so
-            // remote users see something happen as soon as the parent agent
-            // fires `delegate_to_agent`, not only when the child wraps up.
-            let delegation_announce = if is_delegation_title(title) {
-                raw_input
-                    .as_deref()
-                    .and_then(extract_agent_type)
-                    .map(|agent| format!("🤖 Delegating to {agent}…"))
-            } else {
-                None
-            };
-
             let mut guard = bridge.lock().await;
             if let Some(session) = guard.get_mut(connection_id) {
-                // Store title for progress indicator; store raw_input for later
                 session.tool_calls.push(title.clone());
                 if let Some(input) = raw_input.as_deref() {
                     session
                         .tool_call_inputs
                         .insert(tool_call_id.clone(), input.to_string());
-                }
-                if let Some(text) = delegation_announce {
-                    let target = session.target.clone();
-                    drop(guard);
-                    let msg = RichMessage::info(text);
-                    let _ = manager.send_to_target(&target, &msg).await;
                 }
             }
         }
@@ -416,60 +373,18 @@ async fn handle_acp_envelope(
                             .as_deref()
                             .map(|s| extract_agent_type(s).is_some())
                             .unwrap_or(false);
-                    let target = session.target.clone();
                     if is_delegation {
                         let already_rendered = session.delegation_rendered.contains(tool_call_id);
                         let report = parse_delegation_report(raw_output.as_deref());
                         if report.as_ref().is_some_and(|r| r.is_terminal()) {
-                            // Terminal tool output (a fast-complete result, or a
-                            // setup failure). Render it EXACTLY ONCE, gated on the
-                            // `delegation_rendered` marker (NOT the input map,
-                            // which `raw_input` updates re-populate). This is the
-                            // only surface for setup failures and synthetic-id
-                            // fast-completes (neither emits `DelegationCompleted`),
-                            // and it no-ops when the completion event already
-                            // rendered first.
                             if !already_rendered {
-                                let agent = session
-                                    .tool_call_inputs
-                                    .get(tool_call_id)
-                                    .map(String::as_str)
-                                    .or(raw_input.as_deref())
-                                    .and_then(extract_agent_type)
-                                    .unwrap_or_else(|| "agent".to_string());
-                                let body =
-                                    format_delegation_terminal(&agent, report.as_ref().unwrap());
                                 session.delegation_rendered.insert(tool_call_id.clone());
                                 session.tool_call_inputs.remove(tool_call_id);
-                                drop(guard);
-                                let msg = RichMessage::info(body);
-                                let _ = manager.send_to_target(&target, &msg).await;
                             }
-                        } else if !already_rendered {
-                            // Running ack (or unparseable output): announce the
-                            // background task. KEEP the stored input — the eventual
-                            // `DelegationCompleted` render needs the agent_type.
-                            // Suppressed once the result has rendered, so a late
-                            // re-emitted ack can't appear after the result.
-                            let agent = session
-                                .tool_call_inputs
-                                .get(tool_call_id)
-                                .map(String::as_str)
-                                .or(raw_input.as_deref())
-                                .and_then(extract_agent_type)
-                                .unwrap_or_else(|| "agent".to_string());
-                            drop(guard);
-                            let msg = RichMessage::info(format_delegation_ack(&agent));
-                            let _ = manager.send_to_target(&target, &msg).await;
                         }
+                        // Delegation progress is not an Events-tab event.
                     } else {
-                        let stored_input = session.tool_call_inputs.remove(tool_call_id);
-                        let input_ref = stored_input.as_deref().or(raw_input.as_deref());
-                        let body =
-                            format!(">> {}", format_tool_call_detail(effective_title, input_ref));
-                        drop(guard);
-                        let msg = RichMessage::info(body);
-                        let _ = manager.send_to_target(&target, &msg).await;
+                        session.tool_call_inputs.remove(tool_call_id);
                     }
                 }
             }
@@ -495,20 +410,12 @@ async fn handle_acp_envelope(
                 // here at all, so this arm naturally no-ops for synthetic ids —
                 // the terminal `ToolCallUpdate` is their surface.)
                 if !session.delegation_rendered.contains(parent_tool_use_id) {
-                    let agent = session
-                        .tool_call_inputs
-                        .remove(parent_tool_use_id)
-                        .as_deref()
-                        .and_then(extract_agent_type)
-                        .unwrap_or_else(|| "sub-agent".to_string());
+                    session.tool_call_inputs.remove(parent_tool_use_id);
                     session
                         .delegation_rendered
                         .insert(parent_tool_use_id.clone());
-                    let target = session.target.clone();
-                    drop(guard);
-                    let msg = RichMessage::info(format_delegation_result(&agent, result));
-                    let _ = manager.send_to_target(&target, &msg).await;
                 }
+                let _ = result;
             }
         }
 
@@ -574,6 +481,10 @@ async fn handle_acp_envelope(
                 });
 
                 drop(guard);
+
+                if !super::event_filter::event_enabled(db, "permission_request").await {
+                    return;
+                }
 
                 let lang = get_lang(db).await;
                 let prefix = get_prefix(db).await;
@@ -676,6 +587,9 @@ async fn handle_acp_envelope(
                 if code.as_deref() == Some("retry_state") {
                     return;
                 }
+                if !super::event_filter::event_enabled(db, "error").await {
+                    return;
+                }
                 let lang = get_lang(db).await;
                 let msg = RichMessage {
                     title: Some(match lang {
@@ -767,35 +681,12 @@ async fn handle_acp_envelope(
 }
 
 async fn flush_progress(
-    bridge: &Arc<Mutex<SessionBridge>>,
-    manager: &ChatChannelManager,
-    db: &DatabaseConnection,
+    _bridge: &Arc<Mutex<SessionBridge>>,
+    _manager: &ChatChannelManager,
+    _db: &DatabaseConnection,
 ) {
-    let lang = get_lang(db).await;
-    let updates: Vec<(ChannelMessageTarget, String)> = {
-        let mut guard = bridge.lock().await;
-        let mut out = Vec::new();
-        for session in guard.all_sessions_mut() {
-            if !session.content_buffer.is_empty()
-                && session.last_flushed.elapsed() >= Duration::from_secs(FLUSH_INTERVAL_SECS)
-            {
-                session.last_flushed = Instant::now();
-                let last_tool = session.tool_calls.last().cloned();
-                let agent_label = session.agent_type.to_string();
-                let mut status = super::i18n::agent_responding(lang, &agent_label);
-                if let Some(tool) = last_tool {
-                    status.push_str(&format!(" | {tool}"));
-                }
-                out.push((session.target.clone(), status));
-            }
-        }
-        out
-    };
-
-    for (target, text) in updates {
-        let msg = RichMessage::info(text);
-        let _ = manager.send_to_target(&target, &msg).await;
-    }
+    // Progress heartbeats are not Events-tab events (user_prompt_sent /
+    // turn_complete / error / permission_request / question_request).
 }
 
 async fn clear_session_route(
@@ -1264,6 +1155,80 @@ mod async_relay_dedup_tests {
         r#"{"structuredContent":{"task_id":"x","status":"running","child_conversation_id":5}}"#;
     const FAST_COMPLETE: &str = r#"{"content":[{"type":"text","text":"done"}],"isError":false,"structuredContent":{"task_id":"x","status":"completed","child_conversation_id":5,"text":"done"}}"#;
 
+    /// Folder-notify / Events-tab design only surfaces session cards
+    /// (start/complete/error/permission/question). Ordinary tool completions
+    /// must not be relayed as IM messages ("tool", ">> Grep: …").
+    #[tokio::test]
+    async fn content_delta_is_not_pushed_to_channel() {
+        let (bridge, chat, rec) = harness().await;
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        handle_acp_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "conn".into(),
+                payload: AcpEvent::ContentDelta {
+                    text: "x".repeat(600),
+                    parent_tool_use_id: None,
+                },
+            },
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.is_empty(),
+            "token/progress deltas are not Events-tab events, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_tool_completion_is_not_pushed_to_channel() {
+        let (bridge, chat, rec) = harness().await;
+        {
+            let mut guard = bridge.lock().await;
+            let session = guard.get_mut("conn").unwrap();
+            session
+                .tool_call_inputs
+                .insert("grep-1".into(), r#"{"pattern":"folder_inbound"}"#.into());
+        }
+        let conn = ConnectionManager::new();
+        let db = test_helpers::fresh_in_memory_db().await;
+        handle_acp_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "conn".into(),
+                payload: AcpEvent::ToolCallUpdate {
+                    tool_call_id: "grep-1".into(),
+                    title: Some("Grep".into()),
+                    status: Some("completed".into()),
+                    content: None,
+                    raw_input: None,
+                    raw_output: None,
+                    raw_output_append: None,
+                    locations: None,
+                    meta: None,
+                    images: None,
+                },
+            },
+            &bridge,
+            &chat,
+            &conn,
+            &db.conn,
+            &EventEmitter::Noop,
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert!(
+            msgs.is_empty(),
+            "ordinary tool completions must not be sent to IM, got {msgs:?}"
+        );
+    }
+
     /// Synthetic-id fast-complete: terminal tool output, NO DelegationCompleted.
     /// Exactly one ✅ result line, from the terminal ToolCallUpdate.
     #[tokio::test]
@@ -1281,8 +1246,10 @@ mod async_relay_dedup_tests {
         )
         .await;
         let msgs = sent(&rec).await;
-        assert_eq!(msgs.len(), 1, "exactly one line, got {msgs:?}");
-        assert!(msgs[0].starts_with("✅ codex"), "got {:?}", msgs[0]);
+        assert!(
+            msgs.is_empty(),
+            "delegation tool lines are not Events-tab events, got {msgs:?}"
+        );
     }
 
     /// Non-synthetic fast-complete in the `DelegationCompleted → ToolCallUpdate
@@ -1314,12 +1281,10 @@ mod async_relay_dedup_tests {
         )
         .await;
         let msgs = sent(&rec).await;
-        assert_eq!(
-            msgs.len(),
-            1,
-            "must render exactly one result line, got {msgs:?}"
+        assert!(
+            msgs.is_empty(),
+            "delegation tool lines are not Events-tab events, got {msgs:?}"
         );
-        assert!(msgs[0].starts_with("✅ codex"), "got {:?}", msgs[0]);
     }
 
     /// Slow async: running ack first, then DelegationCompleted. Exactly two
@@ -1348,9 +1313,10 @@ mod async_relay_dedup_tests {
         )
         .await;
         let msgs = sent(&rec).await;
-        assert_eq!(msgs.len(), 2, "ack + result, got {msgs:?}");
-        assert!(msgs[0].contains("running in background"));
-        assert!(msgs[1].starts_with("✅ codex"));
+        assert!(
+            msgs.is_empty(),
+            "delegation ack/result are not Events-tab events, got {msgs:?}"
+        );
     }
 
     /// A late running-ack `ToolCallUpdate` (with raw_input) arriving AFTER the
@@ -1380,8 +1346,10 @@ mod async_relay_dedup_tests {
         )
         .await;
         let msgs = sent(&rec).await;
-        assert_eq!(msgs.len(), 1, "no stale ack after the result, got {msgs:?}");
-        assert!(msgs[0].starts_with("✅ codex"));
+        assert!(
+            msgs.is_empty(),
+            "delegation tool lines are not Events-tab events, got {msgs:?}"
+        );
     }
 
     /// Setup failure (terminal report, NO child, NO DelegationCompleted): one
@@ -1402,8 +1370,10 @@ mod async_relay_dedup_tests {
         )
         .await;
         let msgs = sent(&rec).await;
-        assert_eq!(msgs.len(), 1, "one failure line, got {msgs:?}");
-        assert!(msgs[0].starts_with("❌ codex failed"), "got {:?}", msgs[0]);
+        assert!(
+            msgs.is_empty(),
+            "delegation setup failure is not an Events-tab event, got {msgs:?}"
+        );
     }
 
     /// Chat kickoff DEFERS (does not drop) when a turn is already in flight on a
