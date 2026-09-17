@@ -3932,6 +3932,12 @@
         "agents": "{done} 完了 · {running} 実行中",
         "budget": "{used}/{total}",
         "paused": "一時停止",
+        "runState": {
+          "completed": "完了",
+          "failed": "失敗",
+          "stopped": "停止"
+        },
+        "noResultSummary": "実行サマリーは返されませんでした。",
         "phaseState": {
           "pending": "保留",
           "active": "進行中",

@@ -3932,6 +3932,12 @@
         "agents": "{done} 완료 · {running} 실행 중",
         "budget": "{used}/{total}",
         "paused": "일시 중지",
+        "runState": {
+          "completed": "완료",
+          "failed": "실패",
+          "stopped": "중지"
+        },
+        "noResultSummary": "실행 요약이 반환되지 않았습니다.",
         "phaseState": {
           "pending": "대기",
           "active": "진행 중",

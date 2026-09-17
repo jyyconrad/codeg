@@ -3932,6 +3932,12 @@
         "agents": "{done} 已完成 · {running} 執行中",
         "budget": "{used}/{total}",
         "paused": "已暫停",
+        "runState": {
+          "completed": "已完成",
+          "failed": "失敗",
+          "stopped": "已停止"
+        },
+        "noResultSummary": "未返回執行摘要",
         "phaseState": {
           "pending": "待處理",
           "active": "進行中",

@@ -99,13 +99,19 @@ describe("WorkflowProgressOverlay", () => {
 
   it("falls back from an empty result to event detail and then localized empty text", () => {
     const { unmount } = renderOverlay([
-      run({ state: "failed", result_summary: "  ", last_event_detail: "Timed out" }),
+      run({
+        state: "failed",
+        result_summary: "  ",
+        last_event_detail: "Timed out",
+      }),
     ])
     expect(screen.getByText("Timed out")).toBeInTheDocument()
     unmount()
 
     renderOverlay([run({ state: "failed", result_summary: "  " })])
-    expect(screen.getByText("Execution summary was not returned.")).toBeInTheDocument()
+    expect(
+      screen.getByText("Execution summary was not returned.")
+    ).toBeInTheDocument()
   })
 
   it("shows live and terminal runs together", () => {

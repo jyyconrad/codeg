@@ -3932,6 +3932,12 @@
         "agents": "{done} fertig · {running} aktiv",
         "budget": "{used}/{total}",
         "paused": "Pausiert",
+        "runState": {
+          "completed": "Abgeschlossen",
+          "failed": "Fehlgeschlagen",
+          "stopped": "Gestoppt"
+        },
+        "noResultSummary": "Es wurde keine Ausführungszusammenfassung zurückgegeben.",
         "phaseState": {
           "pending": "Ausstehend",
           "active": "Aktiv",

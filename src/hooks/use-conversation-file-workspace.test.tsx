@@ -115,7 +115,12 @@ describe("useConversationScopedFileWorkspace", () => {
     const { rerender } = renderHook(
       ({ active, live }: { active: string | null; live: string[] }) =>
         useConversationScopedFileWorkspace(active, live),
-      { initialProps: { active: null, live: [] as string[] } }
+      {
+        initialProps: {
+          active: null as string | null,
+          live: [] as string[],
+        },
+      }
     )
 
     act(() => {

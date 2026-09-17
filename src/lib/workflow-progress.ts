@@ -18,10 +18,17 @@ export function isWorkflowTerminal(run: WorkflowRun): boolean {
   return TERMINAL_STATES.has(run.state)
 }
 
+function nonempty(value: string | null | undefined): string | undefined {
+  if (value == null || !value.trim()) return undefined
+  return value
+}
+
 function recordFromDelta(delta: WorkflowDelta): WorkflowRun {
   return {
     run_id: delta.run_id,
     name: delta.name ?? "Workflow",
+    result_summary: nonempty(delta.result_summary) ?? null,
+    revision: delta.revision ?? null,
     objective: delta.objective ?? null,
     state: delta.state ?? "running",
     phases: delta.phases ?? [],
@@ -40,7 +47,17 @@ function recordFromDelta(delta: WorkflowDelta): WorkflowRun {
 }
 
 function applyDelta(stored: WorkflowRun, delta: WorkflowDelta): WorkflowRun {
+  if (
+    delta.revision != null &&
+    stored.revision != null &&
+    delta.revision <= stored.revision
+  ) {
+    return stored
+  }
   const next = { ...stored }
+  if (delta.revision != null) next.revision = delta.revision
+  const summary = nonempty(delta.result_summary)
+  if (summary) next.result_summary = summary
   if (delta.name != null) next.name = delta.name
   if (delta.objective != null) next.objective = delta.objective
   if (delta.state != null) next.state = delta.state
@@ -115,6 +132,23 @@ export function adoptUnknownWorkflows(
 
 export function liveWorkflows(runs: WorkflowRun[]): WorkflowRun[] {
   return runs.filter((r) => !isWorkflowTerminal(r))
+}
+
+/** Live progress plus settled results — the overlay keeps both. */
+export function visibleWorkflows(runs: WorkflowRun[]): WorkflowRun[] {
+  return runs
+}
+
+/** Prefer the official report; blank summaries fall back to the last event. */
+export function workflowResultText(run: WorkflowRun): string | null {
+  const summary = nonempty(run.result_summary)?.trim()
+  if (summary) return summary
+  const detail = nonempty(run.last_event_detail)?.trim()
+  if (!detail) return null
+  // Live frames reuse last_event_detail for the current phase title. That is
+  // progress, not a result — only a distinct terminal reason is shown.
+  if (detail === run.current_phase?.trim()) return null
+  return detail
 }
 
 /** One-line body text for a phase: script `detail` when present, else title. */

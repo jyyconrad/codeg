@@ -19,6 +19,8 @@ tsconfig.tsbuildinfo
 work
 work/
 
+.grok/
+
 # Next.js
 .next/
 out/

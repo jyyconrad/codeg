@@ -25,6 +25,7 @@ import {
 } from "lucide-react"
 
 import { CollapsedOverlayChip } from "@/components/chat/collapsed-overlay-chip"
+import { MessageResponse } from "@/components/ai-elements/message"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -37,9 +38,11 @@ import {
 import {
   agentDisplayText,
   groupAgentsByPhase,
-  liveWorkflows,
+  isWorkflowTerminal,
   phaseDisplayText,
   phaseProgress,
+  visibleWorkflows,
+  workflowResultText,
 } from "@/lib/workflow-progress"
 import type { WorkflowAgent, WorkflowPhase, WorkflowRun } from "@/lib/types"
 import {
@@ -58,7 +61,11 @@ function useWorkflowElapsed(run: WorkflowRun): number {
     }, 1000)
     return () => window.clearInterval(id)
   }, [run.run_id, run.state])
-  return workflowElapsedMs(run.run_id)
+  const local = workflowElapsedMs(run.run_id)
+  if (isWorkflowTerminal(run) && typeof run.elapsed_ms === "number") {
+    return Math.max(local, run.elapsed_ms)
+  }
+  return local
 }
 
 export function WorkflowProgressOverlay({
@@ -68,11 +75,11 @@ export function WorkflowProgressOverlay({
 }) {
   const ctx = useWorkflowProgressDock()
   if (!ctx || ctx.dock !== placement) return null
-  const live = liveWorkflows(ctx.runs)
-  if (live.length === 0) return null
+  const runs = visibleWorkflows(ctx.runs)
+  if (runs.length === 0) return null
   return (
     <WorkflowProgressPanel
-      runs={live}
+      runs={runs}
       placement={placement}
       onToggleDock={ctx.toggleDock}
     />
@@ -202,13 +209,21 @@ function WorkflowProgressPanel({
           : "flex gap-2 overflow-x-auto"
       )}
     >
-      {runs.map((run) => (
-        <WorkflowRunBody
-          key={run.run_id}
-          run={run}
-          layout={overlay ? "vertical" : "horizontal"}
-        />
-      ))}
+      {runs.map((run) =>
+        isWorkflowTerminal(run) ? (
+          <WorkflowTerminalCard
+            key={run.run_id}
+            run={run}
+            layout={overlay ? "vertical" : "horizontal"}
+          />
+        ) : (
+          <WorkflowRunBody
+            key={run.run_id}
+            run={run}
+            layout={overlay ? "vertical" : "horizontal"}
+          />
+        )
+      )}
     </div>
   )
 
@@ -231,6 +246,61 @@ function WorkflowProgressPanel({
   )
 }
 
+function WorkflowTerminalCard({
+  run,
+  layout,
+}: {
+  run: WorkflowRun
+  layout: "vertical" | "horizontal"
+}) {
+  const t = useTranslations("Folder.chat.workflows")
+  const report = workflowResultText(run)
+  const horizontal = layout === "horizontal"
+  return (
+    <div
+      data-testid="workflow-terminal-card"
+      className={cn(
+        "rounded-lg border bg-transparent px-2.5 py-2",
+        horizontal && "min-w-56 max-w-80 shrink-0"
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        {run.state === "failed" ? (
+          <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+        ) : run.state === "stopped" ? (
+          <CircleDashedIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <CheckCircle2Icon className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+        )}
+        <p className="min-w-0 flex-1 truncate text-sm font-medium leading-5">
+          {run.name}
+        </p>
+        <Badge variant="secondary" className="h-5 shrink-0">
+          {run.state === "failed"
+            ? t("runState.failed")
+            : run.state === "stopped"
+              ? t("runState.stopped")
+              : t("runState.completed")}
+        </Badge>
+      </div>
+      <div
+        className={cn(
+          "mt-2 max-h-48 overflow-y-auto break-words text-xs leading-relaxed",
+          "[&_h1]:mb-1 [&_h1]:text-sm [&_h1]:font-semibold",
+          "[&_h2]:mb-1 [&_h2]:text-sm [&_h2]:font-semibold",
+          "[&_p]:mb-2 [&_p]:mt-0 [&_ul]:my-2 [&_li]:my-0.5"
+        )}
+      >
+        {report ? (
+          <MessageResponse>{report}</MessageResponse>
+        ) : (
+          <p className="text-muted-foreground">{t("noResultSummary")}</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function WorkflowRunBody({
   run,
   layout,
@@ -239,7 +309,11 @@ function WorkflowRunBody({
   layout: "vertical" | "horizontal"
 }) {
   const groups = groupAgentsByPhase(run)
-  if (groups.length === 0) return null
+  if (groups.length === 0) {
+    return layout === "vertical" ? (
+      <p className="truncate text-sm font-medium">{run.name}</p>
+    ) : null
+  }
   if (layout === "horizontal") {
     return (
       <>
@@ -257,6 +331,7 @@ function WorkflowRunBody({
   }
   return (
     <div className="space-y-2">
+      <p className="truncate text-sm font-medium">{run.name}</p>
       {groups.map((group, i) => (
         <PhaseGroup
           key={group.phase ? group.phase.title : `other-${i}`}

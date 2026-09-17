@@ -3932,6 +3932,12 @@
         "agents": "{done} مكتمل · {running} قيد التشغيل",
         "budget": "{used}/{total}",
         "paused": "متوقف",
+        "runState": {
+          "completed": "مكتمل",
+          "failed": "فشل",
+          "stopped": "توقف"
+        },
+        "noResultSummary": "لم يتم إرجاع ملخص التنفيذ.",
         "phaseState": {
           "pending": "معلق",
           "active": "نشط",

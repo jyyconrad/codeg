@@ -184,6 +184,10 @@ fn grok_context_window_from_config_toml(raw: &str, model: &str) -> Option<u64> {
 ///   pairing `tool_call_id` with `task_id`, since `task_completed.task_snapshot`
 ///   is keyed by `task_id` alone.
 /// - `turn_completed` — closes the current assistant turn (`stop_reason`).
+/// - `workflow_updated` — a background workflow progress/result frame. Terminal
+///   frames are collected separately and merged as `grok-workflow-result:<id>`
+///   turns after model/usage backfill, so they never invent spend or cut an
+///   in-flight assistant/tool pairing.
 ///
 /// Turn model: one user turn per `user_message_chunk`, then a single assistant
 /// turn accumulating every reasoning/text/tool block until `turn_completed`
@@ -1004,6 +1008,13 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
                     .and_then(|n| u32::try_from(n).ok());
                 lifecycle.tokens_used = update.get("tokens_used").and_then(Value::as_u64);
             }
+            // Background workflow frames. Not a turn boundary and not counted
+            // as content — collecting here must not flush the open assistant
+            // or break tool_result pairing. Only terminal statuses become a
+            // later result turn.
+            "workflow_updated" => {
+                collect_workflow_result(&mut out, update, now);
+            }
             // `task_backgrounded` / `task_completed` / plan / other extension
             // updates carry no distinct rendered content beyond what the tool
             // stream already has.
@@ -1037,6 +1048,141 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
         turn.id = format!("grok-turn-{i}");
     }
     out
+}
+
+fn grok_opt_text(update: &Value, key: &str) -> Option<String> {
+    update
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn is_terminal_workflow_status(status: &str) -> bool {
+    matches!(
+        status,
+        "complete" | "completed" | "failed" | "cancelled" | "canceled" | "interrupted"
+    )
+}
+
+fn collect_workflow_result(out: &mut ParsedUpdates, update: &Value, outer_ts: DateTime<Utc>) {
+    let Some(run_id) = grok_opt_text(update, "run_id") else {
+        return;
+    };
+    let status = update
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if !is_terminal_workflow_status(&status) {
+        return;
+    }
+    let revision = update.get("revision").and_then(Value::as_u64);
+    let timestamp = grok_opt_text(update, "last_event_timestamp")
+        .and_then(|s| parse_rfc3339(&s))
+        .unwrap_or(outer_ts);
+    let name = grok_opt_text(update, "name");
+    let result_summary = grok_opt_text(update, "result_summary");
+    let last_event_detail = grok_opt_text(update, "last_event_detail");
+
+    if let Some(existing) = out
+        .workflow_results
+        .iter_mut()
+        .find(|result| result.run_id == run_id)
+    {
+        if let (Some(incoming), Some(stored)) = (revision, existing.revision) {
+            if incoming < stored {
+                return;
+            }
+            if incoming == stored {
+                if existing.result_summary.is_none() {
+                    existing.result_summary = result_summary;
+                }
+                if existing.last_event_detail.is_none() {
+                    existing.last_event_detail = last_event_detail;
+                }
+                return;
+            }
+        }
+        existing.revision = revision.or(existing.revision);
+        existing.status = status;
+        if let Some(name) = name {
+            existing.name = Some(name);
+        }
+        if let Some(summary) = result_summary {
+            existing.result_summary = Some(summary);
+        }
+        if let Some(detail) = last_event_detail {
+            existing.last_event_detail = Some(detail);
+        }
+        return;
+    }
+
+    out.workflow_results.push(GrokWorkflowResult {
+        run_id,
+        revision,
+        name,
+        status,
+        result_summary,
+        last_event_detail,
+        timestamp,
+    });
+}
+
+fn workflow_result_turn(result: &GrokWorkflowResult) -> MessageTurn {
+    let name = result.name.as_deref().unwrap_or("Workflow");
+    let body = result
+        .result_summary
+        .as_deref()
+        .or(result.last_event_detail.as_deref())
+        .unwrap_or("Execution summary was not returned.");
+    let text = format!("# Workflow: {name}\n\nStatus: {}\n\n{body}", result.status);
+    MessageTurn {
+        id: format!("grok-workflow-result:{}", result.run_id),
+        role: TurnRole::Assistant,
+        blocks: vec![ContentBlock::Text { text }],
+        timestamp: result.timestamp,
+        usage: None,
+        duration_ms: None,
+        model: None,
+        completed_at: Some(result.timestamp),
+        agent_message_id: None,
+    }
+}
+
+fn merge_turns_keeping_existing_order(
+    existing: Vec<MessageTurn>,
+    extra: Vec<MessageTurn>,
+) -> Vec<MessageTurn> {
+    if extra.is_empty() {
+        return existing;
+    }
+    let mut out = Vec::with_capacity(existing.len() + extra.len());
+    let mut extras = extra.into_iter().peekable();
+    for turn in existing {
+        while extras
+            .peek()
+            .is_some_and(|next| next.timestamp <= turn.timestamp)
+        {
+            out.push(extras.next().expect("peeked extra turn"));
+        }
+        out.push(turn);
+    }
+    out.extend(extras);
+    out
+}
+
+fn append_workflow_result_turns(parsed: &mut ParsedUpdates) {
+    if parsed.workflow_results.is_empty() {
+        return;
+    }
+    let extra = parsed
+        .workflow_results
+        .iter()
+        .map(workflow_result_turn)
+        .collect();
+    parsed.turns = merge_turns_keeping_existing_order(std::mem::take(&mut parsed.turns), extra);
 }
 
 fn update_text(update: &Value) -> String {
@@ -2181,8 +2327,10 @@ mod tests {
             .filter(|turn| turn.id == format!("grok-workflow-result:{run_id}"))
             .collect();
         assert_eq!(results.len(), 1);
-        assert!(matches!(&results[0].blocks[..], [ContentBlock::Text { text }] if
-            text.contains("authoritative report") && !text.contains("stale report")));
+        assert!(
+            matches!(&results[0].blocks[..], [ContentBlock::Text { text }] if
+            text.contains("authoritative report") && !text.contains("stale report"))
+        );
     }
 
     #[test]
@@ -2214,18 +2362,27 @@ mod tests {
             .unwrap();
         let failed_turn = workflow_result_turn(&detail, failed);
         let cancelled_turn = workflow_result_turn(&detail, cancelled);
-        assert!(matches!(&failed_turn.blocks[..], [ContentBlock::Text { text }] if
-            text.contains("failed") && text.contains("command exited with code 1")));
-        assert!(matches!(&cancelled_turn.blocks[..], [ContentBlock::Text { text }] if
-            text.contains("cancelled") && text.contains("user stopped the workflow")));
+        assert!(
+            matches!(&failed_turn.blocks[..], [ContentBlock::Text { text }] if
+            text.contains("failed") && text.contains("command exited with code 1"))
+        );
+        assert!(
+            matches!(&cancelled_turn.blocks[..], [ContentBlock::Text { text }] if
+            text.contains("cancelled") && text.contains("user stopped the workflow"))
+        );
         // UPDATES has one assistant turn with no usage; synthesized results must
         // never manufacture usage and alter the session aggregate.
-        assert!(detail.session_stats.as_ref().is_none_or(|stats| stats.total_usage.is_none()));
+        assert!(detail
+            .session_stats
+            .as_ref()
+            .is_none_or(|stats| stats.total_usage.is_none()));
         assert!(detail
             .turns
             .iter()
             .filter(|turn| turn.id.starts_with("grok-workflow-result:"))
-            .all(|turn| turn.model.is_none() && turn.usage.is_none() && turn.duration_ms.is_none()));
+            .all(|turn| turn.model.is_none()
+                && turn.usage.is_none()
+                && turn.duration_ms.is_none()));
     }
 
     /// A `get_command_or_subagent_output` poll carries its whole result in

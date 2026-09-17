@@ -86,17 +86,13 @@ describe("upsertWorkflow", () => {
         result_summary: "# Finished\n\nAll checks passed.",
       })
     )
-    expect(completed[0].result_summary).toBe(
-      "# Finished\n\nAll checks passed."
-    )
+    expect(completed[0].result_summary).toBe("# Finished\n\nAll checks passed.")
 
     const preserved = upsertWorkflow(
       completed,
       delta({ state: "completed", result_summary: "  \n" })
     )
-    expect(preserved[0].result_summary).toBe(
-      "# Finished\n\nAll checks passed."
-    )
+    expect(preserved[0].result_summary).toBe("# Finished\n\nAll checks passed.")
   })
 
   it("rejects stale and equal provider revisions", () => {
