@@ -572,7 +572,7 @@ fn native_state(
         last_usage_input: std::sync::Arc::new(std::sync::Mutex::new(None)),
         feedback: None,
         mcp_readonly: std::sync::Arc::new(std::collections::HashSet::new()),
-        compact: None,
+        session_memory: None,
     }
 }
 
@@ -895,4 +895,109 @@ async fn write_a_cancel_b_keeps_file_and_does_not_replay() {
     assert_eq!(a.and_then(|f| f.outcome), Some(ToolOutcome::Success));
     assert_eq!(b.and_then(|f| f.outcome), Some(ToolOutcome::Cancelled));
     assert!(store.lock().expect("store").auto_replay_ids().is_empty());
+}
+
+#[tokio::test]
+async fn session_memory_keeps_prior_tool_result_and_does_not_double_prompt() {
+    use crate::agent::context::{
+        BudgetConfig, CallIdentityBridge, ContextStore, FactRecorder, LlmCompactor, SessionMemory,
+    };
+    use crate::agent::model::CodegLlmClient;
+
+    let echo = EchoTool::new();
+    let (base, capture) = spawn_completions(vec![
+        sse_tool("echo", "call_keep", json!({"text": "TOOL-RESULT-TOKEN-1"})),
+        sse_text("done"),
+    ])
+    .await;
+    let client = completions_client("sk-test", &base).expect("client");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let session = std::sync::Arc::new(SessionMemory::open_in(
+        dir.path(),
+        "sess-contract",
+        "/tmp/demo",
+        usize::MAX / 4,
+        "codeg-test",
+        LlmCompactor::new(
+            CodegLlmClient::Completions(completions_client("sk-test", &base).expect("compact")),
+            "codeg-test",
+            "summarize",
+            128,
+        ),
+    ));
+    let prompt = Message::user("UNIQUE-PROMPT-TOKEN use echo");
+    session.begin_run(&prompt).await.expect("begin_run");
+    let loaded = session
+        .load_history(
+            &prompt,
+            "short preamble",
+            &[],
+            BudgetConfig::new(128_000, 4096),
+        )
+        .await
+        .expect("load");
+    assert!(
+        !loaded.compacted,
+        "under-budget load must not report compaction"
+    );
+    assert!(
+        loaded.messages.iter().all(|m| m != &prompt),
+        "loaded history must not include the current prompt"
+    );
+
+    let store = std::sync::Arc::new(std::sync::Mutex::new(ContextStore::new("s")));
+    let recorder = std::sync::Arc::new(FactRecorder::memory(std::sync::Arc::clone(&store)));
+    let identity = std::sync::Arc::new(CallIdentityBridge::new());
+    let mut native = native_state(
+        std::sync::Arc::clone(&store),
+        recorder,
+        identity,
+        128_000,
+        4096,
+    );
+    native.session_memory = Some(std::sync::Arc::clone(&session));
+    let trace = HookTrace::new();
+    let agent = client
+        .agent("codeg-test")
+        .preamble("short preamble")
+        .tool(echo)
+        .default_max_turns(DEFAULT_MAX_TURNS)
+        .build();
+    let stream = agent
+        .runner(prompt)
+        .history(loaded.messages)
+        .max_turns(DEFAULT_MAX_TURNS)
+        .tool_concurrency(1)
+        .add_hook(CodegHook::auto_allow(trace.clone()).with_native(native))
+        .stream()
+        .await;
+    let drain = drain_stream(stream).await;
+    assert!(drain.error.is_none(), "{:?}", drain.error);
+    let bodies = capture.bodies();
+    assert!(bodies.len() >= 2, "{bodies:?}");
+
+    let first = bodies[0].to_string();
+    let prompt_hits = first.matches("UNIQUE-PROMPT-TOKEN").count();
+    assert_eq!(
+        prompt_hits, 1,
+        "current prompt must appear once in the first request: {first}"
+    );
+
+    let second = bodies[1].to_string();
+    assert!(
+        second.contains("TOOL-RESULT-TOKEN-1"),
+        "second HTTP body must still contain the first turn's tool result: {second}"
+    );
+    let committed = session.inner().load_committed().await.expect("committed");
+    let committed_dump = serde_json::to_string(&committed).expect("serialize committed");
+    assert!(
+        committed_dump.contains("TOOL-RESULT-TOKEN-1"),
+        "on_messages_committed must persist the tool result before the next model call: {committed_dump}"
+    );
+
+    let canonical_dump = trace.completion_histories().join("\n");
+    assert!(
+        canonical_dump.contains("UNIQUE-PROMPT-TOKEN"),
+        "under budget, on_completion_call must not replace Runner history: {canonical_dump}"
+    );
 }

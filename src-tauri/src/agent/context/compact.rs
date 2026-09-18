@@ -1,8 +1,7 @@
-//! Two-level context compression using rig-memory Compactor / MemoryPolicy.
+//! One-shot LLM summarizer implementing rig-memory [`Compactor`].
 //!
-//! L1 is [`TemplateCompactor`] (no HTTP). L2 is a built-in compact agent-loop
-//! on the second session trigger. Never call `AgentBuilder::memory()` —
-//! transcript is truth.
+//! Windowing lives in [`super::policy`] + Rig `TokenWindowMemory`. This module
+//! does not project request history from execution facts.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -14,36 +13,19 @@ use rig::agent::{
     ToolCallAction,
 };
 use rig::client::AgentClientExt;
-use rig::completion::message::{ToolResultContent, UserContent};
 use rig::completion::Message;
-use rig_memory::{Compactor, MemoryError, MemoryPolicy, SlidingWindowMemory, TemplateCompactor};
+use rig_memory::{Compactor, MemoryError};
 use tokio_util::sync::CancellationToken;
 
-use super::budget::{
-    estimate_request, messages_from_turns, BudgetConfig, BudgetError, BudgetInputs,
-};
-use super::store::{
-    CallIdentity, CallIdentityBridge, CanonicalTurn, CompactRecord, ContextStore, ContextView,
-    ExecutionFact, FactRecorder, UsageSource,
-};
-use super::tool_prune::{
-    distill_tool_result, hard_clear_tool_result, tool_skips_hard_clear, DistillKind,
-};
-use crate::acp::file_system_runtime::{FileSystemRuntime, FsAccessPolicy};
-use crate::acp_transcript::now_epoch_ms;
 use crate::agent::mode::compact_context_dir;
 use crate::agent::model::{CodegLlmClient, DEFAULT_INVALID_TOOL_CALL_RETRIES};
-use crate::agent::tools::{GlobTool, LoadedSkills, NativeToolCtx, ReadFileTool, WriteFileTool};
 
-/// Cap on L2 compact `max_tokens` (min of this and the session setting).
+/// Cap on compact `max_tokens` (min of this and the session setting).
 pub const L2_MAX_TOKENS: u64 = 2048;
-/// Model-call budget for the built-in compact agent-loop.
+/// Hard cap on inner dedicated compact completions when eviction is chunked.
 pub const COMPACT_MAX_TURNS: usize = 8;
-const L1_SUMMARY_MAX_BYTES: usize = 8 * 1024;
-/// OpenCode prune: keep the last two user turns' tool output intact.
-const PROTECT_RECENT_USER_TURNS: usize = 2;
-/// Claude Code microcompact / OpenClaw `keep=3`: never hard-clear the newest results.
-const PROTECT_RECENT_TOOL_RESULTS: usize = 3;
+/// Serialized-message budget per compact completion. Whole messages only.
+const COMPACT_CHUNK_MAX_BYTES: usize = 64 * 1024;
 
 /// Artifact produced by [`LlmCompactor`].
 #[derive(Clone, Debug)]
@@ -64,13 +46,14 @@ impl From<CompactArtifact> for Message {
     }
 }
 
-/// L2 compact agent. Same session client/protocol as the main turn.
+/// Dedicated no-tool compact completion. Same session client/protocol as the main turn.
 #[derive(Clone)]
 pub struct LlmCompactor {
     client: CodegLlmClient,
     model_id: String,
     compact_prompt: String,
     max_tokens: u64,
+    #[allow(dead_code)]
     artifacts_dir: Option<PathBuf>,
     cancel: CancellationToken,
 }
@@ -116,17 +99,45 @@ impl LlmCompactor {
         evicted: &[Message],
         carry_over: Option<&str>,
     ) -> Result<CompactArtifact, String> {
-        let mut body = String::new();
-        if let Some(prev) = carry_over.map(str::trim).filter(|s| !s.is_empty()) {
-            body.push_str("Previous summary:\n");
-            body.push_str(prev);
-            body.push_str("\n\n");
+        if self.cancel.is_cancelled() {
+            return Err("cancelled".into());
         }
-        body.push_str("Evicted turns:\n");
-        body.push_str(&messages_as_text(evicted));
-        let prompt = Message::user(body);
-        let context_dir = self.prepare_context_dir()?;
-        tracing::info!("codeg agent compacting context with built-in agent loop");
+        let chunks = chunk_evicted_messages(evicted);
+        if chunks.len() > COMPACT_MAX_TURNS {
+            return Err(format!(
+                "compact needs {} completions; cap is {COMPACT_MAX_TURNS}",
+                chunks.len()
+            ));
+        }
+        let mut carry = carry_over
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let mut summary = String::new();
+        for chunk in &chunks {
+            if self.cancel.is_cancelled() {
+                return Err("cancelled".into());
+            }
+            summary = self
+                .summarize_chunk(conversation_id, chunk, carry.as_deref())
+                .await?;
+            carry = Some(summary.clone());
+        }
+        Ok(CompactArtifact {
+            summary: annotate_history_summary(summary),
+            files: Vec::new(),
+        })
+    }
+
+    async fn summarize_chunk(
+        &self,
+        conversation_id: &str,
+        evicted: &[Message],
+        carry_over: Option<&str>,
+    ) -> Result<String, String> {
+        let _ = conversation_id;
+        let prompt = Message::user(compact_prompt_body(evicted, carry_over));
+        tracing::info!("codeg agent compacting context with dedicated completion");
         let summary = match &self.client {
             CodegLlmClient::Completions(client) => {
                 run_compact_agent(
@@ -134,8 +145,6 @@ impl LlmCompactor {
                     &self.model_id,
                     &self.compact_prompt,
                     prompt,
-                    context_dir.as_deref(),
-                    conversation_id,
                     self.max_tokens,
                     self.cancel.clone(),
                 )
@@ -147,8 +156,6 @@ impl LlmCompactor {
                     &self.model_id,
                     &self.compact_prompt,
                     prompt,
-                    context_dir.as_deref(),
-                    conversation_id,
                     self.max_tokens,
                     self.cancel.clone(),
                 )
@@ -158,15 +165,10 @@ impl LlmCompactor {
         if summary.trim().is_empty() {
             return Err("empty compact summary".into());
         }
-        let mut files = Vec::new();
-        if let Some(dir) = &context_dir {
-            files = collect_markdown_files(dir)?;
-        }
-        let mut summary = summary;
-        ensure_summary_lists_files(&mut summary, &files);
-        Ok(CompactArtifact { summary, files })
+        Ok(summary)
     }
 
+    #[allow(dead_code)]
     fn prepare_context_dir(&self) -> Result<Option<PathBuf>, String> {
         let Some(artifacts) = &self.artifacts_dir else {
             return Ok(None);
@@ -200,9 +202,6 @@ impl Compactor for LlmCompactor {
 
 struct CompactHook {
     cancel: CancellationToken,
-    identity: Arc<CallIdentityBridge>,
-    turn_id: u64,
-    turn_key: String,
     text: Arc<Mutex<String>>,
 }
 
@@ -227,26 +226,16 @@ impl AgentHook for CompactHook {
             return Some(InvalidToolCallAction::stop("cancelled"));
         }
         Some(InvalidToolCallAction::retry(format!(
-            "unknown or disallowed tool `{}`; use write_file, read_file, or glob",
+            "unknown or disallowed tool `{}`; compact is a tool-free completion",
             event.tool_name
         )))
     }
 
-    async fn on_tool_call(&self, _ctx: &HookContext, event: ToolCall<'_>) -> ToolCallAction {
+    async fn on_tool_call(&self, _ctx: &HookContext, _event: ToolCall<'_>) -> ToolCallAction {
         if self.cancel.is_cancelled() {
             return ToolCallAction::stop("cancelled");
         }
-        let tool_call_id = event
-            .tool_call_id
-            .map(str::to_string)
-            .unwrap_or_else(|| event.internal_call_id.to_string());
-        self.identity.set(CallIdentity {
-            turn_id: self.turn_id,
-            turn_key: self.turn_key.clone(),
-            tool_call_id,
-            function_name: event.tool_name.to_string(),
-        });
-        ToolCallAction::run()
+        ToolCallAction::skip("compact is a tool-free completion")
     }
 
     async fn on_text_delta(&self, _ctx: &HookContext, event: TextDelta<'_>) -> ObservationAction {
@@ -255,39 +244,11 @@ impl AgentHook for CompactHook {
     }
 }
 
-fn compact_tool_ctx(
-    context_dir: &Path,
-    session_id: &str,
-    cancel: CancellationToken,
-) -> NativeToolCtx {
-    let identity = Arc::new(CallIdentityBridge::new());
-    let store = Arc::new(Mutex::new(ContextStore::new(format!(
-        "compact:{session_id}"
-    ))));
-    let recorder = Arc::new(FactRecorder::memory(Arc::clone(&store)));
-    NativeToolCtx {
-        turn_id: 1,
-        identity,
-        recorder,
-        cancel,
-        launch_cwd: context_dir.to_path_buf(),
-        fs: Arc::new(FileSystemRuntime::with_policy(FsAccessPolicy::strict(
-            context_dir,
-        ))),
-        session_id: session_id.to_string(),
-        spill_dir: context_dir.join("spills"),
-        loaded_skills: LoadedSkills::shared(),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn run_compact_agent<C>(
     client: C,
     model_id: &str,
     preamble: &str,
     prompt: Message,
-    context_dir: Option<&Path>,
-    session_id: &str,
     max_tokens: u64,
     cancel: CancellationToken,
 ) -> Result<String, String>
@@ -295,65 +256,28 @@ where
     C: AgentClientExt + Send,
     C::CompletionModel: 'static,
 {
+    if cancel.is_cancelled() {
+        return Err("cancelled".into());
+    }
     let text = Arc::new(Mutex::new(String::new()));
-    let (hook, tool_ctx) = if let Some(dir) = context_dir {
-        let ctx = compact_tool_ctx(dir, session_id, cancel.clone());
-        (
-            CompactHook {
-                cancel: cancel.clone(),
-                identity: Arc::clone(&ctx.identity),
-                turn_id: ctx.turn_id,
-                turn_key: format!("compact:{session_id}"),
-                text: Arc::clone(&text),
-            },
-            Some(ctx),
-        )
-    } else {
-        (
-            CompactHook {
-                cancel: cancel.clone(),
-                identity: Arc::new(CallIdentityBridge::new()),
-                turn_id: 1,
-                turn_key: format!("compact:{session_id}"),
-                text: Arc::clone(&text),
-            },
-            None,
-        )
+    let hook = CompactHook {
+        cancel: cancel.clone(),
+        text: Arc::clone(&text),
     };
-    let stream = if let Some(ctx) = tool_ctx {
-        client
-            .agent(model_id)
-            .preamble(preamble)
-            .max_tokens(max_tokens)
-            .default_max_turns(COMPACT_MAX_TURNS)
-            .tool(ReadFileTool::new(ctx.clone()))
-            .tool(WriteFileTool::new(ctx.clone()))
-            .tool(GlobTool::new(ctx))
-            .build()
-            .runner(prompt)
-            .history(Vec::<Message>::new())
-            .max_turns(COMPACT_MAX_TURNS)
-            .tool_concurrency(1)
-            .max_invalid_tool_call_retries(DEFAULT_INVALID_TOOL_CALL_RETRIES)
-            .add_hook(hook)
-            .stream()
-            .await
-    } else {
-        client
-            .agent(model_id)
-            .preamble(preamble)
-            .max_tokens(max_tokens)
-            .default_max_turns(COMPACT_MAX_TURNS)
-            .build()
-            .runner(prompt)
-            .history(Vec::<Message>::new())
-            .max_turns(COMPACT_MAX_TURNS)
-            .tool_concurrency(1)
-            .max_invalid_tool_call_retries(DEFAULT_INVALID_TOOL_CALL_RETRIES)
-            .add_hook(hook)
-            .stream()
-            .await
-    };
+    let stream = client
+        .agent(model_id)
+        .preamble(preamble)
+        .max_tokens(max_tokens)
+        .default_max_turns(1)
+        .build()
+        .runner(prompt)
+        .history(Vec::<Message>::new())
+        .max_turns(1)
+        .tool_concurrency(1)
+        .max_invalid_tool_call_retries(DEFAULT_INVALID_TOOL_CALL_RETRIES)
+        .add_hook(hook)
+        .stream()
+        .await;
     drain_compact_stream(stream, cancel, text).await
 }
 
@@ -389,6 +313,7 @@ async fn drain_compact_stream(
     Ok(output)
 }
 
+#[allow(dead_code)]
 fn collect_markdown_files(root: &Path) -> Result<Vec<CompactFile>, String> {
     let mut files = Vec::new();
     collect_markdown_files_inner(root, &mut files)?;
@@ -396,6 +321,7 @@ fn collect_markdown_files(root: &Path) -> Result<Vec<CompactFile>, String> {
     Ok(files)
 }
 
+#[allow(dead_code)]
 fn collect_markdown_files_inner(dir: &Path, out: &mut Vec<CompactFile>) -> Result<(), String> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -441,434 +367,68 @@ fn ensure_summary_lists_files(summary: &mut String, files: &[CompactFile]) {
     }
 }
 
-/// Project canonical facts. At most one compact-level upgrade per call.
-///
-/// Tool results are distilled per tool **before** turn eviction or L1/L2
-/// summarization. Canonical facts in the store are not rewritten.
-///
-/// Returns a new [`CompactRecord`] when this call created L1 or L2. Original
-/// turns stay in the store; the caller persists the record to JSONL.
-pub async fn project_compacted(
-    inputs: BudgetInputs<'_>,
-    llm: Option<&LlmCompactor>,
-) -> Result<(ContextView, Option<CompactRecord>), BudgetError> {
-    let budget = inputs.config.input_budget()?;
-    let prompt_cost = estimate_request(inputs.preamble, inputs.tool_schemas, &[], inputs.prompt);
-    if prompt_cost >= budget {
-        return Err(BudgetError::PromptExceedsBudget {
-            budget,
-            estimated: prompt_cost,
-        });
-    }
-
-    let existing = inputs.store.compact().cloned();
-    let level = existing.as_ref().map(|r| r.level).unwrap_or(0);
-    let mut live = live_turns(inputs.store, existing.as_ref()).to_vec();
-    let mut newly_evicted: Vec<CanonicalTurn> = Vec::new();
-    let omitted_at_80 =
-        (budget * u64::from(inputs.config.compact_soft_percent.clamp(1, 100))) / 100;
-    let recent_target = inputs.config.compact_recent_turns.max(1);
-    let summary_text = existing.as_ref().map(|r| r.summary.clone());
-
-    loop {
-        let history = history_with_summary(&live, inputs.store, summary_text.as_deref());
-        let estimated = estimate_request(
-            inputs.preamble,
-            inputs.tool_schemas,
-            &history,
-            inputs.prompt,
-        );
-        let over_hard = estimated > budget;
-        let over_soft = estimated >= omitted_at_80 && live.len() > recent_target;
-        let want_upgrade = matches!(level, 0 | 1) && (over_hard || over_soft);
-        if !want_upgrade {
-            return hard_drop_view(inputs, budget, live, summary_text.as_deref(), level, None);
-        }
-        if live.len() <= 1 {
-            if over_hard {
-                return Err(BudgetError::HistoryExceedsBudget { budget, estimated });
-            }
-            return Ok((
-                view_from(
-                    history,
-                    omitted_count(inputs.store, &live),
-                    estimated,
-                    inputs.config,
-                    budget,
-                    level,
-                ),
-                None,
-            ));
-        }
-        newly_evicted.push(live.remove(0));
-        let trial = history_with_summary(&live, inputs.store, summary_text.as_deref());
-        let trial_est =
-            estimate_request(inputs.preamble, inputs.tool_schemas, &trial, inputs.prompt);
-        let trial_hard = trial_est > budget;
-        let trial_soft = trial_est >= omitted_at_80 && live.len() > recent_target;
-        if !trial_hard && !trial_soft {
-            break;
-        }
-        if live.len() <= 1 {
-            break;
-        }
-    }
-
-    upgrade_one_level(inputs, budget, live, newly_evicted, existing, llm).await
-}
-
-/// Lite / L1 projection (no L2 HTTP).
-pub async fn project_view(inputs: BudgetInputs<'_>) -> Result<ContextView, BudgetError> {
-    project_compacted(inputs, None).await.map(|(view, _)| view)
-}
-
-async fn upgrade_one_level(
-    inputs: BudgetInputs<'_>,
-    budget: u64,
-    live: Vec<CanonicalTurn>,
-    newly_evicted: Vec<CanonicalTurn>,
-    existing: Option<CompactRecord>,
-    llm: Option<&LlmCompactor>,
-) -> Result<(ContextView, Option<CompactRecord>), BudgetError> {
-    let level = existing.as_ref().map(|r| r.level).unwrap_or(0);
-    if newly_evicted.is_empty() {
-        return hard_drop_view(
-            inputs,
-            budget,
-            live,
-            existing.as_ref().map(|r| r.summary.as_str()),
-            level,
-            None,
-        );
-    }
-
-    let through_turn = newly_evicted
-        .last()
-        .map(|t| t.turn_id.clone())
-        .unwrap_or_default();
-    let (evicted_msgs, _kept_msgs) = split_policy_messages(&newly_evicted, &live, inputs.store);
-
-    if level == 0 {
-        let summary = template_summary(inputs.store.session_id(), &evicted_msgs).await;
-        let record = CompactRecord {
-            level: 1,
-            through_turn,
-            summary,
-            files: Vec::new(),
-            created_at_ms: now_epoch_ms(),
-        };
-        return hard_drop_view(inputs, budget, live, None, 1, Some(record));
-    }
-
-    if level == 1 {
-        let carry = existing.as_ref().map(|r| CompactArtifact {
-            summary: r.summary.clone(),
-            files: r
-                .files
-                .iter()
-                .map(|path| CompactFile {
-                    path: path.clone(),
-                    content: String::new(),
-                })
-                .collect(),
-        });
-        let Some(compactor) = llm else {
-            return keep_l1(inputs, budget, live, existing);
-        };
-        tracing::info!("codeg agent compacting context with LLM");
-        match Compactor::compact(
-            compactor,
-            inputs.store.session_id(),
-            &evicted_msgs,
-            carry.as_ref(),
-        )
-        .await
-        {
-            Ok(artifact) if !artifact.summary.trim().is_empty() => {
-                let record = CompactRecord {
-                    level: 2,
-                    through_turn,
-                    summary: artifact.summary,
-                    files: artifact
-                        .files
-                        .iter()
-                        .map(|file| file.path.clone())
-                        .collect(),
-                    created_at_ms: now_epoch_ms(),
-                };
-                hard_drop_view(inputs, budget, live, None, 2, Some(record))
-            }
-            Ok(_) => {
-                tracing::warn!("L2 compact returned empty text; retaining L1");
-                keep_l1(inputs, budget, live, existing)
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "L2 compact failed; retaining L1");
-                keep_l1(inputs, budget, live, existing)
-            }
-        }
-    } else {
-        hard_drop_view(
-            inputs,
-            budget,
-            live,
-            existing.as_ref().map(|r| r.summary.as_str()),
-            level,
-            None,
-        )
-    }
-}
-
-fn keep_l1(
-    inputs: BudgetInputs<'_>,
-    budget: u64,
-    live: Vec<CanonicalTurn>,
-    existing: Option<CompactRecord>,
-) -> Result<(ContextView, Option<CompactRecord>), BudgetError> {
-    hard_drop_view(
-        inputs,
-        budget,
-        live,
-        existing.as_ref().map(|r| r.summary.as_str()),
-        existing.as_ref().map(|r| r.level).unwrap_or(1),
-        None,
-    )
-}
-
-fn hard_drop_view(
-    inputs: BudgetInputs<'_>,
-    budget: u64,
-    mut live: Vec<CanonicalTurn>,
-    summary: Option<&str>,
-    level: u8,
-    new_record: Option<CompactRecord>,
-) -> Result<(ContextView, Option<CompactRecord>), BudgetError> {
-    let summary_owned = new_record
-        .as_ref()
-        .map(|r| r.summary.clone())
-        .or_else(|| summary.map(str::to_string));
-    let compact_level = new_record.as_ref().map(|r| r.level).unwrap_or(level);
-    loop {
-        let history = history_with_summary(&live, inputs.store, summary_owned.as_deref());
-        let estimated = estimate_request(
-            inputs.preamble,
-            inputs.tool_schemas,
-            &history,
-            inputs.prompt,
-        );
-        if estimated <= budget {
-            return Ok((
-                view_from(
-                    history,
-                    omitted_count(inputs.store, &live),
-                    estimated,
-                    inputs.config,
-                    budget,
-                    compact_level,
-                ),
-                new_record,
-            ));
-        }
-        if live.len() <= 1 {
-            return Err(BudgetError::HistoryExceedsBudget { budget, estimated });
-        }
-        live.remove(0);
-    }
-}
-
-fn view_from(
-    messages: Vec<Message>,
-    omitted_turns: usize,
-    estimated: u64,
-    config: BudgetConfig,
-    budget: u64,
-    compact_level: u8,
-) -> ContextView {
-    ContextView {
-        messages,
-        omitted_turns,
-        estimated_tokens: estimated,
-        window: config.window,
-        input_budget: budget,
-        source: UsageSource::Estimated,
-        compact_level,
-    }
-}
-
-fn live_turns<'a>(store: &'a ContextStore, compact: Option<&CompactRecord>) -> &'a [CanonicalTurn] {
-    let turns = store.turns();
-    let Some(record) = compact else {
-        return turns;
-    };
-    match turns.iter().position(|t| t.turn_id == record.through_turn) {
-        Some(idx) => &turns[idx + 1..],
-        None => turns,
-    }
-}
-
-fn omitted_count(store: &ContextStore, live: &[CanonicalTurn]) -> usize {
-    store.turns().len().saturating_sub(live.len())
-}
-
-fn history_with_summary(
-    live: &[CanonicalTurn],
-    store: &ContextStore,
-    summary: Option<&str>,
-) -> Vec<Message> {
-    let mut out = Vec::new();
-    if let Some(summary) = summary.map(str::trim).filter(|s| !s.is_empty()) {
-        out.push(Message::user(summary.to_string()));
-    }
-    out.extend(messages_from_turns(live, store));
-    prune_tool_results_in_messages(&mut out, store);
-    out
-}
-
-fn split_policy_messages(
-    evicted_turns: &[CanonicalTurn],
-    kept_turns: &[CanonicalTurn],
-    store: &ContextStore,
-) -> (Vec<Message>, Vec<Message>) {
-    let mut all = messages_from_turns(evicted_turns, store);
-    let kept = messages_from_turns(kept_turns, store);
-    all.extend(kept.clone());
-    let keep_n = kept.len().max(1);
-    match SlidingWindowMemory::last_messages(keep_n).apply_with_demoted(all) {
-        Ok((kept_msgs, mut evicted_msgs)) => {
-            prune_tool_results_for_summarization(&mut evicted_msgs, store);
-            (evicted_msgs, kept_msgs)
-        }
-        Err(_) => {
-            let mut evicted = messages_from_turns(evicted_turns, store);
-            prune_tool_results_for_summarization(&mut evicted, store);
-            (evicted, messages_from_turns(kept_turns, store))
-        }
-    }
-}
-
-/// Hard-clear old tool results, then distill the protected tail per tool.
-///
-/// Protects the last [`PROTECT_RECENT_USER_TURNS`] user-text turns and at least
-/// the last [`PROTECT_RECENT_TOOL_RESULTS`] tool-result messages.
-fn prune_tool_results_in_messages(messages: &mut [Message], store: &ContextStore) {
-    let cutoff = protect_cutoff(messages);
-    for (index, message) in messages.iter_mut().enumerate() {
-        if index < cutoff {
-            rewrite_tool_results(message, store, |name, fact, text| {
-                if tool_skips_hard_clear(name) {
-                    distill_tool_result(name, fact, text, DistillKind::Live)
-                } else {
-                    hard_clear_tool_result(name, fact, text)
-                }
-            });
-        } else {
-            rewrite_tool_results(message, store, |name, fact, text| {
-                distill_tool_result(name, fact, text, DistillKind::Live)
-            });
-        }
-    }
-}
-
-fn prune_tool_results_for_summarization(messages: &mut [Message], store: &ContextStore) {
-    for message in messages.iter_mut() {
-        rewrite_tool_results(message, store, |name, fact, text| {
-            distill_tool_result(name, fact, text, DistillKind::Summarize)
-        });
-    }
-}
-
-fn protect_cutoff(messages: &[Message]) -> usize {
-    let user_turns: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, message)| is_user_text_message(message))
-        .map(|(index, _)| index)
-        .collect();
-    let turn_cutoff = user_turns
-        .len()
-        .checked_sub(PROTECT_RECENT_USER_TURNS)
-        .and_then(|index| user_turns.get(index).copied())
-        .unwrap_or(0);
-    let tool_msgs: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, message)| has_tool_result(message))
-        .map(|(index, _)| index)
-        .collect();
-    let tool_cutoff = tool_msgs
-        .len()
-        .checked_sub(PROTECT_RECENT_TOOL_RESULTS)
-        .and_then(|index| tool_msgs.get(index).copied())
-        .unwrap_or(0);
-    turn_cutoff.min(tool_cutoff)
-}
-
-fn is_user_text_message(message: &Message) -> bool {
-    match message {
-        Message::User { content } => content
-            .iter()
-            .any(|part| matches!(part, UserContent::Text(_))),
-        _ => false,
-    }
-}
-
-fn has_tool_result(message: &Message) -> bool {
-    match message {
-        Message::User { content } => content
-            .iter()
-            .any(|part| matches!(part, UserContent::ToolResult(_))),
-        _ => false,
-    }
-}
-
-fn rewrite_tool_results(
-    message: &mut Message,
-    store: &ContextStore,
-    mut rewrite: impl FnMut(&str, Option<&ExecutionFact>, &str) -> String,
-) {
-    let Message::User { content } = message else {
-        return;
-    };
-    for part in content {
-        let UserContent::ToolResult(result) = part else {
-            continue;
-        };
-        let text = tool_result_text(&result.content);
-        let fact = store.fact(result.call.as_str());
-        let next = rewrite(&result.name, fact, &text);
-        if next != text {
-            result.content = vec![ToolResultContent::text(next)];
-        }
-    }
-}
-
-fn tool_result_text(content: &[ToolResultContent]) -> String {
-    content
-        .iter()
-        .filter_map(ToolResultContent::as_text)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-async fn template_summary(session_id: &str, evicted: &[Message]) -> String {
-    let compactor = TemplateCompactor::new().with_max_bytes(L1_SUMMARY_MAX_BYTES);
-    match compactor.compact(session_id, evicted, None).await {
-        Ok(artifact) => artifact.into_string(),
-        Err(_) => format!("[omitted: {} turns compacted]", evicted.len().max(1)),
-    }
-}
-
 fn messages_as_text(messages: &[Message]) -> String {
     serde_json::to_string(messages).unwrap_or_else(|_| format!("{messages:?}"))
+}
+
+fn compact_prompt_body(evicted: &[Message], carry_over: Option<&str>) -> String {
+    let mut body = String::new();
+    if let Some(prev) = carry_over.map(str::trim).filter(|s| !s.is_empty()) {
+        body.push_str("Previous summary:\n");
+        body.push_str(prev);
+        body.push_str("\n\n");
+    }
+    body.push_str("Evicted turns:\n");
+    body.push_str(&messages_as_text(evicted));
+    body
+}
+
+fn annotate_history_summary(summary: String) -> String {
+    let trimmed = summary.trim();
+    if trimmed.is_empty() {
+        return summary;
+    }
+    let already_marked = trimmed.starts_with("Conversation summary")
+        || trimmed.starts_with("历史摘要")
+        || trimmed.to_ascii_lowercase().starts_with("history summary");
+    if already_marked {
+        summary
+    } else {
+        format!("Conversation summary:\n{summary}")
+    }
+}
+
+fn message_json_len(message: &Message) -> usize {
+    serde_json::to_vec(message)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0)
+}
+
+fn chunk_evicted_messages(messages: &[Message]) -> Vec<&[Message]> {
+    if messages.is_empty() {
+        return vec![messages];
+    }
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut bytes: usize = 0;
+    for (index, message) in messages.iter().enumerate() {
+        let size = message_json_len(message);
+        if index > start && bytes.saturating_add(size) > COMPACT_CHUNK_MAX_BYTES {
+            chunks.push(&messages[start..index]);
+            start = index;
+            bytes = 0;
+        }
+        bytes = bytes.saturating_add(size);
+    }
+    if start < messages.len() {
+        chunks.push(&messages[start..]);
+    }
+    chunks
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::context::store::{
-        AssistantPart, AssistantRecord, ContextStore, ExecutionFact,
-    };
-    use crate::agent::context::{ToolOutcome, ToolPhase};
     use crate::agent::model::{completions_client, CodegLlmClient};
     use axum::extract::Json;
     use axum::http::{header, StatusCode, Uri};
@@ -878,10 +438,6 @@ mod tests {
     use rig::completion::Message;
     use serde_json::{json, Value};
     use std::sync::{Arc, Mutex};
-
-    fn cfg(window: u64, output: u64) -> BudgetConfig {
-        BudgetConfig::new(window, output)
-    }
 
     #[test]
     fn compact_context_dir_nests_under_session_artifacts() {
@@ -908,54 +464,6 @@ mod tests {
             "{summary}"
         );
         assert!(!summary.contains("{\"summary\""), "{summary}");
-    }
-
-    fn fill_turns(store: &mut ContextStore, start: usize, n: usize, pad: usize) {
-        for i in start..start + n {
-            store.append_user(
-                format!("s:{i}"),
-                format!("turn-{i}-{}", "word ".repeat(pad)),
-            );
-            store.commit_assistant(
-                &format!("s:{i}"),
-                AssistantRecord {
-                    model_message_id: Some(format!("m{i}")),
-                    committed: true,
-                    parts: vec![AssistantPart::Text(format!("reply-{i}"))],
-                },
-            );
-        }
-    }
-
-    fn record_read(store: &mut ContextStore, i: usize, body: &str) {
-        let turn_id = format!("s:{i}");
-        let call_id = format!("call_{i}");
-        store.append_user(turn_id.clone(), format!("ask-{i}"));
-        store.record_fact(ExecutionFact {
-            tool_call_id: call_id.clone(),
-            function_name: "read_file".into(),
-            raw_input: json!({"path": format!("f{i}.txt")}),
-            phase: ToolPhase::Terminal,
-            outcome: Some(ToolOutcome::Success),
-            executed: Some(true),
-            model_presentation: Some(body.to_string()),
-            truncated: false,
-            output_locator: None,
-            reason: None,
-            turn_id: turn_id.clone(),
-        });
-        store.commit_assistant(
-            &turn_id,
-            AssistantRecord {
-                model_message_id: Some(format!("m{i}")),
-                committed: true,
-                parts: vec![AssistantPart::ToolCall {
-                    id: call_id,
-                    name: "read_file".into(),
-                    args: json!({"path": format!("f{i}.txt")}),
-                }],
-            },
-        );
     }
 
     async fn spawn_json_completions(script: Vec<Value>) -> (String, Arc<Mutex<Vec<Value>>>) {
@@ -1004,81 +512,34 @@ mod tests {
     }
 
     fn compact_sse(script: &Value) -> String {
-        if script.get("kind").and_then(Value::as_str) == Some("tools") {
-            let calls = script
-                .get("calls")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let tool_calls: Vec<Value> = calls
-                .iter()
-                .enumerate()
-                .map(|(index, call)| {
-                    json!({
-                        "index": index,
-                        "id": call.get("id").and_then(Value::as_str).unwrap_or("call"),
-                        "type": "function",
-                        "function": {
-                            "name": call.get("name").and_then(Value::as_str).unwrap_or("write_file"),
-                            "arguments": call.get("arguments").cloned().unwrap_or(json!({})).to_string()
-                        }
-                    })
-                })
-                .collect();
-            compact_sse_frames(&[
-                json!({
-                    "id": "chatcmpl-compact",
-                    "object": "chat.completion.chunk",
-                    "choices": [{
-                        "index": 0,
-                        "delta": { "role": "assistant", "content": null, "tool_calls": tool_calls },
-                        "finish_reason": null
-                    }]
-                })
-                .to_string(),
-                json!({
-                    "id": "chatcmpl-compact",
-                    "object": "chat.completion.chunk",
-                    "choices": [{
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "tool_calls"
-                    }],
-                    "usage": { "prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28 }
-                })
-                .to_string(),
-                "[DONE]".to_string(),
-            ])
-        } else {
-            let text = script
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or("L2-SUMMARY");
-            compact_sse_frames(&[
-                json!({
-                    "id": "chatcmpl-compact",
-                    "object": "chat.completion.chunk",
-                    "choices": [{
-                        "index": 0,
-                        "delta": { "role": "assistant", "content": text },
-                        "finish_reason": null
-                    }]
-                })
-                .to_string(),
-                json!({
-                    "id": "chatcmpl-compact",
-                    "object": "chat.completion.chunk",
-                    "choices": [{
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "stop"
-                    }],
-                    "usage": { "prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28 }
-                })
-                .to_string(),
-                "[DONE]".to_string(),
-            ])
-        }
+        let text = script
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("L2-SUMMARY");
+        compact_sse_frames(&[
+            json!({
+                "id": "chatcmpl-compact",
+                "object": "chat.completion.chunk",
+                "choices": [{
+                    "index": 0,
+                    "delta": { "role": "assistant", "content": text },
+                    "finish_reason": null
+                }]
+            })
+            .to_string(),
+            json!({
+                "id": "chatcmpl-compact",
+                "object": "chat.completion.chunk",
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop"
+                }],
+                "usage": { "prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28 }
+            })
+            .to_string(),
+            "[DONE]".to_string(),
+        ])
     }
 
     fn compact_sse_frames(payloads: &[String]) -> String {
@@ -1096,535 +557,139 @@ mod tests {
         LlmCompactor::new(CodegLlmClient::Completions(client), "m", prompt, max_tokens)
     }
 
+    fn request_has_no_tools(body: &Value) -> bool {
+        match body.get("tools") {
+            None => true,
+            Some(Value::Null) => true,
+            Some(Value::Array(tools)) => tools.is_empty(),
+            Some(_) => false,
+        }
+    }
+
     #[tokio::test]
-    async fn l1_template_compactor_does_not_call_http() {
-        let mut store = ContextStore::new("s");
-        fill_turns(&mut store, 0, 8, 200);
+    async fn llm_compactor_small_evicted_is_one_tool_free_completion() {
+        let (base, bodies) = spawn_json_completions(vec![json!({"text": "L2-SUMMARY-BODY"})]).await;
+        let compact = llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 2048);
+        let evicted = vec![
+            Message::user("hello-evicted"),
+            Message::assistant("reply-evicted"),
+        ];
+        let artifact = Compactor::compact(&compact, "s", &evicted, None)
+            .await
+            .expect("compact");
+        assert!(
+            artifact.summary.contains("L2-SUMMARY-BODY"),
+            "{}",
+            artifact.summary
+        );
+        assert!(artifact.files.is_empty(), "{:?}", artifact.files);
+        let captured = bodies.lock().expect("bodies").clone();
+        assert_eq!(captured.len(), 1, "{captured:?}");
+        assert!(request_has_no_tools(&captured[0]), "{:?}", captured[0]);
+        let body = captured[0].to_string();
+        assert!(body.contains("hello-evicted"), "{body}");
+        assert!(body.contains("CODEG-COMPACT-PROMPT-MARKER"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn llm_compactor_includes_carry_over_and_new_evicted_text() {
+        let (base, bodies) = spawn_json_completions(vec![json!({"text": "NEW-SUMMARY"})]).await;
+        let compact = llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 2048);
+        let carry = CompactArtifact {
+            summary: "PREV-SUMMARY-UNIQUE".into(),
+            files: Vec::new(),
+        };
+        let evicted = vec![Message::user("NEW-EVICTED-UNIQUE")];
+        let _ = Compactor::compact(&compact, "s", &evicted, Some(&carry))
+            .await
+            .expect("compact");
+        let captured = bodies.lock().expect("bodies").clone();
+        assert_eq!(captured.len(), 1, "{captured:?}");
+        let body = captured[0].to_string();
+        assert!(body.contains("Previous summary:"), "{body}");
+        assert!(body.contains("PREV-SUMMARY-UNIQUE"), "{body}");
+        assert!(body.contains("NEW-EVICTED-UNIQUE"), "{body}");
+        assert!(body.contains("Evicted turns:"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn llm_compactor_empty_model_output_is_error() {
+        let (base, bodies) = spawn_json_completions(vec![json!({"text": "   "})]).await;
+        let compact = llm(&base, "marker", 2048);
+        let evicted = vec![Message::user("x")];
+        let err = Compactor::compact(&compact, "s", &evicted, None).await;
+        assert!(err.is_err(), "{err:?}");
+        assert_eq!(bodies.lock().expect("bodies").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn llm_compactor_cancelled_token_errors_without_hanging() {
         let (base, bodies) = spawn_json_completions(vec![json!({"text": "SHOULD-NOT-RUN"})]).await;
-        let compact = llm(&base, "CODEG_AGENT_COMPACT_PROMPT marker", 4096);
-        let prompt = Message::user("current question");
-        let (view, record) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let compact = llm(&base, "marker", 2048).with_cancel(cancel);
+        let evicted = vec![Message::user("x")];
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            Compactor::compact(&compact, "s", &evicted, None),
         )
         .await
-        .expect("l1");
-        let rec = record.expect("l1 record");
-        assert_eq!(rec.level, 1);
-        assert_eq!(view.compact_level, 1);
-        assert_eq!(store.turns().len(), 8, "JSONL turns stay in the store");
-        let dumped = serde_json::to_string(&view.messages).unwrap();
-        assert!(
-            dumped.contains("Conversation summary") || dumped.contains("[omitted:"),
-            "{dumped}"
-        );
-        assert!(
-            !dumped.contains("\"id\":\"m0\""),
-            "evicted assistant turns must not remain as live history: {dumped}"
-        );
+        .expect("cancelled compact must not hang");
+        assert!(result.is_err(), "{result:?}");
         assert!(
             bodies.lock().expect("bodies").is_empty(),
-            "L1 must not call Completions: {:?}",
+            "cancelled compact must not call Completions: {:?}",
             bodies.lock().expect("bodies")
         );
     }
 
     #[tokio::test]
-    async fn l2_makes_one_compact_call_and_resume_reuses_record() {
-        let mut store = ContextStore::new("s");
-        fill_turns(&mut store, 0, 8, 200);
-        let (base, bodies) = spawn_json_completions(vec![json!({"text": "L2-SUMMARY-BODY"})]).await;
-        let compact = llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 4096);
-        let prompt = Message::user("current question");
-        let (view1, rec1) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l1");
-        assert_eq!(view1.compact_level, 1);
-        let rec1 = rec1.expect("l1");
-        store.set_compact(rec1);
-        fill_turns(&mut store, 8, 8, 200);
-        let (view2, rec2) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l2");
-        let rec2 = rec2.expect("l2 record");
-        assert_eq!(rec2.level, 2);
-        assert_eq!(view2.compact_level, 2);
-        assert_eq!(store.turns().len(), 16);
-        let dumped = serde_json::to_string(&view2.messages).unwrap();
-        assert!(dumped.contains("L2-SUMMARY-BODY"), "{dumped}");
-        assert!(!dumped.contains("turn-0-"), "{dumped}");
-        let captured = bodies.lock().expect("bodies").clone();
-        assert_eq!(
-            captured.len(),
-            1,
-            "L2 makes one compact HTTP call: {captured:?}"
-        );
-        let body = captured[0].to_string();
-        assert!(body.contains("CODEG-COMPACT-PROMPT-MARKER"), "{body}");
-        assert!(
-            !body.contains("\"tools\"") || body.contains("\"tools\":[]"),
-            "{body}"
-        );
-        let cap = captured[0]
-            .get("max_tokens")
-            .or_else(|| captured[0].get("max_completion_tokens"));
-        assert_eq!(cap, Some(&json!(2048)), "{:?}", captured[0]);
-
-        store.set_compact(rec2.clone());
-        let (view3, rec3) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("resume");
-        assert!(rec3.is_none(), "resume must not re-compact");
-        assert_eq!(view3.compact_level, 2);
-        let dumped = serde_json::to_string(&view3.messages).unwrap();
-        assert!(dumped.contains("L2-SUMMARY-BODY"), "{dumped}");
-        assert_eq!(
-            bodies.lock().expect("bodies").len(),
-            1,
-            "resume reuses L2 and must not spend another compact call"
-        );
-    }
-
-    #[tokio::test]
-    async fn l2_failure_retains_l1() {
-        let mut store = ContextStore::new("s");
-        fill_turns(&mut store, 0, 8, 200);
-        let (base, bodies) = spawn_json_completions(vec![json!({"fail": true})]).await;
-        let compact = llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 2048);
-        let prompt = Message::user("current question");
-        let (_, rec1) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l1");
-        let rec1 = rec1.expect("l1");
-        let l1_summary = rec1.summary.clone();
-        store.set_compact(rec1);
-        fill_turns(&mut store, 8, 8, 200);
-        let (view2, rec2) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l2 fail keeps l1");
-        assert!(rec2.is_none(), "failed L2 must not replace L1");
-        assert_eq!(view2.compact_level, 1);
-        assert_eq!(store.compact().map(|c| c.level), Some(1));
-        let dumped = serde_json::to_string(&view2.messages).unwrap();
-        assert!(
-            dumped.contains(&l1_summary) || dumped.contains("Conversation summary"),
-            "{dumped}"
-        );
-        assert_eq!(bodies.lock().expect("bodies").len(), 1);
-    }
-
-    #[tokio::test]
-    async fn one_project_view_upgrades_at_most_one_level() {
-        let mut store = ContextStore::new("s");
-        fill_turns(&mut store, 0, 8, 200);
-        let (base, bodies) = spawn_json_completions(vec![json!({"text": "L2-SHOULD-WAIT"})]).await;
-        let compact = llm(&base, "marker", 2048);
-        let prompt = Message::user("current question");
-        let (view, record) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("one level");
-        assert_eq!(record.expect("l1").level, 1);
-        assert_eq!(view.compact_level, 1);
-        assert!(
-            bodies.lock().expect("bodies").is_empty(),
-            "first trigger is L1 only"
-        );
-    }
-
-    #[tokio::test]
-    async fn prunes_old_tool_results_before_rolling_compact() {
-        let mut store = ContextStore::new("s");
-        let old = format!("OLD-TOOL-BODY-{}", "x".repeat(20_000));
-        record_read(&mut store, 0, &old);
-        record_read(
-            &mut store,
-            1,
-            &format!("MID-TOOL-BODY-{}", "z".repeat(20_000)),
-        );
-        record_read(
-            &mut store,
-            2,
-            &format!("RECENT-TOOL-BODY-{}", "y".repeat(20_000)),
-        );
-        record_read(
-            &mut store,
-            3,
-            &format!("LATEST-TOOL-BODY-{}", "w".repeat(200)),
-        );
-        let prompt = Message::user("continue");
-        let (view, record) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(30_000, 1024),
-                preamble: "p",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            None,
-        )
-        .await
-        .expect("fits after pruning tool results");
-        assert!(
-            record.is_none(),
-            "tool-result prune must run before L1 eviction"
-        );
-        assert_eq!(view.compact_level, 0);
-        let dumped = serde_json::to_string(&view.messages).unwrap();
-        assert!(
-            dumped.contains("f0.txt") && dumped.contains("re-read"),
-            "hard-cleared reads must keep the path and a re-read hint: {dumped}"
-        );
-        assert!(
-            !dumped.contains("OLD-TOOL-BODY-"),
-            "oldest tool body must not remain in the projection: {dumped}"
-        );
-        assert!(
-            dumped.contains("LATEST-TOOL-BODY-"),
-            "the newest tool result stays: {dumped}"
-        );
-        assert_eq!(
-            store
-                .fact("call_0")
-                .and_then(|f| f.model_presentation.as_ref())
-                .map(String::len),
-            Some(old.len()),
-            "canonical facts stay untruncated"
-        );
-    }
-
-    #[tokio::test]
-    async fn soft_trims_protected_tool_results_head_and_tail() {
-        let mut store = ContextStore::new("s");
-        let recent = format!("HEAD-MARKER-{}-TAIL-MARKER", "n".repeat(10_000));
-        record_read(&mut store, 0, &recent);
-        let prompt = Message::user("continue");
-        let (view, record) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(20_000, 1024),
-                preamble: "p",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            None,
-        )
-        .await
-        .expect("fits after soft-trim");
-        assert!(record.is_none());
-        assert_eq!(view.compact_level, 0);
-        let dumped = serde_json::to_string(&view.messages).unwrap();
-        assert!(dumped.contains("HEAD-MARKER-"), "{dumped}");
-        assert!(dumped.contains("TAIL-MARKER"), "{dumped}");
-        assert!(
-            dumped.contains("f0.txt") && dumped.contains("re-read"),
-            "oversized reads keep path, excerpts, and a re-read hint: {dumped}"
-        );
-        assert!(
-            dumped.len() < recent.len(),
-            "projection must be smaller than the raw tool body"
-        );
-    }
-
-    fn record_write(store: &mut ContextStore, i: usize, path: &str, content: &str, body: &str) {
-        let turn_id = format!("s:{i}");
-        let call_id = format!("call_{i}");
-        store.append_user(turn_id.clone(), format!("write-{i}"));
-        store.record_fact(ExecutionFact {
-            tool_call_id: call_id.clone(),
-            function_name: "write_file".into(),
-            raw_input: json!({"path": path, "content": content}),
-            phase: ToolPhase::Terminal,
-            outcome: Some(ToolOutcome::Success),
-            executed: Some(true),
-            model_presentation: Some(body.to_string()),
-            truncated: false,
-            output_locator: None,
-            reason: None,
-            turn_id: turn_id.clone(),
-        });
-        store.commit_assistant(
-            &turn_id,
-            AssistantRecord {
-                model_message_id: Some(format!("m{i}")),
-                committed: true,
-                parts: vec![AssistantPart::ToolCall {
-                    id: call_id,
-                    name: "write_file".into(),
-                    args: json!({"path": path, "content": content}),
-                }],
-            },
-        );
-    }
-
-    #[tokio::test]
-    async fn write_file_soft_trim_is_status_not_file_body() {
-        let mut store = ContextStore::new("s");
-        let content = "hello world";
-        let body = format!("FILE-BODY-{}", "w".repeat(10_000));
-        record_write(&mut store, 0, "src/out.rs", content, &body);
-        let prompt = Message::user("continue");
-        let (view, record) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(20_000, 1024),
-                preamble: "p",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            None,
-        )
-        .await
-        .expect("fits after write distill");
-        assert!(record.is_none());
-        let dumped = serde_json::to_string(&view.messages).unwrap();
-        assert!(dumped.contains("src/out.rs"), "{dumped}");
-        assert!(
-            dumped.contains("11 chars") || dumped.contains("11 characters"),
-            "write distill reports written size: {dumped}"
-        );
-        assert!(
-            !dumped.contains("FILE-BODY-"),
-            "write distill must not keep the file body: {dumped}"
-        );
-    }
-
-    #[tokio::test]
-    async fn l2_summarize_input_does_not_replay_full_tool_bodies() {
-        let mut store = ContextStore::new("s");
-        fill_turns(&mut store, 0, 8, 200);
-        let (base, bodies) = spawn_json_completions(vec![json!({"text": "L2-SUMMARY-BODY"})]).await;
-        let compact = llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 4096);
-        let prompt = Message::user("current question");
-        let (_, rec1) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l1");
-        store.set_compact(rec1.expect("l1"));
-        let bulky = format!("EVICTED-TOOL-BODY-{}", "x".repeat(8_000));
-        record_read(&mut store, 8, &bulky);
-        record_read(
-            &mut store,
-            9,
-            &format!("NEXT-TOOL-BODY-{}", "y".repeat(8_000)),
-        );
-        fill_turns(&mut store, 10, 8, 200);
-        let (_, rec2) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l2");
-        assert_eq!(rec2.expect("l2").level, 2);
-        let captured = bodies.lock().expect("bodies").clone();
-        assert_eq!(captured.len(), 1);
-        let body = captured[0].to_string();
-        assert!(
-            !body.contains(&"x".repeat(4_000)),
-            "L2 compact request must distill tool results first ({} bytes)",
-            body.len()
-        );
-        assert!(
-            body.contains("f8.txt"),
-            "L2 input must keep the read path instead of a 2000-char prefix cut ({} bytes)",
-            body.len()
-        );
-    }
-
-    #[tokio::test]
-    async fn l2_writes_markdown_into_global_session_context() {
-        let mut store = ContextStore::new("s");
-        fill_turns(&mut store, 0, 8, 200);
+    async fn l2_with_artifacts_is_one_tool_free_completion() {
         let artifacts = tempfile::tempdir().expect("artifacts");
-        let (base, bodies) = spawn_json_completions(vec![
-            json!({
-                "kind": "tools",
-                "calls": [{
-                    "name": "write_file",
-                    "id": "w1",
-                    "arguments": {"path": "api.md", "content": "# API"}
-                }]
-            }),
-            json!({"text": "## Handoff\n\nKeep the current work goal."}),
-        ])
+        let (base, bodies) = spawn_json_completions(vec![json!({
+            "text": "## Handoff\n\nKeep the current work goal."
+        })])
         .await;
         let compact =
             llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 4096).with_artifacts(artifacts.path());
-        let prompt = Message::user("current question");
-        let (_, rec1) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l1");
-        store.set_compact(rec1.expect("l1"));
-        fill_turns(&mut store, 8, 8, 200);
-        let (view2, rec2) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l2");
-        let rec2 = rec2.expect("l2 record");
-        assert_eq!(rec2.level, 2);
-        let dumped = serde_json::to_string(&view2.messages).unwrap();
-        assert!(dumped.contains("## Handoff"), "{dumped}");
-        assert!(!dumped.contains("{\"summary\""), "{dumped}");
-        let written = compact_context_dir(artifacts.path()).join("api.md");
-        assert_eq!(std::fs::read_to_string(&written).unwrap(), "# API");
+        let evicted = vec![
+            Message::user("hello-evicted"),
+            Message::assistant("reply-evicted"),
+        ];
+        let artifact = Compactor::compact(&compact, "s", &evicted, None)
+            .await
+            .expect("compact");
         assert!(
-            rec2.files.iter().any(|path| path.ends_with("api.md")),
-            "{:?}",
-            rec2.files
+            artifact.summary.contains("## Handoff"),
+            "{}",
+            artifact.summary
         );
-        assert!(
-            dumped.contains(&written.to_string_lossy().to_string()) || dumped.contains("api.md"),
-            "{dumped}"
-        );
-        let captured = bodies.lock().expect("bodies").clone();
-        assert_eq!(captured.len(), 2, "{captured:?}");
-        let body = captured[0].to_string();
-        assert!(body.contains("write_file"), "{body}");
-        assert!(body.contains("CODEG-COMPACT-PROMPT-MARKER"), "{body}");
-    }
-
-    #[tokio::test]
-    async fn l2_write_file_cannot_leave_session_context() {
-        let mut store = ContextStore::new("s");
-        fill_turns(&mut store, 0, 8, 200);
-        let artifacts = tempfile::tempdir().expect("artifacts");
-        let (base, _bodies) = spawn_json_completions(vec![
-            json!({
-                "kind": "tools",
-                "calls": [{
-                    "name": "write_file",
-                    "id": "w1",
-                    "arguments": {"path": "../escape.md", "content": "nope"}
-                }]
-            }),
-            json!({"text": "handoff only"}),
-        ])
-        .await;
-        let compact =
-            llm(&base, "CODEG-COMPACT-PROMPT-MARKER", 4096).with_artifacts(artifacts.path());
-        let prompt = Message::user("current question");
-        let (_, rec1) = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l1");
-        store.set_compact(rec1.expect("l1"));
-        fill_turns(&mut store, 8, 8, 200);
-        let _ = project_compacted(
-            BudgetInputs {
-                store: &store,
-                config: cfg(8_000, 1024),
-                preamble: "short",
-                tool_schemas: &[],
-                prompt: &prompt,
-            },
-            Some(&compact),
-        )
-        .await
-        .expect("l2");
-        assert!(
-            !artifacts.path().join("escape.md").exists(),
-            "write_file must not escape the session context directory"
-        );
+        assert!(artifact.files.is_empty(), "{:?}", artifact.files);
         assert!(!compact_context_dir(artifacts.path())
-            .join("escape.md")
+            .join("api.md")
             .exists());
+        let captured = bodies.lock().expect("bodies").clone();
+        assert_eq!(captured.len(), 1, "{captured:?}");
+        let body = captured[0].to_string();
+        assert!(request_has_no_tools(&captured[0]), "{body}");
+        assert!(!body.contains("write_file"), "{body}");
+        assert!(body.contains("CODEG-COMPACT-PROMPT-MARKER"), "{body}");
+        assert!(body.contains("hello-evicted"), "{body}");
+    }
+
+    #[test]
+    fn compact_chunks_keep_whole_messages() {
+        let messages = vec![
+            Message::user("H".repeat(COMPACT_CHUNK_MAX_BYTES + 8)),
+            Message::user("tail-message"),
+        ];
+        let chunks = chunk_evicted_messages(&messages);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 1);
+        assert_eq!(chunks[1].len(), 1);
+        let packed = vec![Message::user("a"), Message::user("b")];
+        let one = chunk_evicted_messages(&packed);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].len(), 2);
     }
 }

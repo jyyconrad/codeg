@@ -432,7 +432,11 @@ impl WorkflowDelta {
         if let Some(revision) = self.revision {
             record.revision = Some(revision);
         }
-        if let Some(v) = self.result_summary.as_ref().filter(|s| !s.trim().is_empty()) {
+        if let Some(v) = self
+            .result_summary
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+        {
             record.result_summary = Some(v.clone());
         }
         if let Some(v) = &self.name {

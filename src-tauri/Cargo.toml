@@ -78,7 +78,7 @@ sacp = "11.0.0"
 sacp-tokio = "11.0.0"
 # Codeg Agent in-process runtime. Pin exact versions; do not enable Rig's
 # `rmcp` feature — MCP names are adapted via DynamicTool instead.
-# rig-memory is used for MemoryPolicy / Compactor only; never AgentBuilder::memory().
+# reuse memory components, explicit confirmation + request boundary; still never AgentBuilder::memory().
 rig = { version = "=0.42.0", default-features = false, features = ["agent", "reqwest", "rustls"] }
 rig-memory = "=0.42.0"
 rmcp = { version = "=2.2.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-streamable-http-server"] }
@@ -208,6 +208,7 @@ zip = "2"
 
 [patch.crates-io]
 sacp-tokio = { path = "vendor/sacp-tokio" }
+rig-agent = { path = "vendor/rig-agent" }
 
 # Keep line numbers for backtraces, but avoid the multi-GiB incremental cache
 # of codeg_lib (rlib+cdylib+staticlib). Unchanged dependencies are still reused.

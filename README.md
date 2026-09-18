@@ -200,6 +200,16 @@ docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/xintaofei/codeg:latest
 
 Compose, prebuilt binaries, source builds, and in-place updates are covered in [Deployment](https://docs.codeg.app/getting-started/deployment); environment variables in [Configuration](https://docs.codeg.app/getting-started/configuration). Building Codeg itself: [Development](https://docs.codeg.app/reference/development) and [Architecture](https://docs.codeg.app/reference/architecture).
 
+## Development Principles: Reuse Rig
+
+The in-process **Codeg Agent (`codeg-agent`)** is built on [Rig](https://rig.rs/docs/concepts/agent). Its development should prioritize existing framework capabilities: reuse them directly, compose or configure them, then extend existing traits and hooks where needed. Check the official documentation, the version pinned in `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock`, and existing Codeg implementations before introducing custom machinery.
+
+- Let Rig own the model/tool loop, provider conversion, streaming, retries, and message ordering. Preserve complete standard `Message` histories and keep the current prompt separate from prior history.
+- Reuse [Rig memory policies](https://rig.rs/docs/concepts/memory/#bounding-history-with-policies) for windows, token counting, rolling summaries, and demotion. Extend `Compactor` for LLM summaries and reuse Codeg's existing `LlmCompactor`.
+- Keep host integration, durable checkpoints, and recovery in small adapters. A framework extension should address a verified gap and include tests at the integration boundary.
+
+Contributor rules are in [AGENTS.md](./AGENTS.md). See the [message storage and compaction design (Chinese)](./docs/design/codeg-agent-message-history.md) for the proposed migration and its acceptance criteria.
+
 ## 🔒 Privacy & Security
 
 - Local-first by default for parsing, storage, and project operations — network access happens only on user-triggered actions

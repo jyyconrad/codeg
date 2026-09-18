@@ -14,7 +14,6 @@ use super::config::{
     resolve_session_thought_level, thought_level_additional_params, MODEL_OPTION_ID,
     MODE_OPTION_ID, PERMISSION_OPTION_ID, THOUGHT_LEVEL_OPTION_ID,
 };
-use super::prompt::native_prompt_store_text;
 use super::{assemble_native_prompt, inspect_native_prompt, NativeSessionArgs, TurnCoordinator};
 use crate::acp::agent_mentions::append_agent_routes;
 use crate::acp::connection::{snapshot_companion_features, ConnectionCommand, DelegationInjection};
@@ -33,8 +32,9 @@ use crate::agent::code_intel::{
 };
 use crate::agent::context::transcript::tool_call_update_payload;
 use crate::agent::context::{
-    agent_message_chunk, open_codeg_agent_session, BudgetConfig, CallIdentityBridge, ContextStore,
-    FactRecorder, HydrateError, LlmCompactor, NativeMeta, ToolOutcome, L2_MAX_TOKENS,
+    agent_message_chunk, compact_llm::CompactLlmConfig, open_codeg_agent_session, BudgetConfig,
+    CallIdentityBridge, ContextStore, FactRecorder, HydrateError, LlmCompactor, NativeMeta,
+    SessionMemory, ToolOutcome, L2_MAX_TOKENS,
 };
 use crate::agent::hook::{CodegHook, HookTrace, HostBridge, NativeRunState, PendingPermission};
 use crate::agent::mode::{self, MODE_PLAN};
@@ -365,6 +365,15 @@ async fn run_session(
         args.effective_config.context_inject,
     );
     let coordinator = Arc::new(TurnCoordinator::new());
+    let mut session_memory = build_session_memory(
+        &session_id,
+        &args.launch_cwd.to_string_lossy(),
+        &client,
+        &model_id,
+        args,
+        &artifacts_dir,
+        shutdown.token(),
+    );
     let intel_lease =
         ProjectCodeIntelSupervisor::acquire(args.launch_cwd.clone(), Arc::clone(&fs)).await;
     let lsp_pool = intel_lease.as_ref().and_then(|lease| lease.lsp_pool());
@@ -601,6 +610,7 @@ async fn run_session(
                 Arc::clone(&session_mode),
                 artifacts_dir.clone(),
                 Arc::clone(&pending_continue),
+                Arc::clone(&session_memory),
             )
             .await
             {
@@ -678,6 +688,7 @@ async fn run_session(
                                 Arc::clone(&session_mode),
                                 artifacts_dir.clone(),
                                 Arc::clone(&pending_continue),
+                                Arc::clone(&session_memory),
                             )
                             .await
                             {
@@ -723,6 +734,16 @@ async fn run_session(
                                     _lease = rewound.lease;
                                     recorder = Arc::new(rewound.recorder);
                                     artifacts_dir = rewound.artifacts_dir;
+                                    session_memory.forget();
+                                    session_memory = build_session_memory(
+                                        &session_id,
+                                        &args.launch_cwd.to_string_lossy(),
+                                        &client,
+                                        &model_id,
+                                        args,
+                                        &artifacts_dir,
+                                        shutdown.token(),
+                                    );
                                     emit_with_state(
                                         &args.session_state,
                                         &args.emitter,
@@ -763,6 +784,7 @@ async fn run_session(
 
     subagents.lock().expect("subagent table").shutdown();
     mcp.close().await;
+    session_memory.forget();
     SessionOutcome { err: closing_err }
 }
 
@@ -902,6 +924,56 @@ async fn apply_subagent_finished(
     note
 }
 
+fn build_session_memory(
+    session_id: &str,
+    cwd: &str,
+    client: &CodegLlmClient,
+    model_id: &str,
+    args: &NativeSessionArgs,
+    artifacts_dir: &std::path::Path,
+    cancel: CancellationToken,
+) -> Arc<SessionMemory> {
+    let window = u64::from(
+        args.effective_config
+            .context_windows
+            .get(model_id)
+            .copied()
+            .unwrap_or(0),
+    );
+    let max_output = u64::from(args.effective_config.max_output_tokens);
+    let budget = BudgetConfig::new(window, max_output).with_compact(
+        args.effective_config.compact_soft_percent,
+        args.effective_config.compact_recent_turns as usize,
+    );
+    let compact_prompt = effective_compact_prompt(args.effective_config.compact_prompt.as_deref());
+    let compact_model = args
+        .effective_config
+        .compact_model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(model_id)
+        .to_string();
+    let llm = LlmCompactor::new(
+        client.clone(),
+        compact_model.clone(),
+        compact_prompt.to_string(),
+        max_output.min(L2_MAX_TOKENS),
+    )
+    .with_artifacts(artifacts_dir)
+    .with_cancel(cancel);
+    let tail = SessionMemory::tail_budget_from(budget);
+    let memory = SessionMemory::open(session_id, cwd, tail, &compact_model, llm);
+    let memory = if args.effective_config.compact_llm {
+        let mut cfg = CompactLlmConfig::enabled(&compact_model, compact_prompt);
+        cfg.max_output_tokens = max_output.min(L2_MAX_TOKENS);
+        memory.with_compact_llm(client.clone(), cfg, tail)
+    } else {
+        memory
+    };
+    Arc::new(memory)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start_prompt(
     client: &CodegLlmClient,
@@ -928,6 +1000,7 @@ async fn start_prompt(
     session_mode: Arc<tokio::sync::RwLock<String>>,
     artifacts_dir: std::path::PathBuf,
     pending_continue: Arc<Mutex<Option<String>>>,
+    session_memory: Arc<SessionMemory>,
 ) -> Result<RunningTurn, String> {
     let inspected = inspect_native_prompt(&blocks);
     if let Some(reason) = inspected.reject_reason() {
@@ -937,7 +1010,6 @@ async fn start_prompt(
     let mut model_blocks = blocks.clone();
     append_agent_routes(&mut model_blocks, companion.delegation_registered());
     let prompt = assemble_native_prompt(&model_blocks);
-    let model_text = native_prompt_store_text(&prompt);
 
     if let Some((message_id, blocks)) = user_message {
         emit_with_state(
@@ -957,13 +1029,8 @@ async fn start_prompt(
     .await;
 
     let (turn_id, cancel) = coordinator.begin();
-    let turn_key = {
-        let mut store = store.lock().expect("store");
-        let idx = store.prompt_index() + 1;
-        let key = store.turn_id_for_prompt(idx);
-        store.append_user(key.clone(), model_text);
-        key
-    };
+    session_memory.set_compaction_control(cancel.clone());
+    let turn_key = format!("{session_id}:{turn_id}");
     let prompt_blocks = serde_json::json!([{ "type": "text", "text": text }]);
     recorder
         .record_prompt(prompt_blocks)
@@ -1162,12 +1229,23 @@ async fn start_prompt(
             tool_schemas.push(binding.schema());
         }
     }
-    let compact_prompt = effective_compact_prompt(args.effective_config.compact_prompt.as_deref());
-    let compact_prompt = if in_plan {
-        mode::plan_compact_prompt(compact_prompt)
-    } else {
-        compact_prompt.to_string()
-    };
+    session_memory
+        .begin_run(&prompt)
+        .await
+        .map_err(|err| err.to_string())?;
+    let loaded = session_memory
+        .load_history(
+            &prompt,
+            &turn_preamble,
+            &tool_schemas,
+            BudgetConfig::new(window, max_output).with_compact(
+                args.effective_config.compact_soft_percent,
+                args.effective_config.compact_recent_turns as usize,
+            ),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+    let history = loaded.messages;
     let native = NativeRunState {
         turn_id,
         turn_key: turn_key.clone(),
@@ -1184,22 +1262,7 @@ async fn start_prompt(
         last_usage_input: Arc::new(Mutex::new(None)),
         feedback,
         mcp_readonly: Arc::new(mcp_readonly),
-        compact: Some(
-            LlmCompactor::new(
-                client.clone(),
-                args.effective_config
-                    .compact_model_id
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                    .unwrap_or(model_id)
-                    .to_string(),
-                compact_prompt,
-                max_output.min(L2_MAX_TOKENS),
-            )
-            .with_artifacts(artifacts_dir.clone())
-            .with_cancel(cancel.clone()),
-        ),
+        session_memory: Some(Arc::clone(&session_memory)),
     };
     let (perm_tx, perm_rx) = mpsc::channel(8);
     let host = HostBridge {
@@ -1232,6 +1295,7 @@ async fn start_prompt(
             model_id,
             preamble,
             prompt,
+            history,
             additional_params,
             tools: NativeTurnTools {
                 read,

@@ -4,9 +4,10 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use rig::agent::{
-    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, InvalidToolCallAction,
-    InvalidToolCallContext, ModelTurnAction, ModelTurnFinished, ObservationAction, RequestPatch,
-    TextDelta, ToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
+    AgentHook, CommittedMessages, CommittedMessagesAction, CompletionCallAction,
+    CompletionCallEvent, HookContext, InvalidToolCallAction, InvalidToolCallContext,
+    ModelTurnAction, ModelTurnFinished, ObservationAction, RequestPatch, TextDelta, ToolCall,
+    ToolCallAction, ToolResultAction, ToolResultEvent,
 };
 use rig::completion::Message;
 use serde_json::Value;
@@ -16,12 +17,11 @@ use tokio_util::sync::CancellationToken;
 use crate::acp::session_state::SessionState;
 use crate::acp::types::AcpEvent;
 use crate::agent::context::budget::{
-    per_call_patch, truncate_presentation, BudgetConfig, BudgetInputs,
+    check_request_budget, per_call_patch, truncate_presentation, BudgetConfig,
 };
-use crate::agent::context::compact::{project_compacted, LlmCompactor};
 use crate::agent::context::{
-    AssistantPart, AssistantRecord, CallIdentity, CallIdentityBridge, ContextStore, ExecutionFact,
-    FactRecorder, ModelCommit, ToolOutcome, ToolPhase,
+    CallIdentity, CallIdentityBridge, ContextStore, ExecutionFact, FactRecorder, ModelCommit,
+    SessionMemory, ToolOutcome, ToolPhase,
 };
 use crate::agent::session::TurnCoordinator;
 use crate::agent::tools::{
@@ -165,7 +165,10 @@ pub struct NativeRunState {
     pub(crate) feedback: Option<Arc<FeedbackDelivery>>,
     /// MCP tools whose original `readOnlyHint` is true skip the permission card.
     pub mcp_readonly: Arc<HashSet<String>>,
-    pub compact: Option<LlmCompactor>,
+    /// Session-lifetime CompactingMemory. `None` (contracts/subagent) patches
+    /// at most `max_tokens` / extra_context and never rebuilds history from
+    /// ContextStore.
+    pub session_memory: Option<Arc<SessionMemory>>,
 }
 
 /// Unique per-run Hook. Register only on the Runner, never on AgentBuilder.
@@ -373,53 +376,10 @@ impl AgentHook for CodegHook {
             return CompletionCallAction::stop("cancelled");
         }
         if let Some(native) = &self.native {
-            let snapshot = native.store.lock().expect("store").clone();
-            let compact = native.compact.clone();
-            let result = project_compacted(
-                BudgetInputs {
-                    store: &snapshot,
-                    config: native.budget,
-                    preamble: &native.preamble,
-                    tool_schemas: &native.tool_schemas,
-                    prompt: event.prompt,
-                },
-                compact.as_ref(),
-            )
-            .await;
-            let (action, present) = match result {
-                Ok((view, new_record)) => {
-                    if let Some(record) = new_record {
-                        native
-                            .store
-                            .lock()
-                            .expect("store")
-                            .set_compact(record.clone());
-                        let _ = native.recorder.record_compact(&record).await;
-                    }
-                    *native.last_estimate.lock().expect("estimate") = view.estimated_tokens;
-                    let store = native.store.lock().expect("store");
-                    let present = projected_tool_call_ids(&store, view.omitted_turns);
-                    (
-                        CompletionCallAction::patch(
-                            crate::agent::builtin_skills::attach_using_plan_explore(
-                                attach_subagent_extra_context(
-                                    per_call_patch(view.messages, Some(native.budget.max_output)),
-                                    &native.tool_schemas,
-                                ),
-                            ),
-                        ),
-                        Some(present),
-                    )
-                }
-                Err(err) => (CompletionCallAction::stop(err.to_string()), None),
-            };
-            if let (Some(delivery), Some(present)) = (&native.feedback, present) {
-                delivery.commit_present(&present).await;
+            if native.session_memory.is_some() {
+                return session_memory_completion(self, native, event).await;
             }
-            if self.cancel.is_cancelled() {
-                return CompletionCallAction::stop("cancelled");
-            }
-            return action;
+            return native_without_memory_completion(self, native, event).await;
         }
         match self.request_patch() {
             Some(patch) => CompletionCallAction::patch(patch),
@@ -447,6 +407,26 @@ impl AgentHook for CodegHook {
             }
         }
         ObservationAction::continue_run()
+    }
+
+    async fn on_messages_committed(
+        &self,
+        _ctx: &HookContext,
+        event: CommittedMessages<'_>,
+    ) -> CommittedMessagesAction {
+        if let Some(session) = self
+            .native
+            .as_ref()
+            .and_then(|native| native.session_memory.as_ref())
+        {
+            if let Err(err) = session.persist_if_new(event.messages).await {
+                return CommittedMessagesAction::stop(err.to_string());
+            }
+        }
+        if self.cancel.is_cancelled() {
+            return CommittedMessagesAction::stop("cancelled");
+        }
+        CommittedMessagesAction::continue_run()
     }
 
     async fn on_model_turn_finished(
@@ -683,17 +663,116 @@ impl AgentHook for CodegHook {
     }
 }
 
+async fn native_without_memory_completion(
+    hook: &CodegHook,
+    native: &NativeRunState,
+    event: CompletionCallEvent<'_>,
+) -> CompletionCallAction {
+    match check_request_budget(
+        native.budget,
+        &native.preamble,
+        &native.tool_schemas,
+        event.history,
+        event.prompt,
+    ) {
+        Ok(estimated) => {
+            *native.last_estimate.lock().expect("estimate") = estimated;
+        }
+        Err(err) => return CompletionCallAction::stop(err.to_string()),
+    }
+    let present = {
+        let store = native.store.lock().expect("store");
+        projected_tool_call_ids(&store)
+    };
+    if let Some(delivery) = &native.feedback {
+        delivery.commit_present(&present).await;
+    }
+    if hook.cancel.is_cancelled() {
+        return CompletionCallAction::stop("cancelled");
+    }
+    let patch = RequestPatch::new().max_tokens(native.budget.max_output);
+    CompletionCallAction::patch(crate::agent::builtin_skills::attach_using_plan_explore(
+        attach_subagent_extra_context(patch, &native.tool_schemas),
+    ))
+}
+
+async fn session_memory_completion(
+    hook: &CodegHook,
+    native: &NativeRunState,
+    event: CompletionCallEvent<'_>,
+) -> CompletionCallAction {
+    let Some(session) = native.session_memory.as_ref() else {
+        return CompletionCallAction::continue_run();
+    };
+    let prompt = event.prompt.clone();
+    let live_history = event.history.to_vec();
+    let loaded = match session
+        .load_history(
+            &prompt,
+            &native.preamble,
+            &native.tool_schemas,
+            native.budget,
+        )
+        .await
+    {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            let reason = err.to_string();
+            if reason.contains("context_budget_exceeded") {
+                return CompletionCallAction::stop(reason);
+            }
+            return CompletionCallAction::stop(format!("context_budget_exceeded: {reason}"));
+        }
+    };
+    *native.last_estimate.lock().expect("estimate") = loaded.estimated_tokens;
+    let present = if loaded.compacted {
+        assistant_call_ids(&loaded.messages)
+    } else {
+        assistant_call_ids(&live_history)
+    };
+    if let Some(delivery) = &native.feedback {
+        delivery.commit_present(&present).await;
+    }
+    if hook.cancel.is_cancelled() {
+        return CompletionCallAction::stop("cancelled");
+    }
+    let mut patch = RequestPatch::new().max_tokens(native.budget.max_output);
+    // Patch history only when compaction changed the view. Pending prompt is
+    // added by Rig once and must not be included in the replacement history.
+    if loaded.compacted {
+        patch = patch.history(loaded.messages);
+    }
+    CompletionCallAction::patch(crate::agent::builtin_skills::attach_using_plan_explore(
+        attach_subagent_extra_context(patch, &native.tool_schemas),
+    ))
+}
+
+fn assistant_call_ids(messages: &[Message]) -> HashSet<String> {
+    use rig::completion::message::AssistantContent;
+    let mut ids = HashSet::new();
+    for message in messages {
+        if let Message::Assistant { content, .. } = message {
+            for part in content {
+                if let AssistantContent::ToolCall(tc) = part {
+                    ids.insert(tc.id.as_str().to_string());
+                }
+            }
+        }
+    }
+    ids
+}
+
 async fn record_model_batch(
     native: &NativeRunState,
     content: &[rig::completion::message::AssistantContent],
 ) -> Result<(), String> {
-    let mut parts = Vec::new();
     let mut call_ids = Vec::new();
     let mut last_payload = None;
+    let mut part_count = 0usize;
     for (index, item) in content.iter().enumerate() {
         match item {
             rig::completion::message::AssistantContent::Text(text) => {
-                parts.push(AssistantPart::Text(text.text.clone()));
+                part_count += 1;
                 let mut meta = crate::agent::context::transcript::NativeMeta::v1();
                 meta.turn_id = Some(native.turn_key.clone());
                 meta.part_index = Some(index as u32);
@@ -702,6 +781,7 @@ async fn record_model_batch(
                 ));
             }
             rig::completion::message::AssistantContent::ToolCall(tc) => {
+                part_count += 1;
                 let id = tc
                     .provider
                     .as_ref()
@@ -710,11 +790,6 @@ async fn record_model_batch(
                 let name = tc.function.name.clone();
                 let args = tc.function.arguments.clone();
                 call_ids.push(id.clone());
-                parts.push(AssistantPart::ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    args: args.clone(),
-                });
                 let fact = ExecutionFact::pending(
                     native.turn_key.clone(),
                     id.clone(),
@@ -739,7 +814,7 @@ async fn record_model_batch(
     }
     let commit = ModelCommit {
         batch_id: format!("{}-{}", native.turn_key, call_ids.len()),
-        parts: (0..parts.len()).map(|i| format!("p{i}")).collect(),
+        parts: (0..part_count).map(|i| format!("p{i}")).collect(),
         call_ids,
     };
     native
@@ -747,14 +822,6 @@ async fn record_model_batch(
         .record_model_commit(&native.turn_key, &commit, last_payload)
         .await
         .map_err(|_| "model_commit write was not acknowledged".to_string())?;
-    native.store.lock().expect("store").commit_assistant(
-        &native.turn_key,
-        AssistantRecord {
-            model_message_id: Some(commit.batch_id.clone()),
-            committed: true,
-            parts,
-        },
-    );
     Ok(())
 }
 

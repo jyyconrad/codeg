@@ -14,6 +14,7 @@ Codeg（Code Generation）是一个多智能体编码工作台，它将多个智
 - **样式**: Tailwind CSS v4 + shadcn/ui（radix-maia 风格）
 - **国际化**: next-intl
 - **数据库**: SeaORM + SQLite
+- **内置智能体框架**: Rig（`AgentRunner`、标准 `Message` 与 `rig-memory`）
 - **包管理器**: pnpm
 
 ## 代码检查与测试（任务完成后进行必要的检查）
@@ -88,6 +89,19 @@ pnpm tauri:dmg
 - **`web/event_bridge.rs`** — `EventEmitter::Tauri(AppHandle)` 或 `EventEmitter::WebOnly(Arc<WebEventBroadcaster>)`
 - **`web/router.rs`** — Axum 路由，接受 `Arc<AppState>`
 - **`web/handlers/`** — HTTP API 端点，全部使用 `Extension<Arc<AppState>>`
+
+### 内置智能体（codeg-agent）：Rig 复用优先
+
+`src-tauri/src/agent/` 基于 Rig 实现。开发、修复和设计内置智能体时，按 **直接复用 → 配置与组合 → 实现既有 trait / hook → 最小框架扩展** 的顺序选择方案。
+
+- **先核对能力，再判断缺口**：阅读相关 [Rig 官方文档](https://rig.rs/docs/concepts/agent) 和 [Memory policies](https://rig.rs/docs/concepts/memory/#bounding-history-with-policies)，核对 `src-tauri/Cargo.toml` / `Cargo.lock` 锁定版本的 API、源码及项目已有实现。官网可能面向 main 分支；不能仅凭示例缺少某功能就认定框架不支持，也不能重复新增项目已有能力。
+- **复用运行机制**：模型与工具循环、provider 协议转换、流式处理、重试和消息顺序优先交给 Rig。Codeg 通过既有接口接入权限、宿主工具、展示和持久化，不另建功能重叠的 agent loop 或协议层。
+- **沿用标准消息契约**：会话正文以有序 Rig `Message` 为准，保存完整 content 和调用关联；执行时区分已有 history 与当前 prompt，新增消息追加保存。运行元数据不能代替正文，不能用单个 assistant 槽位覆盖同一指令的多轮消息。压缩只改变活动上下文，保留原文，并维护工具调用与结果的配对。
+- **复用 memory 组件及扩展点**：窗口、token 计数、滚动摘要和历史移出优先组合 `MemoryPolicy`、`TokenWindowMemory`、`CompactingMemory`、`Compactor`、`DemotionHook` 等已有能力。需要 LLM 摘要时，先复用项目已有 `LlmCompactor`，通过 `Compactor` 补齐模型调用，不重写窗口算法或滚动摘要框架。
+- **仅补经过核验的差距**：本地写入确认、摘要检查点、取消恢复、pending 消息保护及长 run 接线放在薄适配层。库的局部限制不构成整体重写的理由；确需扩展框架时，在变更说明中记录锁定版本的缺口、已评估接口与最小修改范围，通过可追踪的依赖补丁维护，不修改本机 Cargo 缓存。
+- **验证组合后的行为**：重点检查实际请求中的消息顺序与唯一性、整请求预算（含摘要和 pending prompt）、压缩后继续、重启恢复及写操作不被自动重放。复用框架已有测试，新增验证集中在 Codeg 的适配与契约边界。
+
+具体设计见 [标准消息存储与上下文压缩方案](docs/design/codeg-agent-message-history.md)。该文档描述目标方案；实现状态以当前代码及验证结果为准。
 
 ### Rust 后端（`src-tauri/src/`）
 

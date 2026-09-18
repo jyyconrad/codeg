@@ -27,7 +27,7 @@ use crate::acp::delegation::types::{DelegationRequest, ResumeDelegationRequest};
 use crate::acp::feedback::{bounded_feedback_batch, MAX_FEEDBACK_RESPONSE_BYTES};
 use crate::acp::question::{parse_questions, QuestionOutcome};
 use crate::acp::session_state::SessionState;
-use crate::agent::context::{AssistantPart, ContextStore};
+use crate::agent::context::ContextStore;
 use crate::models::agent::AgentType;
 
 const COMPANION_TOOL_NAMES: &[&str] = &[
@@ -214,20 +214,10 @@ impl FeedbackDelivery {
     }
 }
 
-pub(crate) fn projected_tool_call_ids(
-    store: &ContextStore,
-    omitted_turns: usize,
-) -> HashSet<String> {
+pub(crate) fn projected_tool_call_ids(store: &ContextStore) -> HashSet<String> {
     store
-        .turns()
-        .iter()
-        .skip(omitted_turns)
-        .filter_map(|turn| turn.assistant.as_ref())
-        .flat_map(|assistant| assistant.parts.iter())
-        .filter_map(|part| match part {
-            AssistantPart::ToolCall { id, .. } => Some(id.clone()),
-            _ => None,
-        })
+        .facts()
+        .map(|fact| fact.tool_call_id.clone())
         .collect()
 }
 
@@ -860,7 +850,7 @@ mod tests {
     };
     use crate::acp::session_info::{SessionInfo, SessionInfoAccess, SessionInfoConfig};
     use crate::acp::work_task_tools::{TaskReportAck, WorkTaskToolAccess};
-    use crate::agent::context::{AssistantRecord, CallIdentity, ContextStore};
+    use crate::agent::context::{CallIdentity, ContextStore, ExecutionFact};
     use crate::agent::tools::test_tool_ctx;
     use crate::models::agent::AgentType;
     use chrono::Utc;
@@ -1274,27 +1264,19 @@ mod tests {
         assert_eq!(delivery.pending_ids(), vec!["n1".to_string()]);
 
         let mut store = ContextStore::new("s");
-        store.append_user("s:1".into(), "hi".into());
-        store.commit_assistant(
-            "s:1",
-            AssistantRecord {
-                committed: true,
-                parts: vec![AssistantPart::ToolCall {
-                    id: "call_1".into(),
-                    name: "check_user_feedback".into(),
-                    args: json!({}),
-                }],
-                ..Default::default()
-            },
-        );
-        let present = projected_tool_call_ids(&store, 1);
-        delivery.commit_present(&present).await;
+        delivery.commit_present(&HashSet::new()).await;
         assert!(
             feedback.committed.lock().expect("c").is_empty(),
-            "omitted projection must not commit"
+            "empty present-id set must not commit"
         );
 
-        let present = projected_tool_call_ids(&store, 0);
+        store.record_fact(ExecutionFact::pending(
+            "s:1",
+            "call_1",
+            "check_user_feedback",
+            json!({}),
+        ));
+        let present = projected_tool_call_ids(&store);
         delivery.commit_present(&present).await;
         assert_eq!(
             feedback.committed.lock().expect("c").clone(),

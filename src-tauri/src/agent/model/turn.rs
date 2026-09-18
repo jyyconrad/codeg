@@ -79,6 +79,8 @@ pub struct NativeTurnRequest {
     pub model_id: String,
     pub preamble: String,
     pub prompt: Message,
+    /// Messages before `prompt`. Must not include the current pending prompt.
+    pub history: Vec<Message>,
     pub additional_params: Option<Value>,
     pub tools: NativeTurnTools,
     pub hook: CodegHook,
@@ -97,6 +99,7 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
         model_id,
         preamble,
         prompt,
+        history,
         additional_params,
         tools,
         hook,
@@ -113,6 +116,7 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
                         model_id,
                         preamble,
                         prompt,
+                        history,
                         additional_params,
                         tools,
                         hook,
@@ -126,6 +130,7 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
                         model_id,
                         preamble,
                         prompt,
+                        history,
                         additional_params,
                         tools,
                         hook,
@@ -144,6 +149,7 @@ async fn assemble_and_stream<C>(
     model_id: String,
     preamble: String,
     prompt: Message,
+    history: Vec<Message>,
     additional_params: Option<Value>,
     tools: NativeTurnTools,
     hook: CodegHook,
@@ -229,7 +235,7 @@ where
         .dynamic_tools(dynamic)
         .build()
         .runner(prompt)
-        .history(Vec::<Message>::new())
+        .history(history)
         .max_turns(max_turns.max(1))
         .tool_concurrency(DEFAULT_TOOL_CONCURRENCY)
         .max_invalid_tool_call_retries(DEFAULT_INVALID_TOOL_CALL_RETRIES)

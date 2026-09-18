@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::store::{AssistantPart, AssistantRecord, ContextStore, ExecutionFact};
+use super::message_memory::SessionMeta;
+use super::migrate::migrate_transcript_entries;
+use super::store::{ContextStore, ExecutionFact};
 use super::transcript::{
-    extract_native_meta, session_update_kind, tool_call_id_of, ModelCommit, NativeMetaError,
-    ToolOutcome, ToolPhase,
+    extract_native_meta, session_update_kind, tool_call_id_of, NativeMetaError, ToolOutcome,
+    ToolPhase,
 };
 use crate::acp_transcript::{
     acquire_write_lease_in, copy_transcript_in, find_grouped_session_in, find_session_in_roots,
@@ -127,12 +129,19 @@ pub fn open_codeg_agent_session(
     match requested.map(str::trim).filter(|s| !s.is_empty()) {
         None => fresh(sessions_root, &dest_group, None),
         Some(session_id) => match transcript_stat_in(sessions_root, &dest_group, session_id) {
-            Ok(Some(_)) => load_existing(sessions_root, &dest_group, agent_wire, session_id),
+            Ok(Some(_)) => {
+                let opened = load_existing(sessions_root, &dest_group, agent_wire, session_id)?;
+                maybe_migrate_legacy_to_v2(sessions_root, &dest_group, session_id, cwd);
+                Ok(opened)
+            }
             Err(err) => Err(HydrateError::failed(
                 session_id,
                 "session_unavailable",
                 format!("transcript could not be read: {err}"),
             )),
+            Ok(None) if is_v2_session_dir(sessions_root, &dest_group, session_id) => {
+                open_v2_only(sessions_root, &dest_group, session_id)
+            }
             Ok(None) => {
                 if let Some(group) = find_grouped_session_in(sessions_root, session_id) {
                     return load_existing(sessions_root, &group, agent_wire, session_id);
@@ -317,6 +326,79 @@ fn load_existing(
     })
 }
 
+const V2_SESSION_FILE: &str = "session.json";
+const V2_MESSAGES_FILE: &str = "messages.jsonl";
+
+fn v2_session_dir(root: &Path, group: &str, session_id: &str) -> PathBuf {
+    root.join(group).join(session_id)
+}
+
+fn is_v2_session_dir(root: &Path, group: &str, session_id: &str) -> bool {
+    let dir = v2_session_dir(root, group, session_id);
+    dir.join(V2_SESSION_FILE).is_file() && dir.join(V2_MESSAGES_FILE).is_file()
+}
+
+fn open_v2_only(root: &Path, group: &str, session_id: &str) -> Result<OpenedSession, HydrateError> {
+    let lease = acquire_write_lease_in(root, group, session_id)
+        .map_err(|err| lease_error(session_id, err))?;
+    Ok(OpenedSession {
+        session_id: session_id.to_string(),
+        continues_from: None,
+        store: ContextStore::new(session_id),
+        lease,
+        header: None,
+        write_root: root.to_path_buf(),
+        write_group: group.to_string(),
+    })
+}
+
+/// Best-effort copy of a legacy ACP jsonl into `{id}/session.json` + `messages.jsonl`.
+/// Keeps the old file. Failures are ignored so existing hydrate tests stay green.
+fn maybe_migrate_legacy_to_v2(root: &Path, group: &str, session_id: &str, cwd: &str) {
+    let dir = v2_session_dir(root, group, session_id);
+    if dir.join(V2_SESSION_FILE).exists() {
+        return;
+    }
+    let chain = read_chain_in(root, group, session_id);
+    let Ok(migrated) = migrate_transcript_entries(session_id, &chain.entries) else {
+        return;
+    };
+    if migrated.messages.is_empty() {
+        return;
+    }
+    let _ = write_v2_messages(&dir, session_id, cwd, &migrated.messages);
+}
+
+fn write_v2_messages(
+    dir: &Path,
+    session_id: &str,
+    cwd: &str,
+    messages: &[rig::completion::Message],
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut body = String::new();
+    for message in messages {
+        let line = serde_json::to_string(message)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        body.push_str(&line);
+        body.push('\n');
+    }
+    std::fs::write(dir.join(V2_MESSAGES_FILE), body)?;
+    let meta = SessionMeta {
+        storage_version: 2,
+        message_format: "rig::completion::Message".into(),
+        rig_version: "0.42.0".into(),
+        session_id: session_id.to_string(),
+        cwd: cwd.to_string(),
+        committed_message_count: messages.len() as u64,
+        active_compaction_id: None,
+    };
+    let json = serde_json::to_vec_pretty(&meta)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    std::fs::write(dir.join(V2_SESSION_FILE), json)?;
+    Ok(())
+}
+
 fn lease_error(session_id: &str, err: TranscriptLeaseError) -> HydrateError {
     match err {
         TranscriptLeaseError::Busy => HydrateError::failed(
@@ -339,92 +421,52 @@ pub fn hydrate_store(
     let mut store = ContextStore::new(session_id);
     let mut prompt_index = 0u64;
     let mut current_turn: Option<String> = None;
-    let mut open_assistant: Option<AssistantRecord> = None;
-    let mut open_text = String::new();
-
-    let flush_text = |open_assistant: &mut Option<AssistantRecord>, open_text: &mut String| {
-        if !open_text.is_empty() {
-            open_assistant
-                .get_or_insert_with(AssistantRecord::default)
-                .parts
-                .push(AssistantPart::Text(std::mem::take(open_text)));
-        }
-    };
 
     for entry in entries {
         match entry.k {
             EntryKind::Prompt => {
-                flush_text(&mut open_assistant, &mut open_text);
-                if let (Some(turn_id), Some(asst)) = (current_turn.take(), open_assistant.take()) {
-                    store.commit_assistant(&turn_id, asst);
-                }
                 prompt_index += 1;
-                let turn_id = store.turn_id_for_prompt(prompt_index);
-                let user_text = prompt_text(&entry.p);
-                store.append_user(turn_id.clone(), user_text);
-                current_turn = Some(turn_id);
+                current_turn = Some(format!("{session_id}:{prompt_index}"));
             }
-            EntryKind::TurnEnd => {
-                flush_text(&mut open_assistant, &mut open_text);
-                if let (Some(turn_id), Some(asst)) = (current_turn.as_ref(), open_assistant.take())
-                {
-                    store.commit_assistant(turn_id, asst);
+            EntryKind::TurnEnd => {}
+            EntryKind::Update => match extract_native_meta(&entry.p) {
+                Err(NativeMetaError::UnsupportedVersion(v)) => {
+                    return Err(HydrateError::failed(
+                        session_id,
+                        "session_unavailable",
+                        format!("unsupported codeg_native metadata version {v}"),
+                    ));
                 }
-            }
-            EntryKind::Update => {
-                match extract_native_meta(&entry.p) {
-                    Err(NativeMetaError::UnsupportedVersion(v)) => {
+                Err(NativeMetaError::Malformed) => {
+                    return Err(HydrateError::failed(
+                        session_id,
+                        "session_unavailable",
+                        "malformed codeg_native metadata",
+                    ));
+                }
+                Ok(None) => {
+                    if matches!(
+                        session_update_kind(&entry.p),
+                        Some("tool_call" | "tool_call_update")
+                    ) {
                         return Err(HydrateError::failed(
                             session_id,
                             "session_unavailable",
-                            format!("unsupported codeg_native metadata version {v}"),
+                            "tool call is missing required codeg_native execution metadata",
                         ));
-                    }
-                    Err(NativeMetaError::Malformed) => {
-                        return Err(HydrateError::failed(
-                            session_id,
-                            "session_unavailable",
-                            "malformed codeg_native metadata",
-                        ));
-                    }
-                    Ok(None) => {
-                        if matches!(
-                            session_update_kind(&entry.p),
-                            Some("tool_call" | "tool_call_update")
-                        ) {
-                            return Err(HydrateError::failed(
-                                session_id,
-                                "session_unavailable",
-                                "tool call is missing required codeg_native execution metadata",
-                            ));
-                        }
-                        // Display-only ACP updates (usage, thought) are ignored.
-                        if session_update_kind(&entry.p) == Some("agent_message_chunk") {
-                            if let Some(text) = chunk_text(&entry.p) {
-                                if !text.is_empty() {
-                                    open_text.push_str(&text);
-                                }
-                            }
-                        }
-                    }
-                    Ok(Some(meta)) => {
-                        apply_native_update(
-                            &mut store,
-                            current_turn.as_deref(),
-                            &mut open_assistant,
-                            &mut open_text,
-                            &entry.p,
-                            meta,
-                            session_id,
-                        )?;
                     }
                 }
-            }
+                Ok(Some(meta)) => {
+                    apply_native_update(
+                        &mut store,
+                        current_turn.as_deref(),
+                        &entry.p,
+                        meta,
+                        session_id,
+                    )?;
+                }
+            },
         }
-    }
-    flush_text(&mut open_assistant, &mut open_text);
-    if let (Some(turn_id), Some(asst)) = (current_turn, open_assistant) {
-        store.commit_assistant(&turn_id, asst);
     }
     finalize_open_facts(&mut store);
     Ok(store)
@@ -433,25 +475,12 @@ pub fn hydrate_store(
 fn apply_native_update(
     store: &mut ContextStore,
     current_turn: Option<&str>,
-    open_assistant: &mut Option<AssistantRecord>,
-    open_text: &mut String,
     payload: &Value,
     meta: super::transcript::NativeMeta,
     session_id: &str,
 ) -> Result<(), HydrateError> {
     let kind = session_update_kind(payload).unwrap_or("");
-    if let Some(text) = chunk_text(payload) {
-        if !text.is_empty() {
-            open_text.push_str(&text);
-        }
-    }
     if matches!(kind, "tool_call" | "tool_call_update") {
-        if !open_text.is_empty() {
-            open_assistant
-                .get_or_insert_with(AssistantRecord::default)
-                .parts
-                .push(AssistantPart::Text(std::mem::take(open_text)));
-        }
         let tool_call_id = meta
             .tool_call_id
             .clone()
@@ -482,23 +511,6 @@ fn apply_native_update(
             .clone()
             .or_else(|| payload.get("rawInput").cloned())
             .unwrap_or(Value::Null);
-        if kind == "tool_call" {
-            let asst = open_assistant.get_or_insert_with(AssistantRecord::default);
-            if meta.model_message_id.is_some() {
-                asst.model_message_id = meta.model_message_id.clone();
-            }
-            if !asst
-                .parts
-                .iter()
-                .any(|p| matches!(p, AssistantPart::ToolCall { id, .. } if *id == tool_call_id))
-            {
-                asst.parts.push(AssistantPart::ToolCall {
-                    id: tool_call_id.clone(),
-                    name: function_name.clone(),
-                    args: raw_input.clone(),
-                });
-            }
-        }
         let mut fact = store.fact(&tool_call_id).cloned().unwrap_or_else(|| {
             ExecutionFact::pending(&turn_id, &tool_call_id, &function_name, raw_input)
         });
@@ -526,33 +538,10 @@ fn apply_native_update(
         }
         store.record_fact(fact);
     }
-    if let Some(commit) = meta.model_commit {
-        apply_commit(open_assistant, open_text, &commit, meta.model_message_id);
-    }
     if let Some(compact) = meta.compact {
         store.set_compact(compact);
     }
     Ok(())
-}
-
-fn apply_commit(
-    open_assistant: &mut Option<AssistantRecord>,
-    open_text: &mut String,
-    commit: &ModelCommit,
-    model_message_id: Option<String>,
-) {
-    if !open_text.is_empty() {
-        open_assistant
-            .get_or_insert_with(AssistantRecord::default)
-            .parts
-            .push(AssistantPart::Text(std::mem::take(open_text)));
-    }
-    let asst = open_assistant.get_or_insert_with(AssistantRecord::default);
-    asst.committed = true;
-    if asst.model_message_id.is_none() {
-        asst.model_message_id = model_message_id.or_else(|| Some(commit.batch_id.clone()));
-    }
-    let _ = commit;
 }
 
 fn finalize_open_facts(store: &mut ContextStore) {
@@ -582,29 +571,6 @@ fn finalize_open_facts(store: &mut ContextStore) {
     }
 }
 
-fn prompt_text(payload: &Value) -> String {
-    let Some(items) = payload.as_array() else {
-        return payload
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-    };
-    items
-        .iter()
-        .filter_map(|item| item.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn chunk_text(payload: &Value) -> Option<String> {
-    payload
-        .get("content")
-        .and_then(|c| c.get("text"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,7 +579,7 @@ mod tests {
     };
     use crate::agent::context::transcript::{
         agent_message_chunk, attach_native_meta, compact_update_payload, tool_call_payload,
-        tool_call_update_payload, CompactRecord, NativeMeta,
+        tool_call_update_payload, CompactRecord, ModelCommit, NativeMeta,
     };
     use crate::models::agent::AgentType;
     use crate::parsers::acp_native::AcpNativeParser;
@@ -683,19 +649,8 @@ mod tests {
     #[test]
     fn groups_two_calls_of_one_model_message_and_keeps_function_names() {
         let mut store = hydrate_fixture_two_calls(ToolOutcome::Success, None);
-        assert_eq!(store.turns().len(), 1);
-        let asst = store.turns()[0].assistant.as_ref().unwrap();
-        assert!(asst.committed);
-        assert_eq!(asst.model_message_id.as_deref(), Some("msg-1"));
-        let names: Vec<_> = asst
-            .parts
-            .iter()
-            .filter_map(|p| match p {
-                AssistantPart::ToolCall { name, .. } => Some(name.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(names, vec!["write_mem", "write_mem"]);
+        assert_eq!(store.fact("call_a").unwrap().function_name, "write_mem");
+        assert_eq!(store.fact("call_b").unwrap().function_name, "write_mem");
         assert_eq!(
             store.fact("call_a").unwrap().outcome,
             Some(ToolOutcome::Success)
@@ -1008,14 +963,13 @@ mod tests {
             },
         ];
         let store = hydrate_store("s1", &entries).expect("hydrate");
-        let parts = &store.turns()[0].assistant.as_ref().unwrap().parts;
-        assert!(matches!(&parts[0], AssistantPart::Text(t) if t == "before "));
-        assert!(matches!(&parts[1], AssistantPart::ToolCall { id, .. } if id == "call_a"));
-        assert!(matches!(&parts[2], AssistantPart::Text(t) if t == "after"));
+        let fact = store.fact("call_a").expect("call_a fact");
+        assert_eq!(fact.function_name, "echo");
+        assert_eq!(fact.outcome, Some(ToolOutcome::Success));
     }
 
     #[test]
-    fn hydrate_reuses_l2_compact_record_and_keeps_original_turns() {
+    fn hydrate_reuses_l2_compact_record() {
         let compact = CompactRecord {
             level: 2,
             through_turn: "s1:1".into(),
@@ -1041,7 +995,6 @@ mod tests {
             },
         ];
         let store = hydrate_store("s1", &entries).expect("hydrate");
-        assert_eq!(store.turns().len(), 2, "original turns stay");
         let rec = store.compact().expect("compact");
         assert_eq!(rec.level, 2);
         assert_eq!(rec.summary, "L2-RESUME-SUMMARY");
@@ -1108,8 +1061,6 @@ mod tests {
                 .expect("hydrate");
         assert_eq!(opened.session_id, session);
         assert_eq!(opened.write_group, group);
-        assert_eq!(opened.store.turns().len(), 1);
-        assert_eq!(opened.store.turns()[0].user_text, "hello");
         let parser = AcpNativeParser::new_in(AgentType::CodegAgent, root.clone());
         let detail = parser.get_conversation(session).expect("parsed");
         assert_eq!(detail.summary.title.as_deref(), Some("hello"));
@@ -1144,7 +1095,6 @@ mod tests {
         .expect("migrate");
         assert_eq!(opened.session_id, session);
         assert_eq!(opened.write_group, encode_session_cwd("/tmp"));
-        assert_eq!(opened.store.turns()[0].user_text, "from legacy");
 
         let new_path = transcript_path_in(&sessions, &opened.write_group, session).unwrap();
         assert!(new_path.exists(), "migrated file must exist at new path");
@@ -1177,5 +1127,48 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&sessions);
         let _ = std::fs::remove_dir_all(&fallback);
+    }
+
+    #[test]
+    fn open_codeg_agent_session_opens_v2_dir_without_jsonl() {
+        let root = temp_root();
+        let session = "v2-only";
+        let cwd = "/tmp/demo";
+        let group = encode_session_cwd(cwd);
+        let dir = root.join(&group).join(session);
+        std::fs::create_dir_all(&dir).unwrap();
+        let messages = [rig::completion::Message::user("from v2")];
+        write_v2_messages(&dir, session, cwd, &messages).expect("write v2");
+        let opened =
+            open_codeg_agent_session(&root, None, cwd, "codeg_agent", Some(session)).expect("open");
+        assert_eq!(opened.session_id, session);
+        assert_eq!(opened.write_group, group);
+        assert!(opened.store.facts().next().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn open_codeg_agent_session_keeps_jsonl_and_writes_v2_sidecar() {
+        let root = temp_root();
+        let session = "jsonl-and-v2";
+        let cwd = "/tmp/demo";
+        let group = encode_session_cwd(cwd);
+        append_line_in(&root, &group, session, &header_line(session));
+        append_line_in(
+            &root,
+            &group,
+            session,
+            &entry(EntryKind::Prompt, json!([{"type":"text","text":"hello"}])),
+        );
+        let opened =
+            open_codeg_agent_session(&root, None, cwd, "codeg_agent", Some(session)).expect("open");
+        assert_eq!(opened.session_id, session);
+        let v2 = root.join(&group).join(session).join("messages.jsonl");
+        assert!(v2.exists(), "legacy jsonl should seed v2 messages.jsonl");
+        let v2_text = std::fs::read_to_string(&v2).unwrap();
+        assert!(v2_text.contains("hello"), "{v2_text}");
+        let jsonl = transcript_path_in(&root, &group, session).unwrap();
+        assert!(jsonl.exists(), "legacy jsonl must be kept");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

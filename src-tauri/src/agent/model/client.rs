@@ -227,6 +227,7 @@ mod tests {
             compact_soft_percent: 80,
             compact_recent_turns: 6,
             compact_model_id: None,
+            compact_llm: false,
             max_turns: 40,
             protocol: CodegProtocol::ChatCompletions,
             resolved_protocol: None,

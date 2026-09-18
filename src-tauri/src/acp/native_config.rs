@@ -15,6 +15,8 @@ pub const COMPACT_PROMPT_KEY: &str = "CODEG_AGENT_COMPACT_PROMPT";
 pub const COMPACT_SOFT_PERCENT_KEY: &str = "CODEG_AGENT_COMPACT_SOFT_PERCENT";
 pub const COMPACT_RECENT_TURNS_KEY: &str = "CODEG_AGENT_COMPACT_RECENT_TURNS";
 pub const COMPACT_MODEL_KEY: &str = "CODEG_AGENT_COMPACT_MODEL";
+/// Opt-in isolated LLM compact branch (`compact-llm`). Default off.
+pub const COMPACT_LLM_KEY: &str = "CODEG_AGENT_COMPACT_LLM";
 pub const PROTOCOL_KEY: &str = "CODEG_AGENT_PROTOCOL";
 pub const RESOLVED_PROTOCOL_KEY: &str = "CODEG_AGENT_RESOLVED_PROTOCOL";
 pub const MAX_TURNS_KEY: &str = "CODEG_AGENT_MAX_TURNS";
@@ -98,6 +100,8 @@ pub struct EffectiveNativeConfig {
     pub compact_recent_turns: u32,
     /// Optional Completions id for L2 compact. `None` uses [`Self::model_id`].
     pub compact_model_id: Option<String>,
+    /// Isolated compact-llm branch. Default false keeps the existing path.
+    pub compact_llm: bool,
     /// Rig `max_turns` for one Prompt. Default 40.
     pub max_turns: u32,
     /// Provider request protocol. One session uses one resolved wire protocol.
@@ -448,6 +452,7 @@ pub fn resolve_codeg_agent_config(
             DEFAULT_COMPACT_RECENT_TURNS,
         ),
         compact_model_id: trimmed_optional(env.get(COMPACT_MODEL_KEY).map(String::as_str)),
+        compact_llm: parse_flag(env.get(COMPACT_LLM_KEY).map(String::as_str)),
         max_turns: parse_positive_u32(
             env.get(MAX_TURNS_KEY).map(String::as_str),
             DEFAULT_MAX_TURNS,
@@ -863,6 +868,19 @@ mod tests {
         let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
         assert_eq!(cfg.compact_model_id.as_deref(), Some("summarizer"));
         assert_eq!(cfg.model_id, "m");
+        assert!(!cfg.compact_llm);
+    }
+
+    #[test]
+    fn compact_llm_is_opt_in() {
+        let env = env_with_windows("m", 128000);
+        let p = provider("https://gw.example/v1", "sk", "m");
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
+        assert!(!cfg.compact_llm);
+        let mut env = env;
+        env.insert(COMPACT_LLM_KEY.into(), "true".into());
+        let cfg = resolve_codeg_agent_config(&env, Some(&p)).expect("valid");
+        assert!(cfg.compact_llm);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! ContextStore (canonical facts) + ContextView (per-request projection).
+//! ContextStore holds execution facts for ACP tool cards and the no-replay contract.
+//! Model request history is Rig `Message`s in `SessionMemory`, not this store.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,12 +21,6 @@ pub use super::transcript::CompactRecord;
 pub use super::transcript::{ToolOutcome, ToolPhase};
 
 const CRITICAL_ACK: Duration = Duration::from_secs(2);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UsageSource {
-    Reported,
-    Estimated,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionFact {
@@ -109,44 +104,8 @@ impl ExecutionFact {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AssistantPart {
-    Text(String),
-    ToolCall {
-        id: String,
-        name: String,
-        args: Value,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct AssistantRecord {
-    pub model_message_id: Option<String>,
-    pub committed: bool,
-    pub parts: Vec<AssistantPart>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CanonicalTurn {
-    pub turn_id: String,
-    pub user_text: String,
-    pub assistant: Option<AssistantRecord>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ContextView {
-    pub messages: Vec<rig::completion::Message>,
-    pub omitted_turns: usize,
-    pub estimated_tokens: u64,
-    pub window: u64,
-    pub input_budget: u64,
-    pub source: UsageSource,
-    pub compact_level: u8,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct ContextStore {
     session_id: String,
-    turns: Vec<CanonicalTurn>,
     facts: HashMap<String, ExecutionFact>,
     compact: Option<CompactRecord>,
 }
@@ -155,7 +114,6 @@ impl ContextStore {
     pub fn new(session_id: impl Into<String>) -> Self {
         Self {
             session_id: session_id.into(),
-            turns: Vec::new(),
             facts: HashMap::new(),
             compact: None,
         }
@@ -163,10 +121,6 @@ impl ContextStore {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
-    }
-
-    pub fn turns(&self) -> &[CanonicalTurn] {
-        &self.turns
     }
 
     pub fn fact(&self, tool_call_id: &str) -> Option<&ExecutionFact> {
@@ -185,22 +139,6 @@ impl ContextStore {
         self.compact = Some(record);
     }
 
-    pub fn append_user(&mut self, turn_id: String, user_text: String) {
-        self.turns.push(CanonicalTurn {
-            turn_id,
-            user_text,
-            assistant: None,
-        });
-    }
-
-    pub fn prompt_index(&self) -> u64 {
-        self.turns.len() as u64
-    }
-
-    pub fn turn_id_for_prompt(&self, prompt_index: u64) -> String {
-        format!("{}:{prompt_index}", self.session_id)
-    }
-
     pub fn record_fact(&mut self, fact: ExecutionFact) {
         self.facts.insert(fact.tool_call_id.clone(), fact);
     }
@@ -211,12 +149,6 @@ impl ContextStore {
     {
         if let Some(fact) = self.facts.get_mut(tool_call_id) {
             update(fact);
-        }
-    }
-
-    pub fn commit_assistant(&mut self, turn_id: &str, assistant: AssistantRecord) {
-        if let Some(turn) = self.turns.iter_mut().rev().find(|t| t.turn_id == turn_id) {
-            turn.assistant = Some(assistant);
         }
     }
 
@@ -517,7 +449,6 @@ mod tests {
     #[test]
     fn cancel_keeps_confirmed_success_and_marks_unstarted_cancelled() {
         let mut store = ContextStore::new("sess");
-        store.append_user("sess:1".into(), "do both".into());
         store.record_fact(ExecutionFact {
             tool_call_id: "call_a".into(),
             function_name: "write_mem".into(),
@@ -550,7 +481,6 @@ mod tests {
     #[test]
     fn started_without_terminal_becomes_unknown_and_is_not_replayed() {
         let mut store = ContextStore::new("sess");
-        store.append_user("sess:1".into(), "write".into());
         store.record_fact(ExecutionFact {
             tool_call_id: "call_u".into(),
             function_name: "write_mem".into(),

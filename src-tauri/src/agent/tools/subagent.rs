@@ -633,7 +633,7 @@ async fn run_inner_subagent(
         last_usage_input: Arc::new(Mutex::new(None)),
         feedback: None,
         mcp_readonly: Arc::new(HashSet::new()),
-        compact: None,
+        session_memory: None,
     };
     let (perm_tx, _perm_rx) = mpsc::channel(1);
     let trace = HookTrace::new();
