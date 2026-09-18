@@ -1532,6 +1532,7 @@ async fn rewind_native_to_origin(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_control_command(
     cmd: ConnectionCommand,
     in_turn: bool,

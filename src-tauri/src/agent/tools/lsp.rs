@@ -223,6 +223,7 @@ pub struct LspArgs {
     pub server: Option<String>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn should_inject_lsp(cfg: &CodeIntelConfig) -> bool {
     cfg.enabled && cfg.lsp.auto_attach
 }

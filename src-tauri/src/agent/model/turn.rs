@@ -144,6 +144,7 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
     drain_native_stream(stream, cancel).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn assemble_and_stream<C>(
     client: C,
     model_id: String,

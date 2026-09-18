@@ -47,12 +47,7 @@ pub fn detect_runtime_env(cwd: &Path) -> RuntimeEnv {
 }
 
 pub fn platform_label() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "macos",
-        "windows" => "windows",
-        "linux" => "linux",
-        other => other,
-    }
+    std::env::consts::OS
 }
 
 /// Phase 1: only `{cwd}/{name}` if it is a regular file. No parent walk.

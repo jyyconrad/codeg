@@ -372,6 +372,7 @@ fn wiki_tool_ctx(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn one_shot(
     bound: &BoundWikiModel,
     preamble: &str,

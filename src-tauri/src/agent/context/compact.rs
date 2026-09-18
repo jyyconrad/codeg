@@ -347,6 +347,7 @@ fn collect_markdown_files_inner(dir: &Path, out: &mut Vec<CompactFile>) -> Resul
     Ok(())
 }
 
+#[cfg(test)]
 fn ensure_summary_lists_files(summary: &mut String, files: &[CompactFile]) {
     let missing: Vec<&str> = files
         .iter()

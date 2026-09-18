@@ -127,7 +127,7 @@ fn xor_in_place(a: &mut [u8], b: &[u8]) {
 fn pad(data: &[u8], padding: Padding) -> Result<Vec<u8>, AppCommandError> {
     match padding {
         Padding::None => {
-            if data.len() % BLOCK != 0 {
+            if !data.len().is_multiple_of(BLOCK) {
                 return Err(AppCommandError::invalid_input(format!(
                     "NoPadding requires input length to be a multiple of {BLOCK} bytes (got {}).",
                     data.len()
@@ -156,7 +156,7 @@ fn pad(data: &[u8], padding: Padding) -> Result<Vec<u8>, AppCommandError> {
 fn unpad(data: &[u8], padding: Padding) -> Result<Vec<u8>, AppCommandError> {
     match padding {
         Padding::None => {
-            if data.len() % BLOCK != 0 {
+            if !data.len().is_multiple_of(BLOCK) {
                 return Err(AppCommandError::invalid_input(format!(
                     "NoPadding requires ciphertext length to be a multiple of {BLOCK} bytes (got {}).",
                     data.len()
@@ -172,13 +172,13 @@ fn unpad(data: &[u8], padding: Padding) -> Result<Vec<u8>, AppCommandError> {
             Ok(data[..end].to_vec())
         }
         Padding::Pkcs7 => {
-            if data.is_empty() || data.len() % BLOCK != 0 {
+            if data.is_empty() || !data.len().is_multiple_of(BLOCK) {
                 return Err(AppCommandError::invalid_input(
                     "PKCS7 padding is invalid: ciphertext length is not a multiple of the block size.",
                 ));
             }
             let n = data[data.len() - 1] as usize;
-            if n < 1 || n > BLOCK {
+            if !(1..=BLOCK).contains(&n) {
                 return Err(AppCommandError::invalid_input("PKCS7 padding is invalid."));
             }
             if data[data.len() - n..].iter().any(|&b| b as usize != n) {
@@ -417,6 +417,7 @@ fn decrypt_block_mode(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encrypt_stream(
     params: &CipherFileParams,
     emitter: &EventEmitter,
@@ -459,6 +460,7 @@ fn encrypt_stream(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decrypt_stream(
     params: &CipherFileParams,
     emitter: &EventEmitter,

@@ -3,6 +3,7 @@
 //! Claude Code / OpenCode / OpenClaw all prune tool output before summarizing
 //! turns, but they do not treat every tool the same: reads are reloadable,
 //! writes collapse to a path+size ack, bash output cannot be replayed.
+#![allow(dead_code)]
 
 use super::spill::recover_hint;
 use super::store::ExecutionFact;

@@ -80,7 +80,7 @@ fn build_pdf(page_texts: &[&str]) -> Vec<u8> {
     let push_obj = |body: &mut Vec<u8>, offsets: &mut Vec<u32>, obj: &str| {
         offsets.push(body.len() as u32);
         body.extend_from_slice(obj.as_bytes());
-        if !body.ends_with(&[b'\n']) {
+        if !body.ends_with(b"\n") {
             body.push(b'\n');
         }
     };

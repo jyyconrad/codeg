@@ -3,7 +3,6 @@
 //! Routes LSP tools straight to [`LspPool`]. Does not speak BrokerMessage,
 //! UDS, or the codeg-mcp companion schema.
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -207,26 +206,24 @@ impl ServerHandler for CodeIntelMcpAdapter {
             )
     }
 
-    fn list_tools(
+    async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        async move { Ok(ListToolsResult::with_all_items(self.listed_tools().await)) }
+    ) -> Result<ListToolsResult, McpError> {
+        Ok(ListToolsResult::with_all_items(self.listed_tools().await))
     }
 
-    fn call_tool(
+    async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
-        async move {
-            let args = request
-                .arguments
-                .map(Value::Object)
-                .unwrap_or(Value::Object(JsonObject::new()));
-            Ok(self.invoke(request.name.as_ref(), args, context.ct).await)
-        }
+    ) -> Result<CallToolResult, McpError> {
+        let args = request
+            .arguments
+            .map(Value::Object)
+            .unwrap_or(Value::Object(JsonObject::new()));
+        Ok(self.invoke(request.name.as_ref(), args, context.ct).await)
     }
 }
 

@@ -43,6 +43,7 @@ pub mod spreadsheet_preview;
 pub mod system_settings;
 pub mod terminal;
 pub mod token_usage;
+#[cfg(feature = "tauri-runtime")]
 pub mod toolbox;
 pub mod turn_window;
 pub mod version_control;

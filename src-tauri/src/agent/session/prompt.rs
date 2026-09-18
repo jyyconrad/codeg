@@ -102,6 +102,7 @@ pub fn assemble_native_prompt(blocks: &[PromptInputBlock]) -> Message {
 
 /// Text parts of an assembled prompt, used as the transcript / history stub.
 /// Image bytes stay on the current-turn `Message` only.
+#[cfg(test)]
 pub fn native_prompt_store_text(message: &Message) -> String {
     match message {
         Message::User { content } => content

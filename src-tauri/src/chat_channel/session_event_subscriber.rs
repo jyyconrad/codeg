@@ -376,11 +376,9 @@ async fn handle_acp_envelope(
                     if is_delegation {
                         let already_rendered = session.delegation_rendered.contains(tool_call_id);
                         let report = parse_delegation_report(raw_output.as_deref());
-                        if report.as_ref().is_some_and(|r| r.is_terminal()) {
-                            if !already_rendered {
-                                session.delegation_rendered.insert(tool_call_id.clone());
-                                session.tool_call_inputs.remove(tool_call_id);
-                            }
+                        if report.as_ref().is_some_and(|r| r.is_terminal()) && !already_rendered {
+                            session.delegation_rendered.insert(tool_call_id.clone());
+                            session.tool_call_inputs.remove(tool_call_id);
                         }
                         // Delegation progress is not an Events-tab event.
                     } else {
@@ -731,6 +729,7 @@ fn extract_agent_type(raw_input: &str) -> Option<String> {
 /// output is just a task id, so the channel shows that the sub-agent started
 /// and is running in the background. The result lands later via
 /// [`format_delegation_result`] on `DelegationCompleted`.
+#[allow(dead_code)]
 fn format_delegation_ack(agent: &str) -> String {
     format!("🚀 Delegated to {agent}; running in background")
 }
@@ -807,6 +806,7 @@ fn parse_json_lenient(s: &str) -> Option<serde_json::Value> {
 /// failure: delegation disabled / depth rejected / spawn failed). Used when the
 /// terminal line surfaces via the tool output rather than `DelegationCompleted`
 /// (setup failures and synthetic-id fast-completes emit no `DelegationCompleted`).
+#[allow(dead_code)]
 fn format_delegation_terminal(agent: &str, view: &DelegationReportView) -> String {
     if view.status.as_deref() == Some("completed") {
         let body = view
@@ -837,6 +837,7 @@ fn format_delegation_terminal(agent: &str, view: &DelegationReportView) -> Strin
 
 /// Result line for a finished delegation, from the `DelegationCompleted`
 /// summary: a compact ✅/❌ with the bounded preview the broker attached.
+#[allow(dead_code)]
 fn format_delegation_result(agent: &str, result: &DelegationResultSummary) -> String {
     match result {
         DelegationResultSummary::Ok { text_preview, .. } => {

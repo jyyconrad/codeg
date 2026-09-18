@@ -198,6 +198,7 @@ pub struct SubagentTool {
 }
 
 impl SubagentTool {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: NativeToolCtx,
         client: CodegLlmClient,
@@ -534,6 +535,7 @@ fn build_inner_lsp(ctx: NativeToolCtx, pool: Option<Arc<LspPool>>) -> Option<Lsp
     pool.map(|pool| LspTool::new(ctx, pool))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn inner_tool_schemas(
     read: &ReadFileTool,
     recall: &RecallTool,

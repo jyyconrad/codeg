@@ -262,7 +262,7 @@ fn parse_document(
 
     loop {
         events += 1;
-        if events % 4096 == 0 {
+        if events.is_multiple_of(4096) {
             deadline.check()?;
         }
         match reader.read_event_into(&mut buf) {
@@ -351,14 +351,10 @@ fn parse_document(
                 let name = e.local_name();
                 match name.as_ref() {
                     b"t" => {
-                        if in_t > 0 {
-                            in_t -= 1;
-                        }
+                        in_t = in_t.saturating_sub(1);
                     }
                     b"p" => {
-                        if in_para > 0 {
-                            in_para -= 1;
-                        }
+                        in_para = in_para.saturating_sub(1);
                         if in_para == 0 {
                             if in_cell > 0 {
                                 if !para_buf.is_empty() {
@@ -384,9 +380,7 @@ fn parse_document(
                         }
                     }
                     b"tc" => {
-                        if in_cell > 0 {
-                            in_cell -= 1;
-                        }
+                        in_cell = in_cell.saturating_sub(1);
                         row_cells.push(normalize_paragraph(&cell_buf));
                         cell_buf.clear();
                     }
@@ -408,14 +402,10 @@ fn parse_document(
                         }
                     }
                     b"tbl" => {
-                        if in_table > 0 {
-                            in_table -= 1;
-                        }
+                        in_table = in_table.saturating_sub(1);
                     }
                     b"drawing" | b"object" | b"pict" | b"oleObject" => {
-                        if skip > 0 {
-                            skip -= 1;
-                        }
+                        skip = skip.saturating_sub(1);
                     }
                     _ => {}
                 }

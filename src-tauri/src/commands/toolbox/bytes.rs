@@ -21,7 +21,7 @@ pub fn decode_hex(input: &str) -> Result<Vec<u8>, AppCommandError> {
     if hex.is_empty() {
         return Ok(Vec::new());
     }
-    if hex.len() % 2 != 0 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+    if !hex.len().is_multiple_of(2) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(AppCommandError::invalid_input("Value is not valid hex."));
     }
     (0..hex.len())
@@ -42,7 +42,7 @@ pub fn decode_base64(input: &str) -> Result<Vec<u8>, AppCommandError> {
     let mut padded = compact;
     let rem = padded.len() % 4;
     if rem != 0 {
-        padded.extend(std::iter::repeat('=').take(4 - rem));
+        padded.extend(std::iter::repeat_n('=', 4 - rem));
     }
     base64::engine::general_purpose::STANDARD
         .decode(padded.as_bytes())

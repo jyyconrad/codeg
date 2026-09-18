@@ -528,7 +528,7 @@ mod tests {
 
         let path = PathBuf::from("/tmp/codeg-agent-skills/big/SKILL.md");
         let extra = PathBuf::from("/tmp/codeg-agent-skills/big/scripts/run.sh");
-        let loaded = present_skill_markdown("big", &path, &body, &[extra.clone()]);
+        let loaded = present_skill_markdown("big", &path, &body, std::slice::from_ref(&extra));
         assert!(!loaded.truncated);
         assert!(
             loaded.presentation.contains("<skill_content name=\"big\">"),

@@ -54,6 +54,7 @@ impl EnterPlanModeTool {
 }
 
 impl ExitPlanModeTool {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: NativeToolCtx,
         session_mode: Arc<RwLock<String>>,

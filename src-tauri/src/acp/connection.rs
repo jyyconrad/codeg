@@ -2969,18 +2969,12 @@ async fn stamp_turn_complete_run_id(
             stop_reason,
             agent_type,
             run_id,
-        } => {
-            let run_id = match run_id {
-                Some(id) => Some(id),
-                None => None,
-            };
-            AcpEvent::TurnComplete {
-                session_id,
-                stop_reason,
-                agent_type,
-                run_id,
-            }
-        }
+        } => AcpEvent::TurnComplete {
+            session_id,
+            stop_reason,
+            agent_type,
+            run_id,
+        },
         other => other,
     }
 }
@@ -4598,6 +4592,7 @@ async fn append_code_intel_mcp_servers(
     Some(lease)
 }
 
+#[cfg(test)]
 fn build_code_intel_http_server(url: &str) -> McpServerHttp {
     McpServerHttp::new(MCP_SERVER_NAME, url)
 }
