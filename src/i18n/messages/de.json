@@ -3802,6 +3802,8 @@
         "createWorkTaskNoTitle": "Arbeitsaufgabe wird erstellt",
         "resumeDelegation": "Aufgabe {task} wird fortgesetzt",
         "resumeDelegationNoId": "Delegierte Aufgabe wird fortgesetzt",
+        "setSessionTimer": "Aufwachen in {seconds}s",
+        "setSessionTimerNoSeconds": "Sitzungs-Timer setzen",
         "promptLabel": "Anweisung",
         "verdict": {
           "success": "erfolgreich",

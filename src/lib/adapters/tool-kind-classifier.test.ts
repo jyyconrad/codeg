@@ -108,6 +108,7 @@ describe("isAgentLikeToolName", () => {
       "create_automation",
       "create_work_task",
       "resume_delegation",
+      "set_session_timer",
     ]) {
       expect(isAgentLikeToolName(tool)).toBe(true)
       expect(isAgentLikeToolName(`mcp__codeg-mcp__${tool}`)).toBe(true)

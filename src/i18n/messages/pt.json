@@ -3802,6 +3802,8 @@
         "createWorkTaskNoTitle": "Criando uma tarefa de trabalho",
         "resumeDelegation": "Retomando a tarefa {task}",
         "resumeDelegationNoId": "Retomando uma tarefa delegada",
+        "setSessionTimer": "Acordar em {seconds}s",
+        "setSessionTimerNoSeconds": "Definir temporizador da sessão",
         "promptLabel": "Instrução",
         "verdict": {
           "success": "sucesso",

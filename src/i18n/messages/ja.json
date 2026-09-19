@@ -3802,6 +3802,8 @@
         "createWorkTaskNoTitle": "作業タスクを作成中",
         "resumeDelegation": "タスク {task} を再開中",
         "resumeDelegationNoId": "委任タスクを再開中",
+        "setSessionTimer": "{seconds} 秒後に起床",
+        "setSessionTimerNoSeconds": "セッションタイマーを設定",
         "promptLabel": "プロンプト",
         "verdict": {
           "success": "成功",

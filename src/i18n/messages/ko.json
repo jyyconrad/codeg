@@ -3802,6 +3802,8 @@
         "createWorkTaskNoTitle": "작업 항목 생성 중",
         "resumeDelegation": "작업 {task} 재개 중",
         "resumeDelegationNoId": "위임 작업 재개 중",
+        "setSessionTimer": "{seconds}초 후 깨우기",
+        "setSessionTimerNoSeconds": "세션 타이머 설정",
         "promptLabel": "프롬프트",
         "verdict": {
           "success": "성공",

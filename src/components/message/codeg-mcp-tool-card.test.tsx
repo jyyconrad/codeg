@@ -349,4 +349,15 @@ describe("CodegMcpToolCard", () => {
     )
     expect(screen.getByText("Reporting task progress")).toBeInTheDocument()
   })
+
+  it("states the wake delay for set_session_timer", () => {
+    renderWithIntl(
+      <CodegMcpToolCard
+        tool="set_session_timer"
+        input={JSON.stringify({ seconds: 45, reason: "ci" })}
+        state="output-available"
+      />
+    )
+    expect(screen.getByText("Wake in 45s · ci")).toBeInTheDocument()
+  })
 })

@@ -3802,6 +3802,8 @@
         "createWorkTaskNoTitle": "إنشاء مهمة عمل",
         "resumeDelegation": "استئناف المهمة {task}",
         "resumeDelegationNoId": "استئناف مهمة مفوضة",
+        "setSessionTimer": "الاستيقاظ بعد {seconds}ث",
+        "setSessionTimerNoSeconds": "تعيين مؤقت الجلسة",
         "promptLabel": "التعليمات",
         "verdict": {
           "success": "ناجحة",

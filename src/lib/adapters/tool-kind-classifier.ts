@@ -67,9 +67,10 @@ const CODEG_MCP_WORKBENCH_NAMES: ReadonlySet<string> = new Set([
   "create_automation",
   "create_work_task",
   "resume_delegation",
+  "set_session_timer",
 ])
 const CODEG_MCP_WORKBENCH_SUFFIX_RE =
-  /[^a-z0-9](?:get_session_info|task_progress|task_complete|create_automation|create_work_task|resume_delegation)$/
+  /[^a-z0-9](?:get_session_info|task_progress|task_complete|create_automation|create_work_task|resume_delegation|set_session_timer)$/
 
 export function isAgentLikeToolName(toolName: string): boolean {
   const name = toolName.toLowerCase().trim()
