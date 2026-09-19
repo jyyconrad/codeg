@@ -298,6 +298,14 @@ pub(crate) async fn handle_event(
                     )
                     .await;
                 }
+                manager
+                    .flush_queued_timer_wake(
+                        &crate::db::AppDatabase {
+                            conn: db_conn.clone(),
+                        },
+                        &envelope.connection_id,
+                    )
+                    .await;
                 return Ok(());
             };
             if let Some(ts) = target_status.clone() {
@@ -347,6 +355,14 @@ pub(crate) async fn handle_event(
                 )
                 .await;
             }
+            manager
+                .flush_queued_timer_wake(
+                    &crate::db::AppDatabase {
+                        conn: db_conn.clone(),
+                    },
+                    &envelope.connection_id,
+                )
+                .await;
             Ok(())
         }
         AcpEvent::Error {

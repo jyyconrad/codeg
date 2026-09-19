@@ -30,7 +30,7 @@ use crate::acp::question::{
     build_outcome, QuestionAnswer, QuestionOutcome, QuestionSpec, RegisteredQuestion,
     SessionQuestionAccess,
 };
-use crate::acp::session_timer::{SessionTimerAck, SessionTimerSpec};
+use crate::acp::session_timer::{wake_prompt_text, SessionTimerAck, SessionTimerSpec};
 use crate::acp::terminal_runtime::TerminalShellRuntimeConfig;
 use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
@@ -497,9 +497,20 @@ pub struct ConnectionManager {
     /// clones so companion set/cancel and idle sweep see the same map. Size is
     /// live timers only — replace and cancel remove the previous entry.
     session_timers: Arc<Mutex<HashMap<String, LiveSessionTimer>>>,
+    /// DB handle for timer fire / queued-wake flush. Installed once at
+    /// bootstrap (`install_timer_db`); tests that need fire call it too.
+    timer_db: Arc<std::sync::OnceLock<AppDatabase>>,
     /// In-process sessions whose map entry may already be gone but whose
     /// terminals / MCP children are still being reaped.
     native_sessions: Arc<Mutex<HashMap<String, Arc<NativeShutdownHandle>>>>,
+}
+
+/// Origin of a linked prompt. Public senders are `User`; timer fire is
+/// `SessionTimer` so a wake cannot cancel itself (K9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PromptSource {
+    User,
+    SessionTimer,
 }
 
 /// A parked `ask_user_question` awaiting its answer. The `sender` resolves the
@@ -519,12 +530,9 @@ struct PendingPlanApprovalEntry {
     sender: tokio::sync::oneshot::Sender<PlanApprovalAnswer>,
 }
 
-/// One scheduled wake per connection. `task` stays `None` until the sleep
-/// worker is spawned (later); cancel still aborts it if present.
+/// One scheduled wake per connection.
 struct LiveSessionTimer {
-    #[allow(dead_code)]
     timer_id: String,
-    #[allow(dead_code)]
     spec: SessionTimerSpec,
     cancel: CancellationToken,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -558,6 +566,7 @@ impl ConnectionManager {
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
             session_timers: Arc::new(Mutex::new(HashMap::new())),
+            timer_db: Arc::new(std::sync::OnceLock::new()),
             native_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -577,6 +586,7 @@ impl ConnectionManager {
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
             session_timers: self.session_timers.clone(),
+            timer_db: self.timer_db.clone(),
             native_sessions: self.native_sessions.clone(),
         }
     }
@@ -586,6 +596,13 @@ impl ConnectionManager {
     /// the unlikely event a second `build_delegation_stack` runs.
     pub fn install_delegation(&self, injection: crate::acp::connection::DelegationInjection) {
         let _ = self.delegation_injection.set(injection);
+    }
+
+    /// Install the DB used to inject a timer wake via `send_prompt_linked`.
+    /// Calling twice is a no-op. Tests that need fire call this; production
+    /// installs it next to `install_delegation`.
+    pub fn install_timer_db(&self, db: AppDatabase) {
+        let _ = self.timer_db.set(db);
     }
 
     /// Install the chat-channel manager exactly once during bootstrap so
@@ -627,6 +644,7 @@ impl ConnectionManager {
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
             session_timers: Arc::new(Mutex::new(HashMap::new())),
+            timer_db: Arc::new(std::sync::OnceLock::new()),
             native_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -922,9 +940,9 @@ impl ConnectionManager {
         disconnected
     }
 
-    /// Register one timer on `conn_id`, replacing any previous entry. Does not
-    /// spawn the sleep worker — that lands with fire/queue. Missing connection
-    /// is a soft failure (`connection_not_found`).
+    /// Register one timer on `conn_id`, replacing any previous entry, and spawn
+    /// the monotonic sleep worker. Missing connection is a soft failure
+    /// (`connection_not_found`).
     pub async fn set_session_timer(
         &self,
         conn_id: &str,
@@ -936,6 +954,13 @@ impl ConnectionManager {
 
         let timer_id = uuid::Uuid::new_v4().to_string();
         let cancel = CancellationToken::new();
+        {
+            let mut s = state.write().await;
+            s.session_timer_deadline =
+                Some(chrono::Utc::now() + chrono::Duration::seconds(i64::from(spec.seconds)));
+            s.queued_timer_wake = None;
+        }
+
         let replaced = {
             let mut timers = self.session_timers.lock().await;
             let previous = timers.remove(conn_id);
@@ -948,18 +973,32 @@ impl ConnectionManager {
                 LiveSessionTimer {
                     timer_id: timer_id.clone(),
                     spec: spec.clone(),
-                    cancel,
+                    cancel: cancel.clone(),
                     task: None,
                 },
             );
             replaced
         };
-
+        let conn_id_task = conn_id.to_string();
+        let timer_id_task = timer_id.clone();
+        let seconds = u64::from(spec.seconds);
+        let mgr = self.clone_ref();
+        let handle = tokio::spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                _ = tokio::time::sleep(Duration::from_secs(seconds)) => {
+                    mgr.on_session_timer_fire(&conn_id_task, &timer_id_task).await;
+                }
+            }
+        });
         {
-            let mut s = state.write().await;
-            s.session_timer_deadline =
-                Some(chrono::Utc::now() + chrono::Duration::seconds(i64::from(spec.seconds)));
-            s.queued_timer_wake = None;
+            let mut timers = self.session_timers.lock().await;
+            match timers.get_mut(conn_id) {
+                Some(entry) if entry.timer_id == timer_id => {
+                    entry.task = Some(handle);
+                }
+                _ => handle.abort(),
+            }
         }
 
         SessionTimerAck {
@@ -987,6 +1026,134 @@ impl ConnectionManager {
             s.session_timer_deadline = None;
             s.queued_timer_wake = None;
         }
+    }
+
+    /// Sleep worker expiry. Ignores a stale `timer_id` (replaced). Queues the
+    /// wake when a turn is in flight or no DB is installed; otherwise injects
+    /// via `PromptSource::SessionTimer`.
+    async fn on_session_timer_fire(&self, conn_id: &str, timer_id: &str) {
+        let spec = {
+            let mut timers = self.session_timers.lock().await;
+            match timers.get(conn_id) {
+                Some(entry) if entry.timer_id == timer_id => {}
+                _ => return,
+            }
+            let timer = timers.remove(conn_id).expect("timer_id just matched");
+            timer.spec
+        };
+
+        let Some(state) = self.get_state(conn_id).await else {
+            return;
+        };
+        let turn_in_flight = {
+            let mut s = state.write().await;
+            s.session_timer_deadline = None;
+            s.turn_in_flight
+        };
+
+        if turn_in_flight || self.timer_db.get().is_none() {
+            state.write().await.queued_timer_wake = Some(spec);
+        } else if let Some(db) = self.timer_db.get() {
+            self.send_or_queue_timer_wake(db, conn_id, spec).await;
+        }
+
+        if let Some(db) = self.timer_db.get() {
+            self.flush_queued_timer_wake(db, conn_id).await;
+        }
+    }
+
+    /// If the live spec (map entry or queued wake) asks to cancel on a user
+    /// message, drop the timer, deadline, and queue.
+    pub async fn note_user_prompt_for_timer(&self, conn_id: &str) {
+        let cancel_from_map = {
+            let timers = self.session_timers.lock().await;
+            timers
+                .get(conn_id)
+                .map(|entry| entry.spec.cancel_on_user_message)
+        };
+        let cancel_from_queue = {
+            if let Some(state) = self.get_state(conn_id).await {
+                state
+                    .read()
+                    .await
+                    .queued_timer_wake
+                    .as_ref()
+                    .map(|spec| spec.cancel_on_user_message)
+            } else {
+                None
+            }
+        };
+        if matches!(cancel_from_map, Some(true)) || matches!(cancel_from_queue, Some(true)) {
+            self.cancel_session_timer(conn_id).await;
+        }
+    }
+
+    /// Send a queued wake now that the turn gate is clear. No-op when nothing
+    /// is queued or a turn is still in flight.
+    pub async fn flush_queued_timer_wake(&self, db: &AppDatabase, conn_id: &str) {
+        let Some(state) = self.get_state(conn_id).await else {
+            return;
+        };
+        let spec = {
+            let mut s = state.write().await;
+            if s.turn_in_flight {
+                return;
+            }
+            match s.queued_timer_wake.take() {
+                Some(spec) => spec,
+                None => return,
+            }
+        };
+        self.send_or_queue_timer_wake(db, conn_id, spec).await;
+    }
+
+    async fn send_or_queue_timer_wake(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        spec: SessionTimerSpec,
+    ) {
+        match self.send_timer_wake(db, conn_id, &spec).await {
+            Ok(_) => {}
+            Err(AcpError::TurnInProgress) => {
+                if let Some(state) = self.get_state(conn_id).await {
+                    state.write().await.queued_timer_wake = Some(spec);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    connection_id = %conn_id,
+                    error = %e,
+                    "[ACP] session timer wake failed"
+                );
+            }
+        }
+    }
+
+    async fn send_timer_wake(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        spec: &SessionTimerSpec,
+    ) -> Result<Option<i32>, AcpError> {
+        let folder_id = if let Some(state) = self.get_state(conn_id).await {
+            state.read().await.folder_id
+        } else {
+            None
+        };
+        self.send_prompt_linked_with_source(
+            db,
+            conn_id,
+            vec![PromptInputBlock::Text {
+                text: wake_prompt_text(spec),
+            }],
+            folder_id,
+            None,
+            None,
+            None,
+            PromptSource::SessionTimer,
+        )
+        .await
     }
 
     /// Compare each running connection's spawn-time config fingerprint against a
@@ -1245,11 +1412,36 @@ impl ConnectionManager {
         &self,
         db: &AppDatabase,
         conn_id: &str,
+        blocks: Vec<PromptInputBlock>,
+        folder_id: Option<i32>,
+        conversation_id: Option<i32>,
+        delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
+        client_message_id: Option<String>,
+    ) -> Result<Option<i32>, AcpError> {
+        self.send_prompt_linked_with_source(
+            db,
+            conn_id,
+            blocks,
+            folder_id,
+            conversation_id,
+            delegation,
+            client_message_id,
+            PromptSource::User,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_prompt_linked_with_source(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
         mut blocks: Vec<PromptInputBlock>,
         folder_id: Option<i32>,
         conversation_id: Option<i32>,
         delegation: Option<crate::acp::delegation::spawner::DelegationLink>,
         client_message_id: Option<String>,
+        source: PromptSource,
     ) -> Result<Option<i32>, AcpError> {
         // Reject an empty prompt up front, BEFORE any side effects: linking /
         // creating the conversation row, flipping it to InProgress, or emitting
@@ -1261,6 +1453,9 @@ impl ConnectionManager {
             return Err(AcpError::protocol(
                 "prompt must contain at least one content block".to_string(),
             ));
+        }
+        if source == PromptSource::User {
+            self.note_user_prompt_for_timer(conn_id).await;
         }
         // Scrub the reserved separator HERE, before the conversation row, the
         // optimistic broadcast, and the ledger all take their copy of `blocks`,
@@ -1357,8 +1552,9 @@ impl ConnectionManager {
         // CANCELLATION SHIELD around the first link, same shape and for the same
         // reason as `fork_session` below.
         //
-        // Everything above this point is side-effect-free: drop this future and
-        // `_prompt_guard` drops with it, having changed nothing. What follows is
+        // Everything above this point is side-effect-free except a User-source
+        // timer cancel (`note_user_prompt_for_timer`): drop this future and
+        // `_prompt_guard` drops with it, having changed nothing else. What follows is
         // not. `bind_external_id` COMMITS ownership of the agent session to a
         // row, and only the publication after it makes that row reachable —
         // `ConversationLinked` latches `state.conversation_id` (which is exactly
@@ -2519,6 +2715,7 @@ impl ConnectionManager {
     }
 
     pub async fn disconnect(&self, conn_id: &str) -> Result<(), AcpError> {
+        self.cancel_session_timer(conn_id).await;
         let removed = {
             // The map lock is held ACROSS the handoff into `draining`, and
             // readers take it in the same order, so an observer can never see
@@ -7406,6 +7603,218 @@ mod tests {
             .await;
         assert!(!ack.ok);
         assert_eq!(ack.error.as_deref(), Some("connection_not_found"));
+    }
+
+    /// Pump the current-thread runtime so a spawned timer task can register
+    /// its sleep (or finish fire) while tokio time is paused.
+    async fn pump_timer_tasks() {
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn advance_timer_sleep(seconds: u64) {
+        pump_timer_tasks().await;
+        tokio::time::advance(Duration::from_secs(seconds) + Duration::from_millis(1)).await;
+        // Resume so the fire path's SQLite work is not stuck on a paused
+        // pool-acquire timeout. The sleep has already been advanced.
+        tokio::time::resume();
+        pump_timer_tasks().await;
+    }
+
+    #[tokio::test]
+    async fn session_timer_fires_prompt_after_sleep() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let folder_id = crate::db::test_helpers::seed_folder(&db, "/tmp/timer-fire").await;
+        let mgr = ConnectionManager::new();
+        mgr.install_timer_db(crate::db::AppDatabase {
+            conn: db.conn.clone(),
+        });
+        let conn_id = "conn-timer-fire";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/timer-fire")),
+        )
+        .await;
+        {
+            let state = mgr.get_state(conn_id).await.unwrap();
+            state.write().await.folder_id = Some(folder_id);
+            state.write().await.conversation_id = Some(
+                crate::db::test_helpers::seed_conversation(&db, folder_id, AgentType::ClaudeCode)
+                    .await,
+            );
+        }
+        tokio::time::pause();
+        let ack = mgr
+            .set_session_timer(
+                conn_id,
+                crate::acp::session_timer::SessionTimerSpec {
+                    seconds: 2,
+                    reason: Some("ci".into()),
+                    cancel_on_user_message: true,
+                },
+            )
+            .await;
+        assert!(ack.ok);
+        advance_timer_sleep(2).await;
+        let cmd = tokio::time::timeout(Duration::from_secs(2), cmd_rx.recv())
+            .await
+            .expect("wake prompt")
+            .expect("cmd");
+        match cmd {
+            crate::acp::connection::ConnectionCommand::Prompt { blocks, .. } => {
+                let text = match &blocks[0] {
+                    crate::acp::types::PromptInputBlock::Text { text } => text,
+                    _ => panic!("expected text"),
+                };
+                assert!(text.starts_with("[session timer]"));
+                assert!(text.contains("Waited: 2 seconds."));
+                assert!(text.contains("Reason: ci"));
+            }
+            _ => panic!("unexpected command (expected Prompt)"),
+        }
+    }
+
+    #[tokio::test]
+    async fn user_prompt_cancels_timer_by_default() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let folder_id = crate::db::test_helpers::seed_folder(&db, "/tmp/timer-cancel").await;
+        let mgr = ConnectionManager::new();
+        mgr.install_timer_db(crate::db::AppDatabase {
+            conn: db.conn.clone(),
+        });
+        let conn_id = "conn-timer-cancel";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/timer-cancel")),
+        )
+        .await;
+        tokio::time::pause();
+        mgr.set_session_timer(
+            conn_id,
+            crate::acp::session_timer::SessionTimerSpec {
+                seconds: 5,
+                reason: None,
+                cancel_on_user_message: true,
+            },
+        )
+        .await;
+        tokio::task::yield_now().await;
+        let _ = mgr
+            .send_prompt_linked(
+                &db,
+                conn_id,
+                vec![crate::acp::types::PromptInputBlock::Text {
+                    text: "hello".into(),
+                }],
+                Some(folder_id),
+                None,
+                None,
+            )
+            .await;
+        let _ = cmd_rx.recv().await;
+        advance_timer_sleep(6).await;
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "cancelled timer must not inject a wake"
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_flag_keeps_timer_after_user_prompt() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let folder_id = crate::db::test_helpers::seed_folder(&db, "/tmp/timer-keep").await;
+        let mgr = ConnectionManager::new();
+        mgr.install_timer_db(crate::db::AppDatabase {
+            conn: db.conn.clone(),
+        });
+        let conn_id = "conn-timer-keep";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/timer-keep")),
+        )
+        .await;
+        tokio::time::pause();
+        mgr.set_session_timer(
+            conn_id,
+            crate::acp::session_timer::SessionTimerSpec {
+                seconds: 3,
+                reason: None,
+                cancel_on_user_message: false,
+            },
+        )
+        .await;
+        tokio::task::yield_now().await;
+        let _ = mgr
+            .send_prompt_linked(
+                &db,
+                conn_id,
+                vec![crate::acp::types::PromptInputBlock::Text {
+                    text: "hello".into(),
+                }],
+                Some(folder_id),
+                None,
+                None,
+            )
+            .await;
+        let _ = cmd_rx.recv().await;
+        {
+            let state = mgr.get_state(conn_id).await.unwrap();
+            state.write().await.turn_in_flight = false;
+            state.write().await.status = crate::acp::types::ConnectionStatus::Connected;
+        }
+        mgr.flush_queued_timer_wake(&db, conn_id).await;
+        advance_timer_sleep(3).await;
+        let cmd = cmd_rx.try_recv().expect("wake still fires");
+        match cmd {
+            crate::acp::connection::ConnectionCommand::Prompt { blocks, .. } => {
+                let text = match &blocks[0] {
+                    crate::acp::types::PromptInputBlock::Text { text } => text,
+                    _ => panic!("expected text"),
+                };
+                assert!(text.starts_with("[session timer]"));
+            }
+            _ => panic!("unexpected command (expected Prompt)"),
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_cancels_session_timer() {
+        tokio::time::pause();
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-timer-disc";
+        let mut cmd_rx = insert_live_connection(&mgr, conn_id, AgentType::ClaudeCode, None).await;
+        mgr.set_session_timer(
+            conn_id,
+            crate::acp::session_timer::SessionTimerSpec {
+                seconds: 4,
+                reason: None,
+                cancel_on_user_message: false,
+            },
+        )
+        .await;
+        tokio::task::yield_now().await;
+        mgr.disconnect(conn_id).await.ok();
+        assert!(
+            mgr.session_timers.lock().await.get(conn_id).is_none(),
+            "disconnect must drop the live timer before the map entry"
+        );
+        advance_timer_sleep(5).await;
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            assert!(
+                !matches!(
+                    cmd,
+                    crate::acp::connection::ConnectionCommand::Prompt { .. }
+                ),
+                "cancelled timer must not inject a wake"
+            );
+        }
     }
 
     #[tokio::test]

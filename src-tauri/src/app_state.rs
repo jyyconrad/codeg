@@ -192,6 +192,9 @@ pub fn build_delegation_stack(
         authoring.clone(),
     )) as Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>;
 
+    connection_manager.install_timer_db(AppDatabase {
+        conn: db_conn.clone(),
+    });
     // Install once, with flags AND the same service handles the listener uses.
     connection_manager.install_delegation(DelegationInjection {
         broker: broker.clone(),
