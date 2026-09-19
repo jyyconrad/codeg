@@ -8,11 +8,12 @@
 //! to six tools — `delegate_to_agent` (async; returns a `task_id` ack),
 //! `get_delegation_status` (poll/long-poll for the result), `cancel_delegation`,
 //! `check_user_feedback` (pull the user's mid-turn steering notes),
-//! `ask_user_question` (block on a multiple-choice card), and `get_session_info`
-//! (resolve a referenced session by id) — whose schemas are embedded at compile
+//! `ask_user_question` (block on a multiple-choice card), `get_session_info`
+//! (resolve a referenced session by id), and `set_session_timer` (schedule a
+//! host wake of this same session) — whose schemas are embedded at compile
 //! time from [`TOOL_SCHEMA_JSON`] and gated by the `--features` groups (delegation
-//! / feedback / ask / sessions). Only `delegate_to_agent` registers a broker-side
-//! cancel handle; canceling a status / cancel / feedback / session round-trip
+//! / feedback / ask / sessions / timer). Only `delegate_to_agent` registers a broker-side
+//! cancel handle; canceling a status / cancel / feedback / session / timer round-trip
 //! merely suppresses its response — and for `check_user_feedback` also skips the
 //! delivery commit, so a cancelled note stays pending.
 //!
@@ -48,15 +49,17 @@ use crate::acp::delegation::transport::{
     client_ask_round_trip, client_cancel, client_cancel_task_round_trip, client_commit_feedback,
     client_create_automation_round_trip, client_create_work_task_round_trip,
     client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
-    client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
-    client_task_progress_round_trip, BrokerAskRequest, BrokerCancelRequest,
-    BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
-    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    client_session_round_trip, client_set_timer_round_trip, client_status_round_trip,
+    client_task_complete_round_trip, client_task_progress_round_trip, BrokerAskRequest,
+    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest,
+    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerFeedbackRequest,
+    BrokerRequest, BrokerResponse, BrokerResumeTaskRequest, BrokerSessionRequest,
+    BrokerSetTimerRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
     BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
+use crate::acp::session_timer::{parse_timer_args, render_timer_ack, SessionTimerAck};
 use crate::models::AutomationAction;
 
 /// Upper bound on one broker-side cancel round-trip. Bounds both
@@ -153,11 +156,14 @@ pub struct CompanionFeatures {
     pub automations: bool,
     /// `create_work_task` — queue a card on the work-task board from chat.
     pub taskboard: bool,
+    /// `set_session_timer` — always-on in production (`--features` includes
+    /// `timer`); still independently gated so tests can hide it.
+    pub timer: bool,
 }
 
 impl CompanionFeatures {
     /// Parse the comma-joined `--features` value (e.g.
-    /// `delegation,feedback,ask,sessions,automations,taskboard`). Unknown tokens
+    /// `delegation,feedback,ask,sessions,automations,taskboard,timer`). Unknown tokens
     /// are ignored. An absent
     /// value (`None`) defaults to delegation-only — backward compatible with a
     /// parent that predates feature gating (companion + listener ship together, so
@@ -172,6 +178,7 @@ impl CompanionFeatures {
                 tasks: false,
                 automations: false,
                 taskboard: false,
+                timer: false,
             };
         };
         let mut f = Self {
@@ -182,6 +189,7 @@ impl CompanionFeatures {
             tasks: false,
             automations: false,
             taskboard: false,
+            timer: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -192,6 +200,7 @@ impl CompanionFeatures {
                 "tasks" => f.tasks = true,
                 "automations" => f.automations = true,
                 "taskboard" => f.taskboard = true,
+                "timer" => f.timer = true,
                 _ => {}
             }
         }
@@ -207,6 +216,7 @@ impl CompanionFeatures {
             "task_progress" | "task_complete" => self.tasks,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
+            "set_session_timer" => self.timer,
             "delegate_to_agent"
             | "get_delegation_status"
             | "cancel_delegation"
@@ -773,6 +783,21 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_create_work_task_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_authoring_result).await
+        }
+        "set_session_timer" => {
+            let spec = match parse_timer_args(&arguments) {
+                Ok(s) => s,
+                Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
+            };
+            let req = BrokerSetTimerRequest {
+                token: ctx.token.clone(),
+                seconds: spec.seconds,
+                reason: spec.reason,
+                cancel_on_user_message: spec.cancel_on_user_message,
+            };
+            let round_trip =
+                Box::pin(async move { client_set_timer_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_timer_result).await
         }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
@@ -1573,6 +1598,20 @@ pub fn render_task_report(report: &Value) -> Value {
     })
 }
 
+/// Map the `set_session_timer` round-trip outcome (a serialized
+/// [`SessionTimerAck`]) into an MCP `tools/call` result. Soft failures
+/// (`ok: false`) keep `isError: true` and never use success copy.
+pub fn render_timer_result(outcome: &Value) -> Value {
+    match serde_json::from_value::<SessionTimerAck>(outcome.clone()) {
+        Ok(ack) => render_timer_ack(&ack),
+        Err(_) => json!({
+            "content": [{ "type": "text", "text": "Timer not set." }],
+            "isError": true,
+            "structuredContent": outcome.clone(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1588,6 +1627,7 @@ mod tests {
             tasks: false,
             automations: false,
             taskboard: false,
+            timer: false,
         })
     }
 
@@ -2181,6 +2221,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        timer: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -2190,6 +2231,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        timer: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2199,6 +2241,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        timer: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2208,6 +2251,17 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: false,
+        timer: false,
+    };
+    const TIMER_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        sessions: false,
+        tasks: false,
+        automations: false,
+        taskboard: false,
+        timer: true,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -2227,6 +2281,7 @@ mod tests {
         assert!(def.delegation && !def.feedback);
         assert!(!def.ask);
         assert!(!def.sessions);
+        assert!(!def.timer);
         // Explicit list, whitespace + unknown tokens tolerated.
         let all = CompanionFeatures::parse(Some(" delegation , feedback , ask , sessions ,bogus"));
         assert!(all.delegation && all.feedback && all.ask && all.sessions);
@@ -2236,6 +2291,8 @@ mod tests {
         assert!(!ask.delegation && !ask.feedback && ask.ask);
         let sessions = CompanionFeatures::parse(Some("sessions"));
         assert!(!sessions.delegation && !sessions.feedback && !sessions.ask && sessions.sessions);
+        let timer = CompanionFeatures::parse(Some("timer"));
+        assert!(timer.timer && !timer.delegation);
         // Empty string → nothing enabled.
         let none = CompanionFeatures::parse(Some(""));
         assert!(!none.delegation && !none.feedback && !none.ask && !none.sessions);
@@ -2539,6 +2596,81 @@ mod tests {
         assert!(e.message.contains("unknown tool"));
     }
 
+    // -- set_session_timer feature gating + parse errors -------------------
+
+    #[test]
+    fn allows_tool_gates_set_session_timer_on_timer_flag() {
+        let off = CompanionFeatures {
+            delegation: false,
+            feedback: false,
+            ask: false,
+            sessions: false,
+            tasks: false,
+            automations: false,
+            taskboard: false,
+            timer: false,
+        };
+        assert!(!off.allows_tool("set_session_timer"));
+        assert!(!off.allows_tool("not_a_real_tool"));
+        let on = CompanionFeatures { timer: true, ..off };
+        assert!(on.allows_tool("set_session_timer"));
+        assert!(!on.allows_tool("not_a_real_tool"));
+    }
+
+    #[tokio::test]
+    async fn tools_list_includes_timer_only_when_enabled() {
+        let names = list_tool_names(
+            dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
+        );
+        assert!(!names.contains(&"set_session_timer".to_string()));
+        let names = list_tool_names(
+            dispatch_with_features(
+                TIMER_ONLY,
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )
+            .await,
+        );
+        assert_eq!(names, vec!["set_session_timer".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn set_session_timer_zero_seconds_rejected_as_invalid_params() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 50, "method": "tools/call",
+            "params": { "name": "set_session_timer", "arguments": { "seconds": 0 } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_with_features(TIMER_ONLY, &line).await);
+        let e = resp.error.expect("seconds: 0 must be rejected");
+        assert_eq!(e.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn set_session_timer_rejected_as_unknown_when_feature_off() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 51, "method": "tools/call",
+            "params": { "name": "set_session_timer", "arguments": { "seconds": 5 } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_for_test(&line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn set_session_timer_spawns_when_valid_and_enabled() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 52, "method": "tools/call",
+            "params": { "name": "set_session_timer", "arguments": { "seconds": 5 } }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_with_features(TIMER_ONLY, &line).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
     // -- chat authoring: feature gating + parsing + rendering ---------------
 
     const AUTOMATIONS_ONLY: CompanionFeatures = CompanionFeatures {
@@ -2549,6 +2681,7 @@ mod tests {
         tasks: false,
         automations: true,
         taskboard: false,
+        timer: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -2558,6 +2691,7 @@ mod tests {
         tasks: false,
         automations: false,
         taskboard: true,
+        timer: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not

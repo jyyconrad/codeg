@@ -98,6 +98,27 @@ impl codeg_lib::acp::work_task_tools::WorkTaskToolAccess for NoTaskTools {
     }
 }
 
+/// Timer stub: the e2e delegation tests never exercise `set_session_timer`.
+struct NoTimers;
+#[async_trait]
+impl codeg_lib::acp::session_timer::SessionTimerAccess for NoTimers {
+    async fn set_timer(
+        &self,
+        _: &str,
+        spec: codeg_lib::acp::session_timer::SessionTimerSpec,
+    ) -> codeg_lib::acp::session_timer::SessionTimerAck {
+        codeg_lib::acp::session_timer::SessionTimerAck {
+            ok: true,
+            timer_id: Some("test".into()),
+            seconds: spec.seconds,
+            cancel_on_user_message: spec.cancel_on_user_message,
+            replaced: false,
+            error: None,
+        }
+    }
+    async fn cancel_by_parent(&self, _: &str) {}
+}
+
 /// Chat-authoring stub: the e2e delegation tests never exercise the authoring
 /// arms.
 struct NoAuthoring;
@@ -208,6 +229,7 @@ async fn end_to_end_uds_happy_path() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(NoTimers) as Arc<dyn codeg_lib::acp::session_timer::SessionTimerAccess>,
     );
 
     // PID-scoped socket inside the OS temp dir — no clashes across test bins.
@@ -325,6 +347,7 @@ async fn end_to_end_uds_batch_status() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(NoTimers) as Arc<dyn codeg_lib::acp::session_timer::SessionTimerAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -413,6 +436,7 @@ async fn end_to_end_uds_invalid_token_rejected() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(NoTimers) as Arc<dyn codeg_lib::acp::session_timer::SessionTimerAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -480,6 +504,7 @@ async fn end_to_end_uds_ask_question_round_trip() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(NoTimers) as Arc<dyn codeg_lib::acp::session_timer::SessionTimerAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();
@@ -623,6 +648,7 @@ async fn end_to_end_uds_ask_revoked_after_register_declines() {
         Arc::new(NoSessionInfo) as Arc<dyn codeg_lib::acp::session_info::SessionInfoAccess>,
         Arc::new(NoTaskTools) as Arc<dyn codeg_lib::acp::work_task_tools::WorkTaskToolAccess>,
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
+        Arc::new(NoTimers) as Arc<dyn codeg_lib::acp::session_timer::SessionTimerAccess>,
     );
 
     let dir = tempfile::tempdir().unwrap();

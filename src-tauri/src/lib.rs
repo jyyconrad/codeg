@@ -844,6 +844,7 @@ mod tauri_app {
                         injection.session_info_access,
                         injection.tasks,
                         injection.authoring_access,
+                        injection.timers,
                     );
                     // Bind through the service handle rather than a bare
                     // `listener.run` spawn: it keeps the bind error and the

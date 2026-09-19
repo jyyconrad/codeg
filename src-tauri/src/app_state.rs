@@ -191,6 +191,9 @@ pub fn build_delegation_stack(
         emitter,
         authoring.clone(),
     )) as Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>;
+    let timers = Arc::new(crate::acp::manager::ConnectionManagerTimerLookup {
+        manager: manager_arc.clone(),
+    }) as Arc<dyn crate::acp::session_timer::SessionTimerAccess>;
 
     connection_manager.install_timer_db(AppDatabase {
         conn: db_conn.clone(),
@@ -211,6 +214,7 @@ pub fn build_delegation_stack(
         feedback_access,
         session_info_access,
         authoring_access,
+        timers,
     });
 
     (

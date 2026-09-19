@@ -21,7 +21,7 @@ use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
     BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest,
     BrokerFeedbackRequest, BrokerMessage, BrokerRequest, BrokerResponse, BrokerResumeTaskRequest,
-    BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerSessionRequest, BrokerSetTimerRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
     BrokerTaskProgressRequest,
 };
 use crate::acp::delegation::types::{
@@ -30,6 +30,7 @@ use crate::acp::delegation::types::{
 use crate::acp::feedback::{PendingFeedback, SessionFeedbackAccess};
 use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
 use crate::acp::session_info::{SessionInfo, SessionInfoAccess};
+use crate::acp::session_timer::{SessionTimerAccess, SessionTimerAck, SessionTimerSpec};
 use crate::acp::work_task_tools::{TaskReportAck, WorkTaskToolAccess};
 use crate::models::AgentType;
 use serde_json::Value;
@@ -143,6 +144,8 @@ pub struct DelegationListener {
     /// feature flags at call time, so flipping the setting off stops writes
     /// from sessions that were launched while it was on.
     pub authoring: Arc<dyn ChatAuthoringAccess>,
+    /// `set_session_timer`. Token → parent connection, then `set_timer`.
+    pub timers: Arc<dyn SessionTimerAccess>,
 }
 
 impl DelegationListener {
@@ -156,6 +159,7 @@ impl DelegationListener {
         session_info: Arc<dyn SessionInfoAccess>,
         tasks: Arc<dyn WorkTaskToolAccess>,
         authoring: Arc<dyn ChatAuthoringAccess>,
+        timers: Arc<dyn SessionTimerAccess>,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
@@ -166,6 +170,7 @@ impl DelegationListener {
             session_info,
             tasks,
             authoring,
+            timers,
         })
     }
 
@@ -468,6 +473,7 @@ impl DelegationListener {
             BrokerMessage::CreateWorkTask(req) => {
                 authoring_response(self.process_create_work_task(req).await)?
             }
+            BrokerMessage::SetTimer(req) => timer_response(self.process_set_timer(req).await)?,
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -719,6 +725,23 @@ impl DelegationListener {
             .await
     }
 
+    /// Validate the token and schedule a timer on the parent connection. An
+    /// invalid token is the same soft failure as a missing connection so the
+    /// LLM cannot distinguish them.
+    async fn process_set_timer(&self, req: BrokerSetTimerRequest) -> SessionTimerAck {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return SessionTimerAck::connection_not_found();
+        };
+        let spec = SessionTimerSpec {
+            seconds: req.seconds,
+            reason: req.reason,
+            cancel_on_user_message: req.cancel_on_user_message,
+        };
+        self.timers
+            .set_timer(&entry.parent_connection_id, spec)
+            .await
+    }
+
     /// Resolve the caller's [`AuthoringContext`] from its per-launch token: the
     /// conversation it is currently in (for defaulting the target project) plus
     /// the working directory recorded at injection. `None` when the token is
@@ -881,6 +904,16 @@ fn ask_response(outcome: &QuestionOutcome) -> std::io::Result<BrokerResponse> {
 fn session_response(info: SessionInfo) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(&info).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
+/// Serialize a [`SessionTimerAck`] into a [`BrokerResponse`] for the `SetTimer`
+/// arm — the companion renders it with `render_timer_ack`.
+fn timer_response(ack: SessionTimerAck) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(&ack).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
         })?,
     })
@@ -1181,6 +1214,35 @@ mod tests {
         }
     }
 
+    /// Records `(parent_connection_id, spec)` so SetTimer tests can assert token
+    /// scoping without a live `ConnectionManager`.
+    #[derive(Default)]
+    struct StubTimers {
+        calls: tokio::sync::Mutex<Vec<(String, SessionTimerSpec)>>,
+    }
+    #[async_trait]
+    impl SessionTimerAccess for StubTimers {
+        async fn set_timer(
+            &self,
+            parent_connection_id: &str,
+            spec: SessionTimerSpec,
+        ) -> SessionTimerAck {
+            self.calls
+                .lock()
+                .await
+                .push((parent_connection_id.to_string(), spec.clone()));
+            SessionTimerAck {
+                ok: true,
+                timer_id: Some("stub-timer".into()),
+                seconds: spec.seconds,
+                cancel_on_user_message: spec.cancel_on_user_message,
+                replaced: false,
+                error: None,
+            }
+        }
+        async fn cancel_by_parent(&self, _parent_connection_id: &str) {}
+    }
+
     use tokio::sync::oneshot;
 
     async fn make_broker(mock: Arc<MockSpawner>) -> Arc<DelegationBroker> {
@@ -1215,6 +1277,7 @@ mod tests {
             Arc::new(StubSessionInfo::default()),
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1237,6 +1300,7 @@ mod tests {
             Arc::new(StubSessionInfo::default()),
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1260,6 +1324,7 @@ mod tests {
             Arc::new(StubSessionInfo::default()),
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1282,6 +1347,7 @@ mod tests {
             session_info,
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1306,6 +1372,28 @@ mod tests {
             Arc::new(StubSessionInfo::default()),
             Arc::new(StubTaskTools),
             authoring,
+            Arc::new(StubTimers::default()),
+        )
+    }
+
+    fn make_timer_listener(
+        tokens: Arc<TokenRegistry>,
+        timers: Arc<StubTimers>,
+    ) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            tokens,
+            Arc::new(StaticParentLookup(Some(1))),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+            Arc::new(StubSessionInfo::default()),
+            Arc::new(StubTaskTools),
+            Arc::new(StubAuthoring::default()),
+            timers,
         )
     }
 
@@ -2255,6 +2343,76 @@ mod tests {
         assert_eq!(resp.outcome["session_id"], 42);
         // The resolver was never consulted for an unauthenticated caller.
         assert!(session_info.calls.lock().await.is_empty());
+    }
+
+    /// A valid `set_session_timer` resolves the parent connection from the token
+    /// and returns the serialized ack.
+    #[tokio::test]
+    async fn set_timer_valid_token_sets_on_parent_connection() {
+        let timers = Arc::new(StubTimers::default());
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_timer_listener(tokens, timers.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::SetTimer(BrokerSetTimerRequest {
+            token: "tok".into(),
+            seconds: 12,
+            reason: Some("poll".into()),
+            cancel_on_user_message: false,
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(resp.outcome["ok"], true);
+        assert_eq!(resp.outcome["seconds"], 12);
+        assert_eq!(resp.outcome["cancel_on_user_message"], false);
+        assert_eq!(resp.outcome["timer_id"], "stub-timer");
+        let calls = timers.calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "parent-conn");
+        assert_eq!(calls[0].1.seconds, 12);
+        assert_eq!(calls[0].1.reason.as_deref(), Some("poll"));
+        assert!(!calls[0].1.cancel_on_user_message);
+    }
+
+    /// An invalid token is a soft `connection_not_found` and never reaches the
+    /// timer access.
+    #[tokio::test]
+    async fn set_timer_invalid_token_is_connection_not_found() {
+        let timers = Arc::new(StubTimers::default());
+        let tokens = Arc::new(TokenRegistry::default());
+        let listener = make_timer_listener(tokens, timers.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::SetTimer(BrokerSetTimerRequest {
+            token: "bogus".into(),
+            seconds: 12,
+            reason: None,
+            cancel_on_user_message: true,
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(resp.outcome["ok"], false);
+        assert_eq!(resp.outcome["error"], "connection_not_found");
+        assert!(timers.calls.lock().await.is_empty());
     }
 
     /// A valid token resolves the caller's conversation + working dir and hands

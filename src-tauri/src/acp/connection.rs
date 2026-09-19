@@ -2364,6 +2364,7 @@ pub async fn spawn_agent_connection(
                     // companion's ask socket to close (which a reparented/hard-killed
                     // agent may never do); the dropped sender declines the tool cleanly.
                     inj.questions.cancel_questions_by_parent(&conn_id).await;
+                    inj.timers.cancel_by_parent(&conn_id).await;
                     // Likewise reclaim a parked Grok `exit_plan_mode` approval; the
                     // dropped sender replies disconnect so grok keeps plan mode active.
                     inj.plan_approvals
@@ -4699,6 +4700,11 @@ pub struct DelegationInjection {
     pub session_info_access: Arc<dyn crate::acp::session_info::SessionInfoAccess>,
     /// `create_automation` / `create_work_task`. Same instance as the listener.
     pub authoring_access: Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>,
+    /// `set_session_timer`. Always-on group (no settings toggle). Same instance
+    /// the delegation listener uses; `run_connection` cleanup calls
+    /// `cancel_by_parent` so bulk disconnects that skip `disconnect()` still
+    /// abort the sleep task.
+    pub timers: Arc<dyn crate::acp::session_timer::SessionTimerAccess>,
 }
 
 /// Locate the `codeg-mcp` companion binary across the supported deployment
@@ -4798,6 +4804,9 @@ pub(crate) struct CompanionFeatureFlags {
     pub automations: bool,
     /// `create_work_task`, gated by the chat-authoring setting.
     pub taskboard: bool,
+    /// `set_session_timer`. Production snapshot always sets this true; `Default`
+    /// stays false so unit tests that construct flags by hand do not inject it.
+    pub timer: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -4828,6 +4837,9 @@ pub(crate) fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<Str
     if flags.taskboard {
         features.push("taskboard");
     }
+    if flags.timer {
+        features.push("timer");
+    }
     if features.is_empty() {
         return None;
     }
@@ -4853,6 +4865,7 @@ pub(crate) async fn snapshot_companion_features(
         tasks: tasks_enabled,
         automations: authoring.automations_enabled,
         taskboard: authoring.work_tasks_enabled,
+        timer: true,
     }
 }
 
@@ -4866,6 +4879,7 @@ impl From<CompanionFeatureFlags> for crate::acp::delegation::companion::Companio
             tasks: flags.tasks,
             automations: flags.automations,
             taskboard: flags.taskboard,
+            timer: flags.timer,
         }
     }
 }
@@ -4912,10 +4926,13 @@ async fn inject_codeg_mcp_with_binary_locator<F>(
 where
     F: FnOnce() -> Option<PathBuf>,
 {
-    // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
-    // Inject it when EITHER feature is enabled; the `--features` arg tells the
-    // companion which tool groups to expose so a disabled feature's tools never
-    // surface to the LLM. (Historically this was gated on delegation alone.)
+    // codeg-mcp carries the delegation tools, live-feedback, ask, session info,
+    // authoring, and the always-on `set_session_timer` group. Inject it when ANY
+    // group is enabled; production snapshots always set `timer: true`, so MCP
+    // reachable agents always try to inject (binary missing still skips). The
+    // `--features` arg tells the companion which tool groups to expose so a
+    // disabled feature's tools never surface to the LLM. (Historically this was
+    // gated on delegation alone.)
     // `tasks_enabled` is per-spawn: true only for task-engine launches, which
     // must get their reporting tools regardless of the settings toggles.
     // Delegation is a THIRD door into the same room as `fs/*` and `terminal/*`:
@@ -22625,6 +22642,27 @@ mod tests {
         }
     }
 
+    struct TestNoTimers;
+
+    #[async_trait::async_trait]
+    impl crate::acp::session_timer::SessionTimerAccess for TestNoTimers {
+        async fn set_timer(
+            &self,
+            _: &str,
+            spec: crate::acp::session_timer::SessionTimerSpec,
+        ) -> crate::acp::session_timer::SessionTimerAck {
+            crate::acp::session_timer::SessionTimerAck {
+                ok: true,
+                timer_id: Some("test".into()),
+                seconds: spec.seconds,
+                cancel_on_user_message: spec.cancel_on_user_message,
+                replaced: false,
+                error: None,
+            }
+        }
+        async fn cancel_by_parent(&self, _: &str) {}
+    }
+
     struct TestNoAuthoring;
 
     #[async_trait::async_trait]
@@ -22688,6 +22726,8 @@ mod tests {
                 as Arc<dyn crate::acp::session_info::SessionInfoAccess>,
             authoring_access: Arc::new(TestNoAuthoring)
                 as Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>,
+            timers: Arc::new(TestNoTimers)
+                as Arc<dyn crate::acp::session_timer::SessionTimerAccess>,
         }
     }
 
@@ -22874,7 +22914,9 @@ mod tests {
             Some("automations".to_string())
         );
         assert_eq!(only(|f| f.taskboard = true), Some("taskboard".to_string()));
-        // All on → comma-joined, in the order the companion parses.
+        // Timer only — always-on group still injects the companion on its own.
+        assert_eq!(only(|f| f.timer = true), Some("timer".to_string()));
+        // All on → comma-joined, in the order the companion parses. `timer` last.
         assert_eq!(
             companion_features_arg(CompanionFeatureFlags {
                 delegation: true,
@@ -22884,9 +22926,20 @@ mod tests {
                 tasks: true,
                 automations: true,
                 taskboard: true,
+                timer: true,
             }),
-            Some("delegation,feedback,ask,sessions,tasks,automations,taskboard".to_string())
+            Some("delegation,feedback,ask,sessions,tasks,automations,taskboard,timer".to_string(),)
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_companion_features_always_enables_timer() {
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+        let flags = snapshot_companion_features(&injection, HostToolsPolicy::Default, false).await;
+        assert!(flags.timer);
+        assert!(!CompanionFeatureFlags::default().timer);
     }
 
     // ── Boolean config options (cline 3.0.50 `auto_approve`) ──

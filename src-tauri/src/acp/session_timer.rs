@@ -59,9 +59,7 @@ pub fn parse_timer_args(args: &Value) -> Result<SessionTimerSpec, String> {
     };
 
     if seconds < 1 || seconds > u64::from(MAX_TIMER_SECONDS) {
-        return Err(format!(
-            "seconds must be between 1 and {MAX_TIMER_SECONDS}"
-        ));
+        return Err(format!("seconds must be between 1 and {MAX_TIMER_SECONDS}"));
     }
 
     let reason = match args.get("reason") {
@@ -105,6 +103,14 @@ pub fn wake_prompt_text(spec: &SessionTimerSpec) -> String {
 }
 
 pub fn timer_ack_text(ack: &SessionTimerAck) -> String {
+    if !ack.ok {
+        return ack
+            .error
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| "Timer not set.".to_string());
+    }
     if ack.replaced {
         format!(
             "Timer set: wake this session in {}s. Previous timer replaced.",
@@ -125,7 +131,11 @@ pub fn render_timer_ack(ack: &SessionTimerAck) -> Value {
 
 #[async_trait]
 pub trait SessionTimerAccess: Send + Sync {
-    async fn set_timer(&self, parent_connection_id: &str, spec: SessionTimerSpec) -> SessionTimerAck;
+    async fn set_timer(
+        &self,
+        parent_connection_id: &str,
+        spec: SessionTimerSpec,
+    ) -> SessionTimerAck;
     async fn cancel_by_parent(&self, parent_connection_id: &str);
 }
 
@@ -207,5 +217,18 @@ mod tests {
             timer_ack_text(&ack),
             "Timer set: wake this session in 12s. Previous timer replaced."
         );
+    }
+
+    #[test]
+    fn ack_text_uses_error_when_not_ok() {
+        let ack = SessionTimerAck::connection_not_found();
+        assert_eq!(timer_ack_text(&ack), "connection_not_found");
+        let rendered = render_timer_ack(&ack);
+        assert_eq!(rendered["isError"], true);
+        assert_eq!(rendered["content"][0]["text"], "connection_not_found");
+        let mut no_error = ack.clone();
+        no_error.error = None;
+        assert_eq!(timer_ack_text(&no_error), "Timer not set.");
+        assert_eq!(render_timer_ack(&no_error)["isError"], true);
     }
 }

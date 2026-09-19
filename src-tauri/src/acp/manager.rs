@@ -30,7 +30,9 @@ use crate::acp::question::{
     build_outcome, QuestionAnswer, QuestionOutcome, QuestionSpec, RegisteredQuestion,
     SessionQuestionAccess,
 };
-use crate::acp::session_timer::{wake_prompt_text, SessionTimerAck, SessionTimerSpec};
+use crate::acp::session_timer::{
+    wake_prompt_text, SessionTimerAccess, SessionTimerAck, SessionTimerSpec,
+};
 use crate::acp::terminal_runtime::TerminalShellRuntimeConfig;
 use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
@@ -4664,6 +4666,32 @@ impl SessionPlanApprovalAccess for ConnectionManagerPlanApprovalLookup {
     async fn cancel_plan_approvals_by_parent(&self, parent_connection_id: &str) {
         self.manager
             .cancel_plan_approvals_by_parent(parent_connection_id)
+            .await
+    }
+}
+
+/// Production impl of [`SessionTimerAccess`] for the companion / native
+/// `set_session_timer` tool. Delegates to `ConnectionManager` so the listener
+/// stays unit-testable with an in-memory stub.
+#[derive(Clone)]
+pub struct ConnectionManagerTimerLookup {
+    pub manager: Arc<ConnectionManager>,
+}
+
+#[async_trait::async_trait]
+impl SessionTimerAccess for ConnectionManagerTimerLookup {
+    async fn set_timer(
+        &self,
+        parent_connection_id: &str,
+        spec: SessionTimerSpec,
+    ) -> SessionTimerAck {
+        self.manager
+            .set_session_timer(parent_connection_id, spec)
+            .await
+    }
+    async fn cancel_by_parent(&self, parent_connection_id: &str) {
+        self.manager
+            .cancel_session_timer(parent_connection_id)
             .await
     }
 }

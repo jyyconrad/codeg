@@ -27,6 +27,7 @@ use crate::acp::delegation::types::{DelegationRequest, ResumeDelegationRequest};
 use crate::acp::feedback::{bounded_feedback_batch, MAX_FEEDBACK_RESPONSE_BYTES};
 use crate::acp::question::{parse_questions, QuestionOutcome};
 use crate::acp::session_state::SessionState;
+use crate::acp::session_timer::{parse_timer_args, render_timer_ack};
 use crate::agent::context::ContextStore;
 use crate::models::agent::AgentType;
 
@@ -42,6 +43,7 @@ const COMPANION_TOOL_NAMES: &[&str] = &[
     "create_work_task",
     "task_progress",
     "task_complete",
+    "set_session_timer",
 ];
 
 /// One tool loaded from the shared schema after feature filtering.
@@ -282,6 +284,7 @@ pub(crate) async fn call_companion_tool(
         "create_work_task" => call_create_work_task(runtime, args).await,
         "task_progress" => call_task_progress(runtime, args).await,
         "task_complete" => call_task_complete(runtime, args).await,
+        "set_session_timer" => call_set_timer(runtime, args).await,
         other => Err(args_err(format!("unknown tool: {other}"))),
     }
 }
@@ -829,6 +832,32 @@ async fn call_task_complete(
         .await
 }
 
+async fn call_set_timer(
+    runtime: &CompanionRuntime,
+    args: Value,
+) -> Result<String, ToolExecutionError> {
+    let spec = match parse_timer_args(&args) {
+        Ok(spec) => spec,
+        Err(msg) => return Err(args_err(msg)),
+    };
+    let fact = runtime
+        .tool_ctx
+        .begin("set_session_timer", args.clone())
+        .await?;
+    if runtime.tool_ctx.cancel.is_cancelled() {
+        return Err(runtime.tool_ctx.finish_err(fact, cancelled_err()).await);
+    }
+    let ack = runtime
+        .injection
+        .timers
+        .set_timer(&runtime.connection_id, spec)
+        .await;
+    runtime
+        .tool_ctx
+        .finish_ok(fact, rendered_text(&render_timer_ack(&ack)))
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,6 +878,7 @@ mod tests {
         QuestionConfig, QuestionSpec, RegisteredQuestion, SessionQuestionAccess,
     };
     use crate::acp::session_info::{SessionInfo, SessionInfoAccess, SessionInfoConfig};
+    use crate::acp::session_timer::{SessionTimerAccess, SessionTimerAck, SessionTimerSpec};
     use crate::acp::work_task_tools::{TaskReportAck, WorkTaskToolAccess};
     use crate::agent::context::{CallIdentity, ContextStore, ExecutionFact};
     use crate::agent::tools::test_tool_ctx;
@@ -982,6 +1012,22 @@ mod tests {
         }
     }
 
+    struct TestNoTimers;
+    #[async_trait::async_trait]
+    impl SessionTimerAccess for TestNoTimers {
+        async fn set_timer(&self, _: &str, spec: SessionTimerSpec) -> SessionTimerAck {
+            SessionTimerAck {
+                ok: true,
+                timer_id: Some("test".into()),
+                seconds: spec.seconds,
+                cancel_on_user_message: spec.cancel_on_user_message,
+                replaced: false,
+                error: None,
+            }
+        }
+        async fn cancel_by_parent(&self, _: &str) {}
+    }
+
     struct MemAuthoring {
         automations: StdMutex<usize>,
         tasks: StdMutex<usize>,
@@ -1059,6 +1105,7 @@ mod tests {
             feedback_access: feedback as Arc<dyn SessionFeedbackAccess>,
             session_info_access: Arc::new(MemSessions) as Arc<dyn SessionInfoAccess>,
             authoring_access: authoring as Arc<dyn ChatAuthoringAccess>,
+            timers: Arc::new(TestNoTimers) as Arc<dyn SessionTimerAccess>,
         };
         injection
             .feedback
@@ -1115,6 +1162,7 @@ mod tests {
             tasks: true,
             automations: true,
             taskboard: true,
+            timer: true,
         };
         let defs = load_companion_defs(features, &[], &[]).unwrap();
         let json_names: Vec<&str> = all
@@ -1144,6 +1192,7 @@ mod tests {
             tasks: false,
             automations: false,
             taskboard: false,
+            timer: false,
         };
         assert!(load_companion_defs(none, &[], &[]).unwrap().is_empty());
 
@@ -1186,6 +1235,7 @@ mod tests {
             tasks: true,
             automations: true,
             taskboard: true,
+            timer: false,
         };
         let names: Vec<_> = load_companion_defs(delegation_off, &[], &[])
             .unwrap()
@@ -1367,7 +1417,7 @@ mod tests {
             vec!["tests passing".to_string()]
         );
 
-        let done_rt = runtime_for("task_complete", injection, None);
+        let done_rt = runtime_for("task_complete", injection.clone(), None);
         let _ = call_companion_tool(
             &done_rt,
             "task_complete",
@@ -1379,6 +1429,12 @@ mod tests {
             tasks.complete.lock().expect("c").clone(),
             vec![("success".to_string(), Some("done".to_string()))]
         );
+
+        let timer_rt = runtime_for("set_session_timer", injection, None);
+        let text = call_companion_tool(&timer_rt, "set_session_timer", json!({ "seconds": 5 }))
+            .await
+            .expect("timer");
+        assert!(text.contains("Timer set"), "{text}");
     }
 
     #[tokio::test]
