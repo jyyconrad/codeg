@@ -22731,47 +22731,88 @@ mod tests {
         }
     }
 
-    // ─── inject_codeg_mcp: enabled=false short-circuit ──────────
+    // ─── inject_codeg_mcp: timer always injects; skip only if binary missing ──
     //
-    // Guards the "default off" product contract: when the broker config has
-    // `enabled: false` (the new production default for fresh installs), the
-    // delegate-MCP injection must not push a server entry and must not
-    // register a per-launch token. The early return at the top of
-    // `inject_codeg_mcp` is the single chokepoint that keeps a
-    // codeg-mcp stdio MCP out of every ACP session until the user
-    // opts in via the settings panel.
+    // Snapshot always sets `timer: true` (K7/K13), so a present companion binary
+    // is injected even when the broker (and every settings-gated group) is off.
+    // The only skip left is `locate_binary() == None`. These tests drive
+    // `inject_codeg_mcp_with_binary_locator` so PATH / CODEG_MCP_BIN cannot
+    // make the result flaky.
     #[tokio::test]
-    async fn inject_codeg_delegate_skipped_when_broker_disabled() {
-        // No set_config call: broker carries its default config, which is
-        // `enabled: false` after the product-default flip. This is the
-        // exact state a fresh install reaches before the user touches the
-        // settings panel. Feedback is likewise disabled by default, so with
-        // BOTH features off the companion isn't injected at all.
+    async fn inject_codeg_mcp_injects_timer_when_broker_disabled() {
         let injection = test_delegation_injection(
             Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
         );
 
+        let fake_bin = std::path::PathBuf::from("/tmp/fake-codeg-mcp");
         let mut servers: Vec<McpServer> = Vec::new();
-        let result = inject_codeg_mcp(
+        let result = inject_codeg_mcp_with_binary_locator(
             &mut servers,
             &injection,
             "parent-conn",
             std::path::Path::new("/tmp"),
             false,
             HostToolsPolicy::Default,
+            || Some(fake_bin.clone()),
         )
         .await;
 
-        assert!(result.is_none(), "disabled broker must return None");
+        let injected = result.expect("timer-always-on must inject when the binary is present");
+        assert!(
+            !injected.delegation_enabled,
+            "broker default is off, so the delegation group stays withheld"
+        );
+        assert!(!injected.feedback_available);
+        assert_eq!(servers.len(), 1, "expected one companion server entry");
+        match &servers[0] {
+            McpServer::Stdio(s) => {
+                assert_eq!(s.name, "codeg-mcp");
+                assert_eq!(s.command, fake_bin);
+                let features = s
+                    .args
+                    .windows(2)
+                    .find(|w| w[0] == "--features")
+                    .map(|w| w[1].as_str())
+                    .expect("injected companion must carry --features");
+                assert!(
+                    features.split(',').any(|g| g == "timer"),
+                    "features={features}"
+                );
+            }
+            other => panic!("expected Stdio companion, got {other:?}"),
+        }
+        assert!(
+            injection.tokens.lookup(&injected.token).await.is_some(),
+            "injected launch must register its per-launch token"
+        );
+    }
+
+    #[tokio::test]
+    async fn inject_codeg_mcp_skipped_when_binary_missing() {
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+
+        let mut servers: Vec<McpServer> = Vec::new();
+        let result = inject_codeg_mcp_with_binary_locator(
+            &mut servers,
+            &injection,
+            "parent-conn",
+            std::path::Path::new("/tmp"),
+            false,
+            HostToolsPolicy::Default,
+            || None,
+        )
+        .await;
+
+        assert!(result.is_none(), "missing binary must skip injection");
         assert!(
             servers.is_empty(),
-            "disabled broker must not push any MCP server entry; got {servers:?}"
+            "missing binary must not push a server entry; got {servers:?}"
         );
-        // Token registry stays untouched — no lookup should resolve to a
-        // valid entry because nothing was registered.
         assert!(
             injection.tokens.lookup("any-token").await.is_none(),
-            "disabled broker must not register a delegate token"
+            "missing binary must not register a token"
         );
     }
 
