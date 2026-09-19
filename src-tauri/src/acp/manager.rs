@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use sea_orm::{
     ActiveModelTrait, ActiveValue::NotSet, ActiveValue::Set, DatabaseConnection, EntityTrait,
@@ -29,6 +30,7 @@ use crate::acp::question::{
     build_outcome, QuestionAnswer, QuestionOutcome, QuestionSpec, RegisteredQuestion,
     SessionQuestionAccess,
 };
+use crate::acp::session_timer::{SessionTimerAck, SessionTimerSpec};
 use crate::acp::terminal_runtime::TerminalShellRuntimeConfig;
 use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
@@ -491,6 +493,10 @@ pub struct ConnectionManager {
     /// touch the same map. At most one per connection (the agent is blocked in
     /// its `exit_plan_mode` call) — no cap, no cumulative growth.
     pending_plan_approvals: Arc<Mutex<HashMap<String, PendingPlanApprovalEntry>>>,
+    /// One live `set_session_timer` per connection id. Shared across `clone_ref`
+    /// clones so companion set/cancel and idle sweep see the same map. Size is
+    /// live timers only — replace and cancel remove the previous entry.
+    session_timers: Arc<Mutex<HashMap<String, LiveSessionTimer>>>,
     /// In-process sessions whose map entry may already be gone but whose
     /// terminals / MCP children are still being reaped.
     native_sessions: Arc<Mutex<HashMap<String, Arc<NativeShutdownHandle>>>>,
@@ -513,6 +519,24 @@ struct PendingPlanApprovalEntry {
     sender: tokio::sync::oneshot::Sender<PlanApprovalAnswer>,
 }
 
+/// One scheduled wake per connection. `task` stays `None` until the sleep
+/// worker is spawned (later); cancel still aborts it if present.
+struct LiveSessionTimer {
+    #[allow(dead_code)]
+    timer_id: String,
+    #[allow(dead_code)]
+    spec: SessionTimerSpec,
+    cancel: CancellationToken,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+fn abort_live_timer(timer: LiveSessionTimer) {
+    timer.cancel.cancel();
+    if let Some(task) = timer.task {
+        task.abort();
+    }
+}
+
 impl Default for ConnectionManager {
     fn default() -> Self {
         Self::new()
@@ -533,6 +557,7 @@ impl ConnectionManager {
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
+            session_timers: Arc::new(Mutex::new(HashMap::new())),
             native_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -551,6 +576,7 @@ impl ConnectionManager {
             probe_locks: self.probe_locks.clone(),
             pending_questions: self.pending_questions.clone(),
             pending_plan_approvals: self.pending_plan_approvals.clone(),
+            session_timers: self.session_timers.clone(),
             native_sessions: self.native_sessions.clone(),
         }
     }
@@ -600,6 +626,7 @@ impl ConnectionManager {
             probe_locks: Arc::new(Mutex::new(HashMap::new())),
             pending_questions: Arc::new(Mutex::new(HashMap::new())),
             pending_plan_approvals: Arc::new(Mutex::new(HashMap::new())),
+            session_timers: Arc::new(Mutex::new(HashMap::new())),
             native_sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -846,9 +873,10 @@ impl ConnectionManager {
     /// "Idle" means: status is `Connected`, no `pending_permission`, no
     /// launched-but-unresolved background work (async sub-agent / background
     /// shell — disconnecting kills the agent CLI and the background work with
-    /// it), and no activity (no events, no commands) for at least
-    /// `idle_timeout`. `Prompting` connections are always preserved (a turn is
-    /// in flight). Returns the number of connections that were disconnected.
+    /// it), no unexpired session timer, and no activity (no events, no
+    /// commands) for at least `idle_timeout`. `Prompting` connections are
+    /// always preserved (a turn is in flight). Returns the number of
+    /// connections that were disconnected.
     pub async fn sweep_idle(&self, idle_timeout: Duration) -> usize {
         let now = chrono::Utc::now();
         let timeout = match chrono::Duration::from_std(idle_timeout) {
@@ -874,6 +902,9 @@ impl ConnectionManager {
                 if state.has_active_background_work(now) {
                     continue;
                 }
+                if state.has_pending_session_timer(now) {
+                    continue;
+                }
                 let elapsed = now.signed_duration_since(state.last_activity_at);
                 if elapsed >= timeout {
                     victims.push(id.clone());
@@ -889,6 +920,73 @@ impl ConnectionManager {
             }
         }
         disconnected
+    }
+
+    /// Register one timer on `conn_id`, replacing any previous entry. Does not
+    /// spawn the sleep worker — that lands with fire/queue. Missing connection
+    /// is a soft failure (`connection_not_found`).
+    pub async fn set_session_timer(
+        &self,
+        conn_id: &str,
+        spec: SessionTimerSpec,
+    ) -> SessionTimerAck {
+        let Some(state) = self.get_state(conn_id).await else {
+            return SessionTimerAck::connection_not_found();
+        };
+
+        let timer_id = uuid::Uuid::new_v4().to_string();
+        let cancel = CancellationToken::new();
+        let replaced = {
+            let mut timers = self.session_timers.lock().await;
+            let previous = timers.remove(conn_id);
+            let replaced = previous.is_some();
+            if let Some(timer) = previous {
+                abort_live_timer(timer);
+            }
+            timers.insert(
+                conn_id.to_string(),
+                LiveSessionTimer {
+                    timer_id: timer_id.clone(),
+                    spec: spec.clone(),
+                    cancel,
+                    task: None,
+                },
+            );
+            replaced
+        };
+
+        {
+            let mut s = state.write().await;
+            s.session_timer_deadline =
+                Some(chrono::Utc::now() + chrono::Duration::seconds(i64::from(spec.seconds)));
+            s.queued_timer_wake = None;
+        }
+
+        SessionTimerAck {
+            ok: true,
+            timer_id: Some(timer_id),
+            seconds: spec.seconds,
+            cancel_on_user_message: spec.cancel_on_user_message,
+            replaced,
+            error: None,
+        }
+    }
+
+    /// Drop the live timer for `conn_id` if any: cancel token, abort sleep
+    /// task, clear deadline and queued wake. No-op when nothing is registered.
+    pub async fn cancel_session_timer(&self, conn_id: &str) {
+        let previous = {
+            let mut timers = self.session_timers.lock().await;
+            timers.remove(conn_id)
+        };
+        if let Some(timer) = previous {
+            abort_live_timer(timer);
+        }
+        if let Some(state) = self.get_state(conn_id).await {
+            let mut s = state.write().await;
+            s.session_timer_deadline = None;
+            s.queued_timer_wake = None;
+        }
     }
 
     /// Compare each running connection's spawn-time config fingerprint against a
@@ -7259,6 +7357,55 @@ mod tests {
             mgr.connections.lock().await.get("stale").is_none(),
             "Idle connection must be removed after sweep"
         );
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_skips_connection_with_future_session_timer() {
+        let mgr = ConnectionManager::new();
+        insert_fake_connection(
+            &mgr,
+            "timed",
+            AgentType::ClaudeCode,
+            None,
+            EventEmitter::Noop,
+        )
+        .await;
+        backdate_last_activity(&mgr, "timed", 600).await;
+        let spec = crate::acp::session_timer::SessionTimerSpec {
+            seconds: 1800,
+            reason: None,
+            cancel_on_user_message: true,
+        };
+        let ack = mgr.set_session_timer("timed", spec.clone()).await;
+        assert!(ack.ok);
+        let n = mgr.sweep_idle(Duration::from_secs(300)).await;
+        assert_eq!(n, 0);
+        assert!(mgr.connections.lock().await.contains_key("timed"));
+
+        let ack2 = mgr.set_session_timer("timed", spec).await;
+        assert!(ack2.ok && ack2.replaced);
+
+        mgr.cancel_session_timer("timed").await;
+        backdate_last_activity(&mgr, "timed", 600).await;
+        let n = mgr.sweep_idle(Duration::from_secs(300)).await;
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn set_session_timer_unknown_connection_is_soft_failure() {
+        let mgr = ConnectionManager::new();
+        let ack = mgr
+            .set_session_timer(
+                "missing",
+                crate::acp::session_timer::SessionTimerSpec {
+                    seconds: 5,
+                    reason: None,
+                    cancel_on_user_message: true,
+                },
+            )
+            .await;
+        assert!(!ack.ok);
+        assert_eq!(ack.error.as_deref(), Some("connection_not_found"));
     }
 
     #[tokio::test]
