@@ -122,6 +122,7 @@ pub(crate) fn native_session_permission_option(current: &str) -> SessionConfigOp
         name: "Permission".into(),
         description: Some("Whether mutating tools wait for approval.".into()),
         category: Some("mode".into()),
+        recommended_value: None,
         kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
             current_value: current,
             options,
@@ -145,6 +146,7 @@ pub(crate) fn native_session_mode_option(current: &str) -> SessionConfigOptionIn
         name: "Mode".into(),
         description: Some("Code implements; Plan is read-only planning.".into()),
         category: Some("mode".into()),
+        recommended_value: None,
         kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
             current_value: current.to_string(),
             options,
@@ -177,6 +179,7 @@ pub(crate) fn native_session_model_option(
                 .into(),
         ),
         category: Some("model".into()),
+        recommended_value: None,
         kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
             current_value: model_id.to_string(),
             options,
@@ -203,6 +206,7 @@ pub(crate) fn native_session_thought_option(current: &str) -> SessionConfigOptio
             "Reasoning effort sent to the bound provider. Off omits the parameter.".into(),
         ),
         category: Some("thought_level".into()),
+        recommended_value: None,
         kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
             current_value: current,
             options,

@@ -43,6 +43,8 @@ interface ChatInputProps {
   /** Pass-through: see `MessageInput`. */
   folderPickerOverride?: ConversationFolderPickerOverride
   draftStorageKey?: string | null
+  /** Pass-through: see `MessageInput.getSentHistory`. */
+  getSentHistory?: () => string[]
   isActive?: boolean
   /** Show the composer's flowing active-session border. Set only for the active
    *  tab when tiled across multiple sessions; passed through to MessageInput. */
@@ -52,6 +54,11 @@ interface ChatInputProps {
   onQueueReorder?: (items: QueuedMessage[]) => void
   onQueueEdit?: (id: string) => void
   onQueueDelete?: (id: string) => void
+  /** Insert one queued item into the RUNNING turn over the session's
+   *  live-feedback channel (see `MessageQueueDisplayProps.onSteerItem`).
+   *  Threaded straight through; present only while a turn is in flight and
+   *  the session has a working channel. */
+  onQueueSteer?: (id: string) => Promise<void> | void
   editingItemId?: string | null
   editingDraftText?: string | null
   editingDraftBlocks?: PromptInputBlock[] | null
@@ -114,6 +121,7 @@ export const ChatInput = memo(function ChatInput({
   attachmentTabId,
   folderPickerOverride,
   draftStorageKey,
+  getSentHistory,
   isActive,
   showActiveFlow,
   queue,
@@ -121,6 +129,7 @@ export const ChatInput = memo(function ChatInput({
   onQueueReorder,
   onQueueEdit,
   onQueueDelete,
+  onQueueSteer,
   editingItemId,
   editingDraftText,
   editingDraftBlocks,
@@ -187,6 +196,8 @@ export const ChatInput = memo(function ChatInput({
             onEdit={onQueueEdit}
             onDelete={onQueueDelete}
             editingItemId={editingItemId ?? null}
+            onSteerItem={onQueueSteer}
+            steerChannel={steerChannel}
           />
         )}
       <MessageInput
@@ -214,6 +225,7 @@ export const ChatInput = memo(function ChatInput({
         attachmentTabId={attachmentTabId}
         folderPickerOverride={folderPickerOverride}
         draftStorageKey={draftStorageKey}
+        getSentHistory={getSentHistory}
         isActive={isActive}
         showActiveFlow={showActiveFlow}
         onEnqueue={onEnqueue}
@@ -236,7 +248,11 @@ export const ChatInput = memo(function ChatInput({
               ? t("agentResponding", { agent: agentName ?? "Agent" })
               : t("sendMessage")
         }
-        className={cn(tall ? "min-h-30" : "min-h-24", "max-h-60")}
+        // The floor goes through `tall`, not through a `min-h-*` here: the box
+        // and its editable area carry two halves of the same number, and only
+        // MessageInput knows the action row that divides them.
+        tall={tall}
+        className="max-h-60"
       />
     </div>
   )

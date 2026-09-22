@@ -26,6 +26,7 @@ import {
   useWorkspaceFileTabs,
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
+import { BrowserTabView } from "@/components/browser/browser-tab-view"
 import { FilePreview } from "@/components/files/file-preview"
 import { shouldUseFilePreview } from "@/lib/file-preview-kind"
 import { DiffViewer } from "@/components/diff/diff-viewer"
@@ -200,6 +201,8 @@ function createAddToChatPill(
 // matching VS Code / IntelliJ "non-destructive refresh" behaviour. Only
 // a true cold load (no content yet) falls back to the full-pane placeholder.
 function hasTabContent(tab: FileWorkspaceTab): boolean {
+  // A browser tab has no text content; its page lives in a native surface.
+  if (tab.kind === "browser") return true
   if (tab.kind === "rich-diff") {
     return (
       tab.originalContent !== undefined ||
@@ -1707,6 +1710,12 @@ export function FileWorkspacePanel() {
     )
   }
 
+  if (activeFileTab.kind === "browser") {
+    // Keyed by tab so switching between two browser tabs remounts the surface
+    // host (which hides the old webview and shows the new one).
+    return <BrowserTabView key={activeFileTab.id} tab={activeFileTab} />
+  }
+
   if (activeFileTab.kind === "rich-diff") {
     const richDiffParts = parseFileTabId(activeFileTab.id)
     const isCommitDiff = richDiffParts?.kind === "diff-commit"
@@ -1913,6 +1922,7 @@ export function FileWorkspacePanel() {
             openFilePreview={openFilePreview}
             previewRoot={previewRoot}
             tab={activeFileTab}
+            chrome="hoisted"
           />
         )}
       </div>

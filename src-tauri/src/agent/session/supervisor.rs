@@ -1637,8 +1637,10 @@ async fn handle_control_command(
                         AcpEvent::ConfigOptionRejected {
                             config_id,
                             option_name: "Model".into(),
-                            requested: value_id,
+                            requested: value_id.clone(),
                             actual: model_id.clone(),
+                            requested_value: value_id,
+                            actual_value: model_id.clone(),
                         },
                     )
                     .await;
@@ -1666,8 +1668,10 @@ async fn handle_control_command(
                             AcpEvent::ConfigOptionRejected {
                                 config_id,
                                 option_name: "Model".into(),
-                                requested: value_id,
+                                requested: value_id.clone(),
                                 actual: model_id.clone(),
+                                requested_value: value_id,
+                                actual_value: model_id.clone(),
                             },
                         )
                         .await;
@@ -1682,8 +1686,10 @@ async fn handle_control_command(
                         AcpEvent::ConfigOptionRejected {
                             config_id,
                             option_name: "Thinking".into(),
-                            requested: value_id,
+                            requested: value_id.clone(),
                             actual: thought_level.clone(),
+                            requested_value: value_id,
+                            actual_value: thought_level.clone(),
                         },
                     )
                     .await;
@@ -1708,8 +1714,10 @@ async fn handle_control_command(
                             AcpEvent::ConfigOptionRejected {
                                 config_id,
                                 option_name: "Thinking".into(),
-                                requested: value_id,
+                                requested: value_id.clone(),
                                 actual: thought_level.clone(),
+                                requested_value: value_id,
+                                actual_value: thought_level.clone(),
                             },
                         )
                         .await;
@@ -1724,8 +1732,10 @@ async fn handle_control_command(
                         AcpEvent::ConfigOptionRejected {
                             config_id,
                             option_name: "Permission".into(),
-                            requested: value_id,
+                            requested: value_id.clone(),
                             actual: permission.clone(),
+                            requested_value: value_id,
+                            actual_value: permission.clone(),
                         },
                     )
                     .await;
@@ -1750,8 +1760,10 @@ async fn handle_control_command(
                             AcpEvent::ConfigOptionRejected {
                                 config_id,
                                 option_name: "Permission".into(),
-                                requested: value_id,
+                                requested: value_id.clone(),
                                 actual: permission.clone(),
+                                requested_value: value_id,
+                                actual_value: permission.clone(),
                             },
                         )
                         .await;
@@ -1767,8 +1779,10 @@ async fn handle_control_command(
                         AcpEvent::ConfigOptionRejected {
                             config_id,
                             option_name: "Mode".into(),
-                            requested: value_id,
-                            actual,
+                            requested: value_id.clone(),
+                            actual: actual.clone(),
+                            requested_value: value_id,
+                            actual_value: actual,
                         },
                     )
                     .await;
@@ -1782,8 +1796,10 @@ async fn handle_control_command(
                         AcpEvent::ConfigOptionRejected {
                             config_id,
                             option_name: "Mode".into(),
-                            requested: value_id,
-                            actual,
+                            requested: value_id.clone(),
+                            actual: actual.clone(),
+                            requested_value: value_id,
+                            actual_value: actual,
                         },
                     )
                     .await;

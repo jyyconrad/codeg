@@ -47,6 +47,12 @@ const eslintConfig = defineConfig([
     ".docs/**",
     "work/**",
     ".grok/**",
+    // Playwright's aria tree, vendored byte-for-byte so that updating it is a
+    // copy rather than a merge (browser-agent/vendor/playwright/VENDOR.md).
+    // It is written against Playwright's lint and compiler settings, not ours.
+    "browser-agent/vendor/**",
+    // esbuild's output, committed so a cargo build needs no node.
+    "src-tauri/src/browser/js/**",
   ]),
   eslintConfigPrettier,
   eslintPluginPrettierRecommended,

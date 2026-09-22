@@ -1115,6 +1115,8 @@ mod tests {
             tasks: true,
             automations: true,
             taskboard: true,
+            browser: false,
+            browser_eval: false,
         };
         let defs = load_companion_defs(features, &[], &[]).unwrap();
         let json_names: Vec<&str> = all
@@ -1144,6 +1146,8 @@ mod tests {
             tasks: false,
             automations: false,
             taskboard: false,
+            browser: false,
+            browser_eval: false,
         };
         assert!(load_companion_defs(none, &[], &[]).unwrap().is_empty());
 
@@ -1186,6 +1190,8 @@ mod tests {
             tasks: true,
             automations: true,
             taskboard: true,
+            browser: false,
+            browser_eval: false,
         };
         let names: Vec<_> = load_companion_defs(delegation_off, &[], &[])
             .unwrap()

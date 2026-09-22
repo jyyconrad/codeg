@@ -38,35 +38,18 @@ vi.mock("@/lib/api", () => ({
   updateSystemRenderingSettings: vi.fn(async (v: unknown) => v),
   updateSystemTerminalSettings: vi.fn(async (v: unknown) => v),
   probeTerminalShellPath: vi.fn(async () => true),
-  getDelegationSettings: vi.fn(async () => ({
-    enabled: false,
-    depth_limit: 1,
-    completed_cache_max_mb: 512,
-    agent_defaults: {},
+  getSystemCloseBehaviorSettings: vi.fn(async () => ({
+    behavior: "ask" as const,
+    tray_available: true,
   })),
-  setDelegationSettings: vi.fn(async (v: unknown) => v),
-  acpListAgents: vi.fn(async () => []),
-  getFeedbackSettings: vi.fn(async () => ({ enabled: false })),
-  setFeedbackSettings: vi.fn(async (v: unknown) => v),
-  getQuestionSettings: vi.fn(async () => ({ enabled: true })),
-  setQuestionSettings: vi.fn(async (v: unknown) => v),
-  getSessionInfoSettings: vi.fn(async () => ({ enabled: true })),
-  setSessionInfoSettings: vi.fn(async (v: unknown) => v),
-  getChatAuthoringSettings: vi.fn(async () => ({
-    automations_enabled: false,
-    work_tasks_enabled: false,
+  updateSystemCloseBehaviorSettings: vi.fn(async (behavior: string) => ({
+    behavior,
+    tray_available: true,
   })),
-  setChatAuthoringSettings: vi.fn(async (v: unknown) => v),
 }))
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
-vi.mock("@/lib/platform", () => ({
-  isDesktop: () => true,
-  // The delegation and agent-tools sections subscribe to their settings-change
-  // broadcasts so a form left open converges instead of reverting a write made
-  // elsewhere (the status-bar codeg-mcp popover).
-  subscribe: () => Promise.resolve(() => {}),
-}))
+vi.mock("@/lib/platform", () => ({ isDesktop: () => true }))
 vi.mock("@/lib/transport", () => ({
   getActiveRemoteConnectionId: () => null,
   // Read by the desktop-notification section to decide whether permission is
@@ -88,9 +71,6 @@ vi.mock("@/hooks/use-platform", () => ({
   }),
 }))
 vi.mock("@/lib/updater", () => ({ relaunchApp: vi.fn() }))
-vi.mock("@/hooks/use-feedback-enabled", () => ({
-  primeFeedbackEnabled: vi.fn(),
-}))
 
 import {
   getAvailableTerminalShells,
@@ -146,19 +126,22 @@ describe("GeneralSettings", () => {
       "Disable hardware acceleration",
       "Desktop notifications",
       "Notification sounds",
-      "Multi-Agent Collaboration",
-      "In-conversation tools",
     ]) {
       expect(screen.getByRole("heading", { name: heading })).toBeInTheDocument()
     }
 
-    // Sibling toggles keep their label association through SettingRow.
-    expect(screen.getByLabelText("Enable delegation")).toBeInTheDocument()
-    expect(screen.getByLabelText("Live Feedback")).toBeInTheDocument()
-    expect(screen.getByLabelText("Ask user question")).toBeInTheDocument()
-    expect(screen.getByLabelText("Get session info")).toBeInTheDocument()
-    expect(screen.getByLabelText("Create automations")).toBeInTheDocument()
-    expect(screen.getByLabelText("Create to-do tasks")).toBeInTheDocument()
+    // Moved out to their own pages (`collaboration-settings.test.tsx`,
+    // `browser-settings.test.tsx`), which is the whole point of the split:
+    // "general" now names what the page holds.
+    for (const heading of [
+      "Multi-Agent Collaboration",
+      "In-conversation tools",
+      "Built-in browser",
+    ]) {
+      expect(
+        screen.queryByRole("heading", { name: heading })
+      ).not.toBeInTheDocument()
+    }
   })
 
   /**

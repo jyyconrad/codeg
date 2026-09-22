@@ -32,6 +32,8 @@ export function FilePreview(props: {
   openFilePreview?: (path: string) => void
   previewRoot?: string | null
   tab?: FileWorkspaceTab
+  /** File column hoists HTML controls into `FileWorkspaceHeader`. */
+  chrome?: "bar" | "hoisted"
 }) {
   const kind = previewKindFromPath(props.path)
   const tab = props.tab ?? stubTab(props)
@@ -45,6 +47,7 @@ export function FilePreview(props: {
         key={tab.id}
         tab={tab}
         rootPath={props.previewRoot ?? props.rootPath}
+        chrome={props.chrome}
       />
     )
   }

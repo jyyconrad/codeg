@@ -36,6 +36,13 @@ fn default_data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".codeg-data"))
 }
 
+/// Namespace for secrets that are not tokens of an account or a channel. The
+/// prefix keeps them from ever colliding with a `github-token:<id>` whose id
+/// happens to look like a secret name.
+fn secret_key(name: &str) -> String {
+    format!("secret:{name}")
+}
+
 fn tokens_file_path() -> PathBuf {
     tokens_file_path_for(std::env::var("CODEG_DATA_DIR").ok().as_deref())
 }
@@ -66,6 +73,15 @@ fn read_tokens() -> HashMap<String, String> {
 /// fixed. Best-effort: if chmod fails the read will usually fail too, and a
 /// read-only mount is not made worse by proceeding.
 fn read_tokens_at(path: &Path) -> HashMap<String, String> {
+    read_tokens_at_checked(path).unwrap_or_default()
+}
+
+/// The same read, but an unreadable or corrupt store is an error rather than an
+/// empty map. Callers that WRITE secrets back need the distinction: "there is no
+/// entry" and "the file would not open" lead to opposite decisions on the way
+/// out — write nothing, versus refuse to write at all — and collapsing them
+/// turns a transient read failure into a permanent deletion.
+fn read_tokens_at_checked(path: &Path) -> Result<HashMap<String, String>, String> {
     #[cfg(unix)]
     if path.exists() {
         use std::os::unix::fs::PermissionsExt;
@@ -78,10 +94,13 @@ fn read_tokens_at(path: &Path) -> HashMap<String, String> {
             );
         }
     }
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .map_err(|e| format!("token store is not readable JSON: {e}")),
+        // A store that was never written is legitimately empty.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(err) => Err(format!("token store read error: {err}")),
+    }
 }
 
 fn write_tokens(tokens: &HashMap<String, String>) -> Result<(), String> {
@@ -161,7 +180,7 @@ fn keyring_delete(key: &str) -> Result<(), String> {
     }
 }
 
-fn get_secret(key: &str) -> Option<String> {
+fn get_stored(key: &str) -> Option<String> {
     if let Some(value) = read_tokens().get(key).cloned() {
         return Some(value);
     }
@@ -185,13 +204,13 @@ fn get_secret(key: &str) -> Option<String> {
     None
 }
 
-fn set_secret(key: &str, value: &str) -> Result<(), String> {
+fn set_stored(key: &str, value: &str) -> Result<(), String> {
     let mut tokens = read_tokens();
     tokens.insert(key.to_string(), value.to_string());
     write_tokens(&tokens)
 }
 
-fn delete_secret(key: &str) -> Result<(), String> {
+fn delete_stored(key: &str) -> Result<(), String> {
     let mut tokens = read_tokens();
     tokens.remove(key);
     write_tokens(&tokens)?;
@@ -207,27 +226,52 @@ fn delete_secret(key: &str) -> Result<(), String> {
 }
 
 pub fn set_token(account_id: &str, token: &str) -> Result<(), String> {
-    set_secret(&token_key(account_id), token)
+    set_stored(&token_key(account_id), token)
 }
 
 pub fn get_token(account_id: &str) -> Option<String> {
-    get_secret(&token_key(account_id))
+    get_stored(&token_key(account_id))
 }
 
 pub fn delete_token(account_id: &str) -> Result<(), String> {
-    delete_secret(&token_key(account_id))
+    delete_stored(&token_key(account_id))
 }
 
 pub fn set_channel_token(channel_id: i32, token: &str) -> Result<(), String> {
-    set_secret(&channel_token_key(channel_id), token)
+    set_stored(&channel_token_key(channel_id), token)
 }
 
 pub fn get_channel_token(channel_id: i32) -> Option<String> {
-    get_secret(&channel_token_key(channel_id))
+    get_stored(&channel_token_key(channel_id))
 }
 
 pub fn delete_channel_token(channel_id: i32) -> Result<(), String> {
-    delete_secret(&channel_token_key(channel_id))
+    delete_stored(&channel_token_key(channel_id))
+}
+
+// ── Named secrets ──
+// Same `0600` `tokens.json` as account and channel tokens, including on
+// desktop. A feature secret (config-sync WebDAV password, snapshot passphrase)
+// uses the `secret:` prefix so it cannot collide with those keys.
+//
+// `Ok(None)` is "nothing stored under that name"; `Err` is "the store would not
+// open". Unlike [`get_token`], which collapses both into `None`, a secret's
+// reader has to keep them apart: an empty value means "delete this entry" when
+// it travels back through [`set_secret`]/[`delete_secret`], so a failed read
+// reported as "absent" would erase the secret at the next save.
+
+pub fn set_secret(name: &str, value: &str) -> Result<(), String> {
+    set_stored(&secret_key(name), value)
+}
+
+pub fn get_secret(name: &str) -> Result<Option<String>, String> {
+    Ok(read_tokens_at_checked(&tokens_file_path())?
+        .get(&secret_key(name))
+        .cloned())
+}
+
+pub fn delete_secret(name: &str) -> Result<(), String> {
+    delete_stored(&secret_key(name))
 }
 
 #[cfg(test)]

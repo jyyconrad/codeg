@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { FileWorkspaceTab } from "@/contexts/workspace-context"
+import type { FileLikeWorkspaceTab } from "@/contexts/workspace-context"
 
 const {
   mockDetect,
@@ -69,7 +69,7 @@ vi.mock("@/stores/app-workspace-store", () => ({
 
 import { FilePreview } from "./file-preview"
 
-function tab(overrides: Partial<FileWorkspaceTab>): FileWorkspaceTab {
+function tab(overrides: Partial<FileLikeWorkspaceTab>): FileLikeWorkspaceTab {
   return {
     id: "tab-1",
     kind: "file",
@@ -84,7 +84,10 @@ function tab(overrides: Partial<FileWorkspaceTab>): FileWorkspaceTab {
   }
 }
 
-function renderPreview(path: string, extra?: Partial<FileWorkspaceTab> & { isPreview?: boolean }) {
+function renderPreview(
+  path: string,
+  extra?: Partial<FileLikeWorkspaceTab> & { isPreview?: boolean }
+) {
   const { isPreview = true, ...rest } = extra ?? {}
   const current = tab({ path, title: path, description: path, ...rest })
   return render(
