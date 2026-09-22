@@ -94,15 +94,20 @@ export default function ImageCompressTool() {
     setInput(next?.name ?? "")
   }
 
+  function downloadImage() {
+    if (!resultBlob) return
+    triggerBlobDownload(
+      resultBlob,
+      withExtension(file?.name ?? "image", extForFormat(format))
+    )
+  }
+
   return (
     <ToolPageShell
       input={input}
       onInputChange={onInput}
       inputLabel={t("input")}
-      downloadFilename={withExtension(
-        file?.name ?? "image",
-        extForFormat(format)
-      )}
+      onDownload={downloadImage}
       error={loadError ?? exportError}
       result={summary}
       onExample={() => {
@@ -171,13 +176,7 @@ export default function ImageCompressTool() {
               : undefined
           }
           downloadLabel={t("download")}
-          onDownload={() => {
-            if (!resultBlob) return
-            triggerBlobDownload(
-              resultBlob,
-              withExtension(file?.name ?? "image", extForFormat(format))
-            )
-          }}
+          onDownload={downloadImage}
         />
       }
     />

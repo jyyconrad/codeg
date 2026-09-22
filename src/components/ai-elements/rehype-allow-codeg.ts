@@ -58,6 +58,11 @@ export function rehypePluginsAllowingCodeg(
       ...schema,
       attributes: {
         ...schema?.attributes,
+        a: [
+          ...(schema?.attributes?.a ?? []),
+          "dataCodegFileTarget",
+          "data-codeg-file-target",
+        ],
         span: [
           ...(schema?.attributes?.span ?? []),
           "dataCodegLocalImage",

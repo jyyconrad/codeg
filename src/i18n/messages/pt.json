@@ -3492,7 +3492,11 @@
         "elapsedMinutes": "{value} min",
         "elapsedSeconds": "{value} s",
         "outputSpeedAria": "Velocidade de saída estimada",
-        "outputSpeedTooltip": "Velocidade de saída estimada (texto + raciocínio)"
+        "outputSpeedTooltip": "Velocidade de saída estimada (texto + raciocínio)",
+        "tokenUsageAria": "Uso de tokens da sessão",
+        "tokenInput": "Entrada",
+        "tokenOutput": "Saída",
+        "tokenCache": "Cache"
       },
       "jsonTree": {
         "viewRaw": "Ver JSON bruto",
@@ -3923,6 +3927,7 @@
         "title": "Fluxo de trabalho",
         "collapseAria": "Recolher fluxo de trabalho",
         "expandAria": "Expandir fluxo de trabalho",
+        "closeAria": "Fechar fluxo de trabalho",
         "collapsedSummary": "{name} {current}/{total}",
         "collapsedSummaryNamed": "{name}",
         "dockToComposerAria": "Afixar acima da entrada",

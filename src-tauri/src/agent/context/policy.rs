@@ -63,23 +63,27 @@ impl RequestScope {
 /// turns without reconstructing the wrapper and losing the absorbed watermark.
 #[derive(Debug)]
 pub struct CodegContextPolicy {
-    window: TokenWindowMemory,
+    window: Mutex<TokenWindowMemory>,
+    dynamic_window: bool,
     scope: Mutex<RequestScope>,
 }
 
 impl CodegContextPolicy {
     pub fn new(window: TokenWindowMemory, scope: RequestScope) -> Self {
         Self {
-            window,
+            window: Mutex::new(window),
+            dynamic_window: false,
             scope: Mutex::new(scope),
         }
     }
 
     pub fn token_window(tail_budget: usize, scope: RequestScope) -> Self {
-        Self::new(
-            TokenWindowMemory::new(tail_budget, HeuristicTokenCounter::openai()),
-            scope,
-        )
+        let counter = HeuristicTokenCounter::openai();
+        Self {
+            window: Mutex::new(TokenWindowMemory::new(tail_budget, counter)),
+            dynamic_window: true,
+            scope: Mutex::new(scope),
+        }
     }
 
     pub fn scope(&self) -> RequestScope {
@@ -90,6 +94,17 @@ impl CodegContextPolicy {
     /// algorithm or the token window.
     pub fn bind_scope(&self, scope: RequestScope) {
         *self.scope.lock().unwrap_or_else(|e| e.into_inner()) = scope;
+    }
+
+    /// Update the per-request history window while retaining this policy and
+    /// its owning `CompactingMemory` wrapper. The default token counter is the
+    /// Rig heuristic used by the existing token-window constructor.
+    pub fn bind_token_budget(&self, max_tokens: usize) {
+        if !self.dynamic_window {
+            return;
+        }
+        *self.window.lock().unwrap_or_else(|e| e.into_inner()) =
+            TokenWindowMemory::new(max_tokens, HeuristicTokenCounter::openai());
     }
 
     fn min_demote_len(scope: &RequestScope, n: usize) -> usize {
@@ -123,7 +138,8 @@ impl MemoryPolicy for CodegContextPolicy {
             return Ok((Vec::new(), Vec::new()));
         }
 
-        let (tw_kept, tw_demoted) = self.window.apply_with_demoted(messages)?;
+        let window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        let (tw_kept, tw_demoted) = window.apply_with_demoted(messages)?;
         let token_cut = tw_demoted.len();
         let mut original = tw_demoted;
         original.extend(tw_kept);
@@ -149,16 +165,16 @@ impl MemoryPolicy for CodegContextPolicy {
         }
 
         let mut cut = token_cut.max(min_cut);
-        cut = legalize_cut(cut, &original, &groups, min_cut, &self.window);
+        cut = legalize_cut(cut, &original, &groups, min_cut, &window);
 
         if let Some(must) = must_from {
             if cut > must {
-                if must < min_cut || !suffix_fits(&self.window, &original, must) {
+                if must < min_cut || !suffix_fits(&window, &original, must) {
                     return Err(budget_exceeded(
                         "covers_through_seq would demote the protected pending prompt",
                     ));
                 }
-                cut = legalize_cut(must, &original, &groups, min_cut, &self.window);
+                cut = legalize_cut(must, &original, &groups, min_cut, &window);
                 if cut > must {
                     return Err(budget_exceeded(
                         "no legal boundary keeps the pending prompt and its tool group",
@@ -169,9 +185,9 @@ impl MemoryPolicy for CodegContextPolicy {
 
         if let Some(preferred) = preferred_from {
             let candidate = preferred.max(min_cut);
-            if candidate < cut && suffix_fits(&self.window, &original, candidate) {
-                let legal = legalize_cut(candidate, &original, &groups, min_cut, &self.window);
-                if legal < cut && suffix_fits(&self.window, &original, legal) {
+            if candidate < cut && suffix_fits(&window, &original, candidate) {
+                let legal = legalize_cut(candidate, &original, &groups, min_cut, &window);
+                if legal < cut && suffix_fits(&window, &original, legal) {
                     cut = legal;
                 }
             }

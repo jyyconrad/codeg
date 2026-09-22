@@ -3492,7 +3492,11 @@
         "elapsedMinutes": "{value} 分钟",
         "elapsedSeconds": "{value} 秒",
         "outputSpeedAria": "估算输出速度",
-        "outputSpeedTooltip": "估算输出速度（正文 + 思考）"
+        "outputSpeedTooltip": "估算输出速度（正文 + 思考）",
+        "tokenUsageAria": "会话 Token 消耗",
+        "tokenInput": "输入",
+        "tokenOutput": "输出",
+        "tokenCache": "缓存"
       },
       "jsonTree": {
         "viewRaw": "查看原始 JSON",
@@ -3923,6 +3927,7 @@
         "title": "工作流",
         "collapseAria": "折叠工作流",
         "expandAria": "展开工作流",
+        "closeAria": "关闭工作流",
         "collapsedSummary": "{name} {current}/{total}",
         "collapsedSummaryNamed": "{name}",
         "dockToComposerAria": "停靠到输入框上方",

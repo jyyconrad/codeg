@@ -3492,7 +3492,11 @@
         "elapsedMinutes": "{value}د",
         "elapsedSeconds": "{value}ث",
         "outputSpeedAria": "السرعة التقديرية للإخراج",
-        "outputSpeedTooltip": "السرعة التقديرية للإخراج (نص + تفكير)"
+        "outputSpeedTooltip": "السرعة التقديرية للإخراج (نص + تفكير)",
+        "tokenUsageAria": "استهلاك رموز الجلسة",
+        "tokenInput": "إدخال",
+        "tokenOutput": "إخراج",
+        "tokenCache": "ذاكرة مؤقتة"
       },
       "jsonTree": {
         "viewRaw": "عرض JSON الخام",
@@ -3923,6 +3927,7 @@
         "title": "سير العمل",
         "collapseAria": "طي سير العمل",
         "expandAria": "توسيع سير العمل",
+        "closeAria": "إغلاق سير العمل",
         "collapsedSummary": "{name} {current}/{total}",
         "collapsedSummaryNamed": "{name}",
         "dockToComposerAria": "تثبيت فوق حقل الإدخال",

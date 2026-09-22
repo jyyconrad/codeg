@@ -1,8 +1,7 @@
 //! Rig Agent / Runner assembly for one Prompt. Session shell must not own this.
 
 use futures::StreamExt;
-use rig::agent::MultiTurnStreamItem;
-use rig::client::AgentClientExt;
+use rig::agent::{AgentBuilder, MultiTurnStreamItem};
 use rig::completion::Message;
 use rig::tool::DynamicTool;
 use serde_json::Value;
@@ -108,45 +107,17 @@ pub async fn run_native_turn(request: NativeTurnRequest) -> NativeTurnOutcome {
     } = request;
     let stream = tokio::select! {
         _ = cancel.cancelled() => return NativeTurnOutcome::Cancelled,
-        stream = async {
-            match client {
-                CodegLlmClient::Completions(client) => {
-                    assemble_and_stream(
-                        client,
-                        model_id,
-                        preamble,
-                        prompt,
-                        history,
-                        additional_params,
-                        tools,
-                        hook,
-                        max_turns,
-                    )
-                    .await
-                }
-                CodegLlmClient::Responses(client) => {
-                    assemble_and_stream(
-                        client,
-                        model_id,
-                        preamble,
-                        prompt,
-                        history,
-                        additional_params,
-                        tools,
-                        hook,
-                        max_turns,
-                    )
-                    .await
-                }
-            }
-        } => stream,
+        stream = assemble_and_stream(
+            client, model_id, preamble, prompt, history,
+            additional_params, tools, hook, max_turns,
+        ) => stream,
     };
     drain_native_stream(stream, cancel).await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn assemble_and_stream<C>(
-    client: C,
+async fn assemble_and_stream(
+    client: CodegLlmClient,
     model_id: String,
     preamble: String,
     prompt: Message,
@@ -155,11 +126,7 @@ async fn assemble_and_stream<C>(
     tools: NativeTurnTools,
     hook: CodegHook,
     max_turns: usize,
-) -> rig::agent::StreamingResult
-where
-    C: AgentClientExt + Send,
-    C::CompletionModel: 'static,
-{
+) -> rig::agent::StreamingResult {
     let NativeTurnTools {
         read,
         recall,
@@ -180,8 +147,8 @@ where
         echo,
         dynamic,
     } = tools;
-    let mut builder = client
-        .agent(&model_id)
+    let model = super::overflow::model_with_recovery(client, model_id, hook.recovery_context());
+    let mut builder = AgentBuilder::from_model_handle(model)
         .preamble(&preamble)
         .default_max_turns(max_turns.max(1))
         .tool(read)

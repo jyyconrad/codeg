@@ -98,6 +98,14 @@ pub fn inbound_quoted_message_ids(cmd: &IncomingCommand) -> Vec<String> {
     );
     push(
         &mut ids,
+        json_str(cmd.metadata.pointer("/event/message/quote/message_id")),
+    );
+    push(
+        &mut ids,
+        json_str(cmd.metadata.pointer("/event/message/quote/id")),
+    );
+    push(
+        &mut ids,
         json_scalar(cmd.metadata.pointer("/message/reply_to_message/message_id")),
     );
     push(
@@ -487,6 +495,32 @@ mod tests {
         );
     }
 
+    /// Feishu 引用回复 often leaves `parent_id` empty and puts the quoted
+    /// message id on `event.message.quote.message_id`.
+    #[test]
+    fn extracts_lark_quote_field_when_parent_id_missing() {
+        let cmd = lark_cmd(
+            1,
+            serde_json::json!({
+                "event": {
+                    "message": {
+                        "message_id": "om_child",
+                        "chat_id": "oc_bound",
+                        "quote": { "message_id": "om_quoted" }
+                    }
+                }
+            }),
+        );
+        assert_eq!(
+            inbound_quoted_message_id(&cmd).as_deref(),
+            Some("om_quoted")
+        );
+        assert_eq!(
+            inbound_quoted_message_ids(&cmd),
+            vec!["om_quoted".to_string()]
+        );
+    }
+
     #[test]
     fn extracts_telegram_reply_to_message() {
         let mut cmd = IncomingCommand::plain(
@@ -532,6 +566,44 @@ mod tests {
             serde_json::json!({ "event": { "message": { "chat_id": "oc_unbound" } } }),
         );
         assert_eq!(route_folder_inbound(&db.conn, &cmd).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn quote_field_continues_mapped_session_when_parent_id_missing() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/folder-inbound-quote-field").await;
+        let quoted = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        let latest = seed_conversation(&db, folder_id, AgentType::Grok).await;
+        let channel_id = seed_lark_channel(&db).await;
+        bind_folder(&db, folder_id, channel_id, Some("oc_bound")).await;
+        chat_channel_message_map_service::upsert(&db.conn, channel_id, "om_quoted", quoted)
+            .await
+            .unwrap();
+        set_updated_at(&db, latest, Utc::now()).await;
+
+        let cmd = lark_cmd(
+            channel_id,
+            serde_json::json!({
+                "event": {
+                    "message": {
+                        "message_id": "om_child",
+                        "chat_id": "oc_bound",
+                        "quote": { "message_id": "om_quoted" },
+                        "create_time": "1694779200000"
+                    }
+                }
+            }),
+        );
+        let plan = route_folder_inbound(&db.conn, &cmd)
+            .await
+            .unwrap()
+            .expect("bound");
+        assert_eq!(
+            plan.action,
+            FolderInboundAction::Continue {
+                conversation_id: quoted
+            }
+        );
     }
 
     #[tokio::test]

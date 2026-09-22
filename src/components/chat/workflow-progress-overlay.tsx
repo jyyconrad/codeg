@@ -9,6 +9,8 @@
  * - Composer dock: same max-w-3xl + px-4 column as the input. Collapsed = one
  *   title row `{name} {progress} {elapsed}`. Expanded body lays phases and
  *   nodes out horizontally.
+ *
+ * When every visible run has settled, a close control dismisses the panel.
  */
 
 import { useEffect, useState } from "react"
@@ -22,6 +24,7 @@ import {
   PanelBottom,
   PanelLeft,
   Workflow,
+  X,
 } from "lucide-react"
 
 import { CollapsedOverlayChip } from "@/components/chat/collapsed-overlay-chip"
@@ -82,6 +85,7 @@ export function WorkflowProgressOverlay({
       runs={runs}
       placement={placement}
       onToggleDock={ctx.toggleDock}
+      onDismiss={() => ctx.dismissRuns(runs.map((run) => run.run_id))}
     />
   )
 }
@@ -90,10 +94,12 @@ function WorkflowProgressPanel({
   runs,
   placement,
   onToggleDock,
+  onDismiss,
 }: {
   runs: WorkflowRun[]
   placement: WorkflowProgressDock
   onToggleDock: () => void
+  onDismiss: () => void
 }) {
   const t = useTranslations("Folder.chat.workflows")
   const tElapsed = useTranslations("Folder.chat.liveTurnStats")
@@ -113,6 +119,7 @@ function WorkflowProgressPanel({
     : null
   const expand = () => setCollapsedByKey((prev) => ({ ...prev, [key]: false }))
   const collapse = () => setCollapsedByKey((prev) => ({ ...prev, [key]: true }))
+  const allSettled = runs.every(isWorkflowTerminal)
 
   if (!isExpanded && overlay) {
     const summary = progress
@@ -123,11 +130,25 @@ function WorkflowProgressPanel({
         })
       : t("collapsedSummaryNamed", { name: primary.name })
     return (
-      <CollapsedOverlayChip
-        icon={<Workflow className="size-3" />}
-        summary={summary}
-        onClick={expand}
-      />
+      <div className="pointer-events-none flex items-center">
+        <CollapsedOverlayChip
+          icon={<Workflow className="size-3" />}
+          summary={summary}
+          onClick={expand}
+        />
+        {allSettled ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="pointer-events-auto size-5 opacity-60 hover:opacity-100"
+            aria-label={t("closeAria")}
+            onClick={onDismiss}
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        ) : null}
+      </div>
     )
   }
 
@@ -185,6 +206,20 @@ function WorkflowProgressPanel({
             className={cn("h-4 w-4", !isExpanded && "rotate-180")}
           />
         </Button>
+        {allSettled ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={t("closeAria")}
+            onClick={(e) => {
+              e.stopPropagation()
+              onDismiss()
+            }}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        ) : null}
       </div>
     </div>
   )

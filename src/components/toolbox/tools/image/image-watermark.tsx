@@ -194,6 +194,14 @@ export default function ImageWatermarkTool() {
     if (!next) setInput("")
   }
 
+  function downloadImage() {
+    if (!resultBlob) return
+    triggerBlobDownload(
+      resultBlob,
+      withExtension(file?.name ?? "watermark", extForFormat(format))
+    )
+  }
+
   return (
     <ToolPageShell
       input={input}
@@ -205,10 +213,7 @@ export default function ImageWatermarkTool() {
         }
       }}
       inputLabel={t("input")}
-      downloadFilename={withExtension(
-        file?.name ?? "watermark",
-        extForFormat(format)
-      )}
+      onDownload={downloadImage}
       error={loadError ?? stampError ?? exportError}
       result={summary}
       onExample={() => {
@@ -336,13 +341,7 @@ export default function ImageWatermarkTool() {
           url={outUrl}
           meta={resultBlob ? formatByteSize(resultBlob.size) : undefined}
           downloadLabel={t("download")}
-          onDownload={() => {
-            if (!resultBlob) return
-            triggerBlobDownload(
-              resultBlob,
-              withExtension(file?.name ?? "watermark", extForFormat(format))
-            )
-          }}
+          onDownload={downloadImage}
         />
       }
     />

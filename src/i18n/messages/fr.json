@@ -3492,7 +3492,11 @@
         "elapsedMinutes": "{value} min",
         "elapsedSeconds": "{value} s",
         "outputSpeedAria": "Vitesse de sortie estimée",
-        "outputSpeedTooltip": "Vitesse de sortie estimée (texte + raisonnement)"
+        "outputSpeedTooltip": "Vitesse de sortie estimée (texte + raisonnement)",
+        "tokenUsageAria": "Consommation de jetons de la session",
+        "tokenInput": "Entrée",
+        "tokenOutput": "Sortie",
+        "tokenCache": "Cache"
       },
       "jsonTree": {
         "viewRaw": "Afficher le JSON brut",
@@ -3923,6 +3927,7 @@
         "title": "Workflow",
         "collapseAria": "Réduire le workflow",
         "expandAria": "Développer le workflow",
+        "closeAria": "Fermer le workflow",
         "collapsedSummary": "{name} {current}/{total}",
         "collapsedSummaryNamed": "{name}",
         "dockToComposerAria": "Ancrer au-dessus de la saisie",

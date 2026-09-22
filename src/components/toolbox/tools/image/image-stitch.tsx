@@ -181,12 +181,20 @@ export default function ImageStitchTool() {
     }
   }
 
+  function downloadImage() {
+    if (!resultBlob) return
+    triggerBlobDownload(
+      resultBlob,
+      withExtension("stitch", extForFormat(format))
+    )
+  }
+
   return (
     <ToolPageShell
       input={input}
       onInputChange={onInput}
       inputLabel={t("input")}
-      downloadFilename={withExtension("stitch", extForFormat(format))}
+      onDownload={downloadImage}
       error={loadError ?? exportError}
       result={summary}
       onExample={() => {
@@ -281,13 +289,7 @@ export default function ImageStitchTool() {
           url={outUrl}
           meta={resultBlob ? formatByteSize(resultBlob.size) : undefined}
           downloadLabel={t("download")}
-          onDownload={() => {
-            if (!resultBlob) return
-            triggerBlobDownload(
-              resultBlob,
-              withExtension("stitch", extForFormat(format))
-            )
-          }}
+          onDownload={downloadImage}
         />
       }
     />

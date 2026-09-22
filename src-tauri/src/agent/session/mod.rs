@@ -149,6 +149,16 @@ mod tests {
         init_hold: Option<Arc<Notify>>,
         fail_turn_end: bool,
     ) -> Harness {
+        spawn_session_configured(base_url, include_echo, init_hold, fail_turn_end, |_| {}).await
+    }
+
+    async fn spawn_session_configured(
+        base_url: &str,
+        include_echo: bool,
+        init_hold: Option<Arc<Notify>>,
+        fail_turn_end: bool,
+        configure: impl FnOnce(&mut NativeSessionArgs),
+    ) -> Harness {
         let codeg_home = IsolatedCodegHome::install();
         let connection_id = format!("native-conn-{}", uuid::Uuid::new_v4());
         let session_id = format!("sess-native-{}", uuid::Uuid::new_v4());
@@ -166,7 +176,7 @@ mod tests {
         let shutdown = NativeShutdownHandle::new();
         let mut windows = BTreeMap::new();
         windows.insert("m".into(), 128000);
-        let args = NativeSessionArgs {
+        let mut args = NativeSessionArgs {
             connection_id,
             agent_type: AgentType::CodegAgent,
             working_dir: Some("/tmp".into()),
@@ -207,6 +217,7 @@ mod tests {
             mcp_server_specs: Some(BTreeMap::new()),
             fail_turn_end,
         };
+        configure(&mut args);
         spawn_native_session(args).expect("spawn native");
         Harness {
             cmd_tx,
@@ -611,6 +622,274 @@ mod tests {
         // the hung request's keep-alive slot. Fresh-token coverage lives in
         // `TurnCoordinator` tests; a second live turn after cancel is covered
         // by `permission_wait_keeps_command_loop_reachable`.
+        h.shutdown.signal_shutdown();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancel_during_initial_history_compaction_keeps_command_loop_reachable() {
+        use rig::completion::Message;
+        use rig::memory::ConversationMemory;
+        let (base, bodies) = spawn_completions(vec![json!({"kind":"hang"})]).await;
+        let mut h = spawn_session_configured(&base, false, None, false, |args| {
+            args.effective_config
+                .context_windows
+                .insert("m".into(), 32_000);
+            args.effective_config.max_output_tokens = 1024;
+            args.effective_config.compact_prompt = Some("SUMMARIZE_TEST_HISTORY".into());
+        })
+        .await;
+        wait_started(&mut h).await;
+        let session_id = h
+            .state
+            .read()
+            .await
+            .external_id
+            .clone()
+            .expect("session id");
+        let memory = crate::agent::context::CodegMessageMemory::new(&session_id, "/tmp");
+        let mut history = Vec::new();
+        for i in 0..20 {
+            history.push(Message::user(format!(
+                "old request {i}: {}",
+                "details ".repeat(800)
+            )));
+            history.push(Message::assistant(format!("old answer {i}")));
+        }
+        memory
+            .append(&session_id, history)
+            .await
+            .expect("seed history");
+        h.cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text {
+                    text: "continue".into(),
+                }],
+                user_message: None,
+            })
+            .await
+            .expect("prompt");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !bodies.lock().expect("bodies").is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("compaction request starts");
+        assert!(bodies.lock().expect("bodies")[0]
+            .to_string()
+            .contains("SUMMARIZE_TEST_HISTORY"));
+        h.cmd_tx
+            .send(ConnectionCommand::Cancel)
+            .await
+            .expect("cancel");
+        let finished = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let event = h.events.recv().await.expect("event");
+                if let AcpEvent::TurnComplete { stop_reason, .. } = &event.payload {
+                    break stop_reason.clone();
+                }
+            }
+        })
+        .await;
+        h.shutdown.signal_shutdown();
+        assert_eq!(
+            finished.expect("Cancel must interrupt startup compaction"),
+            "cancelled"
+        );
+        assert_eq!(memory.active_compaction_id().await.expect("pointer"), None);
+        assert_eq!(
+            crate::agent::context::CheckpointStore::new(memory.session_dir())
+                .active_id(memory.session_id()),
+            None,
+            "cancelled default compaction must not activate its checkpoint index"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn changing_model_rebinds_compaction_model_and_context_window() {
+        use rig::{completion::Message, memory::ConversationMemory};
+        let (base, bodies) = spawn_completions(vec![json!({"text":"summarized"})]).await;
+        let mut h = spawn_session_configured(&base, false, None, false, |args| {
+            args.effective_config
+                .context_windows
+                .insert("small".into(), 32_000);
+            args.effective_config.max_output_tokens = 1024;
+            args.effective_config.compact_prompt = Some("MODEL_SWITCH_SUMMARY".into());
+        })
+        .await;
+        wait_started(&mut h).await;
+        let session_id = h.state.read().await.external_id.clone().unwrap();
+        let memory = crate::agent::context::CodegMessageMemory::new(&session_id, "/tmp");
+        let history = (0..20)
+            .flat_map(|i| {
+                [
+                    Message::user(format!("request {i}: {}", "detail ".repeat(1000))),
+                    Message::assistant(format!("answer {i}")),
+                ]
+            })
+            .collect();
+        memory.append(&session_id, history).await.unwrap();
+        h.cmd_tx
+            .send(ConnectionCommand::SetConfigOption {
+                config_id: "model".into(),
+                value_id: "small".into(),
+            })
+            .await
+            .unwrap();
+        h.cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text {
+                    text: "continue after model switch".into(),
+                }],
+                user_message: None,
+            })
+            .await
+            .unwrap();
+        let event = wait_event(&mut h.events, |e| {
+            matches!(e, AcpEvent::TurnComplete { .. })
+        })
+        .await;
+        h.shutdown.signal_shutdown();
+        assert!(
+            matches!(event, AcpEvent::TurnComplete { stop_reason, .. } if stop_reason == "end_turn")
+        );
+        let requests = bodies.lock().unwrap();
+        let summaries = requests
+            .iter()
+            .filter(|r| r.to_string().contains("MODEL_SWITCH_SUMMARY"))
+            .collect::<Vec<_>>();
+        assert!(
+            !summaries.is_empty(),
+            "smaller selected window must trigger compaction"
+        );
+        assert!(
+            summaries.iter().all(|r| r["model"] == "small"),
+            "implicit compact model follows current model"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn child_write_permission_remains_reachable_after_parent_turn_completes() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().expect("workspace");
+        let output = dir.path().join("child-result.txt");
+        let child_gate = Arc::new(Notify::new());
+        let gate = child_gate.clone();
+        let parent_calls = Arc::new(AtomicUsize::new(0));
+        let child_calls = Arc::new(AtomicUsize::new(0));
+        let output_path = output.to_string_lossy().to_string();
+        let app = Router::new().fallback(post(move |Json(body): Json<Value>| {
+            let gate = gate.clone();
+            let parent_calls = parent_calls.clone();
+            let child_calls = child_calls.clone();
+            let output_path = output_path.clone();
+            async move {
+                let step = if body["model"] == "child" {
+                    if child_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        gate.notified().await;
+                        let tools = body["tools"].as_array().expect("selected child tools");
+                        assert_eq!(tools.len(), 1);
+                        assert_eq!(tools[0]["function"]["name"], "write_file");
+                        json!({"kind":"tools", "calls":[{"name":"write_file","id":"child_write",
+                            "arguments":{"path":output_path,"content":"child finished"}}]})
+                    } else {
+                        json!({"kind":"text","text":"child complete"})
+                    }
+                } else if parent_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    json!({"kind":"tools", "calls":[{"name":"subagent","id":"delegate",
+                        "arguments":{"prompt":"write the requested file","model_id":"child",
+                            "allowed_tools":["write_file"]}}]})
+                } else {
+                    json!({"kind":"text","text":"parent waiting"})
+                };
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    script_to_sse(&step),
+                )
+                    .into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let base = format!("http://{}/v1", listener.local_addr().expect("addr"));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+        let mut h = spawn_session_configured(&base, false, None, false, |args| {
+            args.launch_cwd = dir.path().to_path_buf();
+            args.working_dir = Some(dir.path().to_string_lossy().into());
+            args.fs_policy = FsAccessPolicy::strict(dir.path());
+            args.effective_config
+                .context_windows
+                .insert("child".into(), 128_000);
+        })
+        .await;
+        wait_started(&mut h).await;
+        h.cmd_tx
+            .send(ConnectionCommand::Prompt {
+                blocks: vec![PromptInputBlock::Text {
+                    text: "delegate".into(),
+                }],
+                user_message: None,
+            })
+            .await
+            .expect("prompt");
+        let permission = wait_event(&mut h.events, |e| {
+            matches!(e, AcpEvent::PermissionRequest { .. })
+        })
+        .await;
+        let AcpEvent::PermissionRequest { request_id, .. } = permission else {
+            unreachable!()
+        };
+        h.cmd_tx
+            .send(ConnectionCommand::RespondPermission {
+                request_id,
+                option_id: "allow-once".into(),
+            })
+            .await
+            .expect("allow delegation");
+        wait_event(
+            &mut h.events,
+            |e| matches!(e,AcpEvent::TurnComplete {stop_reason,..} if stop_reason == "end_turn"),
+        )
+        .await;
+        assert!(!output.exists());
+        child_gate.notify_one();
+        let permission =
+            wait_event_labeled(&mut h.events, "child permission while parent idle", |e| {
+                matches!(e, AcpEvent::PermissionRequest { .. })
+            })
+            .await;
+        let AcpEvent::PermissionRequest {
+            request_id,
+            tool_call,
+            ..
+        } = permission
+        else {
+            unreachable!()
+        };
+        assert_eq!(tool_call["title"], "write_file");
+        assert!(!output.exists(), "whitelisting does not approve a write");
+        h.cmd_tx
+            .send(ConnectionCommand::RespondPermission {
+                request_id,
+                option_id: "allow-once".into(),
+            })
+            .await
+            .expect("allow child write");
+        wait_event(
+            &mut h.events,
+            |e| matches!(e,AcpEvent::TurnComplete {stop_reason,..} if stop_reason == "end_turn"),
+        )
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(&output).expect("approved write"),
+            "child finished"
+        );
         h.shutdown.signal_shutdown();
     }
 

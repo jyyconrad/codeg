@@ -102,4 +102,72 @@ describe("extractLiveEditStats", () => {
     const after = extractLiveEditStats(msg([shared, added]))
     expect(after).toEqual({ files: 2, additions: 5, deletions: 0 })
   })
+
+  it("counts a write tool that uses new_source instead of content", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(JSON.stringify({ file_path: "x.ts", new_source: "a\nb" })),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 2, deletions: 0 })
+  })
+
+  it("counts OpenCode live camelCase edit args", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(
+          JSON.stringify({
+            filePath: "x.ts",
+            oldString: "one\ntwo",
+            newString: "one\ntwo\nthree",
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 1, additions: 1, deletions: 0 })
+  })
+
+  it("does not leak nested-diff stats across files in a changes payload", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(
+          JSON.stringify({
+            changes: {
+              "/repo/src/a.ts": {
+                diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new",
+              },
+              "/repo/src/b.ts": {
+                old_text: "one",
+                new_text: "one\ntwo\nthree",
+              },
+            },
+          })
+        ),
+      ])
+    )
+    expect(stats).toEqual({ files: 2, additions: 3, deletions: 1 })
+  })
+
+  it("does not treat an edit-shaped apply_patch JSON blob as one giant patch", () => {
+    const stats = extractLiveEditStats(
+      msg([
+        toolBlock(
+          JSON.stringify({
+            changes: {
+              "/repo/src/a.ts": {
+                diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new",
+              },
+              "/repo/src/b.ts": {
+                old_text: "one",
+                new_text: "one\ntwo",
+              },
+            },
+          })
+        ),
+      ])
+    )
+    // Two real files, not a phantom `src/a.ts` from the nested diff header.
+    expect(stats.files).toBe(2)
+    expect(stats.additions).toBeGreaterThan(0)
+  })
 })

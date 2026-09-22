@@ -69,11 +69,21 @@ describe("remarkRewriteFileUriLinks", () => {
     )
   })
 
-  it("leaves a bare relative path untouched (not a drive path)", () => {
-    // `C:` needs a following slash to be a drive path; `src/main.rs` and a
-    // schemeless relative path stay as-is (not openable — existing behavior).
-    expect(rewrite("src/main.rs")).toBe("src/main.rs")
-    expect(rewrite("notes.md")).toBe("notes.md")
+  it("prefixes workspace-relative file paths for rehype-harden", () => {
+    // rehype-harden accepts `./…` but rejects a bare `src/…` when no default
+    // origin is configured. Keep the target workspace-relative while making
+    // its URL shape explicit to the sanitizer.
+    expect(
+      rewrite("dist/windows-lab/switchgear-lab_20260919_windows_amd64.zip")
+    ).toBe("./dist/windows-lab/switchgear-lab_20260919_windows_amd64.zip")
+    expect(rewrite("src/main.rs")).toBe("./src/main.rs")
+    expect(rewrite("notes.md")).toBe("./notes.md")
+  })
+
+  it("preserves query and line fragments on workspace-relative paths", () => {
+    expect(rewrite("dist/report.xlsx?download=1#L12")).toBe(
+      "./dist/report.xlsx?download=1#L12"
+    )
   })
 
   it("emits a UNC file:// URI as a backslash UNC path (unambiguously local)", () => {
@@ -136,7 +146,7 @@ describe("remarkAutolinkInlineFilePaths", () => {
     remarkAutolinkInlineFilePaths()(tree)
     const node = firstChildOfParagraph(tree)
     expect(node?.type).toBe("link")
-    expect(node?.url).toBe("docs/使用手册.docx")
+    expect(node?.url).toBe("./docs/使用手册.docx")
   })
 
   it("turns a document filename in inline code into a file link", () => {

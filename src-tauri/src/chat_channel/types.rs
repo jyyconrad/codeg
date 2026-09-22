@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::acp::types::PromptInputBlock;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelType {
@@ -59,6 +61,7 @@ pub struct IncomingCommand {
     pub metadata: serde_json::Value,
     pub quoted_message_id: Option<String>,
     pub provider_message_id: Option<String>,
+    pub extra_blocks: Vec<PromptInputBlock>,
 }
 
 impl IncomingCommand {
@@ -77,6 +80,7 @@ impl IncomingCommand {
             metadata: serde_json::Value::Null,
             quoted_message_id: None,
             provider_message_id: None,
+            extra_blocks: Vec::new(),
         }
     }
 }

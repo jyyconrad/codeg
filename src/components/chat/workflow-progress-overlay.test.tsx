@@ -229,4 +229,124 @@ describe("WorkflowProgressOverlay", () => {
     })
     expect(screen.getByText("3s")).toBeInTheDocument()
   })
+
+  it("shows a close button only after every run has settled", () => {
+    const { rerender } = renderOverlay([run()])
+    expect(
+      screen.queryByRole("button", { name: "Close workflow" })
+    ).not.toBeInTheDocument()
+
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <WorkflowProgressDockProvider
+          runs={[run({ state: "completed", result_summary: "done" })]}
+        >
+          <WorkflowProgressOverlay placement="overlay" />
+        </WorkflowProgressDockProvider>
+      </NextIntlClientProvider>
+    )
+    expect(
+      screen.getByRole("button", { name: "Close workflow" })
+    ).toBeInTheDocument()
+  })
+
+  it("does not offer close while a live run is still in the panel", () => {
+    renderOverlay([
+      run({
+        state: "completed",
+        result_summary: "terminal summary",
+      }),
+      run({
+        run_id: "wf_2",
+        name: "follow-up",
+        current_phase: "Research",
+      }),
+    ])
+    expect(
+      screen.queryByRole("button", { name: "Close workflow" })
+    ).not.toBeInTheDocument()
+  })
+
+  it.each(["completed", "failed", "stopped"] as const)(
+    "dismisses a %s panel so the card no longer renders",
+    (state) => {
+      renderOverlay([run({ state, result_summary: "settled" })])
+      fireEvent.click(screen.getByRole("button", { name: "Close workflow" }))
+      expect(screen.queryByText("deep-research")).not.toBeInTheDocument()
+      expect(
+        screen.queryByTestId("workflow-terminal-card")
+      ).not.toBeInTheDocument()
+    }
+  )
+
+  it("keeps a dismissed run hidden through a late result update", () => {
+    const settled = run({
+      state: "completed",
+      result_summary: "first summary",
+    })
+    const { rerender } = renderOverlay([settled])
+    fireEvent.click(screen.getByRole("button", { name: "Close workflow" }))
+
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <WorkflowProgressDockProvider
+          runs={[{ ...settled, result_summary: "revised summary" }]}
+        >
+          <WorkflowProgressOverlay placement="overlay" />
+        </WorkflowProgressDockProvider>
+      </NextIntlClientProvider>
+    )
+    expect(screen.queryByText("revised summary")).not.toBeInTheDocument()
+    expect(
+      screen.queryByTestId("workflow-terminal-card")
+    ).not.toBeInTheDocument()
+  })
+
+  it("closes a settled overlay after it was collapsed to the chip", () => {
+    renderOverlay([
+      run({
+        state: "completed",
+        result_summary: "first summary",
+      }),
+    ])
+    fireEvent.click(screen.getByRole("button", { name: "Collapse workflow" }))
+    fireEvent.click(screen.getByRole("button", { name: "Close workflow" }))
+    expect(
+      screen.queryByRole("button", { name: /deep-research/ })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByTestId("workflow-terminal-card")
+    ).not.toBeInTheDocument()
+  })
+
+  it("shows a new run after the previous card was dismissed", () => {
+    const settled = run({
+      state: "completed",
+      result_summary: "first summary",
+    })
+    const { rerender } = renderOverlay([settled])
+    fireEvent.click(screen.getByRole("button", { name: "Close workflow" }))
+
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <WorkflowProgressDockProvider
+          runs={[
+            settled,
+            run({
+              run_id: "wf_2",
+              name: "follow-up",
+              current_phase: "Research",
+            }),
+          ]}
+        >
+          <WorkflowProgressOverlay placement="overlay" />
+        </WorkflowProgressDockProvider>
+      </NextIntlClientProvider>
+    )
+    expect(screen.getByText("follow-up")).toBeInTheDocument()
+    expect(screen.queryByText("first summary")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Close workflow" })
+    ).not.toBeInTheDocument()
+  })
 })

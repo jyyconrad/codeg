@@ -54,7 +54,7 @@ export default function QrGenerateTool() {
       input={input}
       onInputChange={setInput}
       inputLabel={t("input")}
-      downloadFilename="qr.svg"
+      onDownload={downloadSvg}
       result={ready ? payload : ""}
       example="https://example.com"
       params={

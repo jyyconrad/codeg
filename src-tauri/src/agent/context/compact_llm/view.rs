@@ -202,7 +202,26 @@ impl CompactLlmCompactor {
         let sandbox = CompactLlmSandbox::new(pending_dir.clone(), &self.config);
         let branch =
             CompactLlmBranch::new(self.client.clone(), self.config.clone(), self.control());
-        let carry_text = previous.map(|c| summary_text_of(&c.summary_message));
+        // Carry the expanded prior view so attachment bodies from an earlier
+        // round remain available to the next summary prompt. The checkpoint's
+        // summary_message only contains the first text part; files live in the
+        // committed attachment directory.
+        let carry_text = previous
+            .map(|c| {
+                let root = match c.status {
+                    super::CompactLlmCheckpointStatus::Committed => {
+                        self.store.committed_files_dir(&c.id)
+                    }
+                    super::CompactLlmCheckpointStatus::Pending => {
+                        self.store.pending_files_dir(&c.id)
+                    }
+                };
+                self.store
+                    .expand_summary_at(c, &root)
+                    .map(|message| summary_text_of(&message))
+                    .map_err(MemoryError::from)
+            })
+            .transpose()?;
         let output = match branch
             .run(conversation_id, new_slice, carry_text.as_deref(), &sandbox)
             .await
@@ -323,6 +342,10 @@ impl CompactLlmSessionView {
         self.compacting.policy().bind_scope(scope);
     }
 
+    pub fn set_control(&self, control: CompactionControl) {
+        self.compactor.set_control(control.clone());
+    }
+
     pub fn forget(&self) {
         self.compacting.forget(&self.conversation_id);
         *self
@@ -339,8 +362,41 @@ impl CompactLlmSessionView {
         budget: BudgetConfig,
         control: CompactionControl,
     ) -> Result<LoadedHistory, MemoryError> {
+        self.load_inner(pending, preamble, tool_schemas, budget, control, false)
+            .await
+    }
+
+    pub async fn force_compact(
+        &self,
+        pending: &Message,
+        preamble: &str,
+        tool_schemas: &[Value],
+        budget: BudgetConfig,
+    ) -> Result<LoadedHistory, MemoryError> {
+        let control = self.compactor.control();
+        self.load_inner(pending, preamble, tool_schemas, budget, control, true)
+            .await
+    }
+
+    async fn load_inner(
+        &self,
+        pending: &Message,
+        preamble: &str,
+        tool_schemas: &[Value],
+        budget: BudgetConfig,
+        control: CompactionControl,
+        force: bool,
+    ) -> Result<LoadedHistory, MemoryError> {
+        if control.is_cancelled() {
+            return Err(CompactLlmError::Cancelled.into());
+        }
         let _serial = self.load_lock.lock().await;
-        let active = self.store.recover().await.map_err(MemoryError::from)?;
+        let active = self
+            .store
+            .recover()
+            .await
+            .map_err(MemoryError::from)?
+            .filter(|cp| cp.fingerprint == self.compactor.config.fingerprint());
         let committed = self.inner.load_committed().await?;
         let pending_seq = bind_seq_excluding_pending(&committed, pending);
         self.inner.bind_history_before(pending_seq).await;
@@ -349,13 +405,42 @@ impl CompactLlmSessionView {
             .as_ref()
             .map(|c| c.covers_through_seq as usize)
             .or_else(|| self.covers_through_seq());
+        let input_budget = budget
+            .input_budget()
+            .map_err(|err| MemoryError::Policy(format!("context_budget_exceeded: {err}")))?;
+        let fixed = estimate_request(preamble, tool_schemas, &[], pending);
+        let mut trigger_history = committed
+            .iter()
+            .take(pending_seq.saturating_sub(1) as usize)
+            .skip(covers.unwrap_or(0))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(active_cp) = active.as_ref() {
+            if let Ok(summary) = self.store.expand_summary(active_cp) {
+                trigger_history.insert(0, summary);
+            }
+        }
+        let trigger = input_budget.saturating_mul(u64::from(budget.compact_soft_percent)) / 100;
+        let history_budget = if force {
+            estimate_request("", &[], &[], pending).min(input_budget.saturating_sub(fixed).max(1))
+                as usize
+        } else if estimate_request(preamble, tool_schemas, &trigger_history, pending) <= trigger {
+            usize::MAX / 4
+        } else {
+            let target = input_budget
+                .saturating_mul(u64::from(budget.effective_compact_target_percent()))
+                / 100;
+            target.saturating_sub(fixed).max(1) as usize
+        };
+        self.compacting.policy().bind_token_budget(history_budget);
         self.compacting.policy().bind_scope(RequestScope {
             pending_prompt: Some(pending.clone()),
             covers_through_seq: covers,
+            protect_recent_user_turns: budget.compact_recent_turns,
             ..RequestScope::default()
         });
 
-        self.compactor.set_control(control);
+        self.compactor.set_control(control.clone());
         self.compactor
             .set_source_last_seq(pending_seq.saturating_sub(1));
         self.compactor
@@ -378,14 +463,9 @@ impl CompactLlmSessionView {
             committed.iter().take(n).cloned().collect()
         };
         let compacted = loaded != original;
-        if compacted {
-            if let Some(covers) = covers_through(&original, &loaded) {
-                *self
-                    .covers_through_seq
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(covers);
-            }
-        }
+        let loaded_coverage = compacted
+            .then(|| covers_through(&original, &loaded))
+            .flatten();
 
         let estimated_tokens = estimate_request(preamble, tool_schemas, &loaded, pending);
         let pending_id = self.compactor.take_pending_id();
@@ -411,8 +491,21 @@ impl CompactLlmSessionView {
             }
         }
 
+        if control.is_cancelled() {
+            if let Some(id) = pending_id {
+                let _ = self.store.abort_pending(&id).await;
+            }
+            self.compacting.forget(&self.conversation_id);
+            return Err(MemoryError::Internal("cancelled".into()));
+        }
         if let Some(id) = pending_id {
             self.store.commit(&id).await.map_err(MemoryError::from)?;
+        }
+        if let Some(covers) = loaded_coverage {
+            *self
+                .covers_through_seq
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(covers);
         }
 
         Ok(LoadedHistory {
@@ -745,7 +838,7 @@ mod tests {
                 &pending,
                 "preamble",
                 &[],
-                BudgetConfig::new(128_000, 4096),
+                BudgetConfig::new(1800, 128).with_compact(80, 2),
                 CompactionControl::new(CancellationToken::new()),
             )
             .await
@@ -773,7 +866,7 @@ mod tests {
                 &pending,
                 "preamble",
                 &[],
-                BudgetConfig::new(128_000, 4096),
+                BudgetConfig::new(1800, 128).with_compact(80, 2),
                 CompactionControl::new(CancellationToken::new()),
             )
             .await
@@ -803,7 +896,7 @@ mod tests {
         let err = view
             .load(
                 &pending,
-                "preamble",
+                &"preamble ".repeat(200),
                 &[],
                 BudgetConfig::new(1100, 1),
                 CompactionControl::new(CancellationToken::new()),

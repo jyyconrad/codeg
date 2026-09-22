@@ -32,6 +32,9 @@ const INCOMPLETE_LINK = "streamdown:incomplete-link"
 type MarkdownLinkProps = ComponentProps<"a"> & {
   // react-markdown passes the originating hast node; it must not reach the DOM.
   node?: unknown
+  /** Original workspace-relative target preserved before rehype-harden normalizes it. */
+  dataCodegFileTarget?: string
+  "data-codeg-file-target"?: string
 }
 
 /** Flatten a markdown link's children to plain text (used as the badge label). */
@@ -64,23 +67,31 @@ export function MarkdownLink({
   href,
   children,
   className,
+  dataCodegFileTarget,
+  "data-codeg-file-target": dashedFileTarget,
   ...rest
 }: MarkdownLinkProps) {
   const linkSafety = useStreamdownLinkSafety()
   const [modalOpen, setModalOpen] = useState(false)
 
   const isIncomplete = href === INCOMPLETE_LINK
+  const targetHref =
+    typeof dataCodegFileTarget === "string"
+      ? dataCodegFileTarget
+      : typeof dashedFileTarget === "string"
+        ? dashedFileTarget
+        : href
 
   // Deliberately NOT async: `openLinkWithSafety` opens the tab inside this
   // handler's own call stack, because awaiting the (synchronous) safety verdict
   // costs the user gesture that WebKit's popup blocker requires — see #410.
   const handleClick = useCallback(
     (event: MouseEvent<HTMLButtonElement>) => {
-      if (!href || isIncomplete) return
+      if (!targetHref || isIncomplete) return
       event.preventDefault()
-      openLinkWithSafety(href, linkSafety, () => setModalOpen(true))
+      openLinkWithSafety(targetHref, linkSafety, () => setModalOpen(true))
     },
-    [href, isIncomplete, linkSafety]
+    [isIncomplete, linkSafety, targetHref]
   )
 
   // No usable href: render an inert anchor, matching Streamdown's fallback.
@@ -109,14 +120,14 @@ export function MarkdownLink({
     if (reference) return <ReferenceBadge data={reference} />
   }
 
-  const kind = isIncomplete ? null : classifyResourceKind(href)
+  const kind = isIncomplete ? null : classifyResourceKind(targetHref ?? "")
   const Icon = kind ? RESOURCE_KIND_ICON[kind] : null
 
   const modalProps: LinkSafetyModalProps = {
-    url: href,
+    url: targetHref ?? "",
     isOpen: modalOpen,
     onClose: () => setModalOpen(false),
-    onConfirm: () => openExternalTab(href),
+    onConfirm: () => openExternalTab(targetHref ?? ""),
   }
 
   // A file reference — a `file://` uri (rewritten to a local path by
@@ -150,14 +161,14 @@ export function MarkdownLink({
     // `ReferenceBadge` renders `uri` as its own title and uses it for nothing
     // else, so both tooltips resolve from the same value. The `:line` suffix is
     // re-appended because the parser splits it off into its own field.
-    const target = parseLocalFileTarget(href)
+    const target = parseLocalFileTarget(targetHref ?? "")
     const displayPath = target
       ? `${target.path}${target.line ? `:${target.line}` : ""}`
-      : href
+      : (targetHref ?? "")
     const fileData: ReferenceAttrs = {
       refType: "file",
-      id: href,
-      label: nodeText(children) || href,
+      id: targetHref ?? "",
+      label: nodeText(children) || targetHref || "",
       uri: displayPath,
       meta: { fileKind: "file" },
     }
@@ -165,7 +176,7 @@ export function MarkdownLink({
       <>
         {/* Right-clicking the badge opens its actions (reveal in file manager /
             copy paths); a left click still opens the file. */}
-        <FileReferenceActions target={href}>
+        <FileReferenceActions target={targetHref ?? ""}>
           <button
             type="button"
             data-resource-kind="file"
@@ -188,7 +199,7 @@ export function MarkdownLink({
         data-incomplete={isIncomplete}
         data-streamdown="link"
         data-resource-kind={kind ?? undefined}
-        title={isIncomplete ? undefined : href}
+        title={isIncomplete ? undefined : targetHref}
         onClick={handleClick}
         className={cn(
           "wrap-anywhere appearance-none text-left font-medium text-primary underline",

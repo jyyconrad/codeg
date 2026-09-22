@@ -341,6 +341,7 @@ impl ChatChannelBackend for TelegramBackend {
                                                     provider_message_id: message
                                                         .get("message_id")
                                                         .and_then(json_scalar_to_string),
+                                                    extra_blocks: Vec::new(),
                                                 })
                                                 .await;
                                             if let Err(e) = send_result {
@@ -406,6 +407,7 @@ impl ChatChannelBackend for TelegramBackend {
                                                 provider_message_id: message
                                                     .get("message_id")
                                                     .and_then(json_scalar_to_string),
+                                                extra_blocks: Vec::new(),
                                             })
                                             .await;
                                         if let Err(e) = send_result {

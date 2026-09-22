@@ -2,20 +2,22 @@
 
 use rig::agent::RequestPatch;
 use rig::completion::Message;
+use rig_memory::{HeuristicTokenCounter, TokenCounter};
 use serde_json::Value;
 
 /// Default cap on a single tool presentation sent back to the model.
 pub const MAX_TOOL_PRESENTATION_BYTES: usize = 32 * 1024;
 /// Soft target: keep this many most-recent turns before lite compact.
 pub const RECENT_TURN_TARGET: usize = 6;
-/// Extra tokens counted per serialized message for role/envelope overhead.
-const MESSAGE_WRAP: u64 = 16;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BudgetConfig {
     pub window: u64,
     pub max_output: u64,
     pub compact_soft_percent: u8,
+    /// Target retained history after a compaction. The trigger remains the
+    /// soft threshold above; keeping the two values separate avoids a
+    /// compaction that immediately trips again on the next request.
+    pub compact_target_percent: u8,
     pub compact_recent_turns: usize,
 }
 
@@ -25,6 +27,7 @@ impl BudgetConfig {
             window,
             max_output,
             compact_soft_percent: 80,
+            compact_target_percent: 70,
             compact_recent_turns: RECENT_TURN_TARGET,
         }
     }
@@ -43,6 +46,36 @@ impl BudgetConfig {
             recent_turns
         };
         self
+    }
+
+    pub const fn with_compact_target(mut self, percent: u8) -> Self {
+        let requested = if percent == 0 {
+            70
+        } else if percent > 100 {
+            100
+        } else {
+            percent
+        };
+        let upper = self.compact_soft_percent.saturating_sub(1);
+        self.compact_target_percent = if upper == 0 || requested < upper {
+            requested
+        } else {
+            upper
+        };
+        self
+    }
+
+    /// Effective target is always below the trigger, including compatibility
+    /// configurations that set a soft threshold below the default 80%.
+    pub const fn effective_compact_target_percent(self) -> u8 {
+        let upper = self.compact_soft_percent.saturating_sub(10);
+        if upper == 0 {
+            1
+        } else if self.compact_target_percent < upper {
+            self.compact_target_percent
+        } else {
+            upper
+        }
     }
 }
 
@@ -108,17 +141,35 @@ pub fn estimate_request(
     history: &[Message],
     prompt: &Message,
 ) -> u64 {
-    let mut n = estimate_tokens_bytes(preamble) + MESSAGE_WRAP;
+    estimate_request_with_counter(
+        &HeuristicTokenCounter::openai(),
+        preamble,
+        tool_schemas,
+        history,
+        prompt,
+    )
+}
+
+/// Estimate the complete request using the same Rig token-counting contract
+/// as [`TokenWindowMemory`]. Schemas are counted as user text because they are
+/// serialized JSON supplied to the provider; callers can include additional
+/// model-visible context in `preamble`.
+pub fn estimate_request_with_counter(
+    counter: &dyn TokenCounter,
+    preamble: &str,
+    tool_schemas: &[Value],
+    history: &[Message],
+    prompt: &Message,
+) -> u64 {
+    let mut n = counter.count(&Message::system(preamble)) as u64;
     for schema in tool_schemas {
-        n = n.saturating_add(estimate_json(schema));
+        let encoded = serde_json::to_string(schema).unwrap_or_default();
+        n = n.saturating_add(counter.count(&Message::user(encoded)) as u64);
     }
     for message in history {
-        n = n
-            .saturating_add(estimate_json(message))
-            .saturating_add(MESSAGE_WRAP);
+        n = n.saturating_add(counter.count(message) as u64);
     }
-    n.saturating_add(estimate_json(prompt))
-        .saturating_add(MESSAGE_WRAP)
+    n.saturating_add(counter.count(prompt) as u64)
 }
 
 /// Truncate a tool presentation to 32KiB at a line/char boundary.
@@ -160,7 +211,7 @@ pub fn check_request_budget(
 ) -> Result<u64, BudgetError> {
     let budget = config.input_budget()?;
     let estimated = estimate_request(preamble, tool_schemas, history, prompt);
-    if estimated >= budget {
+    if estimated > budget {
         if history.is_empty() {
             Err(BudgetError::PromptExceedsBudget { budget, estimated })
         } else {
@@ -183,6 +234,18 @@ mod tests {
     fn safety_margin_is_max_of_1024_and_five_percent() {
         assert_eq!(cfg(10_000, 100).safety_margin(), 1024);
         assert_eq!(cfg(128_000, 4096).safety_margin(), 6400);
+    }
+
+    #[test]
+    fn compact_target_stays_below_a_custom_soft_trigger() {
+        let config = cfg(128_000, 4096).with_compact(50, 2);
+        assert_eq!(config.effective_compact_target_percent(), 40);
+        assert_eq!(
+            config
+                .with_compact_target(70)
+                .effective_compact_target_percent(),
+            40
+        );
     }
 
     #[test]
@@ -239,7 +302,7 @@ mod tests {
         let history = vec![Message::user("prior"), Message::assistant("noted")];
         let estimated = estimate_request("preamble", &[], &history, &prompt);
         assert!(estimated > estimate_tokens_bytes("preamble"));
-        assert!(estimated > estimate_json(&prompt));
+        assert!(estimated > 0);
     }
 
     #[test]

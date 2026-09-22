@@ -42,7 +42,8 @@ pub use recall::RecallTool;
 pub use search::{GlobTool, GrepTool};
 pub use skill::{LoadedSkills, SkillCatalog, SkillTool};
 pub use subagent::{
-    attach_subagent_extra_context, NativeInject, SubagentTable, SubagentTool, SUBAGENT_SPEC_ID,
+    attach_subagent_extra_context, NativeInject, ParentRuntime, SubagentTable, SubagentTool,
+    SUBAGENT_SPEC_ID,
 };
 
 /// Native tool call context: identity, facts, cancel, cwd, and fs runtime.

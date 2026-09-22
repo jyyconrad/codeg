@@ -629,9 +629,13 @@ async fn last_request_usage_is_not_the_run_aggregate() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn batch_a_success_b_cancel_keeps_a_and_does_not_replay() {
-    use crate::agent::context::{CallIdentityBridge, ContextStore, FactRecorder, ToolOutcome};
+    use crate::agent::context::{
+        CallIdentityBridge, ContextStore, FactRecorder, LlmCompactor, SessionMemory, ToolOutcome,
+    };
+    use crate::agent::model::CodegLlmClient;
     use crate::agent::tools::SideEffectTool;
 
+    let dir = tempfile::tempdir().expect("dir");
     let store = std::sync::Arc::new(std::sync::Mutex::new(ContextStore::new("s")));
     let recorder = std::sync::Arc::new(FactRecorder::memory(std::sync::Arc::clone(&store)));
     let identity = std::sync::Arc::new(CallIdentityBridge::new());
@@ -640,7 +644,7 @@ async fn batch_a_success_b_cancel_keeps_a_and_does_not_replay() {
         std::sync::Arc::clone(&recorder),
         1,
     );
-    let native = native_state(
+    let mut native = native_state(
         std::sync::Arc::clone(&store),
         std::sync::Arc::clone(&recorder),
         std::sync::Arc::clone(&identity),
@@ -653,6 +657,22 @@ async fn batch_a_success_b_cancel_keeps_a_and_does_not_replay() {
     ])])
     .await;
     let client = completions_client("sk-test", &base).expect("client");
+    let session = std::sync::Arc::new(SessionMemory::open_in(
+        dir.path(),
+        "cancelled-tool-run",
+        dir.path().to_str().expect("cwd"),
+        usize::MAX / 4,
+        "codeg-test",
+        LlmCompactor::new(
+            CodegLlmClient::Completions(client.clone()),
+            "codeg-test",
+            "summarize",
+            128,
+        ),
+    ));
+    let prompt = Message::user("write A then cancel B");
+    session.begin_run(&prompt).await.expect("begin run");
+    native.session_memory = Some(std::sync::Arc::clone(&session));
     let agent = client
         .agent("codeg-test")
         .tool(tool.clone())
@@ -662,7 +682,7 @@ async fn batch_a_success_b_cancel_keeps_a_and_does_not_replay() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let hook = CodegHook::waiting(HookTrace::new(), tx, cancel.clone()).with_native(native);
     let stream = agent
-        .runner("write A then B")
+        .runner(prompt)
         .max_turns(DEFAULT_MAX_TURNS)
         .tool_concurrency(1)
         .add_hook(hook)
@@ -687,6 +707,13 @@ async fn batch_a_success_b_cancel_keeps_a_and_does_not_replay() {
         Some(ToolOutcome::Cancelled)
     );
     assert!(store.lock().expect("store").auto_replay_ids().is_empty());
+
+    let committed = session.inner().load_committed().await.expect("committed");
+    let committed_dump = serde_json::to_string(&committed).expect("serialize committed");
+    assert!(
+        !committed_dump.contains("call_a") && !committed_dump.contains("call_b"),
+        "cancelled tool batch must not persist an assistant tool call without results: {committed_dump}"
+    );
 }
 
 #[tokio::test]

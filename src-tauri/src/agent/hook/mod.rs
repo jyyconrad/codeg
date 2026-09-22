@@ -4,10 +4,10 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use rig::agent::{
-    AgentHook, CommittedMessages, CommittedMessagesAction, CompletionCallAction,
-    CompletionCallEvent, HookContext, InvalidToolCallAction, InvalidToolCallContext,
-    ModelTurnAction, ModelTurnFinished, ObservationAction, RequestPatch, TextDelta, ToolCall,
-    ToolCallAction, ToolResultAction, ToolResultEvent,
+    AgentHook, CommittedMessages, CommittedMessagesAction, CommittedMessagesNext,
+    CompletionCallAction, CompletionCallEvent, HookContext, InvalidToolCallAction,
+    InvalidToolCallContext, ModelTurnAction, ModelTurnFinished, ObservationAction, RequestPatch,
+    TextDelta, ToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
 };
 use rig::completion::Message;
 use serde_json::Value;
@@ -43,6 +43,8 @@ pub struct PendingPermission {
     pub tool_name: String,
     pub tool_call_id: Option<String>,
     pub args: String,
+    /// Ignore a queued request if its owning run was cancelled meanwhile.
+    pub cancel: CancellationToken,
     pub reply: oneshot::Sender<PermissionDecision>,
 }
 
@@ -256,6 +258,20 @@ impl CodegHook {
         self
     }
 
+    /// Snapshot the session recovery inputs for a provider-level retry
+    /// adapter. The adapter must keep all persistence and cancellation on the
+    /// existing hook/session path.
+    pub(crate) fn recovery_context(
+        &self,
+    ) -> Option<(Arc<SessionMemory>, BudgetConfig, CancellationToken)> {
+        self.native.as_ref().and_then(|native| {
+            native
+                .session_memory
+                .as_ref()
+                .map(|memory| (memory.clone(), native.budget, self.cancel.clone()))
+        })
+    }
+
     /// Skip permission cards for mutating tools. Host events still emit.
     pub fn auto_allow_permissions(mut self) -> Self {
         self.permission = PermissionPolicy::AutoAllow;
@@ -414,17 +430,25 @@ impl AgentHook for CodegHook {
         _ctx: &HookContext,
         event: CommittedMessages<'_>,
     ) -> CommittedMessagesAction {
+        // A CallTools checkpoint contains the assistant tool calls before their
+        // results exist. Defer it until the following checkpoint so cancelling
+        // a tool batch cannot leave an unpaired assistant message on disk.
+        // Cancellation must be checked before persistence because Rig emits a
+        // final Failed checkpoint after the cancellation reaches next_step().
+        if self.cancel.is_cancelled() {
+            return CommittedMessagesAction::stop("cancelled");
+        }
+        if matches!(event.next, CommittedMessagesNext::CallTools) {
+            return CommittedMessagesAction::continue_run();
+        }
         if let Some(session) = self
             .native
             .as_ref()
             .and_then(|native| native.session_memory.as_ref())
         {
-            if let Err(err) = session.persist_if_new(event.messages).await {
+            if let Err(err) = session.recorder().persist_committed(event.messages).await {
                 return CommittedMessagesAction::stop(err.to_string());
             }
-        }
-        if self.cancel.is_cancelled() {
-            return CommittedMessagesAction::stop("cancelled");
         }
         CommittedMessagesAction::continue_run()
     }
@@ -536,6 +560,7 @@ impl AgentHook for CodegHook {
             tool_name: event.tool_name.to_string(),
             tool_call_id: event.tool_call_id.map(str::to_string),
             args: event.args.to_string(),
+            cancel: self.cancel.clone(),
             reply: reply_tx,
         };
         if tx.send(pending).await.is_err() {
@@ -668,9 +693,11 @@ async fn native_without_memory_completion(
     native: &NativeRunState,
     event: CompletionCallEvent<'_>,
 ) -> CompletionCallAction {
+    let budget_preamble =
+        crate::agent::builtin_skills::budget_preamble(&native.preamble, &native.tool_schemas);
     match check_request_budget(
         native.budget,
-        &native.preamble,
+        &budget_preamble,
         &native.tool_schemas,
         event.history,
         event.prompt,
@@ -704,12 +731,14 @@ async fn session_memory_completion(
     let Some(session) = native.session_memory.as_ref() else {
         return CompletionCallAction::continue_run();
     };
+    let budget_preamble =
+        crate::agent::builtin_skills::budget_preamble(&native.preamble, &native.tool_schemas);
     let prompt = event.prompt.clone();
     let live_history = event.history.to_vec();
     let loaded = match session
         .load_history(
             &prompt,
-            &native.preamble,
+            &budget_preamble,
             &native.tool_schemas,
             native.budget,
         )

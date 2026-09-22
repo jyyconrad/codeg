@@ -27,6 +27,7 @@ use crate::acp::types::{
     UserMessageBlock,
 };
 use crate::acp_transcript::{now_epoch_ms, record_header_critical_in, TranscriptHeader};
+use crate::agent::builtin_skills::budget_preamble;
 use crate::agent::code_intel::{
     load_code_intel_config, resolve_codegraph_binary, LspPool, ProjectCodeIntelSupervisor,
 };
@@ -374,18 +375,40 @@ async fn run_session(
         &artifacts_dir,
         shutdown.token(),
     );
+    let mut session_memory_model_id = model_id.clone();
     let intel_lease =
         ProjectCodeIntelSupervisor::acquire(args.launch_cwd.clone(), Arc::clone(&fs)).await;
     let lsp_pool = intel_lease.as_ref().and_then(|lease| lease.lsp_pool());
     let _intel_lease = intel_lease;
     let mut cmd_rx = std::mem::replace(&mut args.cmd_rx, mpsc::channel(1).1);
     let (inject_tx, mut inject_rx) = mpsc::channel::<NativeInject>(8);
+    // Children outlive an individual parent turn. Keep their permission
+    // requests reachable until the session closes or the child is cancelled.
+    let (child_permission_tx, mut child_permission_rx) = mpsc::channel::<PendingPermission>(8);
+    let child_permission_coordinator = TurnCoordinator::new();
+    child_permission_coordinator.begin();
     let subagents = Arc::new(Mutex::new(SubagentTable::default()));
     let mut pending_injects: VecDeque<String> = VecDeque::new();
 
     let mut running: Option<RunningTurn> = None;
     let mut closing_err: Option<String> = None;
     loop {
+        // A model change takes effect between turns, together with its
+        // context window and implicit compaction model. Keep the confirmed
+        // message store; discard only the previous in-process memory view.
+        if running.is_none() && session_memory_model_id != model_id {
+            session_memory.forget();
+            session_memory = build_session_memory(
+                &session_id,
+                &args.launch_cwd.to_string_lossy(),
+                &client,
+                &model_id,
+                args,
+                &artifacts_dir,
+                shutdown.token(),
+            );
+            session_memory_model_id = model_id.clone();
+        }
         if shutdown.is_cancelled() {
             shutdown_subagents(&subagents, &mut inject_rx, &mut pending_injects);
             if let SettleOutcome::Fatal(message) = settle_running(
@@ -432,6 +455,11 @@ async fn run_session(
                     }
                     break;
                 }
+                pending = child_permission_rx.recv() => {
+                    if let Some(pending) = pending {
+                        publish_permission(&args.session_state, &args.emitter, &child_permission_coordinator, pending).await;
+                    }
+                }
                 inject = inject_rx.recv() => {
                     if let Some(inject) = inject {
                         let text = apply_subagent_finished(
@@ -471,6 +499,7 @@ async fn run_session(
                         }
                         Some(ConnectionCommand::Cancel) => {
                             cancel_turn_subagents(&subagents, &mut inject_rx, &mut pending_injects);
+                            resolve_cancelled_permissions(&child_permission_coordinator, &args.session_state, &args.emitter).await;
                             let taken = running.take();
                             if let SettleOutcome::Fatal(message) = settle_running(
                                 taken,
@@ -492,7 +521,9 @@ async fn run_session(
                             }
                         }
                         Some(ConnectionCommand::RespondPermission { request_id, option_id }) => {
-                            if coordinator.resolve(&request_id, &option_id) {
+                            if coordinator.resolve(&request_id, &option_id)
+                                || child_permission_coordinator.resolve(&request_id, &option_id)
+                            {
                                 emit_with_state(
                                     &args.session_state,
                                     &args.emitter,
@@ -607,6 +638,7 @@ async fn run_session(
                 lsp_pool.clone(),
                 Arc::clone(&subagents),
                 inject_tx.clone(),
+                child_permission_tx.clone(),
                 Arc::clone(&session_mode),
                 artifacts_dir.clone(),
                 Arc::clone(&pending_continue),
@@ -632,6 +664,11 @@ async fn run_session(
                     shutdown_subagents(&subagents, &mut inject_rx, &mut pending_injects);
                     break;
                 }
+                pending = child_permission_rx.recv() => {
+                    if let Some(pending) = pending {
+                        publish_permission(&args.session_state, &args.emitter, &child_permission_coordinator, pending).await;
+                    }
+                }
                 inject = inject_rx.recv() => {
                     if let Some(inject) = inject {
                         let text = apply_subagent_finished(
@@ -652,7 +689,8 @@ async fn run_session(
                             break;
                         }
                         Some(ConnectionCommand::Cancel) => {
-                            // Idle cancel is a no-op besides draining leftover cards.
+                            cancel_turn_subagents(&subagents, &mut inject_rx, &mut pending_injects);
+                            resolve_cancelled_permissions(&child_permission_coordinator, &args.session_state, &args.emitter).await;
                             for request_id in coordinator.drain_cancelled() {
                                 emit_with_state(
                                     &args.session_state,
@@ -685,6 +723,7 @@ async fn run_session(
                                 lsp_pool.clone(),
                                 Arc::clone(&subagents),
                                 inject_tx.clone(),
+                                child_permission_tx.clone(),
                                 Arc::clone(&session_mode),
                                 artifacts_dir.clone(),
                                 Arc::clone(&pending_continue),
@@ -706,7 +745,9 @@ async fn run_session(
                             }
                         }
                         Some(ConnectionCommand::RespondPermission { request_id, option_id }) => {
-                            if coordinator.resolve(&request_id, &option_id) {
+                            if coordinator.resolve(&request_id, &option_id)
+                                || child_permission_coordinator.resolve(&request_id, &option_id)
+                            {
                                 emit_with_state(
                                     &args.session_state,
                                     &args.emitter,
@@ -784,6 +825,12 @@ async fn run_session(
 
     subagents.lock().expect("subagent table").shutdown();
     mcp.close().await;
+    resolve_cancelled_permissions(
+        &child_permission_coordinator,
+        &args.session_state,
+        &args.emitter,
+    )
+    .await;
     session_memory.forget();
     SessionOutcome { err: closing_err }
 }
@@ -997,6 +1044,7 @@ async fn start_prompt(
     lsp_pool: Option<Arc<LspPool>>,
     subagents: Arc<Mutex<SubagentTable>>,
     inject_tx: mpsc::Sender<NativeInject>,
+    child_permissions: mpsc::Sender<PendingPermission>,
     session_mode: Arc<tokio::sync::RwLock<String>>,
     artifacts_dir: std::path::PathBuf,
     pending_continue: Arc<Mutex<Option<String>>>,
@@ -1084,7 +1132,7 @@ async fn start_prompt(
     let max_output = u64::from(args.effective_config.max_output_tokens);
     let write = (!in_plan).then(|| WriteFileTool::new(tool_ctx.clone()));
     let edit = (!in_plan).then(|| EditFileTool::new(tool_ctx.clone()));
-    let bash = (!in_plan).then(|| BashTool::new(tool_ctx.clone(), terminals));
+    let bash = (!in_plan).then(|| BashTool::new(tool_ctx.clone(), Arc::clone(&terminals)));
     let plan = (!in_plan).then(|| {
         UpdatePlanTool::new(
             tool_ctx.clone(),
@@ -1121,6 +1169,7 @@ async fn start_prompt(
         .context_inject
         .tree
         .then(|| crate::agent::workspace_context::workspace_tree_markdown(&args.launch_cwd));
+    let (perm_tx, perm_rx) = mpsc::channel(8);
     let mut subagent_tool = SubagentTool::new(
         tool_ctx.clone(),
         client.clone(),
@@ -1136,11 +1185,17 @@ async fn start_prompt(
         artifacts_dir.clone(),
     )
     .with_workspace_tree(workspace_tree)
-    .with_owners(args.shutdown.owners());
+    .with_owners(args.shutdown.owners())
+    .with_model_context_windows(args.effective_config.context_windows.clone())
+    .with_parent_runtime(crate::agent::tools::subagent::ParentRuntime {
+        terminals,
+        mcp: Arc::clone(&mcp),
+        permissions: Some(child_permissions),
+        auto_allow: auto_allow_tools,
+    });
     if let Some(pool) = lsp_pool.as_ref() {
         subagent_tool = subagent_tool.with_lsp_pool(Arc::clone(pool));
     }
-    let subagent = Some(subagent_tool);
     let mcp_tools = {
         let tools = mcp.dynamic_tools(tool_ctx.clone());
         if in_plan {
@@ -1209,9 +1264,6 @@ async fn start_prompt(
     if let Some(tool) = exit_plan.as_ref() {
         tool_schemas.push(schema_for(tool));
     }
-    if let Some(tool) = subagent.as_ref() {
-        tool_schemas.push(schema_for(tool));
-    }
     let include_echo = args.include_echo_tool;
     if include_echo {
         tool_schemas.push(schema_for(&EchoTool::new()));
@@ -1229,23 +1281,25 @@ async fn start_prompt(
             tool_schemas.push(binding.schema());
         }
     }
-    session_memory
-        .begin_run(&prompt)
-        .await
-        .map_err(|err| err.to_string())?;
-    let loaded = session_memory
-        .load_history(
-            &prompt,
-            &turn_preamble,
-            &tool_schemas,
-            BudgetConfig::new(window, max_output).with_compact(
-                args.effective_config.compact_soft_percent,
-                args.effective_config.compact_recent_turns as usize,
-            ),
-        )
-        .await
-        .map_err(|err| err.to_string())?;
-    let history = loaded.messages;
+    // The child ceiling is the parent's actual tool set for this mode, plus
+    // its own confined report writer. Host control tools are not supported
+    // by the child and are filtered out by SubagentTool's registry.
+    let mut child_ceiling = tool_schemas
+        .iter()
+        .filter_map(|schema| schema.get("name").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    child_ceiling.push("write_explore_report".to_string());
+    let subagent = Some(subagent_tool.with_allowed_tools(child_ceiling));
+    if let Some(tool) = subagent.as_ref() {
+        tool_schemas.push(schema_for(tool));
+    }
+    let budget = BudgetConfig::new(window, max_output).with_compact(
+        args.effective_config.compact_soft_percent,
+        args.effective_config.compact_recent_turns as usize,
+    );
+    let history_preamble = budget_preamble(&turn_preamble, &tool_schemas);
+    let history_schemas = tool_schemas.clone();
     let native = NativeRunState {
         turn_id,
         turn_key: turn_key.clone(),
@@ -1264,7 +1318,6 @@ async fn start_prompt(
         mcp_readonly: Arc::new(mcp_readonly),
         session_memory: Some(Arc::clone(&session_memory)),
     };
-    let (perm_tx, perm_rx) = mpsc::channel(8);
     let host = HostBridge {
         emitter: args.emitter.clone(),
         session_state: Arc::clone(&args.session_state),
@@ -1281,8 +1334,9 @@ async fn start_prompt(
         }
     };
 
-    // Build the runner on the worker so the command loop keeps polling
-    // `cmd_rx` during the first HTTP round-trip (K25).
+    // History preparation may call a compaction model. Keep it on the
+    // worker so Cancel/Disconnect/permissions stay reachable during that
+    // first request as well as during the main Rig loop.
     let client = client.clone();
     let preamble = turn_preamble;
     let model_id = model_id.to_string();
@@ -1290,6 +1344,19 @@ async fn start_prompt(
     let echo = include_echo.then(EchoTool::new);
     let max_turns = args.effective_config.max_turns.max(1) as usize;
     let worker = tokio::spawn(async move {
+        let prepared = async {
+            session_memory.begin_run(&prompt).await?;
+            session_memory
+                .load_history(&prompt, &history_preamble, &history_schemas, budget)
+                .await
+        }
+        .await;
+        let history = match prepared {
+            Ok(loaded) if !worker_cancel.is_cancelled() => loaded.messages,
+            _ if worker_cancel.is_cancelled() => return NativeTurnOutcome::Cancelled,
+            Err(err) => return NativeTurnOutcome::Failed(err.to_string()),
+            Ok(_) => unreachable!(),
+        };
         run_native_turn(NativeTurnRequest {
             client,
             model_id,
@@ -1430,12 +1497,25 @@ async fn finish_turn(
     .await;
 }
 
+async fn resolve_cancelled_permissions(
+    coordinator: &TurnCoordinator,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+) {
+    for request_id in coordinator.drain_cancelled() {
+        emit_with_state(state, emitter, AcpEvent::PermissionResolved { request_id }).await;
+    }
+}
+
 async fn publish_permission(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     coordinator: &TurnCoordinator,
     pending: PendingPermission,
 ) {
+    if pending.reply.is_closed() || pending.cancel.is_cancelled() {
+        return;
+    }
     let request_id = uuid::Uuid::new_v4().to_string();
     let tool_call = json!({
         "toolCallId": pending.tool_call_id.clone().unwrap_or_else(|| request_id.clone()),
@@ -1885,5 +1965,46 @@ impl Drop for NativeDropGuard {
                 self.shutdown.mark_complete();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_child_permission_queued_after_drain_does_not_publish_a_card() {
+        let session = SessionState::new(
+            "permission-test".into(),
+            crate::models::agent::AgentType::CodegAgent,
+            None,
+            "main".into(),
+            None,
+        );
+        let mut events = session.event_stream().subscribe();
+        let state = Arc::new(RwLock::new(session));
+        let coordinator = TurnCoordinator::new();
+        coordinator.begin();
+        let cancel = CancellationToken::new();
+        let (reply, _receiver) = tokio::sync::oneshot::channel();
+        cancel.cancel();
+        publish_permission(
+            &state,
+            &EventEmitter::Noop,
+            &coordinator,
+            PendingPermission {
+                tool_name: "write_file".into(),
+                tool_call_id: Some("late-child-write".into()),
+                args: "{}".into(),
+                cancel,
+                reply,
+            },
+        )
+        .await;
+        assert!(
+            events.try_recv().is_err(),
+            "cancelled child must not leave a permission card"
+        );
+        assert!(coordinator.drain_cancelled().is_empty());
     }
 }

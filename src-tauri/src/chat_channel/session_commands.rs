@@ -32,6 +32,7 @@ use crate::web::event_bridge::EventEmitter;
 pub struct FollowupRequest<'a> {
     pub db: &'a DatabaseConnection,
     pub text: &'a str,
+    pub extra_blocks: &'a [PromptInputBlock],
     pub channel_id: i32,
     pub sender_id: &'a str,
     pub target: &'a ChannelMessageTarget,
@@ -74,6 +75,7 @@ pub enum CommandPostAction {
         folder_id: i32,
         conversation_id: i32,
         text: String,
+        extra_blocks: Vec<PromptInputBlock>,
         channel_id: i32,
         sender_id: String,
         response_target: ChannelMessageTarget,
@@ -682,6 +684,7 @@ pub async fn handle_task(
             folder_id,
             conversation_id: conv.id,
             text: task_description.to_string(),
+            extra_blocks: Vec::new(),
             channel_id,
             sender_id: sender_id.to_string(),
             response_target: session_target,
@@ -703,6 +706,7 @@ pub async fn handle_post_action(
             folder_id,
             conversation_id,
             text,
+            extra_blocks,
             channel_id,
             sender_id,
             response_target,
@@ -715,6 +719,7 @@ pub async fn handle_post_action(
                 folder_id,
                 conversation_id,
                 &text,
+                &extra_blocks,
             )
             .await
             {
@@ -1189,12 +1194,18 @@ pub async fn handle_followup(req: FollowupRequest<'_>) -> RichMessage {
     }
 
     // Send prompt to agent
-    if let Err(e) = send_chat_prompt(req.conn_mgr, &connection_id, req.text).await {
+    if let Err(e) = send_chat_prompt(req.conn_mgr, &connection_id, req.text, req.extra_blocks).await
+    {
         // A turn is already in flight on this (shared) connection — another
         // client, or a previous prompt still running. This is transient: the
         // connection is alive, so do NOT tear down the bridge/session. Keep the
         // follow-up on this conversation and retry it after TurnComplete.
         if matches!(e, crate::acp::error::AcpError::TurnInProgress) {
+            if !req.extra_blocks.is_empty() {
+                tracing::warn!(
+                    "[ChatChannel] follow-up attachments dropped while the agent is busy"
+                );
+            }
             let deferred = defer_followup_prompt(req.bridge, &connection_id, req.text).await;
             return RichMessage::info(if deferred {
                 i18n::task_deferred_busy(req.lang).to_string()
@@ -1265,7 +1276,7 @@ pub async fn handle_folder_bound_inbound(
             result
         }
         FolderInboundAction::StartNew => {
-            let result = handle_task(
+            let mut result = handle_task(
                 db,
                 cmd.command_text.trim(),
                 cmd.channel_id,
@@ -1280,6 +1291,11 @@ pub async fn handle_folder_bound_inbound(
                 data_dir,
             )
             .await;
+            if let Some(CommandPostAction::SendLinkedPrompt { extra_blocks, .. }) =
+                &mut result.post_action
+            {
+                extra_blocks.clone_from(&cmd.extra_blocks);
+            }
             if let Some(CommandPostAction::SendLinkedPrompt {
                 conversation_id, ..
             }) = &result.post_action
@@ -1324,6 +1340,7 @@ async fn continue_folder_conversation(
         let followup = FollowupRequest {
             db,
             text: cmd.command_text.trim(),
+            extra_blocks: &cmd.extra_blocks,
             channel_id: cmd.channel_id,
             sender_id: &cmd.sender_id,
             target: &cmd.target,
@@ -1434,10 +1451,16 @@ async fn continue_folder_conversation(
         folder.id,
         conv.id,
         cmd.command_text.trim(),
+        &cmd.extra_blocks,
     )
     .await
     {
         if matches!(e, crate::acp::error::AcpError::TurnInProgress) {
+            if !cmd.extra_blocks.is_empty() {
+                tracing::warn!(
+                    "[ChatChannel] follow-up attachments dropped while the agent is busy"
+                );
+            }
             let message =
                 if defer_followup_prompt(bridge, &connection_id, cmd.command_text.trim()).await {
                     i18n::task_deferred_busy(lang).to_string()
@@ -1532,8 +1555,14 @@ async fn send_followup_to_session(
         }
     }
 
-    if let Err(e) = send_chat_prompt(req.conn_mgr, &connection_id, req.text).await {
+    if let Err(e) = send_chat_prompt(req.conn_mgr, &connection_id, req.text, req.extra_blocks).await
+    {
         if matches!(e, crate::acp::error::AcpError::TurnInProgress) {
+            if !req.extra_blocks.is_empty() {
+                tracing::warn!(
+                    "[ChatChannel] follow-up attachments dropped while the agent is busy"
+                );
+            }
             let deferred = defer_followup_prompt(req.bridge, &connection_id, req.text).await;
             return RichMessage::info(if deferred {
                 i18n::task_deferred_busy(req.lang).to_string()
@@ -1654,6 +1683,7 @@ async fn resume_topic_binding_and_send_followup(
         folder.id,
         conv.id,
         req.text,
+        req.extra_blocks,
     )
     .await
     {
@@ -1850,18 +1880,25 @@ async fn spawn_chat_connection_for_conversation(
     Ok((connection_id, folder))
 }
 
+fn chat_prompt_blocks(text: &str, extra: &[PromptInputBlock]) -> Vec<PromptInputBlock> {
+    let mut blocks = Vec::with_capacity(1 + extra.len());
+    if !text.is_empty() {
+        blocks.push(PromptInputBlock::Text {
+            text: text.to_string(),
+        });
+    }
+    blocks.extend(extra.iter().cloned());
+    blocks
+}
+
 async fn send_chat_prompt(
     conn_mgr: &ConnectionManager,
     connection_id: &str,
     text: &str,
+    extra: &[PromptInputBlock],
 ) -> Result<(), crate::acp::error::AcpError> {
     conn_mgr
-        .send_prompt(
-            connection_id,
-            vec![PromptInputBlock::Text {
-                text: text.to_string(),
-            }],
-        )
+        .send_prompt(connection_id, chat_prompt_blocks(text, extra))
         .await
 }
 
@@ -1872,14 +1909,13 @@ async fn send_chat_prompt_linked(
     folder_id: i32,
     conversation_id: i32,
     text: &str,
+    extra: &[PromptInputBlock],
 ) -> Result<(), crate::acp::error::AcpError> {
     conn_mgr
         .send_prompt_linked(
             &AppDatabase { conn: db.clone() },
             connection_id,
-            vec![PromptInputBlock::Text {
-                text: text.to_string(),
-            }],
+            chat_prompt_blocks(text, extra),
             Some(folder_id),
             Some(conversation_id),
             None,
@@ -2351,6 +2387,7 @@ mod tests {
             folder_id,
             conv_id,
             "first task prompt",
+            &[],
         )
         .await
         .expect("linked prompt send");
@@ -2415,6 +2452,7 @@ mod tests {
         let message = handle_followup(FollowupRequest {
             db: &db.conn,
             text: "continue task",
+            extra_blocks: &[],
             channel_id,
             sender_id: "sender-1",
             target: &target,

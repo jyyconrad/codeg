@@ -711,6 +711,7 @@ impl ChatChannelBackend for WeixinBackend {
                                                 .get("msg_id")
                                                 .and_then(|v| v.as_str())
                                                 .map(str::to_string),
+                                            extra_blocks: Vec::new(),
                                         })
                                         .await;
                                     if let Err(e) = send_result {

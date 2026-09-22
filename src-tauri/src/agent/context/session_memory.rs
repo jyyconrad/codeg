@@ -48,6 +48,7 @@ pub struct SessionMemory {
     inner: CodegMessageMemory,
     recorder: RunRecorder,
     compacting: Arc<SessionCompacting>,
+    checkpoint_store: CheckpointStore,
     compact_llm: Option<CompactLlmSessionView>,
     compaction_cancel: Arc<Mutex<CancellationToken>>,
     conversation_id: String,
@@ -103,9 +104,10 @@ impl SessionMemory {
             source_last_seq: None,
             max_summary_tokens: Some(llm.max_tokens()),
         };
-        let compactor = CheckpointedCompactor::new(llm, store)
+        let compactor = CheckpointedCompactor::new(llm, store.clone())
             .with_fingerprint(fingerprint)
-            .with_request_snapshot(snapshot);
+            .with_request_snapshot(snapshot)
+            .with_deferred_commit();
         let conversation_id = inner.session_id().to_string();
         let recorder = RunRecorder::new(inner.clone());
         let compacting = CompactingMemory::new(inner.clone(), policy, compactor);
@@ -113,6 +115,7 @@ impl SessionMemory {
             inner,
             recorder,
             compacting: Arc::new(compacting),
+            checkpoint_store: store,
             compact_llm: None,
             compaction_cancel: Arc::new(Mutex::new(CancellationToken::new())),
             conversation_id,
@@ -145,7 +148,8 @@ impl SessionMemory {
         *self
             .compaction_cancel
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = cancel;
+            .unwrap_or_else(|e| e.into_inner()) = cancel.clone();
+        self.compacting.compactor().set_cancel(cancel);
     }
 
     pub fn session_id(&self) -> &str {
@@ -227,15 +231,7 @@ impl SessionMemory {
     /// messages that do not `PartialEq` the Rig prompt can still be appended
     /// as a later ordinal.
     pub async fn persist_if_new(&self, messages: &[Message]) -> Result<(), MemoryError> {
-        let committed = self.inner.load_committed().await?;
-        let new: Vec<Message> = messages
-            .iter()
-            .filter(|message| {
-                !is_history_summary_message(message) && !committed.iter().any(|c| c == *message)
-            })
-            .cloned()
-            .collect();
-        self.persist_messages(new).await
+        self.recorder.persist_committed(messages).await
     }
 
     /// Serialize same-session loads, rebind pending, compact, then budget-check.
@@ -267,48 +263,206 @@ impl SessionMemory {
         let pending_seq = bind_seq_excluding_pending(&committed, pending);
         self.inner.bind_history_before(pending_seq).await;
 
+        let input_budget = budget
+            .input_budget()
+            .map_err(|err| MemoryError::Policy(format!("context_budget_exceeded: {err}")))?;
+        let fixed = estimate_request(preamble, tool_schemas, &[], pending);
+        let coverage = self.covers_through_seq().unwrap_or(0);
+        let mut trigger_history = committed
+            .iter()
+            .take(pending_seq.saturating_sub(1) as usize)
+            .skip(coverage)
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(summary) = self
+            .checkpoint_store
+            .active_summary(&self.conversation_id)?
+        {
+            trigger_history.insert(0, summary);
+        }
+        let trigger = input_budget.saturating_mul(u64::from(budget.compact_soft_percent)) / 100;
+        let history_budget =
+            if estimate_request(preamble, tool_schemas, &trigger_history, pending) <= trigger {
+                usize::MAX / 4
+            } else {
+                let target = input_budget
+                    .saturating_mul(u64::from(budget.effective_compact_target_percent()))
+                    / 100;
+                target.saturating_sub(fixed).max(1) as usize
+            };
+        self.compacting.policy().bind_token_budget(history_budget);
+        let control = self
+            .compaction_cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        self.compacting.compactor().set_cancel(control.clone());
+
         self.compacting.policy().bind_scope(RequestScope {
             pending_prompt: Some(pending.clone()),
             covers_through_seq: self.covers_through_seq(),
+            protect_recent_user_turns: budget.compact_recent_turns,
             ..RequestScope::default()
         });
 
-        let loaded = ConversationMemory::load(self.compacting.as_ref(), &self.conversation_id)
-            .await
-            .map_err(policy_budget_error)?;
+        let loaded =
+            match ConversationMemory::load(self.compacting.as_ref(), &self.conversation_id).await {
+                Ok(loaded) => loaded,
+                Err(err) => {
+                    if let Some(id) = self.compacting.compactor().take_pending_id() {
+                        let _ = self.compacting.compactor().abort_pending(&id);
+                    }
+                    return Err(policy_budget_error(err));
+                }
+            };
+        let pending_id = self.compacting.compactor().take_pending_id();
 
         let original: Vec<Message> = {
             let n = pending_seq.saturating_sub(1) as usize;
             committed.iter().take(n).cloned().collect()
         };
         let compacted = loaded != original;
-        if compacted {
-            if let Some(covers) = covers_through(&original, &loaded) {
-                *self
-                    .covers_through_seq
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(covers);
-            }
-        }
+        let loaded_coverage = compacted
+            .then(|| covers_through(&original, &loaded))
+            .flatten();
 
         let estimated_tokens = estimate_request(preamble, tool_schemas, &loaded, pending);
         match budget.input_budget() {
             Ok(input) if estimated_tokens > input => {
+                if let Some(id) = pending_id {
+                    let _ = self.compacting.compactor().abort_pending(&id);
+                }
+                self.compacting.forget(&self.conversation_id);
                 return Err(MemoryError::Policy(format!(
                     "context_budget_exceeded: estimated {estimated_tokens} exceeds input budget {input}"
                 )));
             }
             Ok(_) => {}
             Err(err) => {
+                if let Some(id) = pending_id {
+                    let _ = self.compacting.compactor().abort_pending(&id);
+                }
+                self.compacting.forget(&self.conversation_id);
                 return Err(MemoryError::Policy(format!(
                     "context_budget_exceeded: {err}"
                 )));
             }
         }
 
+        if control.is_cancelled() {
+            if let Some(id) = pending_id {
+                let _ = self.compacting.compactor().abort_pending(&id);
+            }
+            self.compacting.forget(&self.conversation_id);
+            return Err(MemoryError::Internal("cancelled".into()));
+        }
+        if let Some(id) = pending_id {
+            self.compacting
+                .compactor()
+                .commit_pending(&self.conversation_id, &id)?;
+        }
+        if let Some(covers) = loaded_coverage {
+            *self
+                .covers_through_seq
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(covers);
+        }
+
         Ok(LoadedHistory {
             messages: loaded,
             compacted,
+            estimated_tokens,
+        })
+    }
+
+    /// Force one bounded compaction attempt for provider overflow recovery.
+    /// The wrapper is reused; a failed/cancelled attempt leaves its previous
+    /// watermark and checkpoint chain untouched.
+    pub async fn force_compact(
+        &self,
+        pending: &Message,
+        preamble: &str,
+        tool_schemas: &[Value],
+        budget: BudgetConfig,
+        control: CancellationToken,
+    ) -> Result<LoadedHistory, MemoryError> {
+        if control.is_cancelled() {
+            return Err(MemoryError::Internal("cancelled".into()));
+        }
+        if let Some(view) = &self.compact_llm {
+            view.set_control(CompactionControl::new(control.clone()));
+            return view
+                .force_compact(pending, preamble, tool_schemas, budget)
+                .await;
+        }
+        let _serial = self.load_lock.lock().await;
+        self.compacting.compactor().set_cancel(control.clone());
+        let committed = self.inner.load_committed().await?;
+        let pending_seq = bind_seq_excluding_pending(&committed, pending);
+        self.inner.bind_history_before(pending_seq).await;
+        let input_budget = budget
+            .input_budget()
+            .map_err(|err| MemoryError::Policy(format!("context_budget_exceeded: {err}")))?;
+        let fixed = estimate_request(preamble, tool_schemas, &[], pending);
+        let pending_cost = estimate_request("", &[], &[], pending).max(1);
+        self.compacting.policy().bind_token_budget(
+            pending_cost.min(input_budget.saturating_sub(fixed).max(1)) as usize,
+        );
+        self.compacting.policy().bind_scope(RequestScope {
+            pending_prompt: Some(pending.clone()),
+            covers_through_seq: self.covers_through_seq(),
+            protect_recent_user_turns: budget.compact_recent_turns,
+            ..RequestScope::default()
+        });
+        let loaded =
+            match ConversationMemory::load(self.compacting.as_ref(), &self.conversation_id).await {
+                Ok(loaded) => loaded,
+                Err(err) => {
+                    if let Some(id) = self.compacting.compactor().take_pending_id() {
+                        let _ = self.compacting.compactor().abort_pending(&id);
+                    }
+                    return Err(policy_budget_error(err));
+                }
+            };
+        let original: Vec<Message> = committed
+            .iter()
+            .take(pending_seq.saturating_sub(1) as usize)
+            .cloned()
+            .collect();
+        let loaded_coverage = (loaded != original)
+            .then(|| covers_through(&original, &loaded))
+            .flatten();
+        let estimated_tokens = estimate_request(preamble, tool_schemas, &loaded, pending);
+        if estimated_tokens > input_budget {
+            if let Some(id) = self.compacting.compactor().take_pending_id() {
+                let _ = self.compacting.compactor().abort_pending(&id);
+            }
+            self.compacting.forget(&self.conversation_id);
+            return Err(MemoryError::Policy(format!(
+                "context_budget_exceeded: estimated {estimated_tokens} exceeds input budget {input_budget}"
+            )));
+        }
+        if control.is_cancelled() {
+            if let Some(id) = self.compacting.compactor().take_pending_id() {
+                let _ = self.compacting.compactor().abort_pending(&id);
+            }
+            self.compacting.forget(&self.conversation_id);
+            return Err(MemoryError::Internal("cancelled".into()));
+        }
+        if let Some(id) = self.compacting.compactor().take_pending_id() {
+            self.compacting
+                .compactor()
+                .commit_pending(&self.conversation_id, &id)?;
+        }
+        if let Some(covers) = loaded_coverage {
+            *self
+                .covers_through_seq
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(covers);
+        }
+        Ok(LoadedHistory {
+            compacted: loaded != original,
+            messages: loaded,
             estimated_tokens,
         })
     }
@@ -365,29 +519,6 @@ fn policy_budget_error(err: MemoryError) -> MemoryError {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
-}
-
-fn is_history_summary_message(message: &Message) -> bool {
-    let Message::User { content } = message else {
-        return false;
-    };
-    let mut text = String::new();
-    for part in content {
-        if let rig::completion::message::UserContent::Text(t) = part {
-            text.push_str(&t.text);
-        }
-    }
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    trimmed.starts_with("历史摘要：")
-        || trimmed.starts_with("历史摘要:")
-        || trimmed.starts_with("Conversation summary:")
-        || trimmed.starts_with("Conversation summary")
-        || lower.starts_with("history summary:")
-        || lower.starts_with("history summary")
 }
 
 #[cfg(test)]
@@ -492,7 +623,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persist_if_new_does_not_write_compaction_summary_into_originals() {
+    async fn persist_if_new_rejects_derived_summary_in_committed_prefix() {
         let (_dir, memory) = temp_session();
         let prompt = Message::user("commit this");
         let kept = Message::assistant("kept suffix");
@@ -502,16 +633,13 @@ mod tests {
             .await
             .expect("kept");
         let summary = Message::user("Conversation summary: earlier turns were compacted.");
-        memory
+        let err = memory
             .persist_if_new(&[summary.clone(), prompt.clone(), kept.clone()])
             .await
-            .expect("skip summary");
+            .expect_err("derived summary is not a committed run prefix");
+        assert!(err.to_string().contains("prefix"), "{err}");
         let full = memory.inner().load_committed().await.expect("committed");
         assert_eq!(full, vec![prompt, kept]);
-        assert!(
-            full.iter().all(|m| m != &summary),
-            "derived summary must not be appended to messages.jsonl: {full:?}"
-        );
     }
 
     #[tokio::test]

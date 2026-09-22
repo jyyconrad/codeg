@@ -55,7 +55,7 @@ pub struct LlmCompactor {
     max_tokens: u64,
     #[allow(dead_code)]
     artifacts_dir: Option<PathBuf>,
-    cancel: CancellationToken,
+    cancel: Arc<Mutex<CancellationToken>>,
 }
 
 impl LlmCompactor {
@@ -71,7 +71,7 @@ impl LlmCompactor {
             compact_prompt: compact_prompt.into(),
             max_tokens: max_tokens.clamp(1, L2_MAX_TOKENS),
             artifacts_dir: None,
-            cancel: CancellationToken::new(),
+            cancel: Arc::new(Mutex::new(CancellationToken::new())),
         }
     }
 
@@ -80,9 +80,15 @@ impl LlmCompactor {
         self
     }
 
-    pub fn with_cancel(mut self, cancel: CancellationToken) -> Self {
-        self.cancel = cancel;
+    pub fn with_cancel(self, cancel: CancellationToken) -> Self {
+        self.set_cancel(cancel);
         self
+    }
+
+    /// Bind the cancellation token for the current compaction request. The
+    /// compactor itself remains session-scoped and is reused across turns.
+    pub fn set_cancel(&self, cancel: CancellationToken) {
+        *self.cancel.lock().unwrap_or_else(|e| e.into_inner()) = cancel;
     }
 
     pub fn max_tokens(&self) -> u64 {
@@ -99,7 +105,12 @@ impl LlmCompactor {
         evicted: &[Message],
         carry_over: Option<&str>,
     ) -> Result<CompactArtifact, String> {
-        if self.cancel.is_cancelled() {
+        let cancel = self
+            .cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if cancel.is_cancelled() {
             return Err("cancelled".into());
         }
         let chunks = chunk_evicted_messages(evicted);
@@ -115,7 +126,7 @@ impl LlmCompactor {
             .map(str::to_string);
         let mut summary = String::new();
         for chunk in &chunks {
-            if self.cancel.is_cancelled() {
+            if cancel.is_cancelled() {
                 return Err("cancelled".into());
             }
             summary = self
@@ -136,6 +147,11 @@ impl LlmCompactor {
         carry_over: Option<&str>,
     ) -> Result<String, String> {
         let _ = conversation_id;
+        let cancel = self
+            .cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let prompt = Message::user(compact_prompt_body(evicted, carry_over));
         tracing::info!("codeg agent compacting context with dedicated completion");
         let summary = match &self.client {
@@ -146,7 +162,7 @@ impl LlmCompactor {
                     &self.compact_prompt,
                     prompt,
                     self.max_tokens,
-                    self.cancel.clone(),
+                    cancel.clone(),
                 )
                 .await?
             }
@@ -157,7 +173,7 @@ impl LlmCompactor {
                     &self.compact_prompt,
                     prompt,
                     self.max_tokens,
-                    self.cancel.clone(),
+                    cancel.clone(),
                 )
                 .await?
             }

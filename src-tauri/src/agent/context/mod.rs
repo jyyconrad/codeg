@@ -38,3 +38,6 @@ pub use transcript::{
     acp_status_for, agent_message_chunk, attach_native_meta, extract_native_meta, ModelCommit,
     NativeMeta, NativeMetaError, OutputLocator, ToolOutcome, ToolPhase, NATIVE_META_VERSION,
 };
+
+#[cfg(test)]
+mod reliability_tests;

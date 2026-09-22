@@ -31,10 +31,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::compact::CompactArtifact;
+use super::compact::LlmCompactor;
 
 const CHECKPOINT_VERSION: u32 = 1;
 const INDEX_VERSION: u32 = 1;
 const STATUS_COMMITTED: &str = "committed";
+const STATUS_PENDING: &str = "pending";
 const HISTORY_SUMMARY_ZH: &str = "历史摘要：";
 const HISTORY_SUMMARY_EN: &str = "History summary:";
 const INDEX_FILE: &str = "index.json";
@@ -153,6 +155,17 @@ impl CheckpointStore {
         index.active.get(conversation_id).cloned()
     }
 
+    pub fn active_summary(&self, conversation_id: &str) -> Result<Option<Message>, MemoryError> {
+        let Some(id) = self.active_id(conversation_id) else {
+            return Ok(None);
+        };
+        Ok(self
+            .load_committed(conversation_id)?
+            .into_iter()
+            .find(|cp| cp.id == id)
+            .map(|cp| cp.summary_message))
+    }
+
     fn load_committed(
         &self,
         conversation_id: &str,
@@ -254,6 +267,43 @@ impl CheckpointStore {
         Ok(())
     }
 
+    fn persist_pending(&self, checkpoint: &CompactionCheckpoint) -> Result<(), MemoryError> {
+        let mut pending = checkpoint.clone();
+        pending.status = STATUS_PENDING.to_string();
+        let dir = self.compactions_dir();
+        std::fs::create_dir_all(&dir).map_err(MemoryError::backend)?;
+        let path = dir.join(format!("{}.json", pending.id));
+        let bytes = serde_json::to_vec_pretty(&pending)
+            .map_err(|e| MemoryError::Internal(format!("serialize compaction checkpoint: {e}")))?;
+        atomic_write(&path, &bytes)
+    }
+
+    fn remove(&self, id: &str) -> Result<(), MemoryError> {
+        let path = self.compactions_dir().join(format!("{id}.json"));
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(MemoryError::backend(err)),
+        }
+    }
+
+    fn commit_pending(&self, conversation_id: &str, id: &str) -> Result<(), MemoryError> {
+        let path = self.compactions_dir().join(format!("{id}.json"));
+        let raw = std::fs::read_to_string(&path).map_err(MemoryError::backend)?;
+        let mut checkpoint: CompactionCheckpoint = serde_json::from_str(&raw)
+            .map_err(|e| MemoryError::Internal(format!("parse pending checkpoint: {e}")))?;
+        if checkpoint.id != id || checkpoint.conversation_id != conversation_id {
+            return Err(MemoryError::Internal(
+                "pending checkpoint identity mismatch".into(),
+            ));
+        }
+        if checkpoint.status != STATUS_PENDING {
+            return Err(MemoryError::Internal("checkpoint is not pending".into()));
+        }
+        checkpoint.status = STATUS_COMMITTED.to_string();
+        self.persist(&checkpoint)
+    }
+
     fn write_active(&self, conversation_id: &str, id: &str) -> Result<(), MemoryError> {
         let dir = self.compactions_dir();
         let path = dir.join(INDEX_FILE);
@@ -281,6 +331,8 @@ pub struct CheckpointedCompactor<C: Compactor> {
     store: CheckpointStore,
     fingerprint: String,
     snapshot: Option<RequestBudgetSnapshot>,
+    pending_id: Arc<Mutex<Option<String>>>,
+    defer_commit: bool,
 }
 
 impl<C: Compactor> CheckpointedCompactor<C> {
@@ -290,6 +342,8 @@ impl<C: Compactor> CheckpointedCompactor<C> {
             store,
             fingerprint: String::new(),
             snapshot: None,
+            pending_id: Arc::new(Mutex::new(None)),
+            defer_commit: false,
         }
     }
 
@@ -303,12 +357,32 @@ impl<C: Compactor> CheckpointedCompactor<C> {
         self
     }
 
+    pub fn with_deferred_commit(mut self) -> Self {
+        self.defer_commit = true;
+        self
+    }
+
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
 
     pub fn store(&self) -> &CheckpointStore {
         &self.store
+    }
+
+    pub fn take_pending_id(&self) -> Option<String> {
+        self.pending_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    pub fn commit_pending(&self, conversation_id: &str, id: &str) -> Result<(), MemoryError> {
+        self.store.commit_pending(conversation_id, id)
+    }
+
+    pub fn abort_pending(&self, id: &str) -> Result<(), MemoryError> {
+        self.store.remove(id)
     }
 }
 
@@ -446,8 +520,20 @@ where
             created_at: chrono::Utc::now().to_rfc3339(),
             estimated_summary_tokens: Some(estimated),
         };
-        self.store.persist(&checkpoint)?;
+        if self.defer_commit {
+            self.store.persist_pending(&checkpoint)?;
+            *self.pending_id.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(checkpoint.id.clone());
+        } else {
+            self.store.persist(&checkpoint)?;
+        }
         Ok(checkpoint)
+    }
+}
+
+impl CheckpointedCompactor<LlmCompactor> {
+    pub fn set_cancel(&self, cancel: tokio_util::sync::CancellationToken) {
+        self.inner.set_cancel(cancel);
     }
 }
 

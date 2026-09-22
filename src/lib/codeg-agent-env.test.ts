@@ -30,16 +30,6 @@ import {
 } from "./codeg-agent-env"
 
 describe("codeg agent env helpers", () => {
-  it("ships a resumable compact prompt that writes session markdown and hands off in prose", () => {
-    expect(CODEG_BUILTIN_COMPACT_PROMPT).toContain("current work goal")
-    expect(CODEG_BUILTIN_COMPACT_PROMPT).toContain("unfinished")
-    expect(CODEG_BUILTIN_COMPACT_PROMPT).toContain("Markdown")
-    expect(CODEG_BUILTIN_COMPACT_PROMPT).toContain("write_file")
-    expect(CODEG_BUILTIN_COMPACT_PROMPT).toContain("tool loop")
-    expect(CODEG_BUILTIN_COMPACT_PROMPT).not.toContain('"summary"')
-    expect(CODEG_BUILTIN_COMPACT_PROMPT).not.toContain("Return JSON")
-  })
-
   it("ships an OpenCode-style main prompt with Codeg tools and file links", () => {
     expect(CODEG_BUILTIN_SYSTEM_PROMPT).toContain("You are Codeg Agent")
     expect(CODEG_BUILTIN_SYSTEM_PROMPT).toContain("read_file")

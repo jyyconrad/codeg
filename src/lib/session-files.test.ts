@@ -147,6 +147,62 @@ describe("extractReplyFileChanges", () => {
     expect(files[0].diff).toBeTruthy()
   })
 
+  it("counts OpenCode live camelCase edit args (filePath/oldString/newString)", () => {
+    const files = extractReplyFileChanges([
+      {
+        id: "a1",
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: "t1",
+            tool_name: "edit",
+            input_preview: JSON.stringify({
+              filePath: "/repo/src/a.ts",
+              oldString: "one\ntwo",
+              newString: "one\ntwo\nthree",
+            }),
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+    ])
+
+    expect(files).toHaveLength(1)
+    expect(files[0].path).toBe("/repo/src/a.ts")
+    expect(files[0].additions).toBe(1)
+    expect(files[0].deletions).toBe(0)
+  })
+
+  it("reads edit text from a nested arguments wrapper", () => {
+    const files = extractReplyFileChanges([
+      {
+        id: "a1",
+        role: "assistant",
+        blocks: [
+          {
+            type: "tool_use",
+            tool_use_id: "t1",
+            tool_name: "edit",
+            input_preview: JSON.stringify({
+              arguments: {
+                file_path: "/repo/src/a.ts",
+                old_string: "one",
+                new_string: "one\ntwo",
+              },
+            }),
+          },
+        ],
+        timestamp: "2024-01-01T00:00:01Z",
+      },
+    ])
+
+    expect(files).toHaveLength(1)
+    expect(files[0].path).toBe("/repo/src/a.ts")
+    expect(files[0].additions).toBe(1)
+    expect(files[0].deletions).toBe(0)
+  })
+
   it("lists distinct files as separate rows in first-seen order", () => {
     const files = extractReplyFileChanges([
       writeTurn("a1", "t1", "/repo/src/b.ts", "x\n"),

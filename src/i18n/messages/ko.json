@@ -3492,7 +3492,11 @@
         "elapsedMinutes": "{value}분",
         "elapsedSeconds": "{value}초",
         "outputSpeedAria": "예상 출력 속도",
-        "outputSpeedTooltip": "예상 출력 속도（텍스트 + 추론）"
+        "outputSpeedTooltip": "예상 출력 속도（텍스트 + 추론）",
+        "tokenUsageAria": "세션 토큰 사용량",
+        "tokenInput": "입력",
+        "tokenOutput": "출력",
+        "tokenCache": "캐시"
       },
       "jsonTree": {
         "viewRaw": "원본 JSON 보기",
@@ -3923,6 +3927,7 @@
         "title": "워크플로",
         "collapseAria": "워크플로 접기",
         "expandAria": "워크플로 펼치기",
+        "closeAria": "워크플로 닫기",
         "collapsedSummary": "{name} {current}/{total}",
         "collapsedSummaryNamed": "{name}",
         "dockToComposerAria": "입력창 위에 고정",

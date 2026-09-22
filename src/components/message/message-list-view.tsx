@@ -1658,6 +1658,7 @@ export function MessageListView({
           <LiveTurnStats
             message={liveMessage}
             agentType={agentType}
+            conversationId={conversationId}
             isStreaming={connStatus === "prompting"}
           />
         )}

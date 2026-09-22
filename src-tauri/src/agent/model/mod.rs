@@ -1,10 +1,12 @@
 mod client;
+mod overflow;
 mod preamble;
 mod turn;
 
 use rig::providers::openai::CompletionsClient;
 
 pub use client::{probe_wire_protocol, resolve_session_wire_protocol, CodegLlmClient};
+pub(crate) use overflow::model_with_cancel;
 pub use preamble::{live_session_preamble, session_preamble, PreambleSpec};
 pub use turn::{
     run_native_turn, NativeTurnOutcome, NativeTurnRequest, NativeTurnTools, WIKI_COMPILE_MAX_TURNS,

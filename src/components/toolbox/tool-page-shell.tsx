@@ -37,6 +37,7 @@ export function ToolPageShell({
   encodingNotice,
   cryptoFooter,
   downloadFilename = "toolbox-result.txt",
+  onDownload,
   className,
 }: {
   input: string
@@ -52,6 +53,7 @@ export function ToolPageShell({
   encodingNotice?: boolean
   cryptoFooter?: boolean
   downloadFilename?: string
+  onDownload?: () => void
   className?: string
 }) {
   const t = useTranslations("Toolbox")
@@ -73,6 +75,10 @@ export function ToolPageShell({
 
   function downloadResult() {
     if (!result) return
+    if (onDownload) {
+      onDownload()
+      return
+    }
     const blob = new Blob([result], { type: "text/plain;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const link = document.createElement("a")

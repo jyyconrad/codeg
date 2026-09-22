@@ -17,6 +17,12 @@ function spanAttributes(plugin: unknown): unknown[] | undefined {
   return schema?.attributes?.span
 }
 
+function anchorAttributes(plugin: unknown): unknown[] | undefined {
+  if (!Array.isArray(plugin)) return undefined
+  const schema = plugin[1] as { attributes?: { a?: unknown[] } } | undefined
+  return schema?.attributes?.a
+}
+
 describe("rehypePluginsAllowingCodeg", () => {
   it("adds `codeg` to the sanitize schema's href protocol allow-list", () => {
     // Guards against an upstream rename of the `sanitize` key — the whole fix
@@ -55,6 +61,16 @@ describe("rehypePluginsAllowingCodeg", () => {
       []) {
       expect(span).toContainEqual(attribute)
     }
+  })
+
+  it("preserves the original workspace-relative file target", () => {
+    const sanitizeIndex = Object.keys(defaultRehypePlugins).indexOf("sanitize")
+    const anchor = anchorAttributes(
+      rehypePluginsAllowingCodeg(defaultRehypePlugins)[sanitizeIndex]
+    )
+    expect(anchor).toEqual(
+      expect.arrayContaining(["dataCodegFileTarget", "data-codeg-file-target"])
+    )
   })
 
   it("preserves plugin count and order, passing raw/harden through by reference", () => {

@@ -236,6 +236,7 @@ async fn dispatch_command(
                     session_commands::handle_followup(session_commands::FollowupRequest {
                         db,
                         text,
+                        extra_blocks: &cmd.extra_blocks,
                         channel_id,
                         sender_id,
                         target,
@@ -285,6 +286,7 @@ async fn dispatch_command(
                     session_commands::handle_followup(session_commands::FollowupRequest {
                         db,
                         text,
+                        extra_blocks: &cmd.extra_blocks,
                         channel_id,
                         sender_id,
                         target,

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const mocks = vi.hoisted(() => ({
   openFilePreview: vi.fn(),
   openUrl: vi.fn(),
+  pathExists: vi.fn(),
   toastError: vi.fn(),
   isDesktop: vi.fn(() => false),
   getActiveRemoteConnectionId: vi.fn(() => null),
@@ -26,6 +27,10 @@ vi.mock("sonner", () => ({
 
 vi.mock("@/lib/platform", () => ({
   openUrl: mocks.openUrl,
+}))
+
+vi.mock("@/lib/api", () => ({
+  pathExists: mocks.pathExists,
 }))
 
 vi.mock("@/lib/transport", () => ({
@@ -57,6 +62,8 @@ describe("MessageResponse — Windows local file links (issue #362, real Streamd
     mocks.openFilePreview.mockResolvedValue(undefined)
     mocks.openUrl.mockReset()
     mocks.openUrl.mockResolvedValue(undefined)
+    mocks.pathExists.mockReset()
+    mocks.pathExists.mockResolvedValue(true)
     mocks.toastError.mockReset()
     mocks.isDesktop.mockReset()
     mocks.isDesktop.mockReturnValue(false)
@@ -67,6 +74,30 @@ describe("MessageResponse — Windows local file links (issue #362, real Streamd
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it("renders a workspace-relative zip link as a file badge, not '[blocked]'", async () => {
+    const path = "dist/windows-lab/switchgear-lab_20260919_windows_amd64.zip"
+    const { container } = render(
+      <MessageResponse>{`[${path}](${path})`}</MessageResponse>
+    )
+
+    await waitFor(() => {
+      expect(fileBadgeButton(container)).toBeTruthy()
+    })
+    expect(container.textContent).toContain(
+      "switchgear-lab_20260919_windows_amd64.zip"
+    )
+    expect(container.textContent).not.toContain("[blocked]")
+
+    fireEvent.click(fileBadgeButton(container))
+    await waitFor(() => {
+      expect(mocks.openFilePreview).toHaveBeenCalledWith(path, {
+        line: undefined,
+      })
+    })
+    expect(mocks.pathExists).toHaveBeenCalledWith(`/repo/${path}`)
+    expect(window.open).not.toHaveBeenCalled()
   })
 
   it("renders a bare Windows drive-path link as a file badge, not '[blocked]'", async () => {

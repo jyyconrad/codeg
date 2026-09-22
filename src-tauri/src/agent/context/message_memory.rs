@@ -21,6 +21,7 @@ use rig::completion::Message;
 use rig::memory::{ConversationMemory, MemoryError};
 use rig::wasm_compat::WasmBoxedFuture;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -70,6 +71,7 @@ pub struct CodegMessageMemory {
     write_lock: Arc<tokio::sync::Mutex<()>>,
     /// Exclusive upper bound (1-based seq) applied by [`ConversationMemory::load`].
     history_before_seq: Arc<Mutex<Option<u64>>>,
+    snapshot: Arc<Mutex<Option<CommittedSnapshot>>>,
 }
 
 /// Incremental saver for one user-instruction run over [`CodegMessageMemory`].
@@ -82,6 +84,21 @@ pub struct RunRecorder {
 #[derive(Clone)]
 struct ActiveRun {
     run_id: String,
+    committed: Vec<Message>,
+}
+
+#[derive(Clone)]
+struct CommittedSnapshot {
+    signature: FileSignature,
+    count: u64,
+    committed_end: u64,
+    messages: Vec<Message>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileSignature {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
 }
 
 /// Handle returned by [`RunRecorder::begin_run`].
@@ -90,6 +107,7 @@ pub struct RunHandle {
     memory: CodegMessageMemory,
     run_id: String,
     prompt_seq: u64,
+    active: Arc<Mutex<Option<ActiveRun>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -185,6 +203,7 @@ impl CodegMessageMemory {
             cwd,
             write_lock,
             history_before_seq: Arc::new(Mutex::new(None)),
+            snapshot: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -289,6 +308,10 @@ impl CodegMessageMemory {
     fn load_committed_locked(&self) -> Result<Vec<Message>, MemoryError> {
         let meta = self.recover_locked()?;
         self.read_committed_messages(meta.committed_message_count)
+    }
+
+    fn invalidate_snapshot(&self) {
+        *self.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     fn load_for_runner_locked(&self) -> Result<Vec<Message>, MemoryError> {
@@ -480,7 +503,18 @@ impl CodegMessageMemory {
                 "committed_message_count is {committed} but {MESSAGES_FILE} is missing"
             )));
         }
-        let end = committed_byte_end(&path, committed)?;
+        let cached_end = file_signature(&path).ok().and_then(|signature| {
+            self.snapshot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .filter(|snapshot| snapshot.signature == signature && snapshot.count == committed)
+                .map(|snapshot| snapshot.committed_end)
+        });
+        let end = match cached_end {
+            Some(end) => end,
+            None => committed_byte_end(&path, committed)?,
+        };
         let file_len = file_len_or_zero(&path)?;
         if file_len > end {
             isolate_tail(&path, end, "orphan")?;
@@ -498,16 +532,29 @@ impl CodegMessageMemory {
                 "committed_message_count is {count} but {MESSAGES_FILE} is missing"
             )));
         }
+        let signature = file_signature(&path)?;
+        if let Some(snapshot) = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|snapshot| snapshot.signature == signature && snapshot.count >= count)
+        {
+            return Ok(snapshot.messages[..count as usize].to_vec());
+        }
         let file = File::open(&path).map_err(backend)?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
         let mut messages = Vec::with_capacity(count as usize);
-        for line in reader.lines() {
-            if messages.len() as u64 >= count {
+        let mut committed_end = 0u64;
+        for _ in 0..count {
+            let mut line = String::new();
+            let bytes = reader.read_line(&mut line).map_err(backend)?;
+            if bytes == 0 || !line.ends_with('\n') {
                 break;
             }
-            let line = line.map_err(backend)?;
-            let msg: Message = serde_json::from_str(&line).map_err(backend)?;
-            messages.push(msg);
+            committed_end += bytes as u64;
+            line.pop();
+            messages.push(parse_message_line(&line)?);
         }
         if messages.len() as u64 != count {
             return Err(other(format!(
@@ -515,6 +562,12 @@ impl CodegMessageMemory {
                 messages.len()
             )));
         }
+        *self.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = Some(CommittedSnapshot {
+            signature,
+            count,
+            committed_end,
+            messages: messages.clone(),
+        });
         Ok(messages)
     }
 
@@ -575,6 +628,11 @@ impl CodegMessageMemory {
             byte_len: payload.len() as u64,
             content_hashes: hashes,
         })?;
+        let previous_snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         append_synced(&messages_path, &payload)?;
         let new_count = meta.committed_message_count + count;
         self.write_runtime_op(&RuntimeOp::Commit {
@@ -586,6 +644,21 @@ impl CodegMessageMemory {
         })?;
         meta.committed_message_count = new_count;
         self.write_session_meta(&meta)?;
+        let next_snapshot = previous_snapshot
+            .filter(|snapshot| {
+                snapshot.count == new_count - count && snapshot.committed_end == expected_offset
+            })
+            .and_then(|mut snapshot| {
+                snapshot
+                    .messages
+                    .extend(remaining.iter().map(|message| (*message).clone()));
+                let signature = file_signature(&messages_path).ok()?;
+                snapshot.signature = signature;
+                snapshot.count = new_count;
+                snapshot.committed_end = expected_offset + payload.len() as u64;
+                Some(snapshot)
+            });
+        *self.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = next_snapshot;
         let first_seq = new_count - count + 1;
         Ok(AppendOutcome {
             written: count,
@@ -616,6 +689,7 @@ impl CodegMessageMemory {
         if messages.exists() {
             fs::remove_file(&messages).map_err(backend)?;
         }
+        self.invalidate_snapshot();
         let runtime = self.runtime_path();
         if runtime.exists() {
             fs::remove_file(&runtime).map_err(backend)?;
@@ -679,11 +753,13 @@ impl RunRecorder {
         };
         *self.active.lock().unwrap_or_else(|e| e.into_inner()) = Some(ActiveRun {
             run_id: run_id.clone(),
+            committed: vec![prompt.clone()],
         });
         Ok(RunHandle {
             memory: self.memory.clone(),
             run_id,
             prompt_seq,
+            active: self.active.clone(),
         })
     }
 
@@ -691,15 +767,49 @@ impl RunRecorder {
     /// `(run_id, message_ordinal)` via the active run's already-committed
     /// ordinals (prompt is ordinal 0; these start at 1).
     pub async fn append_messages(&self, messages: Vec<Message>) -> Result<(), MemoryError> {
-        let run_id = self
-            .active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|r| r.run_id.clone())
-            .ok_or_else(|| other("append_messages called before begin_run"))?;
+        if messages.is_empty() {
+            return Ok(());
+        }
         let _guard = self.memory.write_lock.lock().await;
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        let run = active
+            .as_mut()
+            .ok_or_else(|| other("append_messages called before begin_run"))?;
+        let run_id = run.run_id.clone();
         self.memory.append_next_locked(&run_id, &messages)?;
+        run.committed.extend(messages);
+        Ok(())
+    }
+
+    /// Persist Rig's cumulative `AgentRun::messages()` prefix for the active
+    /// run. Retries with the same prefix are idempotent; a retraction or
+    /// mutation is rejected explicitly rather than being silently filtered.
+    pub async fn persist_committed(&self, messages: &[Message]) -> Result<(), MemoryError> {
+        let _guard = self.memory.write_lock.lock().await;
+        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        let run = active
+            .as_mut()
+            .ok_or_else(|| other("persist_committed called before begin_run"))?;
+        if messages.len() < run.committed.len() {
+            return Err(other(format!(
+                "committed message prefix retracted: have {}, received {}",
+                run.committed.len(),
+                messages.len()
+            )));
+        }
+        if messages[..run.committed.len()] != run.committed[..] {
+            return Err(other(
+                "committed message prefix changed; refusing to append divergent run state",
+            ));
+        }
+        let suffix = &messages[run.committed.len()..];
+        if suffix.is_empty() {
+            return Ok(());
+        }
+        let run_id = run.run_id.clone();
+        self.memory
+            .append_locked(Some(&run_id), run.committed.len() as u64, suffix)?;
+        run.committed.extend_from_slice(suffix);
         Ok(())
     }
 }
@@ -723,6 +833,11 @@ impl RunHandle {
     pub async fn append_messages(&self, messages: Vec<Message>) -> Result<(), MemoryError> {
         let _guard = self.memory.write_lock.lock().await;
         self.memory.append_next_locked(&self.run_id, &messages)?;
+        if let Ok(mut active) = self.active.lock() {
+            if let Some(run) = active.as_mut().filter(|run| run.run_id == self.run_id) {
+                run.committed.extend(messages.iter().cloned());
+            }
+        }
         Ok(())
     }
 
@@ -776,6 +891,18 @@ fn parse_runtime_line(line: &str) -> Result<Option<RuntimeOp>, MemoryError> {
     }
 }
 
+fn parse_message_line(line: &str) -> Result<Message, MemoryError> {
+    let raw: Value = serde_json::from_str(line).map_err(backend)?;
+    let message: Message = serde_json::from_value(raw.clone()).map_err(backend)?;
+    let round_trip = serde_json::to_value(&message).map_err(backend)?;
+    if raw != round_trip {
+        return Err(other(
+            "message JSON round-trip changed fields; refusing to accept unknown or unsupported fields",
+        ));
+    }
+    Ok(message)
+}
+
 fn finished_operation_ids(ops: &[RuntimeOp]) -> HashSet<String> {
     ops.iter()
         .filter_map(|op| match op {
@@ -810,6 +937,14 @@ fn file_len_or_zero(path: &Path) -> Result<u64, MemoryError> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
         Err(err) => Err(backend(err)),
     }
+}
+
+fn file_signature(path: &Path) -> Result<FileSignature, MemoryError> {
+    let metadata = fs::metadata(path).map_err(backend)?;
+    Ok(FileSignature {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
 }
 
 fn append_synced(path: &Path, bytes: &[u8]) -> Result<(), MemoryError> {
@@ -1205,6 +1340,112 @@ mod tests {
             inner.iter().all(|m| m != &prompt),
             "inner.load must not include the saved current prompt"
         );
+    }
+
+    #[tokio::test]
+    async fn persist_committed_keeps_repeated_assistant_content_across_cumulative_callbacks() {
+        let (_dir, memory) = temp_memory();
+        let recorder = RunRecorder::new(memory.clone());
+        let prompt = Message::user("repeat");
+        recorder.begin_run(&prompt).await.expect("begin_run");
+        let assistant = Message::assistant("same answer");
+
+        recorder
+            .persist_committed(&[prompt.clone(), assistant.clone()])
+            .await
+            .expect("first cumulative callback");
+        recorder
+            .persist_committed(&[prompt.clone(), assistant.clone(), assistant.clone()])
+            .await
+            .expect("second cumulative callback");
+        recorder
+            .persist_committed(&[prompt.clone(), assistant.clone(), assistant.clone()])
+            .await
+            .expect("retry second callback");
+
+        assert_eq!(
+            memory.load_committed().await.expect("load"),
+            vec![prompt, assistant.clone(), assistant]
+        );
+    }
+
+    #[tokio::test]
+    async fn persist_committed_rejects_retracted_or_changed_prefix() {
+        let (_dir, memory) = temp_memory();
+        let recorder = RunRecorder::new(memory);
+        let prompt = Message::user("prompt");
+        recorder.begin_run(&prompt).await.expect("begin_run");
+        recorder
+            .persist_committed(&[prompt.clone(), Message::assistant("first")])
+            .await
+            .expect("first callback");
+
+        let retracted = recorder
+            .persist_committed(std::slice::from_ref(&prompt))
+            .await
+            .expect_err("retracted callback must fail");
+        assert!(retracted.to_string().contains("retracted"));
+
+        let changed = recorder
+            .persist_committed(&[prompt, Message::assistant("different")])
+            .await
+            .expect_err("changed callback must fail");
+        assert!(changed.to_string().contains("prefix changed"));
+    }
+
+    #[tokio::test]
+    async fn jsonl_unknown_message_fields_are_rejected_without_rewrite() {
+        let (_dir, memory) = temp_memory();
+        ConversationMemory::append(&memory, memory.session_id(), vec![Message::user("known")])
+            .await
+            .expect("seed");
+        let path = memory.session_dir().join(MESSAGES_FILE);
+        let raw = fs::read_to_string(&path).expect("read");
+        let mut value: Value = serde_json::from_str(raw.trim()).expect("json");
+        value
+            .as_object_mut()
+            .expect("message object")
+            .insert("future_field".into(), Value::String("must reject".into()));
+        let replaced = format!("{}\n", serde_json::to_string(&value).expect("encode"));
+        fs::write(&path, &replaced).expect("replace fixture");
+
+        let error = memory.load_committed().await.expect_err("unknown field");
+        assert!(error.to_string().contains("round-trip"), "{error}");
+        assert_eq!(fs::read_to_string(&path).expect("read unchanged"), replaced);
+    }
+
+    #[tokio::test]
+    async fn committed_snapshot_appends_incrementally_and_invalidates_on_external_change() {
+        let (_dir, memory) = temp_memory();
+        ConversationMemory::append(&memory, memory.session_id(), vec![Message::user("one")])
+            .await
+            .expect("seed");
+        assert_eq!(memory.load_committed().await.expect("first load").len(), 1);
+
+        ConversationMemory::append(
+            &memory,
+            memory.session_id(),
+            vec![Message::assistant("two")],
+        )
+        .await
+        .expect("append after snapshot");
+        assert_eq!(
+            memory
+                .load_committed()
+                .await
+                .expect("incremental load")
+                .len(),
+            2
+        );
+
+        let path = memory.session_dir().join(MESSAGES_FILE);
+        let raw = fs::read_to_string(&path).expect("read jsonl");
+        let replaced = raw.replace("one", "uno");
+        assert_eq!(raw.len(), replaced.len(), "fixture must keep file length");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&path, replaced).expect("external edit");
+        let loaded = memory.load_committed().await.expect("reload external edit");
+        assert_eq!(loaded[0], Message::user("uno"));
     }
 
     #[tokio::test]

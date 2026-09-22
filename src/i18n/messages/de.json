@@ -3492,7 +3492,11 @@
         "elapsedMinutes": "{value} Min",
         "elapsedSeconds": "{value} Sek",
         "outputSpeedAria": "Geschätzte Ausgabegeschwindigkeit",
-        "outputSpeedTooltip": "Geschätzte Ausgabegeschwindigkeit (Text + Denken)"
+        "outputSpeedTooltip": "Geschätzte Ausgabegeschwindigkeit (Text + Denken)",
+        "tokenUsageAria": "Sitzungs-Tokenverbrauch",
+        "tokenInput": "Eingabe",
+        "tokenOutput": "Ausgabe",
+        "tokenCache": "Cache"
       },
       "jsonTree": {
         "viewRaw": "Rohes JSON anzeigen",
@@ -3923,6 +3927,7 @@
         "title": "Workflow",
         "collapseAria": "Workflow einklappen",
         "expandAria": "Workflow ausklappen",
+        "closeAria": "Workflow schließen",
         "collapsedSummary": "{name} {current}/{total}",
         "collapsedSummaryNamed": "{name}",
         "dockToComposerAria": "Über dem Eingabefeld andocken",

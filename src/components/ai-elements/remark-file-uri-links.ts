@@ -1,5 +1,5 @@
-// Local-file markdown links are otherwise rendered as `… [blocked]`. Two
-// distinct sanitize/harden rules cause this, both sidestepped here in the mdast
+// Local-file markdown links are otherwise rendered as `… [blocked]`. Three
+// distinct sanitize/harden rules cause this, all sidestepped here in the mdast
 // layer (before remark-rehype) while keeping the link clickable through the
 // existing link-safety + open-file-dialog flow:
 //
@@ -10,6 +10,9 @@
 //      leading `C:` as a URL protocol and strips the href, after which harden
 //      blocks the now-hrefless `<a>`. Rewritten to `/C:/…` so `C:` is no longer
 //      in protocol position (see {@link windowsDrivePathToSafe}).
+//   3. Bare workspace-relative paths (`dist/…`) — harden has no default origin
+//      and only accepts explicit relatives such as `./dist/…`. They are
+//      prefixed with `./` while remaining relative to the active workspace.
 //
 // Image destinations are handled by remarkLocalImages, which preserves their
 // original path until the workspace-confined image reader can resolve it.
@@ -19,6 +22,10 @@ type MdastNodeLike = {
   url?: unknown
   identifier?: unknown
   value?: unknown
+  data?: {
+    hProperties?: Record<string, unknown>
+    [key: string]: unknown
+  }
   children?: unknown
 }
 
@@ -68,9 +75,90 @@ function windowsDrivePathToSafe(url: string): string | null {
   return WINDOWS_DRIVE_PATH.test(url) ? `/${url}` : null
 }
 
-/** Rewrite a `file://` URI or a bare Windows drive path to a sanitize-safe form. */
+const FILE_EXT = /\.[A-Za-z0-9]{1,10}$/
+const DOCUMENT_EXT = /\.(pdf|docx|xlsx|xls|pptx|csv|md|markdown|txt|html|htm)$/i
+const URL_SCHEME = /^[a-zA-Z][a-zA-Z\d+\-.]*:/
+const WORKSPACE_FILE_TARGET_ATTR = "data-codeg-file-target"
+
+function pathWithoutUrlSuffix(url: string): string {
+  const hashIndex = url.indexOf("#")
+  const beforeHash = hashIndex >= 0 ? url.slice(0, hashIndex) : url
+  const queryIndex = beforeHash.indexOf("?")
+  return queryIndex >= 0 ? beforeHash.slice(0, queryIndex) : beforeHash
+}
+
+/** Return the file-shaped portion of a workspace-relative target, if any. */
+function workspaceRelativeFilePath(url: string): string | null {
+  if (
+    !url ||
+    url.startsWith("/") ||
+    url.startsWith("\\") ||
+    url.startsWith("//") ||
+    URL_SCHEME.test(url)
+  ) {
+    return null
+  }
+
+  let path = pathWithoutUrlSuffix(url)
+  while (path.startsWith("./")) path = path.slice(2)
+  while (path.startsWith("../")) path = path.slice(3)
+  if (path.startsWith("~/")) path = path.slice(2)
+
+  const base = path.split(/[\\/]/).pop() ?? ""
+  const hasPathExtension =
+    FILE_EXT.test(base) && (path.includes("/") || path.includes("\\"))
+  const isDocumentFilename = DOCUMENT_EXT.test(base)
+  return hasPathExtension || isDocumentFilename ? path : null
+}
+
+function workspaceFileTargetData(
+  url: string
+): MdastNodeLike["data"] | undefined {
+  return workspaceRelativeFilePath(url)
+    ? { hProperties: { [WORKSPACE_FILE_TARGET_ATTR]: url } }
+    : undefined
+}
+
+function preserveWorkspaceFileTarget(node: MdastNodeLike, url: string): void {
+  const data = workspaceFileTargetData(url)
+  if (!data) return
+  node.data = {
+    ...node.data,
+    hProperties: {
+      ...node.data?.hProperties,
+      ...data.hProperties,
+    },
+  }
+}
+
+/**
+ * A bare workspace-relative path is a local file target, but rehype-harden
+ * only accepts schemeless relatives that begin with `./`, `../`, or `/` when
+ * no default origin is configured. Prefix the path without changing its
+ * workspace-relative meaning. The file/Windows/explicit-relative branches
+ * above stay unchanged, and URL-like targets are deliberately excluded.
+ */
+function workspaceRelativePathToSafe(url: string): string | null {
+  if (
+    !url ||
+    url.startsWith("\\") ||
+    url.startsWith("//") ||
+    URL_SCHEME.test(url) ||
+    !workspaceRelativeFilePath(url)
+  ) {
+    return null
+  }
+
+  return url.startsWith("./") ? url : `./${url}`
+}
+
+/** Rewrite a local file target to a sanitize-safe form. */
 function rewriteLocalFileUrl(url: string): string | null {
-  return fileUriToLocalPath(url) ?? windowsDrivePathToSafe(url)
+  return (
+    fileUriToLocalPath(url) ??
+    windowsDrivePathToSafe(url) ??
+    workspaceRelativePathToSafe(url)
+  )
 }
 
 function walk(node: MdastNodeLike, fn: (n: MdastNodeLike) => void): void {
@@ -82,9 +170,6 @@ function walk(node: MdastNodeLike, fn: (n: MdastNodeLike) => void): void {
     }
   }
 }
-
-const FILE_EXT = /\.[A-Za-z0-9]{1,10}$/
-const DOCUMENT_EXT = /\.(pdf|docx|xlsx|xls|pptx|csv|md|markdown|txt|html|htm)$/i
 
 /**
  * True when inline code is a local file path with a filename extension —
@@ -111,7 +196,7 @@ function inlineCodeToFileHref(value: string): string | null {
 }
 
 /**
- * Promote backtick-wrapped absolute file paths to markdown links so
+ * Promote backtick-wrapped local file paths to markdown links so
  * MarkdownLink / openFilePreview can open them. Existing links are left
  * alone; fenced code blocks are not visited as inlineCode.
  */
@@ -121,7 +206,10 @@ export function remarkAutolinkInlineFilePaths() {
   }
 }
 
-function visitReplaceInlineCode(node: MdastNodeLike, insideLink: boolean): void {
+function visitReplaceInlineCode(
+  node: MdastNodeLike,
+  insideLink: boolean
+): void {
   const children = node.children
   if (!Array.isArray(children)) return
   const nestedLink = insideLink || node.type === "link"
@@ -137,6 +225,7 @@ function visitReplaceInlineCode(node: MdastNodeLike, insideLink: boolean): void 
         children[i] = {
           type: "link",
           url: href,
+          data: workspaceFileTargetData(child.value),
           children: [{ type: "text", value: child.value.trim() }],
         }
         continue
@@ -164,11 +253,13 @@ export function remarkRewriteFileUriLinks() {
     walk(tree, (node) => {
       if (typeof node.url !== "string") return
       if (node.type === "link") {
+        preserveWorkspaceFileTarget(node, node.url)
         const rewritten = rewriteLocalFileUrl(node.url)
         if (rewritten != null) node.url = rewritten
         return
       }
       if (node.type === "definition") {
+        preserveWorkspaceFileTarget(node, node.url)
         const id =
           typeof node.identifier === "string"
             ? node.identifier.toLowerCase()

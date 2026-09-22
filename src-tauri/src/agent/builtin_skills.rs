@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use rig::agent::RequestPatch;
 use rig::completion::Document;
+use serde_json::Value;
 
 use crate::agent::tools::skill::strip_yaml_frontmatter;
 use crate::paths::codeg_agent_dir;
@@ -70,6 +71,24 @@ pub fn using_plan_explore_document() -> Document {
 
 pub fn attach_using_plan_explore(patch: RequestPatch) -> RequestPatch {
     patch.context(using_plan_explore_document())
+}
+
+/// Preamble text used only for request-budget accounting. These documents are
+/// attached to every native request through `RequestPatch.extra_context`; the
+/// actual request still carries them as documents with their stable IDs.
+pub(crate) fn budget_preamble(preamble: &str, tool_schemas: &[Value]) -> String {
+    let mut budget = String::with_capacity(preamble.len() + 512);
+    budget.push_str(preamble);
+    budget.push_str("\n\n");
+    budget.push_str(&using_plan_explore_document().text);
+    if tool_schemas
+        .iter()
+        .any(|schema| schema.get("name").and_then(Value::as_str) == Some("subagent"))
+    {
+        budget.push_str("\n\n");
+        budget.push_str(crate::agent::tools::subagent::SUBAGENT_SPEC_TEXT);
+    }
+    budget
 }
 
 #[cfg(test)]

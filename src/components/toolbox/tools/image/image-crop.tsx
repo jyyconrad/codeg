@@ -273,15 +273,20 @@ export default function ImageCropTool() {
     )
   }
 
+  function downloadImage() {
+    if (!resultBlob) return
+    triggerBlobDownload(
+      resultBlob,
+      withExtension(file?.name ?? "crop", extForFormat(format))
+    )
+  }
+
   return (
     <ToolPageShell
       input={input}
       onInputChange={onInput}
       inputLabel={t("input")}
-      downloadFilename={withExtension(
-        file?.name ?? "crop",
-        extForFormat(format)
-      )}
+      onDownload={downloadImage}
       error={loadError ?? exportError}
       result={summary}
       onExample={() => {
@@ -408,13 +413,7 @@ export default function ImageCropTool() {
               : undefined
           }
           downloadLabel={t("download")}
-          onDownload={() => {
-            if (!resultBlob) return
-            triggerBlobDownload(
-              resultBlob,
-              withExtension(file?.name ?? "crop", extForFormat(format))
-            )
-          }}
+          onDownload={downloadImage}
         />
       }
     />

@@ -614,12 +614,21 @@ function extractFilePaths(inputPreview: string | null): string[] {
  * (a) leak that file's diff/stats onto its siblings and (b) emit a phantom path
  * from the nested diff's own header.
  */
+const EDIT_SHAPE_TEXT_KEYS = [
+  "old_string",
+  "oldString",
+  "new_string",
+  "newString",
+  "old_text",
+  "oldText",
+  "new_text",
+  "newText",
+] as const
+
 function isEditShapedInput(parsed: Record<string, unknown> | null): boolean {
   if (!parsed) return false
   if (findObjectFieldDeep(parsed, "changes")) return true
-  if (typeof parsed.old_string === "string") return true
-  if (typeof parsed.new_string === "string") return true
-  return false
+  return findStringFieldDeep(parsed, EDIT_SHAPE_TEXT_KEYS) != null
 }
 
 function computeLineDiff(
@@ -667,9 +676,13 @@ function computeLineDiff(
     if (!parsed) return null
 
     const oldStr =
-      typeof parsed.old_string === "string" ? parsed.old_string : ""
+      firstStringField(parsed, EDIT_CHANGE_OLD_KEYS) ??
+      findStringFieldDeep(parsed, EDIT_CHANGE_OLD_KEYS) ??
+      ""
     const newStr =
-      typeof parsed.new_string === "string" ? parsed.new_string : ""
+      firstStringField(parsed, EDIT_CHANGE_NEW_KEYS) ??
+      findStringFieldDeep(parsed, EDIT_CHANGE_NEW_KEYS) ??
+      ""
 
     if (!oldStr && !newStr) return null
 
@@ -679,7 +692,10 @@ function computeLineDiff(
   if (op === "write") {
     if (!parsed) return null
 
-    const content = typeof parsed.content === "string" ? parsed.content : ""
+    const content =
+      firstStringField(parsed, ["content", "new_source", "newSource"]) ??
+      findStringFieldDeep(parsed, ["content", "new_source", "newSource"]) ??
+      ""
     if (!content) return null
 
     return {

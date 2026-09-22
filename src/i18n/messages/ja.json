@@ -3492,7 +3492,11 @@
         "elapsedMinutes": "{value}分",
         "elapsedSeconds": "{value}秒",
         "outputSpeedAria": "推定出力速度",
-        "outputSpeedTooltip": "推定出力速度（テキスト + 思考）"
+        "outputSpeedTooltip": "推定出力速度（テキスト + 思考）",
+        "tokenUsageAria": "セッションのトークン消費",
+        "tokenInput": "入力",
+        "tokenOutput": "出力",
+        "tokenCache": "キャッシュ"
       },
       "jsonTree": {
         "viewRaw": "生の JSON を表示",
@@ -3923,6 +3927,7 @@
         "title": "ワークフロー",
         "collapseAria": "ワークフローを折りたたむ",
         "expandAria": "ワークフローを展開",
+        "closeAria": "ワークフローを閉じる",
         "collapsedSummary": "{name} {current}/{total}",
         "collapsedSummaryNamed": "{name}",
         "dockToComposerAria": "入力欄の上に固定",
