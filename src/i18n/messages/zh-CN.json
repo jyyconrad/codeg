@@ -3904,6 +3904,8 @@
         "createWorkTaskNoTitle": "创建待办任务",
         "resumeDelegation": "恢复任务 {task}",
         "resumeDelegationNoId": "恢复委派任务",
+        "setSessionTimer": "{seconds} 秒后唤醒",
+        "setSessionTimerNoSeconds": "设置会话定时器",
         "promptLabel": "指令",
         "verdict": {
           "success": "成功",

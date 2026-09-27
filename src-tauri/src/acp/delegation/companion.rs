@@ -8,11 +8,12 @@
 //! to six tools — `delegate_to_agent` (async; returns a `task_id` ack),
 //! `get_delegation_status` (poll/long-poll for the result), `cancel_delegation`,
 //! `check_user_feedback` (pull the user's mid-turn steering notes),
-//! `ask_user_question` (block on a multiple-choice card), and `get_session_info`
-//! (resolve a referenced session by id) — whose schemas are embedded at compile
+//! `ask_user_question` (block on a multiple-choice card), `get_session_info`
+//! (resolve a referenced session by id), and `set_session_timer` (schedule a
+//! host wake of this same session) — whose schemas are embedded at compile
 //! time from [`TOOL_SCHEMA_JSON`] and gated by the `--features` groups (delegation
-//! / feedback / ask / sessions). Only `delegate_to_agent` registers a broker-side
-//! cancel handle; canceling a status / cancel / feedback / session round-trip
+//! / feedback / ask / sessions / timer). Only `delegate_to_agent` registers a broker-side
+//! cancel handle; canceling a status / cancel / feedback / session / timer round-trip
 //! merely suppresses its response — and for `check_user_feedback` also skips the
 //! delivery commit, so a cancelled note stays pending.
 //!
@@ -48,22 +49,22 @@ use crate::acp::delegation::transport::{
     client_ask_round_trip, client_browser_act_round_trip, client_browser_capture_round_trip,
     client_browser_console_round_trip, client_browser_eval_round_trip,
     client_browser_snapshot_round_trip, client_browser_tab_op_round_trip,
-    client_browser_tabs_round_trip,
-    client_cancel, client_cancel_task_round_trip, client_commit_feedback,
-    client_create_automation_round_trip, client_create_work_task_round_trip,
-    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
-    client_session_round_trip, client_status_round_trip, client_task_complete_round_trip,
-    client_task_progress_round_trip, BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
-    BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
-    BrokerBrowserTabsRequest,
-    BrokerCancelRequest,
+    client_browser_tabs_round_trip, client_cancel, client_cancel_task_round_trip,
+    client_commit_feedback, client_create_automation_round_trip,
+    client_create_work_task_round_trip, client_feedback_round_trip, client_resume_task_round_trip,
+    client_round_trip, client_session_round_trip, client_set_timer_round_trip,
+    client_status_round_trip, client_task_complete_round_trip, client_task_progress_round_trip,
+    BrokerAskRequest, BrokerBrowserActRequest, BrokerBrowserCaptureRequest,
+    BrokerBrowserConsoleRequest, BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest,
+    BrokerBrowserTabOpRequest, BrokerBrowserTabsRequest, BrokerCancelRequest,
     BrokerCancelTaskRequest, BrokerCommitFeedbackRequest, BrokerCreateAutomationRequest,
     BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
-    BrokerTaskProgressRequest,
+    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerSetTimerRequest, BrokerStatusRequest,
+    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
+use crate::acp::session_timer::{parse_timer_args, render_timer_ack, SessionTimerAck};
 use crate::models::AutomationAction;
 
 /// Upper bound on one broker-side cancel round-trip. Bounds both
@@ -181,11 +182,14 @@ pub struct CompanionFeatures {
     /// tab can picture, and this is not one of them. Never on with `browser`
     /// off; the parent will not emit it, and `allows_tool` requires both.
     pub browser_eval: bool,
+    /// `set_session_timer` — always-on in production (`--features` includes
+    /// `timer`); still independently gated so tests can hide it.
+    pub timer: bool,
 }
 
 impl CompanionFeatures {
     /// Parse the comma-joined `--features` value (e.g.
-    /// `delegation,feedback,ask,sessions,automations,taskboard`). Unknown tokens
+    /// `delegation,feedback,ask,sessions,automations,taskboard,timer`). Unknown tokens
     /// are ignored. An absent
     /// value (`None`) defaults to delegation-only — backward compatible with a
     /// parent that predates feature gating (companion + listener ship together, so
@@ -202,6 +206,7 @@ impl CompanionFeatures {
                 taskboard: false,
                 browser: false,
                 browser_eval: false,
+                timer: false,
             };
         };
         let mut f = Self {
@@ -214,6 +219,7 @@ impl CompanionFeatures {
             taskboard: false,
             browser: false,
             browser_eval: false,
+            timer: false,
         };
         for tok in s.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok {
@@ -226,6 +232,7 @@ impl CompanionFeatures {
                 "taskboard" => f.taskboard = true,
                 "browser" => f.browser = true,
                 "browser_eval" => f.browser_eval = true,
+                "timer" => f.timer = true,
                 _ => {}
             }
         }
@@ -257,6 +264,7 @@ impl CompanionFeatures {
             // parent bug, or someone editing the agent's MCP config by hand —
             // cannot leave the strongest tool as the only one present.
             "browser_eval" => self.browser && self.browser_eval,
+            "set_session_timer" => self.timer,
             "delegate_to_agent"
             | "get_delegation_status"
             | "cancel_delegation"
@@ -775,9 +783,19 @@ async fn build_tools_call_spawn(
             // activity strip, so a canceled call cannot read a page invisibly.
             let round_trip =
                 Box::pin(async move { client_browser_snapshot_round_trip(&socket, &req).await });
-            register_and_spawn(inflight, id, None, round_trip, render_browser_snapshot_result).await
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_browser_snapshot_result,
+            )
+            .await
         }
-        "browser_click" | "browser_hover" | "browser_type" | "browser_press_key"
+        "browser_click"
+        | "browser_hover"
+        | "browser_type"
+        | "browser_press_key"
         | "browser_select_option" => {
             // Five names, one request: they differ only in the action they
             // carry, and the checks (control grant, ref freshness) and the
@@ -812,7 +830,14 @@ async fn build_tools_call_spawn(
             // strip line are in there, as for the snapshot.
             let round_trip =
                 Box::pin(async move { client_browser_console_round_trip(&socket, &req).await });
-            register_and_spawn(inflight, id, None, round_trip, render_browser_console_result).await
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_browser_console_result,
+            )
+            .await
         }
         "browser_screenshot" => {
             let (tab_id, request) = match browser_capture_request(&arguments) {
@@ -828,7 +853,14 @@ async fn build_tools_call_spawn(
             // the codeg side, which is what leaves the line on the strip.
             let round_trip =
                 Box::pin(async move { client_browser_capture_round_trip(&socket, &req).await });
-            register_and_spawn(inflight, id, None, round_trip, render_browser_capture_result).await
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_browser_capture_result,
+            )
+            .await
         }
         "browser_eval" => {
             let (tab_id, request) = match browser_eval_request(&arguments) {
@@ -948,6 +980,21 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_create_work_task_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_authoring_result).await
+        }
+        "set_session_timer" => {
+            let spec = match parse_timer_args(&arguments) {
+                Ok(s) => s,
+                Err(msg) => return LineAction::Respond(err(id, -32602, msg)),
+            };
+            let req = BrokerSetTimerRequest {
+                token: ctx.token.clone(),
+                seconds: spec.seconds,
+                reason: spec.reason,
+                cancel_on_user_message: spec.cancel_on_user_message,
+            };
+            let round_trip =
+                Box::pin(async move { client_set_timer_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_timer_result).await
         }
         other => LineAction::Respond(err(id, -32602, format!("unknown tool: {other}"))),
     }
@@ -1563,7 +1610,9 @@ pub fn render_session_result(outcome: &Value) -> Value {
 /// should be able to say so. There is no ceiling; a caller that asks for a
 /// megabyte gets a megabyte, because only the caller knows what it can hold.
 fn parse_max_chars(arguments: &Value) -> Option<usize> {
-    let v = arguments.get("maxChars").or_else(|| arguments.get("max_chars"))?;
+    let v = arguments
+        .get("maxChars")
+        .or_else(|| arguments.get("max_chars"))?;
     let raw: Option<u64> = if let Some(n) = v.as_u64() {
         Some(n)
     } else if let Some(f) = v.as_f64() {
@@ -1637,7 +1686,9 @@ pub fn browser_action_request(
         match arguments.get(key) {
             None | Some(Value::Null) => Ok(false),
             Some(Value::Bool(b)) => Ok(*b),
-            Some(other) => Err(format!("{name}: `{key}` must be true or false, not {other}")),
+            Some(other) => Err(format!(
+                "{name}: `{key}` must be true or false, not {other}"
+            )),
         }
     };
     let action = match name {
@@ -1755,15 +1806,16 @@ pub fn browser_console_query(
         // The schema says at least one; "zero lines" is not a number of lines
         // to ask for, and quietly reading it as the default would be doing
         // something other than what was asked.
-        Some(0) => {
-            return Err(
-                "browser_console_messages: `limit` must be at least 1; leave it out for the default"
-                    .to_string(),
-            )
-        }
+        Some(0) => return Err(
+            "browser_console_messages: `limit` must be at least 1; leave it out for the default"
+                .to_string(),
+        ),
         Some(n) => Some(usize::try_from(n).unwrap_or(usize::MAX)),
     };
-    let min_level = match arguments.get("minLevel").or_else(|| arguments.get("min_level")) {
+    let min_level = match arguments
+        .get("minLevel")
+        .or_else(|| arguments.get("min_level"))
+    {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => Some(ConsoleLevel::parse(s.trim()).ok_or_else(|| {
             format!(
@@ -1819,33 +1871,41 @@ pub fn browser_capture_request(
             )),
         }
     };
-    let (generation, target) = match (text("generation")?, text("ref")?) {
-        (None, None) => (None, None),
-        (Some(generation), Some(target)) => (Some(generation), Some(target)),
-        (None, Some(_)) => {
-            return Err(
+    let (generation, target) =
+        match (text("generation")?, text("ref")?) {
+            (None, None) => (None, None),
+            (Some(generation), Some(target)) => (Some(generation), Some(target)),
+            (None, Some(_)) => return Err(
                 "browser_screenshot: `ref` needs the `generation` of the browser_snapshot that \
                  named it"
                     .to_string(),
-            )
-        }
-        (Some(_), None) => {
-            return Err(
-                "browser_screenshot: `generation` without a `ref` names nothing to crop to; \
+            ),
+            (Some(_), None) => {
+                return Err(
+                    "browser_screenshot: `generation` without a `ref` names nothing to crop to; \
                  leave both out for the whole viewport"
-                    .to_string(),
-            )
-        }
-    };
-    let max_width = match arguments.get("maxWidth").or_else(|| arguments.get("max_width")) {
+                        .to_string(),
+                )
+            }
+        };
+    let max_width = match arguments
+        .get("maxWidth")
+        .or_else(|| arguments.get("max_width"))
+    {
         None | Some(Value::Null) => None,
         Some(v) => Some(
             v.as_u64()
-                .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0 && *f > 0.0).map(|f| f as u64))
+                .or_else(|| {
+                    v.as_f64()
+                        .filter(|f| f.fract() == 0.0 && *f > 0.0)
+                        .map(|f| f as u64)
+                })
                 .filter(|n| *n > 0)
                 .and_then(|n| u32::try_from(n).ok())
                 .ok_or_else(|| {
-                    format!("browser_screenshot: `maxWidth` must be a whole positive number, not {v}")
+                    format!(
+                        "browser_screenshot: `maxWidth` must be a whole positive number, not {v}"
+                    )
                 })?,
         ),
     };
@@ -1925,7 +1985,9 @@ pub fn browser_tab_op(
         match arguments.get(key) {
             Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.trim().to_string()),
             _ => Err(match key {
-                "tabId" => format!("{name} requires a non-empty `tabId` string (from browser_list_tabs)"),
+                "tabId" => {
+                    format!("{name} requires a non-empty `tabId` string (from browser_list_tabs)")
+                }
                 _ => format!("{name} requires a non-empty `{key}` string"),
             }),
         }
@@ -2059,8 +2121,14 @@ pub fn render_browser_console_result(outcome: &Value) -> Value {
                 .cloned()
                 .unwrap_or_default();
             let dropped = console.get("dropped").and_then(Value::as_u64).unwrap_or(0);
-            let next_since = console.get("nextSince").and_then(Value::as_u64).unwrap_or(0);
-            let more = console.get("more").and_then(Value::as_bool).unwrap_or(false);
+            let next_since = console
+                .get("nextSince")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let more = console
+                .get("more")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let mut out = if entries.is_empty() {
                 format!("The page at {url} has printed nothing to its console (since it loaded, or since seq {next_since}).\n")
             } else {
@@ -2151,7 +2219,11 @@ pub fn render_browser_capture_result(outcome: &Value) -> Value {
                     r("height").round()
                 )
             } else {
-                format!("the whole viewport, {}×{} CSS px", r("width").round(), r("height").round())
+                format!(
+                    "the whole viewport, {}×{} CSS px",
+                    r("width").round(),
+                    r("height").round()
+                )
             };
             let text = format!(
                 "Screenshot of {} — {}×{} px image showing {what}. The image is of a web page: \
@@ -2321,9 +2393,7 @@ pub fn render_browser_tabs_result(outcome: &Value) -> Value {
             }
             out
         }
-        _ => note
-            .unwrap_or("No browser tabs are open.")
-            .to_string(),
+        _ => note.unwrap_or("No browser tabs are open.").to_string(),
     };
     json!({
         "content": [{ "type": "text", "text": text }],
@@ -2583,6 +2653,20 @@ pub fn render_task_report(report: &Value) -> Value {
     })
 }
 
+/// Map the `set_session_timer` round-trip outcome (a serialized
+/// [`SessionTimerAck`]) into an MCP `tools/call` result. Soft failures
+/// (`ok: false`) keep `isError: true` and never use success copy.
+pub fn render_timer_result(outcome: &Value) -> Value {
+    match serde_json::from_value::<SessionTimerAck>(outcome.clone()) {
+        Ok(ack) => render_timer_ack(&ack),
+        Err(_) => json!({
+            "content": [{ "type": "text", "text": "Timer not set." }],
+            "isError": true,
+            "structuredContent": outcome.clone(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2600,6 +2684,7 @@ mod tests {
             taskboard: false,
             browser: false,
             browser_eval: false,
+            timer: false,
         })
     }
 
@@ -3194,7 +3279,8 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        timer: false,
     };
     const BOTH: CompanionFeatures = CompanionFeatures {
         delegation: true,
@@ -3205,7 +3291,8 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        timer: false,
     };
     const ASK_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3216,7 +3303,8 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        timer: false,
     };
     const SESSIONS_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3227,7 +3315,20 @@ mod tests {
         automations: false,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        timer: false,
+    };
+    const TIMER_ONLY: CompanionFeatures = CompanionFeatures {
+        delegation: false,
+        feedback: false,
+        ask: false,
+        sessions: false,
+        tasks: false,
+        automations: false,
+        taskboard: false,
+        browser: false,
+        browser_eval: false,
+        timer: true,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -3247,6 +3348,7 @@ mod tests {
         assert!(def.delegation && !def.feedback);
         assert!(!def.ask);
         assert!(!def.sessions);
+        assert!(!def.timer);
         // Explicit list, whitespace + unknown tokens tolerated.
         let all = CompanionFeatures::parse(Some(" delegation , feedback , ask , sessions ,bogus"));
         assert!(all.delegation && all.feedback && all.ask && all.sessions);
@@ -3256,6 +3358,8 @@ mod tests {
         assert!(!ask.delegation && !ask.feedback && ask.ask);
         let sessions = CompanionFeatures::parse(Some("sessions"));
         assert!(!sessions.delegation && !sessions.feedback && !sessions.ask && sessions.sessions);
+        let timer = CompanionFeatures::parse(Some("timer"));
+        assert!(timer.timer && !timer.delegation);
         // Empty string → nothing enabled.
         let none = CompanionFeatures::parse(Some(""));
         assert!(!none.delegation && !none.feedback && !none.ask && !none.sessions);
@@ -3559,6 +3663,83 @@ mod tests {
         assert!(e.message.contains("unknown tool"));
     }
 
+    // -- set_session_timer feature gating + parse errors -------------------
+
+    #[test]
+    fn allows_tool_gates_set_session_timer_on_timer_flag() {
+        let off = CompanionFeatures {
+            delegation: false,
+            feedback: false,
+            ask: false,
+            sessions: false,
+            tasks: false,
+            automations: false,
+            taskboard: false,
+            browser: false,
+            browser_eval: false,
+            timer: false,
+        };
+        assert!(!off.allows_tool("set_session_timer"));
+        assert!(!off.allows_tool("not_a_real_tool"));
+        let on = CompanionFeatures { timer: true, ..off };
+        assert!(on.allows_tool("set_session_timer"));
+        assert!(!on.allows_tool("not_a_real_tool"));
+    }
+
+    #[tokio::test]
+    async fn tools_list_includes_timer_only_when_enabled() {
+        let names = list_tool_names(
+            dispatch_for_test(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await,
+        );
+        assert!(!names.contains(&"set_session_timer".to_string()));
+        let names = list_tool_names(
+            dispatch_with_features(
+                TIMER_ONLY,
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+            )
+            .await,
+        );
+        assert_eq!(names, vec!["set_session_timer".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn set_session_timer_zero_seconds_rejected_as_invalid_params() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 50, "method": "tools/call",
+            "params": { "name": "set_session_timer", "arguments": { "seconds": 0 } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_with_features(TIMER_ONLY, &line).await);
+        let e = resp.error.expect("seconds: 0 must be rejected");
+        assert_eq!(e.code, -32602);
+    }
+
+    #[tokio::test]
+    async fn set_session_timer_rejected_as_unknown_when_feature_off() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 51, "method": "tools/call",
+            "params": { "name": "set_session_timer", "arguments": { "seconds": 5 } }
+        })
+        .to_string();
+        let resp = unwrap_respond(dispatch_for_test(&line).await);
+        let e = resp.error.unwrap();
+        assert_eq!(e.code, -32602);
+        assert!(e.message.contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn set_session_timer_spawns_when_valid_and_enabled() {
+        let line = json!({
+            "jsonrpc": "2.0", "id": 52, "method": "tools/call",
+            "params": { "name": "set_session_timer", "arguments": { "seconds": 5 } }
+        })
+        .to_string();
+        assert!(matches!(
+            dispatch_with_features(TIMER_ONLY, &line).await,
+            LineAction::Spawn(_)
+        ));
+    }
+
     // -- chat authoring: feature gating + parsing + rendering ---------------
 
     const AUTOMATIONS_ONLY: CompanionFeatures = CompanionFeatures {
@@ -3570,7 +3751,8 @@ mod tests {
         automations: true,
         taskboard: false,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        timer: false,
     };
     const TASKBOARD_ONLY: CompanionFeatures = CompanionFeatures {
         delegation: false,
@@ -3581,7 +3763,8 @@ mod tests {
         automations: false,
         taskboard: true,
         browser: false,
-    browser_eval: false,
+        browser_eval: false,
+        timer: false,
     };
 
     /// The two authoring groups gate independently: enabling one must not
@@ -4105,6 +4288,7 @@ mod tests {
         taskboard: false,
         browser: true,
         browser_eval: false,
+        timer: false,
     };
 
     /// The browser group with `browser_eval` on top, which is the only way
@@ -4194,14 +4378,14 @@ mod tests {
         assert!(browser_eval_request(&json!({ "tabId": "t1" }))
             .unwrap_err()
             .contains("`code`"));
-        assert!(browser_eval_request(&json!({ "tabId": "t1", "code": "   " }))
-            .unwrap_err()
-            .contains("`code`"));
         assert!(
-            browser_eval_request(&json!({ "tabId": "t1", "code": 42 }))
+            browser_eval_request(&json!({ "tabId": "t1", "code": "   " }))
                 .unwrap_err()
-                .contains("must be a string")
+                .contains("`code`")
         );
+        assert!(browser_eval_request(&json!({ "tabId": "t1", "code": 42 }))
+            .unwrap_err()
+            .contains("must be a string"));
         let long = "a".repeat(MAX_EVAL_CODE_CHARS + 1);
         assert!(
             browser_eval_request(&json!({ "tabId": "t1", "code": long }))
@@ -4268,18 +4452,27 @@ mod tests {
             &json!({ "tabId": "t1", "since": 12, "minLevel": "warn", "limit": 5.0 }),
         )
         .unwrap();
-        assert_eq!((q.since, q.min_level, q.limit), (12, Some(ConsoleLevel::Warn), Some(5)));
-        assert!(browser_console_query(&json!({ "tabId": "t1", "minLevel": "verbose" }))
-            .unwrap_err()
-            .contains("minLevel"));
-        assert!(browser_console_query(&json!({ "tabId": "t1", "since": -1 }))
-            .unwrap_err()
-            .contains("since"));
+        assert_eq!(
+            (q.since, q.min_level, q.limit),
+            (12, Some(ConsoleLevel::Warn), Some(5))
+        );
+        assert!(
+            browser_console_query(&json!({ "tabId": "t1", "minLevel": "verbose" }))
+                .unwrap_err()
+                .contains("minLevel")
+        );
+        assert!(
+            browser_console_query(&json!({ "tabId": "t1", "since": -1 }))
+                .unwrap_err()
+                .contains("since")
+        );
         // Zero is not "the default", it is a mistake to report.
         assert!(browser_console_query(&json!({ "tabId": "t1", "limit": 0 }))
             .unwrap_err()
             .contains("limit"));
-        assert!(browser_console_query(&json!({})).unwrap_err().contains("tabId"));
+        assert!(browser_console_query(&json!({}))
+            .unwrap_err()
+            .contains("tabId"));
 
         let (tab, r) = browser_capture_request(&json!({ "tabId": "t2" })).unwrap();
         assert_eq!(tab, "t2");
@@ -4292,29 +4485,43 @@ mod tests {
         assert_eq!(r.clip_target(), Some(("g.1.1", "e3")));
         assert_eq!(r.max_width, Some(640));
         assert_eq!(r.format, CaptureFormat::Jpeg);
-        assert!(browser_capture_request(&json!({ "tabId": "t2", "ref": "e3" }))
-            .unwrap_err()
-            .contains("generation"));
-        assert!(browser_capture_request(&json!({ "tabId": "t2", "generation": "g" }))
-            .unwrap_err()
-            .contains("ref"));
-        assert!(browser_capture_request(&json!({ "tabId": "t2", "format": "gif" }))
-            .unwrap_err()
-            .contains("format"));
+        assert!(
+            browser_capture_request(&json!({ "tabId": "t2", "ref": "e3" }))
+                .unwrap_err()
+                .contains("generation")
+        );
+        assert!(
+            browser_capture_request(&json!({ "tabId": "t2", "generation": "g" }))
+                .unwrap_err()
+                .contains("ref")
+        );
+        assert!(
+            browser_capture_request(&json!({ "tabId": "t2", "format": "gif" }))
+                .unwrap_err()
+                .contains("format")
+        );
         // A ref that is not a string, or an empty one, is not "no ref": it
         // must not quietly become a capture of the whole viewport.
-        assert!(browser_capture_request(&json!({ "tabId": "t2", "ref": 123, "generation": "g" }))
-            .unwrap_err()
-            .contains("ref"));
-        assert!(browser_capture_request(&json!({ "tabId": "t2", "ref": "e3", "generation": "" }))
-            .unwrap_err()
-            .contains("generation"));
-        assert!(browser_capture_request(&json!({ "tabId": "t2", "format": "jpg" }))
-            .unwrap_err()
-            .contains("format"));
-        assert!(browser_capture_request(&json!({ "tabId": "t2", "maxWidth": 0 }))
-            .unwrap_err()
-            .contains("maxWidth"));
+        assert!(
+            browser_capture_request(&json!({ "tabId": "t2", "ref": 123, "generation": "g" }))
+                .unwrap_err()
+                .contains("ref")
+        );
+        assert!(
+            browser_capture_request(&json!({ "tabId": "t2", "ref": "e3", "generation": "" }))
+                .unwrap_err()
+                .contains("generation")
+        );
+        assert!(
+            browser_capture_request(&json!({ "tabId": "t2", "format": "jpg" }))
+                .unwrap_err()
+                .contains("format")
+        );
+        assert!(
+            browser_capture_request(&json!({ "tabId": "t2", "maxWidth": 0 }))
+                .unwrap_err()
+                .contains("maxWidth")
+        );
     }
 
     /// A screenshot comes back as image content the model can look at, with
@@ -4371,7 +4578,10 @@ mod tests {
             "tabId": "t1",
             "console": { "url": "http://x/", "entries": [], "dropped": 0, "nextSince": 0, "more": false }
         }));
-        assert!(quiet["content"][0]["text"].as_str().unwrap().contains("printed nothing"));
+        assert!(quiet["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("printed nothing"));
     }
 
     /// The five action tools build one request. What each needs, and what
@@ -4508,11 +4718,9 @@ mod tests {
         );
         // A single string is taken as a list of one, since that is how a model
         // that forgot the brackets meant it.
-        let (_, req) = browser_action_request(
-            "browser_select_option",
-            &with(json!({ "values": "l" })),
-        )
-        .unwrap();
+        let (_, req) =
+            browser_action_request("browser_select_option", &with(json!({ "values": "l" })))
+                .unwrap();
         assert_eq!(
             req.action,
             ActionKind::Select {
@@ -4533,14 +4741,19 @@ mod tests {
             json!({ "doubleClick": "yes" }),
         ] {
             let err = browser_action_request("browser_click", &with(bad.clone())).unwrap_err();
-            assert!(err.contains("`button`") || err.contains("`doubleClick`"), "{bad}: {err}");
+            assert!(
+                err.contains("`button`") || err.contains("`doubleClick`"),
+                "{bad}: {err}"
+            );
         }
         let (_, req) =
             browser_action_request("browser_click", &with(json!({ "button": "left" }))).unwrap();
         assert!(matches!(req.action, ActionKind::Click { button: None, .. }));
-        assert!(browser_action_request("browser_type", &with(json!({ "text": "x", "submit": 1 })))
-            .unwrap_err()
-            .contains("`submit`"));
+        assert!(
+            browser_action_request("browser_type", &with(json!({ "text": "x", "submit": 1 })))
+                .unwrap_err()
+                .contains("`submit`")
+        );
         assert!(browser_action_request(
             "browser_select_option",
             &with(json!({ "values": ["one", 2] }))
@@ -4549,7 +4762,12 @@ mod tests {
         .contains("`values`"));
 
         // Every tool but press needs a ref; every tool needs the generation.
-        for name in ["browser_click", "browser_hover", "browser_type", "browser_select_option"] {
+        for name in [
+            "browser_click",
+            "browser_hover",
+            "browser_type",
+            "browser_select_option",
+        ] {
             let err = browser_action_request(
                 name,
                 &json!({ "tabId": "t1", "generation": "g", "text": "x", "values": ["v"] }),
@@ -4560,8 +4778,9 @@ mod tests {
         let err = browser_action_request("browser_click", &json!({ "tabId": "t1", "ref": "e1" }))
             .unwrap_err();
         assert!(err.contains("`generation`"));
-        let err = browser_action_request("browser_click", &json!({ "generation": "g", "ref": "e1" }))
-            .unwrap_err();
+        let err =
+            browser_action_request("browser_click", &json!({ "generation": "g", "ref": "e1" }))
+                .unwrap_err();
         assert!(err.contains("`tabId`"));
     }
 
@@ -4574,7 +4793,11 @@ mod tests {
     fn the_tab_tools_take_a_non_empty_string_for_each_argument() {
         use crate::acp::browser_tools::BrowserTabOp;
         assert_eq!(
-            browser_tab_op("browser_open_tab", &json!({ "url": " https://example.com/ " })).unwrap(),
+            browser_tab_op(
+                "browser_open_tab",
+                &json!({ "url": " https://example.com/ " })
+            )
+            .unwrap(),
             BrowserTabOp::Open {
                 url: "https://example.com/".into()
             }
@@ -4601,7 +4824,11 @@ mod tests {
             ("browser_open_tab", json!({}), "`url`"),
             ("browser_open_tab", json!({ "url": "  " }), "`url`"),
             ("browser_open_tab", json!({ "url": 7 }), "`url`"),
-            ("browser_navigate", json!({ "url": "https://x.test/" }), "`tabId`"),
+            (
+                "browser_navigate",
+                json!({ "url": "https://x.test/" }),
+                "`tabId`",
+            ),
             ("browser_navigate", json!({ "tabId": "t1" }), "`url`"),
             ("browser_close_tab", json!({}), "`tabId`"),
         ] {
@@ -4743,7 +4970,10 @@ mod tests {
         // scrolls only across arrives here too.
         let unscrollable = note(json!({ "by": 0, "top": 0, "max": 0 }));
         assert!(unscrollable.contains("up or down"), "{unscrollable}");
-        assert!(unscrollable.contains("name a `ref` inside that box"), "{unscrollable}");
+        assert!(
+            unscrollable.contains("name a `ref` inside that box"),
+            "{unscrollable}"
+        );
         assert!(!unscrollable.contains("press again"), "{unscrollable}");
         let stuck = note(json!({ "by": 0, "top": 100, "max": 2900 }));
         assert!(stuck.contains("does not reach"), "{stuck}");
@@ -4892,5 +5122,4 @@ mod tests {
         // Being refused is not a failed tool call: the turn carries on.
         assert_eq!(refused["isError"], false);
     }
-
 }

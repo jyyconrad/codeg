@@ -1,8 +1,8 @@
 /**
  * Parsing helpers for the codeg-mcp *workbench* companion tools — the ones that
  * report back into codeg itself rather than driving a sub-agent:
- * `get_session_info`, `task_progress`, `task_complete`, `create_automation` and
- * `create_work_task` — plus `resume_delegation`.
+ * `get_session_info`, `task_progress`, `task_complete`, `create_automation`,
+ * `create_work_task`, `set_session_timer` — plus `resume_delegation`.
  *
  * `resume_delegation` is the odd one out: it revives a sub-agent, so its
  * primary renderer is `ResumedDelegationCard`, which states WHICH sub-agent
@@ -48,6 +48,7 @@ export const CODEG_MCP_WORKBENCH_TOOLS = [
   "create_automation",
   "create_work_task",
   "resume_delegation",
+  "set_session_timer",
 ] as const
 
 export type CodegMcpWorkbenchTool = (typeof CODEG_MCP_WORKBENCH_TOOLS)[number]
@@ -86,13 +87,12 @@ export interface CodegMcpToolModel {
    */
   prompt: string | null
   /**
-   * `resume_delegation`'s optional `reason` argument — why the run was being
-   * revived. `null` for every other tool and when the LLM omitted it.
+   * Optional free-form `reason` on `resume_delegation` (why the run was being
+   * revived) and `set_session_timer` (why the wake was scheduled). `null` for
+   * every other tool and when the LLM omitted it.
    *
-   * Surfaced for the same reason as `prompt` above: it is the only free-form
-   * text a resume carries, it is injected into the child's continuation
-   * prompt, and nothing echoes it back in the result — so without this it
-   * would be visible nowhere.
+   * Surfaced for the same reason as `prompt` above: it is free-form text the
+   * result never echoes, so without this it would be visible nowhere.
    */
   reason: string | null
   /** The result text, envelopes peeled. `null` while the call is in flight. */
@@ -224,6 +224,14 @@ const ARG_SPECS: Record<
     fields: ["task_id"],
     detail: (args) => str(args, "task_id"),
   },
+  set_session_timer: {
+    fields: ["seconds"],
+    detail: (args) => {
+      const raw = args.seconds
+      if (raw === undefined || raw === null) return null
+      return String(raw)
+    },
+  },
 }
 
 /**
@@ -335,7 +343,11 @@ export function parseCodegMcpToolCall(params: {
     verdict: params.tool === "task_complete" ? parseVerdict(args) : null,
     prompt: authoring && args ? str(args, "prompt") : null,
     reason:
-      params.tool === "resume_delegation" && args ? str(args, "reason") : null,
+      (params.tool === "resume_delegation" ||
+        params.tool === "set_session_timer") &&
+      args
+        ? str(args, "reason")
+        : null,
     resultText: isError ? (params.errorText?.trim() ?? resultText) : resultText,
     status: isError
       ? "err"

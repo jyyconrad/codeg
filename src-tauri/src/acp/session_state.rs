@@ -16,6 +16,7 @@ use crate::acp::event_stream::{
 use crate::acp::feedback::{FeedbackItem, FeedbackStatus};
 use crate::acp::plan_approval::PendingPlanApprovalState;
 use crate::acp::question::PendingQuestionState;
+use crate::acp::session_timer::SessionTimerSpec;
 use crate::acp::types::{
     AcpEvent, AsyncTaskRecord, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus,
     EventEnvelope, GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo,
@@ -495,6 +496,15 @@ pub struct SessionState {
     /// pinning the connection alive forever. Backend-internal; not serialized.
     pub background_activity_at: Option<DateTime<Utc>>,
 
+    /// Wall-clock deadline of the live `set_session_timer` on this connection.
+    /// `Some` and still in the future → idle sweep must not disconnect.
+    /// Cleared on cancel, replace, or fire. Independent of
+    /// `background_outstanding` (K6).
+    pub session_timer_deadline: Option<DateTime<Utc>>,
+    /// Wake spec queued because a turn was in flight at expiry. Does not
+    /// itself pin idle sweep; `Prompting` / `turn_in_flight` already skip it.
+    pub queued_timer_wake: Option<SessionTimerSpec>,
+
     // ACP 协商出的能力
     pub modes: Option<SessionModeStateInfo>,
     pub current_mode: Option<String>,
@@ -877,6 +887,8 @@ impl SessionState {
             feedback: Vec::new(),
             background_outstanding: 0,
             background_activity_at: None,
+            session_timer_deadline: None,
+            queued_timer_wake: None,
             modes: None,
             current_mode: None,
             config_options: None,
@@ -1766,6 +1778,15 @@ impl SessionState {
             Some(at) => now.signed_duration_since(at) < background_keepalive_max_age(),
             None => false,
         }
+    }
+
+    /// True while a session timer deadline is still in the future. Idle sweep
+    /// must skip this connection so the timer can fire (K5). Expired or missing
+    /// deadlines do not exempt.
+    pub fn has_pending_session_timer(&self, now: DateTime<Utc>) -> bool {
+        self.session_timer_deadline
+            .map(|deadline| deadline > now)
+            .unwrap_or(false)
     }
 
     /// Whether any AIR async task is still non-terminal AND the adapter has
@@ -2686,6 +2707,16 @@ mod tests {
             "win-test".to_string(),
             None,
         )
+    }
+
+    #[test]
+    fn pending_session_timer_is_true_only_before_deadline() {
+        let mut s = fresh_state();
+        let now = Utc::now();
+        assert!(!s.has_pending_session_timer(now));
+        s.session_timer_deadline = Some(now + chrono::Duration::seconds(30));
+        assert!(s.has_pending_session_timer(now));
+        assert!(!s.has_pending_session_timer(now + chrono::Duration::seconds(31)));
     }
 
     /// `ConversationLinked` must forget the live-title skip-cache.

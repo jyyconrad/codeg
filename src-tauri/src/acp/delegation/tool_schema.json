@@ -656,5 +656,31 @@
         }
       }
     }
+  },
+  {
+    "name": "set_session_timer",
+    "description": "Schedule this same session to be re-woken by the host after a given number of seconds. Returns immediately and does not block this turn. When the wait expires the host injects a wake message into this session and starts a new turn. Maximum 1800 seconds. Only one pending timer per session; a later call replaces it. By default a later user message cancels the timer; pass `cancel_on_user_message: false` to keep waiting while you chat. Do not use this to wait on another session or for work that needs more than 30 minutes.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "seconds"
+      ],
+      "properties": {
+        "seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1800,
+          "description": "Seconds to wait before waking this same session. Maximum 1800 (30 minutes)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional note included in the wake prompt so you remember why you waited."
+        },
+        "cancel_on_user_message": {
+          "type": "boolean",
+          "description": "If true (default), a later user message on this session cancels the timer. If false, the wake still fires after the wait."
+        }
+      }
+    }
   }
 ]

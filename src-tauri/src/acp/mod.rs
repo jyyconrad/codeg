@@ -37,6 +37,7 @@ pub mod run_settled;
 pub mod scratch_dir;
 pub mod session_info;
 pub mod session_state;
+pub mod session_timer;
 pub mod session_title;
 pub mod stderr_tail;
 pub mod temp_reclaim;

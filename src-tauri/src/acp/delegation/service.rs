@@ -477,6 +477,25 @@ mod tests {
         path
     }
 
+    #[async_trait]
+    impl crate::acp::session_timer::SessionTimerAccess for Stub {
+        async fn set_timer(
+            &self,
+            _: &str,
+            spec: crate::acp::session_timer::SessionTimerSpec,
+        ) -> crate::acp::session_timer::SessionTimerAck {
+            crate::acp::session_timer::SessionTimerAck {
+                ok: true,
+                timer_id: Some("test".into()),
+                seconds: spec.seconds,
+                cancel_on_user_message: spec.cancel_on_user_message,
+                replaced: false,
+                error: None,
+            }
+        }
+        async fn cancel_by_parent(&self, _: &str) {}
+    }
+
     fn make_service(socket_path: PathBuf) -> Arc<DelegationService> {
         let broker = Arc::new(DelegationBroker::new(
             Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
@@ -485,6 +504,7 @@ mod tests {
         let listener = DelegationListener::new(
             broker,
             Arc::new(TokenRegistry::default()),
+            Arc::new(Stub),
             Arc::new(Stub),
             Arc::new(Stub),
             Arc::new(Stub),

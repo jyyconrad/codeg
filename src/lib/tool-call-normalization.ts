@@ -139,6 +139,7 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   task_complete: "task_complete",
   create_automation: "create_automation",
   create_work_task: "create_work_task",
+  set_session_timer: "set_session_timer",
   // codeg-mcp live-feedback poll (server prefix varies by host; the suffix rule
   // in `normalizeToolName` covers the other separators). Codex persists it under
   // the bare `check_user_feedback` name, dropping the `mcp__codeg_mcp` namespace.
@@ -591,6 +592,7 @@ export function normalizeToolName(toolName: string): string {
   if (/[^a-z0-9]task_complete$/.test(canonical)) return "task_complete"
   if (/[^a-z0-9]create_automation$/.test(canonical)) return "create_automation"
   if (/[^a-z0-9]create_work_task$/.test(canonical)) return "create_work_task"
+  if (/[^a-z0-9]set_session_timer$/.test(canonical)) return "set_session_timer"
 
   // codeg-mcp ask-user-question companion tool. Same host-prefix story as the
   // delegation tools above (`mcp__<server>__ask_user_question`,

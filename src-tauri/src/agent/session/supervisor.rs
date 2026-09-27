@@ -65,7 +65,7 @@ fn companion_ok_in_mode(mode: &str, name: &str) -> bool {
     }
     matches!(
         name,
-        "ask_user_question" | "get_session_info" | "check_user_feedback"
+        "ask_user_question" | "get_session_info" | "check_user_feedback" | "set_session_timer"
     )
 }
 

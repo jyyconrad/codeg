@@ -331,6 +331,19 @@ pub struct BrokerBrowserTabOpRequest {
     pub op: crate::acp::browser_tools::BrowserTabOp,
 }
 
+/// Schedule a host wake of the parent session. Backs the `set_session_timer` MCP
+/// tool. Authenticated by the per-launch `token`; the listener resolves the
+/// parent connection from it (the tool cannot target another session). Seconds
+/// and the cancel flag are already validated companion-side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerSetTimerRequest {
+    pub token: String,
+    pub seconds: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub cancel_on_user_message: bool,
+}
+
 /// Tagged top-level message dispatched by the listener. Adding new variants
 /// is the wire-stable way to grow the broker protocol without touching the
 /// frame layer.
@@ -357,6 +370,7 @@ pub enum BrokerMessage {
     BrowserCapture(BrokerBrowserCaptureRequest),
     BrowserEval(BrokerBrowserEvalRequest),
     BrowserTabOp(BrokerBrowserTabOpRequest),
+    SetTimer(BrokerSetTimerRequest),
     /// Liveness probe. Unlike every other variant this one is NOT sent by a
     /// companion — it comes from codeg's own service-status check
     /// (`acp::delegation::service`), which is why it carries no `token`: a
@@ -621,6 +635,15 @@ pub async fn client_browser_tab_op_round_trip(
     message_round_trip(socket_path, &BrokerMessage::BrowserTabOp(req.clone())).await
 }
 
+/// Dispatch a `set_session_timer` request and read back the serialized
+/// [`crate::acp::session_timer::SessionTimerAck`].
+pub async fn client_set_timer_round_trip(
+    socket_path: &str,
+    req: &BrokerSetTimerRequest,
+) -> io::Result<BrokerResponse> {
+    message_round_trip(socket_path, &BrokerMessage::SetTimer(req.clone())).await
+}
+
 /// Probe the listener: write a [`BrokerMessage::Ping`] and read the
 /// `{"ok": true}` answer back. Used by the codeg-mcp service-status indicator
 /// to tell "listening" from "socket file exists but nobody is accepting".
@@ -751,6 +774,28 @@ mod tests {
                 assert_eq!(req.max_messages, Some(20));
             }
             other => panic!("expected SessionInfo variant, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_timer_message_round_trip_in_memory() {
+        let (mut a, mut b) = duplex(8 * 1024);
+        let msg = BrokerMessage::SetTimer(BrokerSetTimerRequest {
+            token: "tok".into(),
+            seconds: 12,
+            reason: Some("poll".into()),
+            cancel_on_user_message: false,
+        });
+        write_frame(&mut a, &msg).await.unwrap();
+        let got: BrokerMessage = read_frame(&mut b).await.unwrap();
+        match got {
+            BrokerMessage::SetTimer(req) => {
+                assert_eq!(req.token, "tok");
+                assert_eq!(req.seconds, 12);
+                assert_eq!(req.reason.as_deref(), Some("poll"));
+                assert!(!req.cancel_on_user_message);
+            }
+            other => panic!("expected SetTimer variant, got {other:?}"),
         }
     }
 

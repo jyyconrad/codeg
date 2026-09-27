@@ -1383,6 +1383,12 @@ describe("normalizeToolName collapses the codeg-mcp workbench companions", () =>
     }
   })
 
+  it("collapses mcp__codeg-mcp__set_session_timer to set_session_timer", () => {
+    expect(normalizeToolName("mcp__codeg-mcp__set_session_timer")).toBe(
+      "set_session_timer"
+    )
+  })
+
   it("keeps task_progress/task_complete out of the generic 'task' tool", () => {
     // Regression: the freeform `^task(\b|[_\s:-])` rule used to swallow both,
     // which is why they rendered as an empty "任务" card with no detail.

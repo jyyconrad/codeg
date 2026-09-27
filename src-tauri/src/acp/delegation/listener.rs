@@ -15,13 +15,13 @@ use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
-use crate::acp::chat_authoring::{AuthoringContext, AuthoringOutcome, ChatAuthoringAccess};
-use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::browser_tools::{
     BrowserActOutcome, BrowserCaptureOutcome, BrowserConsoleOutcome, BrowserEvalOutcome,
     BrowserSnapshotOutcome, BrowserTabOutcome, BrowserTabsOutcome, BrowserToolAccess,
     ERROR_NO_SUCH_TAB,
 };
+use crate::acp::chat_authoring::{AuthoringContext, AuthoringOutcome, ChatAuthoringAccess};
+use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerBrowserActRequest,
     BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest, BrokerBrowserEvalRequest,
@@ -29,7 +29,8 @@ use crate::acp::delegation::transport::{
     BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest,
     BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerFeedbackRequest,
     BrokerMessage, BrokerRequest, BrokerResponse, BrokerResumeTaskRequest, BrokerSessionRequest,
-    BrokerStatusRequest, BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    BrokerSetTimerRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerTaskProgressRequest,
 };
 use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
@@ -39,6 +40,7 @@ use crate::acp::question::{QuestionOutcome, SessionQuestionAccess};
 #[cfg(unix)]
 use crate::acp::scratch_dir::SUN_PATH_CAP;
 use crate::acp::session_info::{SessionInfo, SessionInfoAccess};
+use crate::acp::session_timer::{SessionTimerAccess, SessionTimerAck, SessionTimerSpec};
 use crate::acp::work_task_tools::{TaskReportAck, WorkTaskToolAccess};
 use crate::models::AgentType;
 use serde_json::Value;
@@ -159,6 +161,8 @@ pub struct DelegationListener {
     /// exists only in the desktop build, because a browser tab is a native
     /// webview — server mode gets `NoBrowserTabs`.
     pub browser: Arc<dyn BrowserToolAccess>,
+    /// `set_session_timer`. Token → parent connection, then `set_timer`.
+    pub timers: Arc<dyn SessionTimerAccess>,
 }
 
 impl DelegationListener {
@@ -173,6 +177,7 @@ impl DelegationListener {
         tasks: Arc<dyn WorkTaskToolAccess>,
         authoring: Arc<dyn ChatAuthoringAccess>,
         browser: Arc<dyn BrowserToolAccess>,
+        timers: Arc<dyn SessionTimerAccess>,
     ) -> Arc<Self> {
         Arc::new(Self {
             broker,
@@ -184,6 +189,7 @@ impl DelegationListener {
             tasks,
             authoring,
             browser,
+            timers,
         })
     }
 
@@ -602,6 +608,7 @@ impl DelegationListener {
                 // (or a page navigated) with nothing on the strip to say so.
                 browser_tab_op_response(self.process_browser_tab_op(req).await)?
             }
+            BrokerMessage::SetTimer(req) => timer_response(self.process_set_timer(req).await)?,
             BrokerMessage::Cancel(cancel) => {
                 self.process_cancel(cancel).await;
                 // Empty ack — the companion only uses this to detect the
@@ -976,6 +983,23 @@ impl DelegationListener {
             .await
     }
 
+    /// Validate the token and schedule a timer on the parent connection. An
+    /// invalid token is the same soft failure as a missing connection so the
+    /// LLM cannot distinguish them.
+    async fn process_set_timer(&self, req: BrokerSetTimerRequest) -> SessionTimerAck {
+        let Some(entry) = self.tokens.lookup(&req.token).await else {
+            return SessionTimerAck::connection_not_found();
+        };
+        let spec = SessionTimerSpec {
+            seconds: req.seconds,
+            reason: req.reason,
+            cancel_on_user_message: req.cancel_on_user_message,
+        };
+        self.timers
+            .set_timer(&entry.parent_connection_id, spec)
+            .await
+    }
+
     /// Resolve the caller's [`AuthoringContext`] from its per-launch token: the
     /// conversation it is currently in (for defaulting the target project) plus
     /// the working directory recorded at injection. `None` when the token is
@@ -1143,6 +1167,16 @@ fn session_response(info: SessionInfo) -> std::io::Result<BrokerResponse> {
     })
 }
 
+/// Serialize a [`SessionTimerAck`] into a [`BrokerResponse`] for the `SetTimer`
+/// arm — the companion renders it with `render_timer_ack`.
+fn timer_response(ack: SessionTimerAck) -> std::io::Result<BrokerResponse> {
+    Ok(BrokerResponse {
+        outcome: serde_json::to_value(&ack).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
+        })?,
+    })
+}
+
 /// Serialize a [`BrowserTabsOutcome`] into a [`BrokerResponse`] for the
 /// `BrowserTabs` arm — the companion renders it into the `browser_list_tabs`
 /// tool result.
@@ -1157,9 +1191,7 @@ fn browser_tabs_response(outcome: BrowserTabsOutcome) -> std::io::Result<BrokerR
 /// Serialize a [`BrowserSnapshotOutcome`] into a [`BrokerResponse`] for the
 /// `BrowserSnapshot` arm — the companion renders it into the `browser_snapshot`
 /// tool result.
-fn browser_snapshot_response(
-    outcome: BrowserSnapshotOutcome,
-) -> std::io::Result<BrokerResponse> {
+fn browser_snapshot_response(outcome: BrowserSnapshotOutcome) -> std::io::Result<BrokerResponse> {
     Ok(BrokerResponse {
         outcome: serde_json::to_value(&outcome).map_err(|e| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, format!("encode: {e}"))
@@ -1424,11 +1456,11 @@ pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::browser_tools::{NoBrowserTabs, ERROR_GRANT_REQUIRED};
     use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationConfig};
     use crate::acp::delegation::spawner::{
         mock::MockSpawner, ConnectionSpawner, ResumedSpawn, SpawnerError,
     };
-    use crate::acp::browser_tools::{NoBrowserTabs, ERROR_GRANT_REQUIRED};
     use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
     use serde_json::json;
     use std::time::Duration;
@@ -1568,11 +1600,7 @@ mod tests {
                 note: None,
             }
         }
-        async fn snapshot(
-            &self,
-            tab_id: &str,
-            max_chars: Option<usize>,
-        ) -> BrowserSnapshotOutcome {
+        async fn snapshot(&self, tab_id: &str, max_chars: Option<usize>) -> BrowserSnapshotOutcome {
             self.calls
                 .lock()
                 .await
@@ -1626,10 +1654,7 @@ mod tests {
             ));
             BrowserActOutcome::control_required(tab_id)
         }
-        async fn tab_op(
-            &self,
-            op: crate::acp::browser_tools::BrowserTabOp,
-        ) -> BrowserTabOutcome {
+        async fn tab_op(&self, op: crate::acp::browser_tools::BrowserTabOp) -> BrowserTabOutcome {
             self.calls
                 .lock()
                 .await
@@ -1706,6 +1731,35 @@ mod tests {
         }
     }
 
+    /// Records `(parent_connection_id, spec)` so SetTimer tests can assert token
+    /// scoping without a live `ConnectionManager`.
+    #[derive(Default)]
+    struct StubTimers {
+        calls: tokio::sync::Mutex<Vec<(String, SessionTimerSpec)>>,
+    }
+    #[async_trait]
+    impl SessionTimerAccess for StubTimers {
+        async fn set_timer(
+            &self,
+            parent_connection_id: &str,
+            spec: SessionTimerSpec,
+        ) -> SessionTimerAck {
+            self.calls
+                .lock()
+                .await
+                .push((parent_connection_id.to_string(), spec.clone()));
+            SessionTimerAck {
+                ok: true,
+                timer_id: Some("stub-timer".into()),
+                seconds: spec.seconds,
+                cancel_on_user_message: spec.cancel_on_user_message,
+                replaced: false,
+                error: None,
+            }
+        }
+        async fn cancel_by_parent(&self, _parent_connection_id: &str) {}
+    }
+
     use tokio::sync::oneshot;
 
     async fn make_broker(mock: Arc<MockSpawner>) -> Arc<DelegationBroker> {
@@ -1741,6 +1795,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1764,6 +1819,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1788,6 +1844,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1811,6 +1868,7 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             Arc::new(NoBrowserTabs),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1836,6 +1894,7 @@ mod tests {
             Arc::new(StubTaskTools),
             authoring,
             Arc::new(NoBrowserTabs),
+            Arc::new(StubTimers::default()),
         )
     }
 
@@ -1860,6 +1919,29 @@ mod tests {
             Arc::new(StubTaskTools),
             Arc::new(StubAuthoring::default()),
             browser,
+            Arc::new(StubTimers::default()),
+        )
+    }
+
+    fn make_timer_listener(
+        tokens: Arc<TokenRegistry>,
+        timers: Arc<StubTimers>,
+    ) -> Arc<DelegationListener> {
+        let broker = Arc::new(DelegationBroker::new(
+            Arc::new(MockSpawner::new()) as Arc<dyn ConnectionSpawner>,
+            Arc::new(AlwaysRootLookup) as Arc<dyn ConversationDepthLookup>,
+        ));
+        DelegationListener::new(
+            broker,
+            tokens,
+            Arc::new(StaticParentLookup(Some(1))),
+            Arc::new(StubFeedback::default()),
+            Arc::new(StubQuestion::default()),
+            Arc::new(StubSessionInfo::default()),
+            Arc::new(StubTaskTools),
+            Arc::new(StubAuthoring::default()),
+            Arc::new(NoBrowserTabs),
+            timers,
         )
     }
 
@@ -2811,6 +2893,76 @@ mod tests {
         assert!(session_info.calls.lock().await.is_empty());
     }
 
+    /// A valid `set_session_timer` resolves the parent connection from the token
+    /// and returns the serialized ack.
+    #[tokio::test]
+    async fn set_timer_valid_token_sets_on_parent_connection() {
+        let timers = Arc::new(StubTimers::default());
+        let tokens = Arc::new(TokenRegistry::default());
+        tokens
+            .register(
+                "tok".into(),
+                TokenEntry {
+                    parent_connection_id: "parent-conn".into(),
+                    working_dir: PathBuf::from("/tmp"),
+                },
+            )
+            .await;
+        let listener = make_timer_listener(tokens, timers.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::SetTimer(BrokerSetTimerRequest {
+            token: "tok".into(),
+            seconds: 12,
+            reason: Some("poll".into()),
+            cancel_on_user_message: false,
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(resp.outcome["ok"], true);
+        assert_eq!(resp.outcome["seconds"], 12);
+        assert_eq!(resp.outcome["cancel_on_user_message"], false);
+        assert_eq!(resp.outcome["timer_id"], "stub-timer");
+        let calls = timers.calls.lock().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "parent-conn");
+        assert_eq!(calls[0].1.seconds, 12);
+        assert_eq!(calls[0].1.reason.as_deref(), Some("poll"));
+        assert!(!calls[0].1.cancel_on_user_message);
+    }
+
+    /// An invalid token is a soft `connection_not_found` and never reaches the
+    /// timer access.
+    #[tokio::test]
+    async fn set_timer_invalid_token_is_connection_not_found() {
+        let timers = Arc::new(StubTimers::default());
+        let tokens = Arc::new(TokenRegistry::default());
+        let listener = make_timer_listener(tokens, timers.clone());
+
+        let (mut client, mut server) = duplex(8 * 1024);
+        let server_task = tokio::spawn(async move {
+            listener.serve_one(&mut server).await.unwrap();
+        });
+        let msg = BrokerMessage::SetTimer(BrokerSetTimerRequest {
+            token: "bogus".into(),
+            seconds: 12,
+            reason: None,
+            cancel_on_user_message: true,
+        });
+        write_frame(&mut client, &msg).await.unwrap();
+        let resp: BrokerResponse = read_frame(&mut client).await.unwrap();
+        server_task.await.unwrap();
+
+        assert_eq!(resp.outcome["ok"], false);
+        assert_eq!(resp.outcome["error"], "connection_not_found");
+        assert!(timers.calls.lock().await.is_empty());
+    }
+
     /// A valid token resolves the caller's conversation + working dir and hands
     /// both down as the [`AuthoringContext`], so the impl can default the target
     /// project to the project this chat is in.
@@ -3201,7 +3353,9 @@ mod tests {
 
         let listed = browser_round_trip(
             listener.clone(),
-            BrokerMessage::BrowserTabs(BrokerBrowserTabsRequest { token: "tok".into() }),
+            BrokerMessage::BrowserTabs(BrokerBrowserTabsRequest {
+                token: "tok".into(),
+            }),
         )
         .await;
         assert_eq!(listed.outcome["tabs"][0]["tabId"], "t1");
@@ -3356,7 +3510,10 @@ mod tests {
             },
         );
         let response = browser_capture_response(huge).unwrap();
-        assert_eq!(response.outcome["error"], crate::acp::browser_tools::ERROR_READ_FAILED);
+        assert_eq!(
+            response.outcome["error"],
+            crate::acp::browser_tools::ERROR_READ_FAILED
+        );
         assert_eq!(response.outcome["tabId"], "t1");
         assert!(response.outcome.get("capture").is_none());
         assert!(serde_json::to_vec(&response.outcome).unwrap().len() < 4096);
@@ -3378,7 +3535,10 @@ mod tests {
                 clipped: false,
             },
         );
-        assert_eq!(browser_capture_response(small).unwrap().outcome["capture"]["data"], "AAAA");
+        assert_eq!(
+            browser_capture_response(small).unwrap().outcome["capture"]["data"],
+            "AAAA"
+        );
     }
 
     /// A caller who cannot prove it is a companion is told the same thing a
@@ -3499,7 +3659,9 @@ mod tests {
             fits_sun_path(&socket),
             "the real path must fit, or this tests the wrong check"
         );
-        assert!(!fits_sun_path(&DelegationListener::staging_socket_path(&socket)));
+        assert!(!fits_sun_path(&DelegationListener::staging_socket_path(
+            &socket
+        )));
 
         let err = DelegationListener::bind(&socket).await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);

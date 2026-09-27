@@ -3904,6 +3904,8 @@
         "createWorkTaskNoTitle": "Creating a work task",
         "resumeDelegation": "Resuming task {task}",
         "resumeDelegationNoId": "Resuming a delegated task",
+        "setSessionTimer": "Wake in {seconds}s",
+        "setSessionTimerNoSeconds": "Set session timer",
         "promptLabel": "Prompt",
         "verdict": {
           "success": "success",

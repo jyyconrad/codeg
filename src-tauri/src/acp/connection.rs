@@ -1983,12 +1983,12 @@ async fn build_agent(
                 None => {
                     let system =
                         crate::commands::acp::resolve_system_agent_binary_for(agent_type, cmd)
-                        .ok_or_else(|| {
-                            AcpError::SdkNotInstalled(format!(
-                                "{} is not installed. Please install it in Agent Settings.",
-                                meta.name
-                            ))
-                        })?;
+                            .ok_or_else(|| {
+                                AcpError::SdkNotInstalled(format!(
+                                    "{} is not installed. Please install it in Agent Settings.",
+                                    meta.name
+                                ))
+                            })?;
                     tracing::info!(
                         "[ACP][{}] No cached binary; using system {} from PATH",
                         meta.name,
@@ -2514,6 +2514,7 @@ pub async fn spawn_agent_connection(
                     // companion's ask socket to close (which a reparented/hard-killed
                     // agent may never do); the dropped sender declines the tool cleanly.
                     inj.questions.cancel_questions_by_parent(&conn_id).await;
+                    inj.timers.cancel_by_parent(&conn_id).await;
                     // Likewise reclaim a parked Grok `exit_plan_mode` approval; the
                     // dropped sender replies disconnect so grok keeps plan mode active.
                     inj.plan_approvals
@@ -5013,6 +5014,11 @@ pub struct DelegationInjection {
     pub session_info_access: Arc<dyn crate::acp::session_info::SessionInfoAccess>,
     /// `create_automation` / `create_work_task`. Same instance as the listener.
     pub authoring_access: Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>,
+    /// `set_session_timer`. Always-on group (no settings toggle). Same instance
+    /// the delegation listener uses; `run_connection` cleanup calls
+    /// `cancel_by_parent` so bulk disconnects that skip `disconnect()` still
+    /// abort the sleep task.
+    pub timers: Arc<dyn crate::acp::session_timer::SessionTimerAccess>,
 }
 
 /// Locate the `codeg-mcp` companion binary across the supported deployment
@@ -5120,6 +5126,9 @@ pub(crate) struct CompanionFeatureFlags {
     /// flag so that turning it on or off does not disturb the rest of the
     /// group, and so that the group being on never implies it.
     pub browser_eval: bool,
+    /// `set_session_timer`. Production snapshot always sets this true; `Default`
+    /// stays false so unit tests that construct flags by hand do not inject it.
+    pub timer: bool,
 }
 
 /// The `--features` value for a companion launch, or `None` when no group is
@@ -5159,6 +5168,9 @@ pub(crate) fn companion_features_arg(flags: CompanionFeatureFlags) -> Option<Str
     if flags.browser && flags.browser_eval {
         features.push("browser_eval");
     }
+    if flags.timer {
+        features.push("timer");
+    }
     if features.is_empty() {
         return None;
     }
@@ -5191,8 +5203,8 @@ pub(crate) async fn snapshot_companion_features(
         // tools there would promise a capability that cannot exist, and the
         // agent would find out by being told "no tabs" forever.
         browser: cfg!(feature = "tauri-runtime") && injection.browser.is_enabled().await,
-        browser_eval: cfg!(feature = "tauri-runtime")
-            && injection.browser.is_eval_enabled().await,
+        browser_eval: cfg!(feature = "tauri-runtime") && injection.browser.is_eval_enabled().await,
+        timer: true,
     }
 }
 
@@ -5208,6 +5220,7 @@ impl From<CompanionFeatureFlags> for crate::acp::delegation::companion::Companio
             taskboard: flags.taskboard,
             browser: flags.browser,
             browser_eval: flags.browser_eval,
+            timer: flags.timer,
         }
     }
 }
@@ -5254,10 +5267,13 @@ async fn inject_codeg_mcp_with_binary_locator<F>(
 where
     F: FnOnce() -> Option<PathBuf>,
 {
-    // codeg-mcp carries BOTH the delegation tools and the live-feedback tool.
-    // Inject it when EITHER feature is enabled; the `--features` arg tells the
-    // companion which tool groups to expose so a disabled feature's tools never
-    // surface to the LLM. (Historically this was gated on delegation alone.)
+    // codeg-mcp carries the delegation tools, live-feedback, ask, session info,
+    // authoring, and the always-on `set_session_timer` group. Inject it when ANY
+    // group is enabled; production snapshots always set `timer: true`, so MCP
+    // reachable agents always try to inject (binary missing still skips). The
+    // `--features` arg tells the companion which tool groups to expose so a
+    // disabled feature's tools never surface to the LLM. (Historically this was
+    // gated on delegation alone.)
     // `tasks_enabled` is per-spawn: true only for task-engine launches, which
     // must get their reporting tools regardless of the settings toggles.
     // Delegation is a THIRD door into the same room as `fs/*` and `terminal/*`:
@@ -7382,24 +7398,30 @@ async fn handle_cursor_ask_question(
     // that apart from "this host never showed it" will proceed as if the user
     // had a say. The reason text is structural — never any of the payload.
     let Some((questions, ask_cfg)) = access else {
-        let _ = responder.respond(crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
-            "the host's question bridge is unavailable; the user was not asked",
-        ));
+        let _ = responder.respond(
+            crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
+                "the host's question bridge is unavailable; the user was not asked",
+            ),
+        );
         return;
     };
     if !ask_cfg.is_enabled().await {
-        let _ = responder.respond(crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
-            "the host's interactive question card is disabled; the user was not asked",
-        ));
+        let _ = responder.respond(
+            crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
+                "the host's interactive question card is disabled; the user was not asked",
+            ),
+        );
         return;
     }
     let parsed = match crate::acp::cursor_ext::parse_cursor_ask_questions(&req.0) {
         Ok(parsed) => parsed,
         Err(e) => {
             tracing::warn!("[cursor ask] rejecting malformed ext request: {e}");
-            let _ = responder.respond(crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(
-                &format!("the host could not render this ask: {e}"),
-            ));
+            let _ = responder.respond(
+                crate::acp::cursor_ext::cursor_ask_skip_response_with_reason(&format!(
+                    "the host could not render this ask: {e}"
+                )),
+            );
             return;
         }
     };
@@ -7472,15 +7494,16 @@ async fn handle_cursor_create_plan(
         let _ = responder.respond(crate::acp::cursor_ext::cursor_create_plan_disconnect_response());
         return;
     };
-    let (plan_markdown, tool_call_id) = match crate::acp::cursor_ext::parse_cursor_create_plan(&req.0)
-    {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            tracing::warn!("[cursor plan] rejecting malformed ext request: {e}");
-            let _ = responder.respond(crate::acp::cursor_ext::cursor_create_plan_disconnect_response());
-            return;
-        }
-    };
+    let (plan_markdown, tool_call_id) =
+        match crate::acp::cursor_ext::parse_cursor_create_plan(&req.0) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::warn!("[cursor plan] rejecting malformed ext request: {e}");
+                let _ = responder
+                    .respond(crate::acp::cursor_ext::cursor_create_plan_disconnect_response());
+                return;
+            }
+        };
     let Some(registered) = access
         .register_plan_approval(connection_id, tool_call_id, plan_markdown)
         .await
@@ -7532,9 +7555,7 @@ fn handle_cursor_generate_image(
         "[cursor image] cursor/generate_image keys={:?}",
         crate::acp::cursor_ext::param_keys(&req.0)
     );
-    let _ = responder.respond(crate::acp::cursor_ext::build_cursor_generate_image_response(
-        &req.0,
-    ));
+    let _ = responder.respond(crate::acp::cursor_ext::build_cursor_generate_image_response(&req.0));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8068,9 +8089,10 @@ fn config_option_rejects_value(option: &SessionConfigOption, value: &str) -> boo
     // Grouped and ungrouped are one flat namespace here, the same way
     // `config_option_rejection` reads them.
     let mut advertised = match &select.options {
-        SessionConfigSelectOptions::Ungrouped(options) => {
-            options.iter().map(|o| o.value.to_string()).collect::<Vec<_>>()
-        }
+        SessionConfigSelectOptions::Ungrouped(options) => options
+            .iter()
+            .map(|o| o.value.to_string())
+            .collect::<Vec<_>>(),
         SessionConfigSelectOptions::Grouped(groups) => groups
             .iter()
             .flat_map(|group| group.options.iter().map(|o| o.value.to_string()))
@@ -8255,10 +8277,7 @@ async fn apply_preferred_session_options(
     //     still allowed; it just does not outlive the session.
     let (pinned, agent_type) = {
         let guard = state.read().await;
-        (
-            guard.env_pinned_config_option_ids.clone(),
-            guard.agent_type,
-        )
+        (guard.env_pinned_config_option_ids.clone(), guard.agent_type)
     };
     let never_replayed = |config_id: &str| {
         pinned.iter().any(|id| id == config_id)
@@ -9523,8 +9542,7 @@ fn classify_session_load_failure(
 /// [`classify_session_load_failure`] (a `session/load` that can't be retried)
 /// and [`prompt_rejection_is_terminal`] (a `session/prompt` rejection that no
 /// later prompt on this connection could survive either).
-const SESSION_GONE_MARKERS: &[&str] =
-    &["process exited", "session has ended", "Session not found"];
+const SESSION_GONE_MARKERS: &[&str] = &["process exited", "session has ended", "Session not found"];
 
 /// Whether a `session/prompt` rejection means the CONNECTION is dead, or only
 /// this turn.
@@ -15011,14 +15029,9 @@ async fn emit_conversation_update(
             let status = format!("{:?}", tc.status).to_lowercase();
             // OpenCode's only authoritative statement of WHICH tool this is
             // arrives on this opening frame's title (see fn doc).
-            let meta = stamp_opencode_tool_name(
-                agent_type,
-                &status,
-                &tc.raw_input,
-                &tc.title,
-                tc.meta,
-            )
-            .map(serde_json::Value::Object);
+            let meta =
+                stamp_opencode_tool_name(agent_type, &status, &tc.raw_input, &tc.title, tc.meta)
+                    .map(serde_json::Value::Object);
             raw_output_cache.remove_if_final(&tool_call_id, Some(status.as_str()));
             // Track Grok's spawn_subagent lifecycle for the subagent-notification
             // pairing (progress meta + finished settle). No-op for other agents.
@@ -20815,7 +20828,11 @@ mod tests {
                 "jetbrains": {"air": {"version": 1, "recommendedValue": "   "}}
             })),
         ] {
-            assert_eq!(recommended(bad.clone()), None, "unexpected read from {bad:?}");
+            assert_eq!(
+                recommended(bad.clone()),
+                None,
+                "unexpected read from {bad:?}"
+            );
         }
 
         // A toggle has no value list to recommend into, so the hint is dropped
@@ -21980,13 +21997,7 @@ mod tests {
     #[test]
     fn opencode_tool_name_is_stamped_only_on_the_arg_less_opening_frame() {
         let stamped = |status: &str, raw_input: serde_json::Value, title: &str| {
-            stamp_opencode_tool_name(
-                AgentType::OpenCode,
-                status,
-                &Some(raw_input),
-                title,
-                None,
-            )
+            stamp_opencode_tool_name(AgentType::OpenCode, status, &Some(raw_input), title, None)
         };
         // The real opening frame: `pending`, `rawInput: {}`, title = tool id.
         assert_eq!(
@@ -22002,15 +22013,16 @@ mod tests {
         // the COMPLETED state — display title, populated input — so the empty
         // -input gate is what keeps the marker off it.
         assert_eq!(
-            stamped("pending", serde_json::json!({"pattern": "*.txt"}), "notes.txt"),
+            stamped(
+                "pending",
+                serde_json::json!({"pattern": "*.txt"}),
+                "notes.txt"
+            ),
             None
         );
         // Later frames in the lifecycle: nothing to record, the reducer keeps
         // the opening frame's meta.
-        assert_eq!(
-            stamped("in_progress", serde_json::json!({}), "glob"),
-            None
-        );
+        assert_eq!(stamped("in_progress", serde_json::json!({}), "glob"), None);
         assert_eq!(stamped("pending", serde_json::json!({}), "   "), None);
     }
 
@@ -22044,7 +22056,10 @@ mod tests {
         )
         .expect("meta");
         assert_eq!(with_sibling["vendor"], serde_json::json!({ "x": 1 }));
-        assert_eq!(with_sibling["opencode"], serde_json::json!({ "toolName": "read" }));
+        assert_eq!(
+            with_sibling["opencode"],
+            serde_json::json!({ "toolName": "read" })
+        );
 
         let preexisting = stamp_opencode_tool_name(
             AgentType::OpenCode,
@@ -23254,11 +23269,19 @@ mod tests {
         );
 
         assert_eq!(
-            synth(ToolKind::Search, "Searching the web for: \"rust borrow\"", &[]),
+            synth(
+                ToolKind::Search,
+                "Searching the web for: \"rust borrow\"",
+                &[]
+            ),
             Some(r#"{"query":"rust borrow"}"#.to_string())
         );
         assert_eq!(
-            synth(ToolKind::Fetch, "Fetching content from: https://example.com", &[]),
+            synth(
+                ToolKind::Fetch,
+                "Fetching content from: https://example.com",
+                &[]
+            ),
             Some(r#"{"url":"https://example.com"}"#.to_string())
         );
 
@@ -24094,12 +24117,8 @@ mod tests {
     /// first.
     #[test]
     fn scratch_dir_sets_every_temp_variable_the_child_might_read() {
-        let merged = merge_agent_env_with_color(
-            false,
-            &[],
-            &BTreeMap::new(),
-            Some(Path::new("/scratch/x")),
-        );
+        let merged =
+            merge_agent_env_with_color(false, &[], &BTreeMap::new(), Some(Path::new("/scratch/x")));
         for key in crate::acp::scratch_dir::TEMP_ENV_KEYS {
             assert_eq!(merged_value(&merged, key), Some("/scratch/x"), "{key}");
         }
@@ -24845,10 +24864,7 @@ mod tests {
         };
 
         assert_eq!(
-            ids(visible_config_options(
-                &["provider".to_string()],
-                options()
-            )),
+            ids(visible_config_options(&["provider".to_string()], options())),
             vec!["auto_approve".to_string()],
             "a dropdown whose every choice errors must not reach the composer"
         );
@@ -24954,6 +24970,27 @@ mod tests {
         }
     }
 
+    struct TestNoTimers;
+
+    #[async_trait::async_trait]
+    impl crate::acp::session_timer::SessionTimerAccess for TestNoTimers {
+        async fn set_timer(
+            &self,
+            _: &str,
+            spec: crate::acp::session_timer::SessionTimerSpec,
+        ) -> crate::acp::session_timer::SessionTimerAck {
+            crate::acp::session_timer::SessionTimerAck {
+                ok: true,
+                timer_id: Some("test".into()),
+                seconds: spec.seconds,
+                cancel_on_user_message: spec.cancel_on_user_message,
+                replaced: false,
+                error: None,
+            }
+        }
+        async fn cancel_by_parent(&self, _: &str) {}
+    }
+
     struct TestNoAuthoring;
 
     #[async_trait::async_trait]
@@ -25018,50 +25055,93 @@ mod tests {
                 as Arc<dyn crate::acp::session_info::SessionInfoAccess>,
             authoring_access: Arc::new(TestNoAuthoring)
                 as Arc<dyn crate::acp::chat_authoring::ChatAuthoringAccess>,
+            timers: Arc::new(TestNoTimers)
+                as Arc<dyn crate::acp::session_timer::SessionTimerAccess>,
         }
     }
 
-    // ─── inject_codeg_mcp: enabled=false short-circuit ──────────
+    // ─── inject_codeg_mcp: timer always injects; skip only if binary missing ──
     //
-    // Guards the "default off" product contract: when the broker config has
-    // `enabled: false` (the new production default for fresh installs), the
-    // delegate-MCP injection must not push a server entry and must not
-    // register a per-launch token. The early return at the top of
-    // `inject_codeg_mcp` is the single chokepoint that keeps a
-    // codeg-mcp stdio MCP out of every ACP session until the user
-    // opts in via the settings panel.
+    // Snapshot always sets `timer: true` (K7/K13), so a present companion binary
+    // is injected even when the broker (and every settings-gated group) is off.
+    // The only skip left is `locate_binary() == None`. These tests drive
+    // `inject_codeg_mcp_with_binary_locator` so PATH / CODEG_MCP_BIN cannot
+    // make the result flaky.
     #[tokio::test]
-    async fn inject_codeg_delegate_skipped_when_broker_disabled() {
-        // No set_config call: broker carries its default config, which is
-        // `enabled: false` after the product-default flip. This is the
-        // exact state a fresh install reaches before the user touches the
-        // settings panel. Feedback is likewise disabled by default, so with
-        // BOTH features off the companion isn't injected at all.
+    async fn inject_codeg_mcp_injects_timer_when_broker_disabled() {
         let injection = test_delegation_injection(
             Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
         );
 
+        let fake_bin = std::path::PathBuf::from("/tmp/fake-codeg-mcp");
         let mut servers: Vec<McpServer> = Vec::new();
-        let result = inject_codeg_mcp(
+        let result = inject_codeg_mcp_with_binary_locator(
             &mut servers,
             &injection,
             "parent-conn",
             std::path::Path::new("/tmp"),
             false,
             HostToolsPolicy::Default,
+            || Some(fake_bin.clone()),
         )
         .await;
 
-        assert!(result.is_none(), "disabled broker must return None");
+        let injected = result.expect("timer-always-on must inject when the binary is present");
+        assert!(
+            !injected.delegation_enabled,
+            "broker default is off, so the delegation group stays withheld"
+        );
+        assert!(!injected.feedback_available);
+        assert_eq!(servers.len(), 1, "expected one companion server entry");
+        match &servers[0] {
+            McpServer::Stdio(s) => {
+                assert_eq!(s.name, "codeg-mcp");
+                assert_eq!(s.command, fake_bin);
+                let features = s
+                    .args
+                    .windows(2)
+                    .find(|w| w[0] == "--features")
+                    .map(|w| w[1].as_str())
+                    .expect("injected companion must carry --features");
+                assert!(
+                    features.split(',').any(|g| g == "timer"),
+                    "features={features}"
+                );
+            }
+            other => panic!("expected Stdio companion, got {other:?}"),
+        }
+        assert!(
+            injection.tokens.lookup(&injected.token).await.is_some(),
+            "injected launch must register its per-launch token"
+        );
+    }
+
+    #[tokio::test]
+    async fn inject_codeg_mcp_skipped_when_binary_missing() {
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+
+        let mut servers: Vec<McpServer> = Vec::new();
+        let result = inject_codeg_mcp_with_binary_locator(
+            &mut servers,
+            &injection,
+            "parent-conn",
+            std::path::Path::new("/tmp"),
+            false,
+            HostToolsPolicy::Default,
+            || None,
+        )
+        .await;
+
+        assert!(result.is_none(), "missing binary must skip injection");
         assert!(
             servers.is_empty(),
-            "disabled broker must not push any MCP server entry; got {servers:?}"
+            "missing binary must not push a server entry; got {servers:?}"
         );
-        // Token registry stays untouched — no lookup should resolve to a
-        // valid entry because nothing was registered.
         assert!(
             injection.tokens.lookup("any-token").await.is_none(),
-            "disabled broker must not register a delegate token"
+            "missing binary must not register a token"
         );
     }
 
@@ -25207,7 +25287,9 @@ mod tests {
         // The browser group too — a user who only shares browser tabs still
         // gets a companion.
         assert_eq!(only(|f| f.browser = true), Some("browser".to_string()));
-        // All on → comma-joined, in the order the companion parses.
+        // Timer only — always-on group still injects the companion on its own.
+        assert_eq!(only(|f| f.timer = true), Some("timer".to_string()));
+        // All on → comma-joined, in the order the companion parses. `timer` last.
         assert_eq!(
             companion_features_arg(CompanionFeatureFlags {
                 delegation: true,
@@ -25219,9 +25301,10 @@ mod tests {
                 taskboard: true,
                 browser: true,
                 browser_eval: true,
+                timer: true,
             }),
             Some(
-                "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval"
+                "delegation,feedback,ask,sessions,tasks,automations,taskboard,browser,browser_eval,timer"
                     .to_string()
             )
         );
@@ -25236,6 +25319,16 @@ mod tests {
             }),
             Some("browser,browser_eval".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_companion_features_always_enables_timer() {
+        let injection = test_delegation_injection(
+            Arc::new(TestAllAgentsAvailable) as Arc<dyn AgentAvailabilityLookup>
+        );
+        let flags = snapshot_companion_features(&injection, HostToolsPolicy::Default, false).await;
+        assert!(flags.timer);
+        assert!(!CompanionFeatureFlags::default().timer);
     }
 
     // ── Boolean config options (cline 3.0.50 `auto_approve`) ──

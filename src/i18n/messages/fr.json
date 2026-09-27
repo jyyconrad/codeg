@@ -3904,6 +3904,8 @@
         "createWorkTaskNoTitle": "Création d’une tâche",
         "resumeDelegation": "Reprise de la tâche {task}",
         "resumeDelegationNoId": "Reprise d'une tâche déléguée",
+        "setSessionTimer": "Réveil dans {seconds}s",
+        "setSessionTimerNoSeconds": "Définir le minuteur de session",
         "promptLabel": "Instruction",
         "verdict": {
           "success": "réussie",

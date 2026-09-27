@@ -2,8 +2,8 @@
 
 /**
  * Inline card for the codeg-mcp *workbench* companion tools — `get_session_info`,
- * `task_progress`, `task_complete`, `create_automation`, `create_work_task` and
- * `resume_delegation`.
+ * `task_progress`, `task_complete`, `create_automation`, `create_work_task`,
+ * `resume_delegation` and `set_session_timer`.
  *
  * One collapsed line framed around what the agent was actually doing ("读取会话
  * #2122", "进度：tests passing", "任务完成 · 成功"), with a status badge and an
@@ -27,6 +27,7 @@ import {
   ClipboardList,
   RotateCcw,
   Signpost,
+  Timer,
 } from "lucide-react"
 
 import { cn } from "@/lib/utils"
@@ -56,6 +57,7 @@ const ICONS: Record<CodegMcpWorkbenchTool, typeof BookOpen> = {
   create_automation: CalendarClock,
   create_work_task: ClipboardList,
   resume_delegation: RotateCcw,
+  set_session_timer: Timer,
 }
 
 export function CodegMcpToolCard({
@@ -106,6 +108,12 @@ export function CodegMcpToolCard({
         return model.detail
           ? t("resumeDelegation", { task: model.detail })
           : t("resumeDelegationNoId")
+      case "set_session_timer": {
+        if (!model.detail) return t("setSessionTimerNoSeconds")
+        const base = t("setSessionTimer", { seconds: model.detail })
+        // Spec: one line "Wake in {seconds}s"; append reason when present.
+        return model.reason ? `${base} · ${model.reason}` : base
+      }
     }
   }, [t, tool, model])
 

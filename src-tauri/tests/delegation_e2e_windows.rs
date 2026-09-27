@@ -104,6 +104,27 @@ impl codeg_lib::acp::work_task_tools::WorkTaskToolAccess for NoTaskTools {
     }
 }
 
+/// Timer stub: the e2e delegation tests never exercise `set_session_timer`.
+struct NoTimers;
+#[async_trait]
+impl codeg_lib::acp::session_timer::SessionTimerAccess for NoTimers {
+    async fn set_timer(
+        &self,
+        _: &str,
+        spec: codeg_lib::acp::session_timer::SessionTimerSpec,
+    ) -> codeg_lib::acp::session_timer::SessionTimerAck {
+        codeg_lib::acp::session_timer::SessionTimerAck {
+            ok: true,
+            timer_id: Some("test".into()),
+            seconds: spec.seconds,
+            cancel_on_user_message: spec.cancel_on_user_message,
+            replaced: false,
+            error: None,
+        }
+    }
+    async fn cancel_by_parent(&self, _: &str) {}
+}
+
 /// Chat-authoring stub: the e2e delegation tests never exercise the authoring
 /// arms.
 struct NoAuthoring;
@@ -217,6 +238,7 @@ async fn end_to_end_named_pipe_happy_path() {
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
         Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs)
             as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
+        Arc::new(NoTimers) as Arc<dyn codeg_lib::acp::session_timer::SessionTimerAccess>,
     );
 
     let pipe = unique_pipe("happy");
@@ -322,6 +344,7 @@ async fn end_to_end_named_pipe_back_to_back_requests() {
         Arc::new(NoAuthoring) as Arc<dyn codeg_lib::acp::chat_authoring::ChatAuthoringAccess>,
         Arc::new(codeg_lib::acp::browser_tools::NoBrowserTabs)
             as Arc<dyn codeg_lib::acp::browser_tools::BrowserToolAccess>,
+        Arc::new(NoTimers) as Arc<dyn codeg_lib::acp::session_timer::SessionTimerAccess>,
     );
 
     let pipe = unique_pipe("repeat");
