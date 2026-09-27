@@ -38,7 +38,10 @@ import { Drawer, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppToaster } from "@/components/ui/app-toaster"
 import { cn } from "@/lib/utils"
-import { detectEnvironment } from "@/lib/transport/detect"
+import {
+  detectEnvironment,
+  type TransportEnvironment,
+} from "@/lib/transport/detect"
 import { useIsMobile } from "@/hooks/use-mobile"
 
 interface SettingsNavItem {
@@ -172,6 +175,24 @@ interface SettingsShellProps {
   children: ReactNode
 }
 
+/**
+ * The nav for one runtime. Only one entry is runtime-bound: the Web service
+ * page configures the server a web client is already talking to, and there is
+ * no such server to configure from inside it.
+ *
+ * The Browser page is deliberately not on that list. Most of what it holds is
+ * a desktop browser engine, but site rules, what a server starting in a
+ * terminal does and the terminal's link menu all still decide something in a
+ * browser session, and that page is the only place they can be set.
+ */
+export function settingsNavItemsFor(
+  env: TransportEnvironment
+): SettingsNavItem[] {
+  return SETTINGS_NAV_ITEMS.filter(
+    (item) => !(item.labelKey === "web_service" && env === "web")
+  )
+}
+
 function normalizePath(path: string): string {
   const noSuffix = path.replace(/\/index\.html$/, "").replace(/\.html$/, "")
   const noTrailingSlash = noSuffix.replace(/\/+$/, "")
@@ -226,17 +247,7 @@ export function SettingsShell({ children }: SettingsShellProps) {
     [router, setNavOpen]
   )
 
-  // Two entries only exist for one of the two runtimes: the Web service page
-  // configures the server a web client is already talking to, and the Browser
-  // page configures a built-in browser that only the desktop shell has — its
-  // page renders nothing in web mode, so the nav must not lead there.
-  const filteredNavItems = SETTINGS_NAV_ITEMS.filter(
-    (item) =>
-      !(
-        (item.labelKey === "web_service" || item.labelKey === "browser") &&
-        detectEnvironment() === "web"
-      )
-  )
+  const filteredNavItems = settingsNavItemsFor(detectEnvironment())
 
   const navContent = (
     <div className="flex min-h-0 flex-1 flex-col">

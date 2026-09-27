@@ -27,16 +27,14 @@ import { useOpenUrlTarget } from "@/hooks/use-open-url-target"
 import { copyTextToClipboard } from "@/lib/utils"
 import { useTranslations } from "next-intl"
 
+const INCOMPLETE_LINK = "streamdown:incomplete-link"
+
 const RESOURCE_KIND_ICON: Record<ResourceKind, LucideIcon> = {
   file: FileText,
   web: Globe,
   email: Mail,
   phone: Phone,
 }
-
-// Streamdown swaps the href of a not-yet-closed markdown link with this
-// sentinel while the message is still streaming.
-const INCOMPLETE_LINK = "streamdown:incomplete-link"
 
 type MarkdownLinkProps = ComponentProps<"a"> & {
   // react-markdown passes the originating hast node; it must not reach the DOM.
@@ -135,7 +133,7 @@ export function MarkdownLink({
   // bytes travel out of band, so it has no openable target). The same parser the
   // editor uses on draft restore recovers refType/id/meta from the uri; the link
   // text is the label.
-  if (!isIncomplete && href.toLowerCase().startsWith("codeg:")) {
+  if (href.toLowerCase().startsWith("codeg:")) {
     const reference = parseCodegReferenceUri(href, nodeText(children))
     if (reference) return <ReferenceBadge data={reference} />
   }
@@ -215,10 +213,9 @@ export function MarkdownLink({
   const button = (
     <button
       type="button"
-      data-incomplete={isIncomplete}
       data-streamdown="link"
       data-resource-kind={kind ?? undefined}
-      title={isIncomplete ? undefined : href}
+      title={href}
       onClick={handleClick}
       className={cn(
         "wrap-anywhere appearance-none text-left font-medium text-primary underline",

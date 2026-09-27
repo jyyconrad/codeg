@@ -1,7 +1,7 @@
 //! File tools wrapping `FileSystemRuntime`.
 
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
-use sacp::schema::{ReadTextFileRequest, WriteTextFileRequest};
+use agent_client_protocol::schema::v1::{ReadTextFileRequest, WriteTextFileRequest};
 use serde::Deserialize;
 use serde_json::json;
 

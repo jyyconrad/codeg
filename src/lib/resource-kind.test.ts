@@ -47,8 +47,6 @@ describe("classifyResourceKind", () => {
   it.each<[string]>([
     [""],
     ["   "],
-    // streaming placeholder injected by streamdown for unclosed links
-    ["streamdown:incomplete-link"],
     // in-page fragment
     ["#section"],
     // host-like targets stay untagged

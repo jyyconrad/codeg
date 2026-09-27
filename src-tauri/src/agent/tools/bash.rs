@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
-use sacp::schema::{
-    KillTerminalRequest, ReleaseTerminalRequest, SessionId, TerminalOutputRequest,
+use agent_client_protocol::schema::v1::{
+    KillTerminalRequest, ReleaseTerminalRequest, SessionId, TerminalId, TerminalOutputRequest,
     WaitForTerminalExitRequest,
 };
 use serde::Deserialize;
@@ -137,7 +137,7 @@ impl BashTool {
     async fn wait_capture(
         &self,
         session: SessionId,
-        terminal_id: sacp::schema::TerminalId,
+        terminal_id: TerminalId,
         timeout: Duration,
     ) -> Result<ShellCapture, ToolExecutionError> {
         let wait = self

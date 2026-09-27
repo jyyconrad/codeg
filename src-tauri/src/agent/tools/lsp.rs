@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rig::tool::{Tool, ToolContext, ToolExecutionError};
-use sacp::schema::ReadTextFileRequest;
+use agent_client_protocol::schema::v1::ReadTextFileRequest;
 use serde::Deserialize;
 use serde_json::json;
 

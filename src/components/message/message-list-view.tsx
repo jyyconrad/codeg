@@ -14,6 +14,7 @@ import { CollapsibleUserMessage } from "./collapsible-user-message"
 import { CollapsibleSystemMessage } from "./collapsible-system-message"
 import {
   contextCompactionPayload,
+  contextCompactionSummary,
   isContextCompactionMeta,
 } from "@/lib/context-compaction"
 import {
@@ -25,6 +26,7 @@ import {
   type AdaptedContentPart,
   type AdaptedMessage,
   type MessageTurnAdapter,
+  type ToolCallState,
   type UserImageDisplay,
   type UserResourceDisplay,
 } from "@/lib/adapters/ai-elements-adapter"
@@ -86,6 +88,7 @@ import {
 import type { MessageScrollContextValue } from "@/components/message/message-scroll-context"
 import { extractSessionFilesGrouped } from "@/lib/session-files"
 import { useModelLabels } from "@/hooks/use-model-labels"
+import { usePageHandoffName } from "@/lib/browser/use-page-handoff-name"
 import { unescapeComposerText } from "@/lib/composer-copy-text"
 import { useStickToBottomContext } from "use-stick-to-bottom"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
@@ -222,6 +225,12 @@ export type ThreadRenderItem =
       key: string
       kind: "compaction"
       meta: Record<string, unknown> | null
+      /** The retained summary, when the backend claimed one for this call
+       *  (see `contextCompactionSummary`). */
+      summary?: string | null
+      /** The call's lifecycle, so a `/compact` still running reads as
+       *  compacting and its summary streams. */
+      state?: ToolCallState
     }
 
 /**
@@ -529,16 +538,18 @@ function isEmptyTurnItem(item: ThreadRenderItem): boolean {
 
 /**
  * When a resolved group's ONLY meaningful content is a single context-compaction
- * tool-call part, return that part's `_meta` (so the caller can hoist it to a
- * standalone `"compaction"` divider item); otherwise `null`. Empty text parts are
- * ignored so a bare compaction turn still qualifies. Scoped to assistant groups
- * with no user resources/images. A compaction part always carries a truthy
- * `_meta` (`contextCompaction` as the boolean marker or the 1.3.0+ versioned
- * object), so a non-null return is unambiguous.
+ * tool-call part, return that part's `_meta` and retained summary (so the caller
+ * can hoist it to a standalone `"compaction"` divider item); otherwise `null`.
+ * Empty text parts are ignored so a bare compaction turn still qualifies. Scoped
+ * to assistant groups with no user resources/images. A compaction part always
+ * carries a truthy `_meta` (`contextCompaction` as the boolean marker or the
+ * 1.3.0+ versioned object), so a non-null return is unambiguous.
  */
-function compactionOnlyMeta(
-  group: ResolvedMessageGroup
-): Record<string, unknown> | null {
+export function compactionOnlyPart(group: ResolvedMessageGroup): {
+  meta: Record<string, unknown> | null
+  summary: string | null
+  state: ToolCallState
+} | null {
   if (group.role !== "assistant") return null
   if (group.resources.length > 0 || group.images.length > 0) return null
   const meaningful = group.parts.filter(
@@ -549,7 +560,11 @@ function compactionOnlyMeta(
   if (only.type !== "tool-call" || !isContextCompactionMeta(only.meta)) {
     return null
   }
-  return only.meta ?? null
+  return {
+    meta: only.meta ?? null,
+    summary: contextCompactionSummary(only.meta, only.output),
+    state: only.state,
+  }
 }
 
 /**
@@ -1087,6 +1102,7 @@ export function MessageListView({
 }: MessageListViewProps) {
   const t = useTranslations("Folder.chat.messageList")
   const sharedT = useTranslations("Folder.chat.shared")
+  const pageHandoffName = usePageHandoffName()
   // Resolved once for the whole thread rather than per reply: the labels are a
   // property of the agent, not of any one turn.
   const modelLabel = useModelLabels(agentType)
@@ -1141,8 +1157,9 @@ export function MessageListView({
     () => ({
       attachedResources: sharedT("attachedResources"),
       toolCallFailed: sharedT("toolCallFailed"),
+      pageHandoffName,
     }),
-    [sharedT]
+    [sharedT, pageHandoffName]
   )
 
   const sessionSyncState = session?.syncState ?? "idle"
@@ -1226,9 +1243,15 @@ export function MessageListView({
       // Hoist a compaction-only turn to its own standalone divider item so it
       // renders BETWEEN turns instead of being merged into (and wedged inside)
       // the preceding assistant reply by `mergeConsecutiveAssistantTurns`.
-      const compactionMeta = compactionOnlyMeta(group)
-      if (compactionMeta !== null) {
-        return { key, kind: "compaction" as const, meta: compactionMeta }
+      const compaction = compactionOnlyPart(group)
+      if (compaction !== null) {
+        return {
+          key,
+          kind: "compaction" as const,
+          meta: compaction.meta,
+          summary: compaction.summary,
+          state: compaction.state,
+        }
       }
       return {
         key,
@@ -1430,7 +1453,11 @@ export function MessageListView({
           // Chrome-less centered divider between turns (no avatar / stats footer).
           return (
             <div className="px-1 py-2">
-              <ContextCompactionCard meta={item.meta} />
+              <ContextCompactionCard
+                state={item.state}
+                meta={item.meta}
+                summary={item.summary}
+              />
             </div>
           )
         default:

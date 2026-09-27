@@ -1,3 +1,5 @@
+import { isFileName } from "./rehype-relative-file-links"
+
 // Local-file markdown links are otherwise rendered as `… [blocked]`. Three
 // distinct sanitize/harden rules cause this, all sidestepped here in the mdast
 // layer (before remark-rehype) while keeping the link clickable through the
@@ -10,9 +12,13 @@
 //      leading `C:` as a URL protocol and strips the href, after which harden
 //      blocks the now-hrefless `<a>`. Rewritten to `/C:/…` so `C:` is no longer
 //      in protocol position (see {@link windowsDrivePathToSafe}).
-//   3. Bare workspace-relative paths (`dist/…`) — harden has no default origin
-//      and only accepts explicit relatives such as `./dist/…`. They are
-//      prefixed with `./` while remaining relative to the active workspace.
+//   3. A file position at the folder root (`a.ts:12`) — the same misreading,
+//      of `a.ts:` this time. Rewritten to `./a.ts:12` (see
+//      {@link rootFilePositionToRelative}).
+//
+// Relative links (`./a.md`, `src/a.md`, `~/a.md`) survive sanitize but not
+// harden, which flattens or blocks them; that is handled after sanitize, in
+// ./rehype-relative-file-links, where raw HTML anchors are covered too.
 //
 // Image destinations are handled by remarkLocalImages, which preserves their
 // original path until the workspace-confined image reader can resolve it.
@@ -21,11 +27,6 @@ type MdastNodeLike = {
   type: string
   url?: unknown
   identifier?: unknown
-  value?: unknown
-  data?: {
-    hProperties?: Record<string, unknown>
-    [key: string]: unknown
-  }
   children?: unknown
 }
 
@@ -75,89 +76,25 @@ function windowsDrivePathToSafe(url: string): string | null {
   return WINDOWS_DRIVE_PATH.test(url) ? `/${url}` : null
 }
 
-const FILE_EXT = /\.[A-Za-z0-9]{1,10}$/
-const DOCUMENT_EXT = /\.(pdf|docx|xlsx|xls|pptx|csv|md|markdown|txt|html|htm)$/i
-const URL_SCHEME = /^[a-zA-Z][a-zA-Z\d+\-.]*:/
-const WORKSPACE_FILE_TARGET_ATTR = "data-codeg-file-target"
+// A file position at the folder root (`a.ts:12`, `.env:3`, `Makefile:40:2`)
+// hits the same wall: with no directory in front, rehype-sanitize reads `a.ts:`
+// as a URL protocol and strips the href. `./a.ts:12` puts the colon behind a
+// slash, and link-safety splits the line back off before opening. A host with
+// a port (`localhost:3000`, `example.com:8080`, `10.0.0.1:80`) has no file
+// name in front of the colon and keeps its href.
+const ROOT_FILE_POSITION = /^([^\s/\\?#:]+):\d+(?::\d+)?$/
 
-function pathWithoutUrlSuffix(url: string): string {
-  const hashIndex = url.indexOf("#")
-  const beforeHash = hashIndex >= 0 ? url.slice(0, hashIndex) : url
-  const queryIndex = beforeHash.indexOf("?")
-  return queryIndex >= 0 ? beforeHash.slice(0, queryIndex) : beforeHash
+function rootFilePositionToRelative(url: string): string | null {
+  const name = ROOT_FILE_POSITION.exec(url)?.[1]
+  return name !== undefined && isFileName(name) ? `./${url}` : null
 }
 
-/** Return the file-shaped portion of a workspace-relative target, if any. */
-function workspaceRelativeFilePath(url: string): string | null {
-  if (
-    !url ||
-    url.startsWith("/") ||
-    url.startsWith("\\") ||
-    url.startsWith("//") ||
-    URL_SCHEME.test(url)
-  ) {
-    return null
-  }
-
-  let path = pathWithoutUrlSuffix(url)
-  while (path.startsWith("./")) path = path.slice(2)
-  while (path.startsWith("../")) path = path.slice(3)
-  if (path.startsWith("~/")) path = path.slice(2)
-
-  const base = path.split(/[\\/]/).pop() ?? ""
-  const hasPathExtension =
-    FILE_EXT.test(base) && (path.includes("/") || path.includes("\\"))
-  const isDocumentFilename = DOCUMENT_EXT.test(base)
-  return hasPathExtension || isDocumentFilename ? path : null
-}
-
-function workspaceFileTargetData(
-  url: string
-): MdastNodeLike["data"] | undefined {
-  return workspaceRelativeFilePath(url)
-    ? { hProperties: { [WORKSPACE_FILE_TARGET_ATTR]: url } }
-    : undefined
-}
-
-function preserveWorkspaceFileTarget(node: MdastNodeLike, url: string): void {
-  const data = workspaceFileTargetData(url)
-  if (!data) return
-  node.data = {
-    ...node.data,
-    hProperties: {
-      ...node.data?.hProperties,
-      ...data.hProperties,
-    },
-  }
-}
-
-/**
- * A bare workspace-relative path is a local file target, but rehype-harden
- * only accepts schemeless relatives that begin with `./`, `../`, or `/` when
- * no default origin is configured. Prefix the path without changing its
- * workspace-relative meaning. The file/Windows/explicit-relative branches
- * above stay unchanged, and URL-like targets are deliberately excluded.
- */
-function workspaceRelativePathToSafe(url: string): string | null {
-  if (
-    !url ||
-    url.startsWith("\\") ||
-    url.startsWith("//") ||
-    URL_SCHEME.test(url) ||
-    !workspaceRelativeFilePath(url)
-  ) {
-    return null
-  }
-
-  return url.startsWith("./") ? url : `./${url}`
-}
-
-/** Rewrite a local file target to a sanitize-safe form. */
+/** Rewrite a local file url sanitize would misread to a sanitize-safe form. */
 function rewriteLocalFileUrl(url: string): string | null {
   return (
     fileUriToLocalPath(url) ??
     windowsDrivePathToSafe(url) ??
-    workspaceRelativePathToSafe(url)
+    rootFilePositionToRelative(url)
   )
 }
 
@@ -168,70 +105,6 @@ function walk(node: MdastNodeLike, fn: (n: MdastNodeLike) => void): void {
     for (const child of children) {
       walk(child as MdastNodeLike, fn)
     }
-  }
-}
-
-/**
- * True when inline code is a local file path with a filename extension —
- * absolute, `file://`, workspace-relative (`docs/手册.docx`), or a document
- * filename. Bare identifiers (`app.ts`) and extension-less directories
- * (`/usr/bin`) stay code.
- */
-function inlineCodeToFileHref(value: string): string | null {
-  const trimmed = value.trim()
-  if (!trimmed || /\s/.test(trimmed)) return null
-  const base = trimmed.split(/[\\/]/).pop() ?? ""
-  if (!FILE_EXT.test(base)) return null
-  const looksLocal =
-    trimmed.startsWith("~/") ||
-    (trimmed.startsWith("/") && !trimmed.startsWith("//")) ||
-    WINDOWS_DRIVE_PATH.test(trimmed) ||
-    trimmed.startsWith("file://") ||
-    trimmed.startsWith("\\\\") ||
-    trimmed.includes("/") ||
-    trimmed.includes("\\") ||
-    DOCUMENT_EXT.test(base)
-  if (!looksLocal) return null
-  return rewriteLocalFileUrl(trimmed) ?? trimmed
-}
-
-/**
- * Promote backtick-wrapped local file paths to markdown links so
- * MarkdownLink / openFilePreview can open them. Existing links are left
- * alone; fenced code blocks are not visited as inlineCode.
- */
-export function remarkAutolinkInlineFilePaths() {
-  return (tree: MdastNodeLike) => {
-    visitReplaceInlineCode(tree, false)
-  }
-}
-
-function visitReplaceInlineCode(
-  node: MdastNodeLike,
-  insideLink: boolean
-): void {
-  const children = node.children
-  if (!Array.isArray(children)) return
-  const nestedLink = insideLink || node.type === "link"
-  for (let i = 0; i < children.length; i++) {
-    const child = children[i] as MdastNodeLike
-    if (
-      !nestedLink &&
-      child.type === "inlineCode" &&
-      typeof child.value === "string"
-    ) {
-      const href = inlineCodeToFileHref(child.value)
-      if (href) {
-        children[i] = {
-          type: "link",
-          url: href,
-          data: workspaceFileTargetData(child.value),
-          children: [{ type: "text", value: child.value.trim() }],
-        }
-        continue
-      }
-    }
-    visitReplaceInlineCode(child, nestedLink)
   }
 }
 
@@ -253,13 +126,11 @@ export function remarkRewriteFileUriLinks() {
     walk(tree, (node) => {
       if (typeof node.url !== "string") return
       if (node.type === "link") {
-        preserveWorkspaceFileTarget(node, node.url)
         const rewritten = rewriteLocalFileUrl(node.url)
         if (rewritten != null) node.url = rewritten
         return
       }
       if (node.type === "definition") {
-        preserveWorkspaceFileTarget(node, node.url)
         const id =
           typeof node.identifier === "string"
             ? node.identifier.toLowerCase()

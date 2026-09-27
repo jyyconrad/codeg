@@ -8,6 +8,27 @@ import {
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+// Shared by the module mock and by `shellsResolving` below, so a test that
+// re-stubs the call can vary the resolved shell without restating the rows.
+// `vi.hoisted` because the `vi.mock` factory is lifted above every plain
+// `const` in this file.
+const shellOptions = vi.hoisted(() => [
+  {
+    id: "system",
+    label_key: "terminalSystemDefault",
+    value: null,
+    exists: true,
+    accepts_custom_path: false,
+  },
+  {
+    id: "custom",
+    label_key: "terminalShellCustom",
+    value: null,
+    exists: true,
+    accepts_custom_path: true,
+  },
+])
+
 vi.mock("@/lib/api", () => ({
   getSystemTerminalSettings: vi.fn(async () => ({
     default_shell: null,
@@ -15,22 +36,7 @@ vi.mock("@/lib/api", () => ({
   })),
   getAvailableTerminalShells: vi.fn(async () => ({
     resolved_shell: "/bin/zsh",
-    options: [
-      {
-        id: "system",
-        label_key: "terminalSystemDefault",
-        value: null,
-        exists: true,
-        accepts_custom_path: false,
-      },
-      {
-        id: "custom",
-        label_key: "terminalShellCustom",
-        value: null,
-        exists: true,
-        accepts_custom_path: true,
-      },
-    ],
+    options: shellOptions,
   })),
   getSystemRenderingSettings: vi.fn(async () => ({
     disable_hardware_acceleration: false,
@@ -72,6 +78,8 @@ vi.mock("@/hooks/use-platform", () => ({
 }))
 vi.mock("@/lib/updater", () => ({ relaunchApp: vi.fn() }))
 
+import { toast } from "sonner"
+
 import {
   getAvailableTerminalShells,
   getSystemTerminalSettings,
@@ -87,6 +95,11 @@ function renderSettings() {
       <GeneralSettings />
     </NextIntlClientProvider>
   )
+}
+
+/** The options list as the backend returns it, resolving to `path`. */
+function shellsResolving(path: string) {
+  return { resolved_shell: path, options: shellOptions }
 }
 
 /**
@@ -206,6 +219,7 @@ describe("GeneralSettings", () => {
    */
   it("keeps a just-saved shell when the options refresh fails", async () => {
     vi.mocked(updateSystemTerminalSettings).mockClear()
+    vi.mocked(toast.error).mockClear()
     // A stored path outside the option list renders the custom-path row, which
     // is the save route that needs no Select interaction.
     vi.mocked(getSystemTerminalSettings).mockResolvedValueOnce({
@@ -233,6 +247,11 @@ describe("GeneralSettings", () => {
       })
     )
 
+    // ...and the user is not told the save failed. It didn't: the row is
+    // written, the shell is already live. Reporting the refresh as a failed
+    // save sends them to re-save a setting that is already stored.
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled()
+
     const colorize = screen.getByLabelText("Colorize command output")
     await waitFor(() => expect(colorize).toBeEnabled())
     fireEvent.click(colorize)
@@ -242,6 +261,83 @@ describe("GeneralSettings", () => {
         default_shell: "/opt/fish2",
         colorize_command_output: true,
       })
+    )
+  })
+
+  /**
+   * The picker moves ahead of the save so it feels immediate, which makes a
+   * REJECTED save the one state where it can name a shell nothing uses — not
+   * the line under it, not a new terminal tab, not an agent's command. The
+   * toast that said so scrolls away; the wrong selection does not.
+   */
+  it("puts the picker back when the save is rejected", async () => {
+    vi.mocked(getSystemTerminalSettings).mockResolvedValueOnce({
+      default_shell: "/opt/fish",
+      colorize_command_output: false,
+    })
+    vi.mocked(getAvailableTerminalShells).mockResolvedValueOnce(
+      shellsResolving("/opt/fish")
+    )
+    vi.mocked(updateSystemTerminalSettings).mockRejectedValueOnce(
+      new Error("disk full")
+    )
+
+    renderSettings()
+
+    // A stored path outside the option list selects the custom row, so there
+    // is a second option to switch away to.
+    const picker = await screen.findByLabelText("Default Terminal")
+    expect(picker).toHaveTextContent("Custom path")
+
+    fireEvent.keyDown(picker, { key: "Enter" })
+    fireEvent.click(await screen.findByText("System default"))
+
+    await waitFor(() =>
+      expect(vi.mocked(updateSystemTerminalSettings)).toHaveBeenLastCalledWith({
+        default_shell: null,
+        colorize_command_output: false,
+      })
+    )
+    await waitFor(() => expect(picker).toHaveTextContent("Custom path"))
+    // The stored shell is untouched, so the line under the picker keeps
+    // naming it — picker and line agree again.
+    expect(screen.getByText("Currently using: /opt/fish")).toBeInTheDocument()
+  })
+
+  /**
+   * "Currently using" is the only place the page says what the choice actually
+   * resolves to, and the backend answers that per selection — so the page has
+   * to re-read it after every save. Leaving the first answer on screen is what
+   * made the line read as a constant (always the host's `COMSPEC`/`SHELL`)
+   * however the picker was set, which reads as "this setting does nothing".
+   */
+  it("re-reads the resolved shell after a save", async () => {
+    vi.mocked(getSystemTerminalSettings).mockResolvedValueOnce({
+      default_shell: "/opt/fish",
+      colorize_command_output: false,
+    })
+    vi.mocked(getAvailableTerminalShells).mockResolvedValueOnce(
+      shellsResolving("/opt/fish")
+    )
+
+    renderSettings()
+
+    expect(
+      await screen.findByText("Currently using: /opt/fish")
+    ).toBeInTheDocument()
+
+    const path = screen.getByLabelText("Shell path")
+    fireEvent.change(path, { target: { value: "/opt/fish2" } })
+    vi.mocked(getAvailableTerminalShells).mockResolvedValueOnce(
+      shellsResolving("/opt/fish2")
+    )
+    const shellRow = path.parentElement as HTMLElement
+    fireEvent.click(within(shellRow).getByRole("button", { name: "Save" }))
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("Currently using: /opt/fish2")
+      ).toBeInTheDocument()
     )
   })
 

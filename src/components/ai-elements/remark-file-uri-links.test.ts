@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-  remarkAutolinkInlineFilePaths,
-  remarkRewriteFileUriLinks,
-} from "./remark-file-uri-links"
+import { remarkRewriteFileUriLinks } from "./remark-file-uri-links"
 
 // Minimal mdast node shapes for the transform.
 type Node = {
@@ -69,21 +66,57 @@ describe("remarkRewriteFileUriLinks", () => {
     )
   })
 
-  it("prefixes workspace-relative file paths for rehype-harden", () => {
-    // rehype-harden accepts `./…` but rejects a bare `src/…` when no default
-    // origin is configured. Keep the target workspace-relative while making
-    // its URL shape explicit to the sanitizer.
-    expect(
-      rewrite("dist/windows-lab/switchgear-lab_20260919_windows_amd64.zip")
-    ).toBe("./dist/windows-lab/switchgear-lab_20260919_windows_amd64.zip")
-    expect(rewrite("src/main.rs")).toBe("./src/main.rs")
-    expect(rewrite("notes.md")).toBe("./notes.md")
+  it("leaves a bare relative path to the rehype step (not a drive path)", () => {
+    // `C:` needs a following slash to be a drive path. A relative path gets
+    // past sanitize as it is; the `./` it needs is added after sanitize, in
+    // rehype-relative-file-links, where raw HTML anchors are covered too.
+    expect(rewrite("src/main.rs")).toBe("src/main.rs")
+    expect(rewrite("notes.md")).toBe("notes.md")
+    expect(rewrite("./index.html")).toBe("./index.html")
   })
 
-  it("preserves query and line fragments on workspace-relative paths", () => {
-    expect(rewrite("dist/report.xlsx?download=1#L12")).toBe(
-      "./dist/report.xlsx?download=1#L12"
-    )
+  it("puts a root file position behind a slash so sanitize keeps it", () => {
+    // `a.ts:12` reads as a URL with the scheme `a.ts:`; `./a.ts:12` does not.
+    expect(rewrite("a.ts:12")).toBe("./a.ts:12")
+    expect(rewrite("index.html:3:7")).toBe("./index.html:3:7")
+    expect(rewrite(".env:2")).toBe("./.env:2")
+    expect(rewrite("Makefile:40")).toBe("./Makefile:40")
+    // With a directory the colon already sits behind a slash.
+    expect(rewrite("src/a.ts:12")).toBe("src/a.ts:12")
+  })
+
+  it("leaves a host with a port, and other schemes, as they are", () => {
+    for (const url of [
+      "localhost:3000",
+      "example.com:8080",
+      "10.0.0.1:80",
+      "tel:12345",
+      "mailto:a@b.c",
+      "a.ts:L12",
+    ]) {
+      expect(rewrite(url)).toBe(url)
+    }
+  })
+
+  it("rewrites a reference definition the same way", () => {
+    const tree: Node = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "linkReference",
+              identifier: "pos",
+              children: [{ type: "text" }],
+            },
+          ],
+        },
+        { type: "definition", identifier: "pos", url: "a.ts:12" },
+      ],
+    }
+    remarkRewriteFileUriLinks()(tree)
+    expect(tree.children![1].url).toBe("./a.ts:12")
   })
 
   it("emits a UNC file:// URI as a backslash UNC path (unambiguously local)", () => {
@@ -100,92 +133,5 @@ describe("remarkRewriteFileUriLinks", () => {
 
   it("leaves non-file URLs untouched", () => {
     expect(rewrite("https://example.com/x")).toBe("https://example.com/x")
-  })
-})
-
-describe("remarkAutolinkInlineFilePaths", () => {
-  function treeWithInlineCode(value: string): Node {
-    return {
-      type: "root",
-      children: [
-        {
-          type: "paragraph",
-          children: [{ type: "inlineCode", value } as Node],
-        },
-      ],
-    }
-  }
-
-  function firstChildOfParagraph(tree: Node): Node | undefined {
-    const para = tree.children?.[0]
-    return para?.children?.[0]
-  }
-
-  it("turns an absolute POSIX path in inline code into a file link", () => {
-    const tree = treeWithInlineCode(
-      "/Users/jiangyayun/develop/code/work_code/switchgear/docs/使用手册.docx"
-    )
-    remarkAutolinkInlineFilePaths()(tree)
-    const node = firstChildOfParagraph(tree)
-    expect(node?.type).toBe("link")
-    expect(node?.url).toBe(
-      "/Users/jiangyayun/develop/code/work_code/switchgear/docs/使用手册.docx"
-    )
-  })
-
-  it("rewrites file:// inline code to a sanitize-safe path href", () => {
-    const tree = treeWithInlineCode("file:///Users/a/手册.docx")
-    remarkAutolinkInlineFilePaths()(tree)
-    expect(firstChildOfParagraph(tree)?.url).toBe(
-      "/Users/a/%E6%89%8B%E5%86%8C.docx"
-    )
-  })
-
-  it("turns a workspace-relative path in inline code into a file link", () => {
-    const tree = treeWithInlineCode("docs/使用手册.docx")
-    remarkAutolinkInlineFilePaths()(tree)
-    const node = firstChildOfParagraph(tree)
-    expect(node?.type).toBe("link")
-    expect(node?.url).toBe("./docs/使用手册.docx")
-  })
-
-  it("turns a document filename in inline code into a file link", () => {
-    const tree = treeWithInlineCode("使用手册.docx")
-    remarkAutolinkInlineFilePaths()(tree)
-    expect(firstChildOfParagraph(tree)?.type).toBe("link")
-  })
-
-  it("does not promote extension-less directories or bare identifiers", () => {
-    for (const value of ["/usr/bin", "/api/users", "app.ts", "foo"]) {
-      const tree = treeWithInlineCode(value)
-      remarkAutolinkInlineFilePaths()(tree)
-      expect(firstChildOfParagraph(tree)?.type).toBe("inlineCode")
-    }
-  })
-
-  it("leaves inline code inside an existing link alone", () => {
-    const tree: Node = {
-      type: "root",
-      children: [
-        {
-          type: "paragraph",
-          children: [
-            {
-              type: "link",
-              url: "https://example.com",
-              children: [
-                {
-                  type: "inlineCode",
-                  value: "/Users/a/b.docx",
-                } as Node,
-              ],
-            },
-          ],
-        },
-      ],
-    }
-    remarkAutolinkInlineFilePaths()(tree)
-    const inner = tree.children?.[0]?.children?.[0]?.children?.[0]
-    expect(inner?.type).toBe("inlineCode")
   })
 })

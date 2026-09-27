@@ -214,6 +214,7 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     asyncTasks: [],
     workflows: [],
     error: null,
+    errorLevel: "error",
     loadError: null,
     loadErrorCommand: null,
     lastAppliedSeq: 0,
