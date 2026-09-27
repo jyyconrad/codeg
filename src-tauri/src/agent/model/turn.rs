@@ -9,9 +9,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::hook::CodegHook;
 use crate::agent::tools::{
-    BashTool, CodegraphTool, EchoTool, EditFileTool, EnterPlanModeTool, ExitPlanModeTool, GlobTool,
-    GrepTool, LspTool, ReadFileTool, RecallTool, SkillTool, SubagentTool, UpdatePlanTool,
-    WriteExploreReportTool, WriteFileTool, WritePlanTool,
+    BashTool, EchoTool, EditFileTool, EnterPlanModeTool, ExitPlanModeTool, GlobTool, GrepTool,
+    ReadFileTool, RecallTool, SkillTool, SubagentTool, UpdatePlanTool, WriteExploreReportTool,
+    WriteFileTool, WritePlanTool,
 };
 
 use super::{CodegLlmClient, DEFAULT_INVALID_TOOL_CALL_RETRIES, DEFAULT_TOOL_CONCURRENCY};
@@ -29,8 +29,6 @@ pub struct NativeTurnTools {
     pub edit: Option<EditFileTool>,
     pub glob: GlobTool,
     pub grep: GrepTool,
-    pub codegraph: Option<CodegraphTool>,
-    pub lsp: Option<LspTool>,
     pub bash: Option<BashTool>,
     pub skill: SkillTool,
     pub plan: Option<UpdatePlanTool>,
@@ -57,8 +55,6 @@ impl NativeTurnTools {
             edit: Some(EditFileTool::new(ctx.clone())),
             glob: GlobTool::new(ctx.clone()),
             grep: GrepTool::new(ctx.clone()),
-            codegraph: None,
-            lsp: None,
             bash: None,
             skill: SkillTool::new(ctx, SkillCatalog::default()),
             plan: None,
@@ -134,8 +130,6 @@ async fn assemble_and_stream(
         edit,
         glob,
         grep,
-        codegraph,
-        lsp,
         bash,
         skill,
         plan,
@@ -156,12 +150,6 @@ async fn assemble_and_stream(
         .tool(glob)
         .tool(grep)
         .tool(skill);
-    if let Some(codegraph) = codegraph {
-        builder = builder.tool(codegraph);
-    }
-    if let Some(lsp) = lsp {
-        builder = builder.tool(lsp);
-    }
     if let Some(write) = write {
         builder = builder.tool(write);
     }
@@ -250,14 +238,12 @@ mod tests {
     use rig::completion::Message;
     use rig::tool::Tool;
 
-    use crate::agent::tools::{CodegraphTool, LspTool, SubagentTool, UpdatePlanTool};
+    use crate::agent::tools::{SubagentTool, UpdatePlanTool};
 
     #[test]
     fn native_turn_tools_include_update_plan_and_subagent() {
         assert_eq!(UpdatePlanTool::NAME, "update_plan");
         assert_eq!(SubagentTool::NAME, "subagent");
-        assert_eq!(CodegraphTool::NAME, "codegraph");
-        assert_eq!(LspTool::NAME, "lsp");
     }
 
     #[test]
@@ -271,8 +257,6 @@ mod tests {
         assert!(tools.write.is_some());
         assert!(tools.edit.is_some());
         assert!(tools.echo.is_none());
-        assert!(tools.codegraph.is_none());
-        assert!(tools.lsp.is_none());
         assert!(tools.dynamic.is_empty());
     }
 

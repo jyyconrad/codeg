@@ -5166,61 +5166,97 @@ export async function setFeedbackSettings(
   return getTransport().call("set_feedback_settings", { settings })
 }
 
-// ─── Code intelligence settings ───────────────────────────────────────────
+// ─── Code tools settings ─────────────────────────────────────────────────
 
-/** Mirror of Rust `CustomLspServer`. */
-export interface CustomLspServer {
-  id: string
-  language: string
-  command: string
-  args: string[]
-  extensions: string[]
-  manifests: string[]
-}
-
-/** Mirror of Rust `CodeIntelConfig`. */
+/** Mirror of Rust `CodeIntelConfig` persisted in `code-intel.json`. */
 export interface CodeIntelConfig {
   enabled: boolean
-  codegraph: {
-    enabled: boolean
-    binary_path: string | null
-  }
-  lsp: {
-    auto_attach: boolean
-    max_concurrent: number
-    checked: string[]
-    custom: CustomLspServer[]
-  }
+  lsp: CodeIntelLspSettings
+  codegraph: CodeIntelCodegraphSettings
+  serena: CodeIntelSerenaSettings
 }
 
-/** Mirror of Rust `LspServerStatus`. */
-export interface LspServerStatus {
-  id: string
+export interface CodeIntelLspSettings {
+  enabled: boolean
+  languages: string[]
+  /** Clamped to 1..=8 on save. */
+  max_concurrent: number
+  auto_install: boolean
+}
+
+export interface CodeIntelCodegraphSettings {
+  enabled: boolean
+  auto_install: boolean
+  /** Absolute path or a PATH command name. Never a relative path. */
+  binary_path: string | null
+}
+
+export interface CodeIntelSerenaSettings {
+  enabled: boolean
+  auto_install: boolean
+  /** Absolute path or a PATH command name. Never a relative path. */
+  command: string | null
+  /** Pinned Serena tag. Production value is `v1.7.0`. */
+  version: string
+  context: string
+  modes: string[]
+}
+
+export type CodeIntelProviderId = "lsp" | "codegraph" | "serena"
+
+export type CodeIntelDiscovery =
+  | "global"
+  | "managed"
+  | "missing"
+  | "unconfigured"
+  | "override"
+
+export type CodeIntelInstallState =
+  | "idle"
+  | "downloading"
+  | "installed"
+  | "failed"
+
+export type CodeIntelRuntimeState =
+  | "stopped"
+  | "starting"
+  | "connected"
+  | "exited"
+  | "handshake_failed"
+  | "waiting"
+
+/** One entry in Rust `CodeIntelStatus.providers`. */
+export interface CodeIntelProviderStatus {
+  id: CodeIntelProviderId
+  configured: boolean
+  discovery: CodeIntelDiscovery
+  install: CodeIntelInstallState
+  runtime: CodeIntelRuntimeState
+  version: string | null
+  resolved_command: string | null
+  last_error: string | null
+  last_started_at: string | null
+}
+
+/**
+ * Workspace language row. `provider` uses discovery vocabulary. Official LSP
+ * rows stay `unconfigured` even when the language is detected.
+ */
+export interface CodeIntelLanguageStatus {
   language: string
-  binary: string
-  binary_on_path: boolean
+  label: string
   checked: boolean
-  language_detected: boolean
-  default_checked: boolean
-  custom: boolean
-}
-
-/** Mirror of Rust `CodeIntelMcpToolStatus`. */
-export interface CodeIntelMcpToolStatus {
-  name: string
-  group: string
-  description: string
-  advertised: boolean
+  detected: boolean
+  provider: string
 }
 
 /** Mirror of Rust `CodeIntelStatus`. */
 export interface CodeIntelStatus {
   config: CodeIntelConfig
-  codegraph_binary: string | null
-  codegraph_indexed: boolean
   cwd: string | null
-  lsp_servers: LspServerStatus[]
-  mcp_tools?: CodeIntelMcpToolStatus[]
+  migration_report: string | null
+  providers: CodeIntelProviderStatus[]
+  lsp_languages: CodeIntelLanguageStatus[]
 }
 
 export async function getCodeIntelSettings(): Promise<CodeIntelConfig> {
@@ -5237,6 +5273,13 @@ export async function getCodeIntelStatus(
   cwd?: string | null
 ): Promise<CodeIntelStatus> {
   return getTransport().call("get_code_intel_status", { cwd })
+}
+
+/** Restart failed providers on a live workspace lease, then return status. */
+export async function retryCodeIntel(
+  cwd?: string | null
+): Promise<CodeIntelStatus> {
+  return getTransport().call("retry_code_intel", { cwd })
 }
 
 /**

@@ -28,9 +28,7 @@ use crate::acp::types::{
 };
 use crate::acp_transcript::{now_epoch_ms, record_header_critical_in, TranscriptHeader};
 use crate::agent::builtin_skills::budget_preamble;
-use crate::agent::code_intel::{
-    load_code_intel_config, resolve_codegraph_binary, LspPool, ProjectCodeIntelSupervisor,
-};
+use crate::agent::code_intel::{insert_native_stdio_connector, ProjectCodeIntelSupervisor};
 use crate::agent::context::transcript::tool_call_update_payload;
 use crate::agent::context::{
     agent_message_chunk, compact_llm::CompactLlmConfig, open_codeg_agent_session, BudgetConfig,
@@ -43,11 +41,10 @@ use crate::agent::model::{
     live_session_preamble, resolve_session_wire_protocol, run_native_turn, CodegLlmClient,
     NativeTurnOutcome, NativeTurnRequest, NativeTurnTools,
 };
-use crate::agent::tools::codegraph::should_inject_codegraph;
 use crate::agent::tools::{
     build_companion_tools, companion_plan_from_injection, schema_for, schema_for_companion_def,
-    tool_kind, BashTool, CodegraphTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool,
-    EnterPlanModeTool, ExitPlanModeTool, FeedbackDelivery, GlobTool, GrepTool, LspTool, McpSession,
+    tool_kind, BashTool, CompanionPlan, CompanionRuntime, EchoTool, EditFileTool,
+    EnterPlanModeTool, ExitPlanModeTool, FeedbackDelivery, GlobTool, GrepTool, McpSession,
     McpTimeouts, NativeInject, NativeToolCtx, ReadFileTool, RecallTool, SkillCatalog, SkillTool,
     SubagentTable, SubagentTool, UpdatePlanTool, WriteFileTool, WritePlanTool,
 };
@@ -257,27 +254,35 @@ async fn run_session(
         args.fs_policy.clone().with_extra_read_root(&artifacts_dir),
     ));
 
-    let mcp = match args.mcp_server_specs.clone() {
-        Some(specs) => {
-            McpSession::connect_specs(
-                specs,
-                Some(shutdown.owners()),
-                shutdown.token(),
-                McpTimeouts::default(),
-            )
-            .await
-        }
-        None => {
-            McpSession::connect_for_agent(
-                args.agent_type,
-                Some(shutdown.owners()),
-                shutdown.token(),
-                McpTimeouts::default(),
-            )
-            .await
-        }
+    let intel_lease =
+        ProjectCodeIntelSupervisor::acquire(args.launch_cwd.clone(), Arc::clone(&fs)).await;
+    let mut mcp_specs = match args.mcp_server_specs.clone() {
+        Some(specs) => specs,
+        None => match crate::commands::mcp::read_servers_for_agent_type(args.agent_type) {
+            Ok(specs) => specs,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "[ACP] failed to read MCP servers for {}; continuing without them",
+                    args.agent_type
+                );
+                BTreeMap::new()
+            }
+        },
     };
-    let mcp = Arc::new(mcp);
+    if let Some(url) = intel_lease.as_ref().and_then(|lease| lease.mcp_http_url()) {
+        let _ = insert_native_stdio_connector(&mut mcp_specs, &url);
+    }
+    let _intel_lease = intel_lease;
+    let mcp = Arc::new(
+        McpSession::connect_specs(
+            mcp_specs,
+            Some(shutdown.owners()),
+            shutdown.token(),
+            McpTimeouts::default(),
+        )
+        .await,
+    );
     if shutdown.is_cancelled() {
         mcp.close().await;
         return SessionOutcome {
@@ -376,10 +381,6 @@ async fn run_session(
         shutdown.token(),
     );
     let mut session_memory_model_id = model_id.clone();
-    let intel_lease =
-        ProjectCodeIntelSupervisor::acquire(args.launch_cwd.clone(), Arc::clone(&fs)).await;
-    let lsp_pool = intel_lease.as_ref().and_then(|lease| lease.lsp_pool());
-    let _intel_lease = intel_lease;
     let mut cmd_rx = std::mem::replace(&mut args.cmd_rx, mpsc::channel(1).1);
     let (inject_tx, mut inject_rx) = mpsc::channel::<NativeInject>(8);
     // Children outlive an individual parent turn. Keep their permission
@@ -635,7 +636,6 @@ async fn run_session(
                 companion.clone(),
                 feedback_delivery.clone(),
                 Arc::clone(&mcp),
-                lsp_pool.clone(),
                 Arc::clone(&subagents),
                 inject_tx.clone(),
                 child_permission_tx.clone(),
@@ -720,7 +720,6 @@ async fn run_session(
                                 companion.clone(),
                                 feedback_delivery.clone(),
                                 Arc::clone(&mcp),
-                                lsp_pool.clone(),
                                 Arc::clone(&subagents),
                                 inject_tx.clone(),
                                 child_permission_tx.clone(),
@@ -1041,7 +1040,6 @@ async fn start_prompt(
     companion: CompanionPlan,
     feedback: Option<Arc<FeedbackDelivery>>,
     mcp: Arc<McpSession>,
-    lsp_pool: Option<Arc<LspPool>>,
     subagents: Arc<Mutex<SubagentTable>>,
     inject_tx: mpsc::Sender<NativeInject>,
     child_permissions: mpsc::Sender<PendingPermission>,
@@ -1113,21 +1111,6 @@ async fn start_prompt(
     let recall = RecallTool::new(tool_ctx.clone());
     let glob = GlobTool::new(tool_ctx.clone());
     let grep = GrepTool::new(tool_ctx.clone());
-    let intel = load_code_intel_config();
-    let codegraph = if should_inject_codegraph(&intel) {
-        let binary = resolve_codegraph_binary(&intel.codegraph)
-            .unwrap_or_else(|| std::path::PathBuf::from("codegraph"));
-        Some(CodegraphTool::new(
-            tool_ctx.clone(),
-            binary,
-            Some(args.shutdown.owners()),
-        ))
-    } else {
-        None
-    };
-    let lsp = lsp_pool
-        .as_ref()
-        .map(|pool| LspTool::new(tool_ctx.clone(), Arc::clone(pool)));
     let skill = SkillTool::new(tool_ctx.clone(), catalog.clone());
     let max_output = u64::from(args.effective_config.max_output_tokens);
     let write = (!in_plan).then(|| WriteFileTool::new(tool_ctx.clone()));
@@ -1170,7 +1153,7 @@ async fn start_prompt(
         .tree
         .then(|| crate::agent::workspace_context::workspace_tree_markdown(&args.launch_cwd));
     let (perm_tx, perm_rx) = mpsc::channel(8);
-    let mut subagent_tool = SubagentTool::new(
+    let subagent_tool = SubagentTool::new(
         tool_ctx.clone(),
         client.clone(),
         model_id.to_string(),
@@ -1185,7 +1168,6 @@ async fn start_prompt(
         artifacts_dir.clone(),
     )
     .with_workspace_tree(workspace_tree)
-    .with_owners(args.shutdown.owners())
     .with_model_context_windows(args.effective_config.context_windows.clone())
     .with_parent_runtime(crate::agent::tools::subagent::ParentRuntime {
         terminals,
@@ -1193,9 +1175,6 @@ async fn start_prompt(
         permissions: Some(child_permissions),
         auto_allow: auto_allow_tools,
     });
-    if let Some(pool) = lsp_pool.as_ref() {
-        subagent_tool = subagent_tool.with_lsp_pool(Arc::clone(pool));
-    }
     let mcp_tools = {
         let tools = mcp.dynamic_tools(tool_ctx.clone());
         if in_plan {
@@ -1237,12 +1216,6 @@ async fn start_prompt(
         schema_for(&grep),
         schema_for(&skill),
     ];
-    if let Some(tool) = codegraph.as_ref() {
-        tool_schemas.push(schema_for(tool));
-    }
-    if let Some(tool) = lsp.as_ref() {
-        tool_schemas.push(schema_for(tool));
-    }
     if let Some(tool) = write.as_ref() {
         tool_schemas.push(schema_for(tool));
     }
@@ -1371,8 +1344,6 @@ async fn start_prompt(
                 edit,
                 glob,
                 grep,
-                codegraph,
-                lsp,
                 bash,
                 skill,
                 plan,

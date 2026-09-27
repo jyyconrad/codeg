@@ -7,6 +7,8 @@
 //! conversion layer: one output shape, one live strip.
 
 use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -196,6 +198,61 @@ fn grok_agents(update: &Value) -> Option<Vec<WorkflowAgent>> {
             })
             .collect()
     })
+}
+
+/// Conclusion shown after a Grok workflow finishes.
+///
+/// The run writes the full summary to `workflows/<run_id>/scratch/report.md`.
+/// That file is the conclusion. When it is missing or empty, the completion
+/// frame's `result_summary` excerpt is what the user sees instead.
+pub fn load_grok_workflow_conclusion(
+    session_dir: &Path,
+    run_id: &str,
+    wire_summary: Option<&str>,
+) -> Option<String> {
+    if let Some(report) = read_scratch_report(session_dir, run_id) {
+        return Some(report);
+    }
+    wire_summary
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// Bound a report that would otherwise dominate a conversation payload.
+const WORKFLOW_REPORT_CAP: usize = 512 * 1024;
+
+fn read_scratch_report(session_dir: &Path, run_id: &str) -> Option<String> {
+    if !is_safe_workflow_run_id(run_id) {
+        return None;
+    }
+    let path = session_dir
+        .join("workflows")
+        .join(run_id)
+        .join("scratch")
+        .join("report.md");
+    let text = fs::read_to_string(path).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.len() <= WORKFLOW_REPORT_CAP {
+        return Some(trimmed.to_string());
+    }
+    let mut end = WORKFLOW_REPORT_CAP;
+    while end > 0 && !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(trimmed[..end].to_string())
+}
+
+/// Run ids are a single path segment (`wf_<hex>`). Anything else must not be
+/// joined onto the session directory.
+fn is_safe_workflow_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn agent_counts(agents: Option<&Vec<WorkflowAgent>>, active_agents: u64) -> (u32, u32) {
@@ -532,5 +589,48 @@ mod tests {
         let mapped = adapt_air_workflow(&delta, true).expect("known");
         assert!(!mapped.spawned);
         assert_eq!(mapped.run_id, "t-wf");
+    }
+
+    #[test]
+    fn conclusion_is_scratch_report_when_that_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("workflows").join("wf_1").join("scratch");
+        std::fs::create_dir_all(&report).unwrap();
+        std::fs::write(
+            report.join("report.md"),
+            "  # Research result\n\nClaim claim-2 was excluded by verification.\n",
+        )
+        .unwrap();
+        let loaded = load_grok_workflow_conclusion(
+            dir.path(),
+            "wf_1",
+            Some("short excerpt\n\n_Full report: scratch/report.md_"),
+        );
+        assert_eq!(
+            loaded.as_deref(),
+            Some("# Research result\n\nClaim claim-2 was excluded by verification.")
+        );
+    }
+
+    #[test]
+    fn conclusion_falls_back_to_the_completion_excerpt_without_a_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let loaded = load_grok_workflow_conclusion(
+            dir.path(),
+            "wf_1",
+            Some("  **Status: Partial**\n\n## Findings\n- kept  "),
+        );
+        assert_eq!(
+            loaded.as_deref(),
+            Some("**Status: Partial**\n\n## Findings\n- kept")
+        );
+    }
+
+    #[test]
+    fn conclusion_ignores_a_run_id_that_would_escape_the_session_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("report.md"), "outside").unwrap();
+        let loaded = load_grok_workflow_conclusion(dir.path(), "../report", Some("wire excerpt"));
+        assert_eq!(loaded.as_deref(), Some("wire excerpt"));
     }
 }

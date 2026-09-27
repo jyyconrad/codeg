@@ -58,7 +58,26 @@ describe("resolveLinkAction — classification passthrough", () => {
     })
   })
 
-  it.each(["vscode://file/x", "javascript:alert(1)", "src/main.rs"])(
+  it("routes a workspace-relative file to the file panel", () => {
+    expect(resolveLinkAction("src/main.rs", ctx())).toEqual({
+      kind: "file",
+      target: { path: "src/main.rs", line: null },
+    })
+    expect(
+      resolveLinkAction(
+        "rsi-agent-skill-self-evolution-research-2026-09-24.md",
+        ctx()
+      )
+    ).toEqual({
+      kind: "file",
+      target: {
+        path: "rsi-agent-skill-self-evolution-research-2026-09-24.md",
+        line: null,
+      },
+    })
+  })
+
+  it.each(["vscode://file/x", "javascript:alert(1)", "www.example.com"])(
     "still rejects %s (unknown scheme is never handed to the OS)",
     (url) => {
       expect(resolveLinkAction(url, ctx())).toEqual({

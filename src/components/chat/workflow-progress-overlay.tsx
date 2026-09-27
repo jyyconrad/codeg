@@ -320,7 +320,7 @@ function WorkflowTerminalCard({
       </div>
       <div
         className={cn(
-          "mt-2 max-h-48 overflow-y-auto break-words text-xs leading-relaxed",
+          "mt-2 max-h-96 overflow-y-auto break-words text-xs leading-relaxed",
           "[&_h1]:mb-1 [&_h1]:text-sm [&_h1]:font-semibold",
           "[&_h2]:mb-1 [&_h2]:text-sm [&_h2]:font-semibold",
           "[&_p]:mb-2 [&_p]:mt-0 [&_ul]:my-2 [&_li]:my-0.5"

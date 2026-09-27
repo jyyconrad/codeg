@@ -9,6 +9,14 @@ describe("classifyLinkTarget", () => {
     ["./src/app.ts", "./src/app.ts", null],
     ["../src/app.ts", "../src/app.ts", null],
     ["~/notes/todo.md", "~/notes/todo.md", null],
+    ["src/main.rs", "src/main.rs", null],
+    ["docs/使用手册.docx", "docs/使用手册.docx", null],
+    ["README.md", "README.md", null],
+    [
+      "rsi-agent-skill-self-evolution-research-2026-09-24.md",
+      "rsi-agent-skill-self-evolution-research-2026-09-24.md",
+      null,
+    ],
     ["C:\\repo\\a.png", "C:/repo/a.png", null],
     ["file:///repo/src/app.ts#L10", "/repo/src/app.ts", 10],
     ["\\\\server\\share\\x.txt", "//server/share/x.txt", null],
@@ -54,7 +62,7 @@ describe("classifyLinkTarget", () => {
     "ftp://example.com/file",
     "tauri://localhost/",
     "#section",
-    "src/main.rs",
+    "app.ts",
     "www.example.com",
   ])("refuses %s as unsupported (never handed to the OS)", (input) => {
     expect(classifyLinkTarget(input)).toEqual({ kind: "unsupported" })

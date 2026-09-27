@@ -1,9 +1,7 @@
 pub mod artifact;
 pub mod bash;
-pub mod codegraph;
 pub mod companion;
 pub mod fs;
-pub mod lsp;
 pub mod mcp;
 pub mod plan;
 pub mod plan_mode;
@@ -27,14 +25,12 @@ use crate::agent::context::{
 
 pub use artifact::{WriteExploreReportTool, WritePlanTool};
 pub use bash::BashTool;
-pub use codegraph::CodegraphTool;
 pub(crate) use companion::{
     build_companion_tools, companion_plan_from_injection, is_companion_tool,
     projected_tool_call_ids, schema_for_companion_def, CompanionPlan, CompanionRuntime,
     FeedbackDelivery,
 };
 pub use fs::{EditFileTool, ReadFileTool, WriteFileTool};
-pub use lsp::LspTool;
 pub use mcp::{mcp_tool_requires_permission, McpSession, McpTimeouts};
 pub use plan::UpdatePlanTool;
 pub use plan_mode::{EnterPlanModeTool, ExitPlanModeTool};
@@ -532,5 +528,14 @@ mod tests {
         );
         assert!(store.lock().unwrap().fact("call_x").is_none());
         let _ = err;
+    }
+
+    #[test]
+    fn historical_lsp_and_codegraph_names_stay_classified() {
+        assert_eq!(super::tool_kind("lsp"), "search");
+        assert_eq!(super::tool_kind("codegraph"), "search");
+        assert!(!super::tool_requires_permission("lsp"));
+        assert!(!super::tool_requires_permission("codegraph"));
+        assert_ne!(super::tool_kind("find_symbol"), "search");
     }
 }

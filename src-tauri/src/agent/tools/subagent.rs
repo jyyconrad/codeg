@@ -2,7 +2,7 @@
 //! returns immediately; the session shell injects the result later.
 
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::agent::model::CodegLlmClient;
@@ -16,16 +16,12 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::codegraph::should_inject_codegraph;
 use super::{
-    schema_for, CodegraphTool, GlobTool, GrepTool, LspTool, NativeToolCtx, ReadFileTool,
-    RecallTool, SkillCatalog, SkillTool, WriteExploreReportTool,
+    schema_for, GlobTool, GrepTool, NativeToolCtx, ReadFileTool, RecallTool, SkillCatalog,
+    SkillTool, WriteExploreReportTool,
 };
-use crate::acp::process_owner::ProcessOwnerRegistry;
 use crate::acp::terminal_runtime::TerminalRuntime;
-use crate::agent::code_intel::{
-    load_code_intel_config, resolve_codegraph_binary, CodeIntelConfig, LspPool,
-};
+use crate::agent::code_intel::MCP_SERVER_NAME;
 use crate::agent::context::budget::BudgetConfig;
 use crate::agent::context::{CallIdentityBridge, ContextStore, FactRecorder};
 use crate::agent::hook::PendingPermission;
@@ -195,8 +191,6 @@ pub struct SubagentTool {
     table: Arc<Mutex<SubagentTable>>,
     inject_tx: mpsc::Sender<NativeInject>,
     artifacts_dir: PathBuf,
-    owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
-    lsp_pool: Option<Arc<LspPool>>,
     workspace_tree: Option<String>,
     /// Models bound to the parent session and their context windows. A child
     /// may select only one of these entries.
@@ -231,8 +225,6 @@ impl SubagentTool {
             table,
             inject_tx,
             artifacts_dir,
-            owners: None,
-            lsp_pool: None,
             workspace_tree: None,
             model_context_windows: {
                 let mut models = BTreeMap::new();
@@ -246,16 +238,6 @@ impl SubagentTool {
 
     pub fn with_workspace_tree(mut self, tree: Option<String>) -> Self {
         self.workspace_tree = tree;
-        self
-    }
-
-    pub fn with_owners(mut self, owners: Arc<Mutex<ProcessOwnerRegistry>>) -> Self {
-        self.owners = Some(owners);
-        self
-    }
-
-    pub fn with_lsp_pool(mut self, pool: Arc<LspPool>) -> Self {
-        self.lsp_pool = Some(pool);
         self
     }
 
@@ -321,11 +303,7 @@ fn normalize_thoroughness(raw: Option<&str>) -> String {
     }
 }
 
-fn available_inner_tool_names(
-    codegraph: bool,
-    lsp: bool,
-    parent_runtime: Option<&ParentRuntime>,
-) -> Vec<String> {
+fn available_inner_tool_names(parent_runtime: Option<&ParentRuntime>) -> Vec<String> {
     let mut names = vec![
         ReadFileTool::NAME,
         RecallTool::NAME,
@@ -337,12 +315,6 @@ fn available_inner_tool_names(
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
-    if codegraph {
-        names.push(CodegraphTool::NAME.to_owned());
-    }
-    if lsp {
-        names.push(LspTool::NAME.to_owned());
-    }
     if let Some(runtime) = parent_runtime {
         names.extend([
             WriteFileTool::NAME.to_owned(),
@@ -421,12 +393,7 @@ impl Tool for SubagentTool {
     }
 
     fn parameters(&self) -> Value {
-        let intel = load_code_intel_config();
-        let available = available_inner_tool_names(
-            should_inject_codegraph(&intel),
-            self.lsp_pool.is_some(),
-            self.parent_runtime.as_ref(),
-        );
+        let available = available_inner_tool_names(self.parent_runtime.as_ref());
         let configured = configured_inner_tool_names(self.allowed_tools.as_ref(), &available);
         let mut schema = json!({
             "type": "object",
@@ -543,27 +510,11 @@ impl Tool for SubagentTool {
                 )
                 .await);
         }
-        let intel = load_code_intel_config();
-        let available = available_inner_tool_names(
-            should_inject_codegraph(&intel),
-            self.lsp_pool.is_some(),
-            self.parent_runtime.as_ref(),
-        );
-        let default_allowlist = self.parent_runtime.as_ref().map(|_| {
+        let available = available_inner_tool_names(self.parent_runtime.as_ref());
+        let default_allowlist = self.parent_runtime.as_ref().map(|runtime| {
             available
                 .iter()
-                .filter(|name| {
-                    !matches!(
-                        name.as_str(),
-                        WriteFileTool::NAME | EditFileTool::NAME | BashTool::NAME
-                    ) && !self.parent_runtime.as_ref().is_some_and(|runtime| {
-                        runtime
-                            .mcp
-                            .bindings()
-                            .iter()
-                            .any(|binding| binding.local_name == name.as_str())
-                    })
-                })
+                .filter(|name| !excluded_from_default_explore(name, runtime))
                 .cloned()
                 .collect::<HashSet<_>>()
         });
@@ -627,8 +578,6 @@ impl Tool for SubagentTool {
             tool_call_id: fact.tool_call_id.clone(),
             artifacts_dir: self.artifacts_dir.join("subagents").join(&id),
             thoroughness,
-            owners: self.owners.clone(),
-            lsp_pool: self.lsp_pool.clone(),
             workspace_tree: self.workspace_tree.clone(),
             allowed_tools,
             parent_runtime: self.parent_runtime.clone(),
@@ -663,8 +612,6 @@ struct InnerSpawn {
     tool_call_id: String,
     artifacts_dir: PathBuf,
     thoroughness: String,
-    owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
-    lsp_pool: Option<Arc<LspPool>>,
     workspace_tree: Option<String>,
     allowed_tools: Option<HashSet<String>>,
     parent_runtime: Option<ParentRuntime>,
@@ -690,8 +637,6 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
         tool_call_id,
         artifacts_dir,
         thoroughness,
-        owners,
-        lsp_pool,
         workspace_tree,
         allowed_tools,
         parent_runtime,
@@ -712,8 +657,6 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
         child.clone(),
         artifacts_dir.clone(),
         thoroughness.clone(),
-        owners.clone(),
-        lsp_pool.clone(),
         workspace_tree.clone(),
         allowed_tools.clone(),
         parent_runtime.clone(),
@@ -749,8 +692,6 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
             child.clone(),
             artifacts_dir.clone(),
             thoroughness,
-            owners,
-            lsp_pool,
             workspace_tree,
             allowed_tools,
             parent_runtime,
@@ -818,30 +759,16 @@ async fn run_inner_and_inject(spawn: InnerSpawn) {
     table.lock().expect("subagent table").clear_if(&id);
 }
 
-/// Same injection predicate as the parent: master + codegraph enabled.
-/// A missing binary still injects so the inner model sees the install hint.
-fn inner_codegraph_tool(cfg: &CodeIntelConfig, _binary: Option<&Path>) -> bool {
-    should_inject_codegraph(cfg)
-}
-
-fn inner_codegraph_path(binary: Option<&Path>) -> PathBuf {
-    binary
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("codegraph"))
-}
-
-fn build_inner_codegraph(
-    ctx: NativeToolCtx,
-    cfg: &CodeIntelConfig,
-    binary: Option<&Path>,
-    owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
-) -> Option<CodegraphTool> {
-    inner_codegraph_tool(cfg, binary)
-        .then(|| CodegraphTool::new(ctx, inner_codegraph_path(binary), owners))
-}
-
-fn build_inner_lsp(ctx: NativeToolCtx, pool: Option<Arc<LspPool>>) -> Option<LspTool> {
-    pool.map(|pool| LspTool::new(ctx, pool))
+fn excluded_from_default_explore(name: &str, runtime: &ParentRuntime) -> bool {
+    if matches!(
+        name,
+        WriteFileTool::NAME | EditFileTool::NAME | BashTool::NAME
+    ) {
+        return true;
+    }
+    runtime.mcp.bindings().iter().any(|binding| {
+        binding.local_name == name && !(binding.server_key == MCP_SERVER_NAME && binding.read_only)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -852,8 +779,6 @@ fn inner_tool_schemas(
     grep: &GrepTool,
     skill: &SkillTool,
     write_explore: &WriteExploreReportTool,
-    codegraph: Option<&CodegraphTool>,
-    lsp: Option<&LspTool>,
     write: Option<&WriteFileTool>,
     edit: Option<&EditFileTool>,
     bash: Option<&BashTool>,
@@ -868,15 +793,6 @@ fn inner_tool_schemas(
         schema_for(skill),
         schema_for(write_explore),
     ];
-    if let Some(tool) =
-        codegraph.filter(|_| allowed_tools.is_none_or(|set| set.contains(CodegraphTool::NAME)))
-    {
-        schemas.push(schema_for(tool));
-    }
-    if let Some(tool) = lsp.filter(|_| allowed_tools.is_none_or(|set| set.contains(LspTool::NAME)))
-    {
-        schemas.push(schema_for(tool));
-    }
     if let Some(tool) =
         write.filter(|_| allowed_tools.is_none_or(|set| set.contains(WriteFileTool::NAME)))
     {
@@ -926,8 +842,6 @@ async fn run_inner_subagent(
     cancel: CancellationToken,
     artifacts_dir: PathBuf,
     thoroughness: String,
-    owners: Option<Arc<Mutex<ProcessOwnerRegistry>>>,
-    lsp_pool: Option<Arc<LspPool>>,
     workspace_tree: Option<String>,
     allowed_tools: Option<HashSet<String>>,
     parent_runtime: Option<ParentRuntime>,
@@ -946,10 +860,6 @@ async fn run_inner_subagent(
         spill_dir: PathBuf::new(),
         loaded_skills: crate::agent::tools::LoadedSkills::shared_with(["using-plan-explore"]),
     };
-    let intel = load_code_intel_config();
-    let resolved = resolve_codegraph_binary(&intel.codegraph);
-    let codegraph = build_inner_codegraph(inner_ctx.clone(), &intel, resolved.as_deref(), owners);
-    let lsp = build_inner_lsp(inner_ctx.clone(), lsp_pool);
     let read = ReadFileTool::new(inner_ctx.clone());
     let recall = RecallTool::new(inner_ctx.clone());
     let glob = GlobTool::new(inner_ctx.clone());
@@ -983,8 +893,6 @@ async fn run_inner_subagent(
         &grep,
         &skill,
         &write_explore,
-        codegraph.as_ref(),
-        lsp.as_ref(),
         write.as_ref(),
         edit.as_ref(),
         bash.as_ref(),
@@ -1049,8 +957,6 @@ async fn run_inner_subagent(
             grep,
             skill,
             write_explore,
-            codegraph,
-            lsp,
             hook,
             allowed_tools,
             write,
@@ -1085,8 +991,6 @@ async fn assemble_inner(
     grep: GrepTool,
     skill: SkillTool,
     write_explore: WriteExploreReportTool,
-    codegraph: Option<CodegraphTool>,
-    lsp: Option<LspTool>,
     hook: CodegHook,
     allowed_tools: Option<HashSet<String>>,
     write: Option<WriteFileTool>,
@@ -1118,12 +1022,6 @@ async fn assemble_inner(
     }
     if enabled(WriteExploreReportTool::NAME) {
         builder = builder.tool(write_explore);
-    }
-    if let Some(codegraph) = codegraph.filter(|_| enabled(CodegraphTool::NAME)) {
-        builder = builder.tool(codegraph);
-    }
-    if let Some(lsp) = lsp.filter(|_| enabled(LspTool::NAME)) {
-        builder = builder.tool(lsp);
     }
     if let Some(write) = write.filter(|_| enabled(WriteFileTool::NAME)) {
         builder = builder.tool(write);
@@ -1374,7 +1272,7 @@ mod tests {
 
     #[test]
     fn explicit_empty_allowlist_disables_every_inner_tool() {
-        let available = available_inner_tool_names(false, false, None);
+        let available = available_inner_tool_names(None);
         let selected = validate_inner_tool_allowlist(Some(&[]), None, &available, None)
             .expect("empty allowlist is valid")
             .expect("explicit list is retained");
@@ -1384,7 +1282,7 @@ mod tests {
 
     #[test]
     fn allowlist_rejects_tools_that_are_not_registered() {
-        let available = available_inner_tool_names(false, false, None);
+        let available = available_inner_tool_names(None);
         let err = validate_inner_tool_allowlist(Some(&["bash".into()]), None, &available, None)
             .expect_err("bash is not registered by the default Explore child");
         assert!(err.contains("unknown subagent tool"), "{err}");
@@ -1392,7 +1290,7 @@ mod tests {
 
     #[test]
     fn allowlist_cannot_escape_parent_configured_tools() {
-        let available = available_inner_tool_names(false, false, None);
+        let available = available_inner_tool_names(None);
         let configured = HashSet::from(["read_file".to_string()]);
         let err = validate_inner_tool_allowlist(
             Some(&["grep".into()]),
@@ -1586,11 +1484,7 @@ mod tests {
         assert!(!table.lock().expect("table").is_inflight());
     }
 
-    fn inner_tool_names(
-        cfg: &crate::agent::code_intel::CodeIntelConfig,
-        binary: Option<&Path>,
-        lsp_pool: Option<Arc<LspPool>>,
-    ) -> Vec<String> {
+    fn inner_tool_names() -> Vec<String> {
         let dir = tempfile::tempdir().unwrap();
         let ctx = test_tool_ctx(dir.path(), "inner", "c1");
         let read = ReadFileTool::new(ctx.clone());
@@ -1599,8 +1493,6 @@ mod tests {
         let grep = GrepTool::new(ctx.clone());
         let skill = SkillTool::new(ctx.clone(), SkillCatalog::default());
         let write_explore = WriteExploreReportTool::new(ctx.clone(), dir.path().to_path_buf());
-        let codegraph = build_inner_codegraph(ctx.clone(), cfg, binary, None);
-        let lsp = build_inner_lsp(ctx, lsp_pool);
         inner_tool_schemas(
             &read,
             &recall,
@@ -1608,8 +1500,6 @@ mod tests {
             &grep,
             &skill,
             &write_explore,
-            codegraph.as_ref(),
-            lsp.as_ref(),
             None,
             None,
             None,
@@ -1627,90 +1517,13 @@ mod tests {
     }
 
     #[test]
-    fn inner_codegraph_tool_follows_parent_injection_predicate() {
-        let mut cfg = crate::agent::code_intel::default_config();
-        assert!(!inner_codegraph_tool(&cfg, None));
-        cfg.enabled = true;
-        assert!(inner_codegraph_tool(&cfg, None));
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("fake-codegraph");
-        std::fs::write(&binary, "ok").unwrap();
-        assert!(inner_codegraph_tool(&cfg, Some(binary.as_path())));
-        cfg.codegraph.enabled = false;
-        assert!(!inner_codegraph_tool(&cfg, Some(binary.as_path())));
-    }
-
-    #[test]
-    fn inner_schema_includes_codegraph_when_enabled_and_binary_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("fake-codegraph");
-        std::fs::write(&binary, "ok").unwrap();
-        let mut cfg = crate::agent::code_intel::default_config();
-        cfg.enabled = true;
-        let names = inner_tool_names(&cfg, Some(binary.as_path()), None);
-        assert!(names.iter().any(|n| n == "codegraph"), "{names:?}");
-        assert!(names.iter().any(|n| n == "read_file"), "{names:?}");
-        assert!(names.iter().any(|n| n == "grep"), "{names:?}");
+    fn inner_schema_omits_native_lsp_and_codegraph() {
+        let names = inner_tool_names();
+        assert!(names.iter().any(|name| name == "read_file"), "{names:?}");
+        assert!(names.iter().any(|name| name == "grep"), "{names:?}");
         for forbidden in [
-            "write_file",
-            "edit_file",
-            "bash",
-            "subagent",
+            "codegraph",
             "lsp",
-            "update_plan",
-            "write_plan",
-            "enter_plan_mode",
-            "exit_plan_mode",
-        ] {
-            assert!(
-                !names.iter().any(|n| n == forbidden),
-                "{names:?} contains {forbidden}"
-            );
-        }
-    }
-
-    #[test]
-    fn inner_schema_includes_codegraph_when_enabled_without_binary() {
-        let mut cfg = crate::agent::code_intel::default_config();
-        cfg.enabled = true;
-        assert!(inner_codegraph_tool(&cfg, None));
-        let names = inner_tool_names(&cfg, None, None);
-        assert!(names.iter().any(|n| n == "codegraph"), "{names:?}");
-    }
-
-    #[test]
-    fn inner_schema_omits_codegraph_when_disabled() {
-        let cfg = crate::agent::code_intel::default_config();
-        assert!(!inner_codegraph_tool(&cfg, None));
-        let names = inner_tool_names(&cfg, None, None);
-        assert!(!names.iter().any(|n| n == "codegraph"), "{names:?}");
-    }
-
-    #[test]
-    fn inner_schema_includes_lsp_when_parent_has_pool() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut cfg = crate::agent::code_intel::default_config();
-        cfg.enabled = true;
-        let owners = Arc::new(Mutex::new(
-            crate::acp::process_owner::ProcessOwnerRegistry::new(),
-        ));
-        let fs = Arc::new(
-            crate::acp::file_system_runtime::FileSystemRuntime::with_policy(
-                crate::acp::file_system_runtime::FsAccessPolicy::strict(dir.path()),
-            ),
-        );
-        let pool = LspPool::new(
-            dir.path().to_path_buf(),
-            fs,
-            cfg.clone(),
-            owners,
-            CancellationToken::new(),
-        );
-        let names = inner_tool_names(&cfg, None, Some(pool));
-        assert!(names.iter().any(|n| n == "lsp"), "{names:?}");
-        assert!(names.iter().any(|n| n == "read_file"), "{names:?}");
-        assert!(names.iter().any(|n| n == "grep"), "{names:?}");
-        for forbidden in [
             "write_file",
             "edit_file",
             "bash",
@@ -1721,18 +1534,10 @@ mod tests {
             "exit_plan_mode",
         ] {
             assert!(
-                !names.iter().any(|n| n == forbidden),
+                !names.iter().any(|name| name == forbidden),
                 "{names:?} contains {forbidden}"
             );
         }
-    }
-
-    #[test]
-    fn inner_schema_omits_lsp_when_parent_has_no_pool() {
-        let mut cfg = crate::agent::code_intel::default_config();
-        cfg.enabled = true;
-        let names = inner_tool_names(&cfg, None, None);
-        assert!(!names.iter().any(|n| n == "lsp"), "{names:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

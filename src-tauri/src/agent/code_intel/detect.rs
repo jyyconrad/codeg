@@ -5,7 +5,7 @@ use ignore::WalkBuilder;
 
 use crate::acp::file_system_runtime::FileSystemRuntime;
 
-use super::{CustomLspServer, PresetLsp};
+use super::PresetLsp;
 
 pub const DETECT_MAX_FILES: usize = 5000;
 
@@ -28,25 +28,14 @@ pub fn detect_languages(
     root: &Path,
     fs: &FileSystemRuntime,
     presets: &[PresetLsp],
-    custom: &[CustomLspServer],
 ) -> Vec<DetectedLanguage> {
-    let mut candidates: Vec<Candidate> = Vec::with_capacity(presets.len() + custom.len());
+    let mut candidates: Vec<Candidate> = Vec::with_capacity(presets.len());
 
     for preset in presets {
         candidates.push(Candidate {
             server_id: preset.id.to_string(),
             manifests: preset.manifests.iter().map(|m| (*m).to_string()).collect(),
             extensions: normalize_extensions(preset.extensions.iter().copied()),
-            via_manifest: false,
-            via_extension: false,
-        });
-    }
-
-    for server in custom {
-        candidates.push(Candidate {
-            server_id: server.id.clone(),
-            manifests: server.manifests.clone(),
-            extensions: normalize_extensions(server.extensions.iter().map(String::as_str)),
             via_manifest: false,
             via_extension: false,
         });
@@ -125,7 +114,7 @@ pub fn detect_languages(
 }
 
 pub fn language_is_present(root: &Path, fs: &FileSystemRuntime, preset: &PresetLsp) -> bool {
-    detect_languages(root, fs, std::slice::from_ref(preset), &[])
+    detect_languages(root, fs, std::slice::from_ref(preset))
         .first()
         .is_some_and(|hit| hit.via_manifest || hit.via_extension)
 }
@@ -183,7 +172,7 @@ mod tests {
     use std::path::Path;
 
     use crate::acp::file_system_runtime::{FileSystemRuntime, FsAccessPolicy};
-    use crate::agent::code_intel::{detect_languages, preset_lsp_servers, CustomLspServer};
+    use crate::agent::code_intel::{detect_languages, preset_lsp_servers};
 
     fn runtime(root: &Path) -> FileSystemRuntime {
         FileSystemRuntime::with_policy(FsAccessPolicy::strict(root))
@@ -193,7 +182,7 @@ mod tests {
     fn cargo_toml_detects_rust_analyzer_without_rs_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname=\"x\"\n").unwrap();
-        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers(), &[]);
+        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers());
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].server_id, "rust-analyzer");
         assert!(hits[0].via_manifest);
@@ -204,7 +193,7 @@ mod tests {
     fn rs_file_detects_rust_analyzer_without_manifest() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
-        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers(), &[]);
+        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers());
         assert_eq!(hits[0].server_id, "rust-analyzer");
         assert!(hits[0].via_extension);
     }
@@ -212,31 +201,8 @@ mod tests {
     #[test]
     fn empty_dir_detects_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers(), &[]);
+        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers());
         assert!(hits.is_empty());
-    }
-
-    #[test]
-    fn custom_server_detects_from_manifest() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("mix.exs"), "").unwrap();
-        let custom = [CustomLspServer {
-            id: "elixir-ls".into(),
-            language: "Elixir".into(),
-            command: "elixir-ls".into(),
-            args: vec![],
-            extensions: vec![".ex".into()],
-            manifests: vec!["mix.exs".into()],
-        }];
-        let hits = detect_languages(
-            dir.path(),
-            &runtime(dir.path()),
-            preset_lsp_servers(),
-            &custom,
-        );
-        assert!(hits
-            .iter()
-            .any(|h| h.server_id == "elixir-ls" && h.via_manifest));
     }
 
     #[test]
@@ -244,7 +210,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "secret.rs\n").unwrap();
         std::fs::write(dir.path().join("secret.rs"), "fn x() {}").unwrap();
-        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers(), &[]);
+        let hits = detect_languages(dir.path(), &runtime(dir.path()), preset_lsp_servers());
         assert!(hits.is_empty());
     }
 }

@@ -1743,6 +1743,7 @@ mod tauri_app {
                 code_intel_commands::get_code_intel_settings,
                 code_intel_commands::set_code_intel_settings,
                 code_intel_commands::get_code_intel_status,
+                code_intel_commands::retry_code_intel,
                 question_commands::get_question_settings,
                 question_commands::set_question_settings,
                 session_info_commands::get_session_info_settings,

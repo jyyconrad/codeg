@@ -10130,6 +10130,19 @@ pub(crate) async fn apply_model_provider_env(
     if !provider.api_key.trim().is_empty() {
         runtime_env.insert(key_key.to_string(), provider.api_key.clone());
     }
+    if agent_type == AgentType::Codex {
+        let model = crate::acp::codex_model_catalog::default_slug_for_env(
+            &crate::acp::codex_model_catalog::parse_model_config(provider.model.as_deref()),
+        );
+        match model {
+            Some(model) => {
+                runtime_env.insert("OPENAI_MODEL".to_string(), model);
+            }
+            None => {
+                runtime_env.remove("OPENAI_MODEL");
+            }
+        }
+    }
 }
 
 /// Claude Code provider-model JSON keys → ANTHROPIC_*_MODEL env var names.
@@ -16390,6 +16403,57 @@ wire_api = "chat"
         // No models → OPENAI_MODEL cleared (None).
         let empty = parse_provider_model(AgentType::Codex, Some(r#"{"models":[]}"#));
         assert_eq!(empty.get("OPENAI_MODEL"), Some(&None));
+    }
+
+    #[tokio::test]
+    async fn bound_codex_provider_model_is_injected_into_acp_runtime_env() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        agent_setting_service::ensure_defaults(
+            &db.conn,
+            &[agent_setting_service::AgentDefaultInput {
+                agent_type: AgentType::Codex,
+                registry_id: "codex".into(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .expect("codex setting");
+        let provider = model_provider_service::create(
+            &db.conn,
+            "Gateway".into(),
+            "https://gateway.example/v1".into(),
+            "sk-test".into(),
+            "codex".into(),
+            Some(
+                r#"{"customs":[{"slug":"gpt6-sol","base":"gpt-5.6-sol"}],"default":"gpt6-sol"}"#
+                    .into(),
+            ),
+        )
+        .await
+        .expect("provider");
+        agent_setting_service::update(
+            &db.conn,
+            AgentType::Codex,
+            agent_setting_service::AgentSettingsUpdate {
+                enabled: true,
+                env_json: None,
+                model_provider_id: Some(provider.id),
+            },
+        )
+        .await
+        .expect("bind provider");
+
+        let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Codex)
+            .await
+            .expect("load setting")
+            .expect("setting exists");
+        let mut env = BTreeMap::new();
+        apply_model_provider_env(AgentType::Codex, Some(&setting), &mut env, &db.conn).await;
+
+        assert_eq!(
+            env.get("OPENAI_MODEL").map(String::as_str),
+            Some("gpt6-sol")
+        );
     }
 
     #[test]

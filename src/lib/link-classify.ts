@@ -86,25 +86,47 @@ function splitPathAndLine(rawPath: string): LocalFileTarget {
   return { path: maybePath, line }
 }
 
+const FILE_EXT = /\.[A-Za-z0-9]{1,10}$/
+// Bare names the transcript promotes to file links (`备注.md`, a report
+// filename in backticks). Host-like `www.example.com` is not in this set.
+const DOCUMENT_EXT = /\.(pdf|docx|xlsx|xls|pptx|csv|md|markdown|txt|html|htm)$/i
+
+function basename(path: string): string {
+  return path.split(/[\\/]/).pop() ?? ""
+}
+
 function isLocalPathLike(path: string): boolean {
   // "//host/…" (forward slashes) is protocol-relative — a WEB url, not a
   // local path. It must fall through to the external-URL route, never into
   // local file IO. A "\\server\share" (backslashes) IS a local UNC path
   // (a web url never uses backslashes) — the form remark-file-uri-links
   // emits for file://server/share URIs.
-  return (
+  if (
     (path.startsWith("/") && !path.startsWith("//")) ||
     path.startsWith("\\\\") ||
     path.startsWith("./") ||
     path.startsWith("../") ||
     path.startsWith("~/") ||
     WINDOWS_ABSOLUTE_PATH.test(path)
-  )
+  ) {
+    return true
+  }
+  if (path.startsWith("//")) return false
+  // Workspace-relative file (`docs/手册.docx`, `src/main.rs`). The click
+  // target is this original path: remark prefixes `./` only on the href that
+  // rehype-harden sees, and MarkdownLink opens `data-codeg-file-target`.
+  const base = basename(path)
+  if (FILE_EXT.test(base) && (path.includes("/") || path.includes("\\"))) {
+    return true
+  }
+  return DOCUMENT_EXT.test(base) && !path.includes("://")
 }
 
 /**
  * Parse a link target into a local file path + optional line, or null when it
- * isn't a local file (a web url, an unsupported scheme, a bare-relative path).
+ * isn't a local file (a web url, an unsupported scheme, or a host-like
+ * `www.example.com`). A workspace-relative file and a bare document filename
+ * are local files: the transcript renders them as file links.
  * Exported so the transcript's file-badge action menu (message/
  * file-reference-actions.tsx) resolves a badge's path exactly the way a click
  * on that badge resolves it.

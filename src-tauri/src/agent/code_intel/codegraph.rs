@@ -9,7 +9,8 @@ use crate::acp::process_owner::{
     force_kill_and_reap, kill_tree_signal, lock_owners, pid_is_alive, ProcessOwnerRegistry,
 };
 
-use super::{CodeIntelConfig, CodegraphSettings};
+use super::argv::codegraph_env;
+use super::CodeIntelConfig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostIndexAction {
@@ -31,6 +32,10 @@ pub fn should_run_host_index(
     } else {
         HostIndexAction::Init
     }
+}
+
+pub fn codegraph_has_index(cwd: &Path) -> bool {
+    cwd.join(".codegraph").is_dir()
 }
 
 pub async fn spawn_host_index(
@@ -64,11 +69,8 @@ pub async fn spawn_host_index(
             tracing::info!(status = run.status, "codegraph host index finished");
         }
         Ok(run) => {
-            tracing::warn!(
-                status = run.status,
-                stderr = %run.stderr,
-                "codegraph host index exited nonzero"
-            );
+            tracing::warn!(status = run.status, "codegraph host index exited nonzero");
+            let _ = run.stderr;
         }
         Err(err) => {
             tracing::warn!(error = %err, "codegraph host index failed");
@@ -76,127 +78,7 @@ pub async fn spawn_host_index(
     }
 }
 
-pub const CODEGRAPH_QUERY_TIMEOUT: Duration = Duration::from_secs(120);
 pub const CODEGRAPH_INIT_TIMEOUT: Duration = Duration::from_secs(600);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CodegraphOp {
-    Explore,
-    Query,
-    Node,
-    Callers,
-    Callees,
-    Impact,
-    Files,
-    Status,
-}
-
-impl CodegraphOp {
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "explore" => Some(Self::Explore),
-            "query" => Some(Self::Query),
-            "node" => Some(Self::Node),
-            "callers" => Some(Self::Callers),
-            "callees" => Some(Self::Callees),
-            "impact" => Some(Self::Impact),
-            "files" => Some(Self::Files),
-            "status" => Some(Self::Status),
-            _ => None,
-        }
-    }
-
-    pub fn as_cli(self) -> &'static str {
-        match self {
-            Self::Explore => "explore",
-            Self::Query => "query",
-            Self::Node => "node",
-            Self::Callers => "callers",
-            Self::Callees => "callees",
-            Self::Impact => "impact",
-            Self::Files => "files",
-            Self::Status => "status",
-        }
-    }
-
-    pub fn uses_json_flag(self) -> bool {
-        !matches!(self, Self::Explore | Self::Node)
-    }
-
-    fn requires_query(self) -> bool {
-        matches!(
-            self,
-            Self::Explore | Self::Query | Self::Node | Self::Callers | Self::Callees | Self::Impact
-        )
-    }
-}
-
-pub fn resolve_codegraph_binary(settings: &CodegraphSettings) -> Option<PathBuf> {
-    if let Some(raw) = settings.binary_path.as_deref() {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            let path = PathBuf::from(trimmed);
-            if path.is_absolute() && path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    which::which("codegraph").ok()
-}
-
-pub fn codegraph_has_index(cwd: &Path) -> bool {
-    cwd.join(".codegraph").is_dir()
-}
-
-pub fn build_codegraph_argv(
-    op: CodegraphOp,
-    query: Option<&str>,
-    path: Option<&str>,
-    kind: Option<&str>,
-    limit: Option<u32>,
-    depth: Option<u32>,
-) -> Result<Vec<String>, String> {
-    let mut argv = vec![op.as_cli().to_string()];
-
-    if op.requires_query() {
-        let q = query
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| format!("codegraph {} requires a non-empty query", op.as_cli()))?;
-        argv.push(q.to_string());
-    }
-
-    match op {
-        CodegraphOp::Query => {
-            if let Some(kind) = kind.map(str::trim).filter(|s| !s.is_empty()) {
-                argv.push("--kind".into());
-                argv.push(kind.to_string());
-            }
-            if let Some(limit) = limit {
-                argv.push("--limit".into());
-                argv.push(limit.to_string());
-            }
-        }
-        CodegraphOp::Impact => {
-            if let Some(depth) = depth {
-                argv.push("--depth".into());
-                argv.push(depth.to_string());
-            }
-        }
-        CodegraphOp::Files => {
-            if let Some(path) = path.map(str::trim).filter(|s| !s.is_empty()) {
-                argv.push(path.to_string());
-            }
-        }
-        _ => {}
-    }
-
-    if op.uses_json_flag() {
-        argv.push("--json".into());
-    }
-
-    Ok(argv)
-}
 
 pub struct CodegraphRun {
     pub status: i32,
@@ -217,13 +99,13 @@ pub async fn spawn_codegraph(
     let mut cmd = tokio::process::Command::new(binary);
     cmd.args(argv)
         .current_dir(cwd)
-        .env("CODEGRAPH_TELEMETRY", "0")
-        .env("DO_NOT_TRACK", "1")
-        .env("CODEGRAPH_NO_UPDATE_CHECK", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for (key, value) in codegraph_env() {
+        cmd.env(key, value);
+    }
 
     let mut child = cmd
         .spawn()
@@ -336,71 +218,23 @@ async fn terminate_codegraph(pid: u32) {
 mod tests {
     use super::*;
     use crate::agent::code_intel::default_config;
-    use std::time::Duration;
-    use tokio_util::sync::CancellationToken;
-
-    #[test]
-    fn argv_explore_is_plain_text() {
-        let argv = build_codegraph_argv(CodegraphOp::Explore, Some("auth"), None, None, None, None)
-            .unwrap();
-        assert_eq!(argv, vec!["explore", "auth"]);
-    }
-
-    #[test]
-    fn argv_query_adds_json_kind_limit() {
-        let argv = build_codegraph_argv(
-            CodegraphOp::Query,
-            Some("Foo"),
-            None,
-            Some("function"),
-            Some(5),
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            argv,
-            vec!["query", "Foo", "--kind", "function", "--limit", "5", "--json"]
-        );
-    }
-
-    #[test]
-    fn argv_status_json_no_query() {
-        let argv = build_codegraph_argv(CodegraphOp::Status, None, None, None, None, None).unwrap();
-        assert_eq!(argv, vec!["status", "--json"]);
-    }
-
-    #[test]
-    fn argv_explore_rejects_empty_query() {
-        assert!(
-            build_codegraph_argv(CodegraphOp::Explore, Some("  "), None, None, None, None).is_err()
-        );
-    }
-
-    #[test]
-    fn parse_rejects_install() {
-        assert!(CodegraphOp::parse("install").is_none());
-        assert!(CodegraphOp::parse("serve").is_none());
-        assert_eq!(CodegraphOp::parse("explore"), Some(CodegraphOp::Explore));
-    }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn spawn_sets_telemetry_env_and_captures_stdout() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-codegraph");
-        {
-            std::fs::write(
-                &script,
-                "#!/bin/sh\necho TELEMETRY=$CODEGRAPH_TELEMETRY\necho DNT=$DO_NOT_TRACK\necho NOUP=$CODEGRAPH_NO_UPDATE_CHECK\necho argv:$@\n",
-            )
-            .unwrap();
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho TELEMETRY=$CODEGRAPH_TELEMETRY\necho DNT=$DO_NOT_TRACK\necho NOUP=$CODEGRAPH_NO_UPDATE_CHECK\necho argv:$@\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let run = spawn_codegraph(
             &script,
             dir.path(),
-            &["explore".into(), "x".into()],
+            &["serve".into(), "--mcp".into()],
             None,
             CancellationToken::new(),
             Duration::from_secs(5),
@@ -411,7 +245,7 @@ mod tests {
         assert!(run.stdout.contains("TELEMETRY=0"));
         assert!(run.stdout.contains("DNT=1"));
         assert!(run.stdout.contains("NOUP=1"));
-        assert!(run.stdout.contains("argv:explore x"));
+        assert!(run.stdout.contains("argv:serve --mcp"));
     }
 
     #[test]
@@ -420,18 +254,6 @@ mod tests {
         assert!(!codegraph_has_index(dir.path()));
         std::fs::create_dir(dir.path().join(".codegraph")).unwrap();
         assert!(codegraph_has_index(dir.path()));
-    }
-
-    #[test]
-    fn resolve_prefers_absolute_binary_path_when_it_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("codegraph");
-        std::fs::write(&bin, "").unwrap();
-        let settings = CodegraphSettings {
-            enabled: true,
-            binary_path: Some(bin.to_string_lossy().into()),
-        };
-        assert_eq!(resolve_codegraph_binary(&settings), Some(bin));
     }
 
     #[test]
@@ -497,15 +319,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-codegraph");
         let marker = dir.path().join("ran");
-        {
-            std::fs::write(
-                &script,
-                format!("#!/bin/sh\nprintf ran > {}\n", marker.display()),
-            )
-            .unwrap();
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf ran > {}\n", marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         spawn_host_index(
             script,
             dir.path().to_path_buf(),
@@ -523,15 +343,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-codegraph");
         let marker = dir.path().join("argv.txt");
-        {
-            std::fs::write(
-                &script,
-                format!("#!/bin/sh\nprintf '%s' \"$*\" > {}\n", marker.display()),
-            )
-            .unwrap();
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf '%s' \"$*\" > {}\n", marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         spawn_host_index(
             script,
             dir.path().to_path_buf(),
@@ -549,15 +367,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-codegraph");
         let marker = dir.path().join("argv.txt");
-        {
-            std::fs::write(
-                &script,
-                format!("#!/bin/sh\nprintf '%s' \"$*\" > {}\n", marker.display()),
-            )
-            .unwrap();
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nprintf '%s' \"$*\" > {}\n", marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         spawn_host_index(
             script,
             dir.path().to_path_buf(),

@@ -1046,6 +1046,14 @@ fn lark_quoted_message_id(event: &serde_json::Value) -> Option<String> {
     nonempty_json_str(event.pointer("/event/message/parent_id"))
         .or_else(|| nonempty_json_str(event.pointer("/event/message/quote/message_id")))
         .or_else(|| nonempty_json_str(event.pointer("/event/message/quote/id")))
+        .or_else(|| {
+            let content = event
+                .pointer("/event/message/content")
+                .and_then(|value| value.as_str())?;
+            let value = serde_json::from_str::<serde_json::Value>(content).ok()?;
+            find_lark_quote_token(&value)
+        })
+        .or_else(|| nonempty_json_str(event.pointer("/event/message/root_id")))
 }
 
 fn nonempty_json_str(value: Option<&serde_json::Value>) -> Option<String> {
@@ -1054,6 +1062,23 @@ fn nonempty_json_str(value: Option<&serde_json::Value>) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+fn find_lark_quote_token(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Array(values) => values.iter().find_map(find_lark_quote_token),
+        serde_json::Value::Object(object) => {
+            if object.get("tag").and_then(|tag| tag.as_str()) == Some("quote") {
+                for key in ["token", "message_id", "id"] {
+                    if let Some(id) = nonempty_json_str(object.get(key)) {
+                        return Some(id);
+                    }
+                }
+            }
+            object.values().find_map(find_lark_quote_token)
+        }
+        _ => None,
+    }
 }
 
 /// Strip Lark mention placeholders (e.g. `@_user_1`) from the message text.
@@ -1358,6 +1383,26 @@ mod tests {
         );
         let cmd = lark_inbound_command(&event, 7).expect("text quote should dispatch");
         assert_eq!(cmd.quoted_message_id.as_deref(), Some("om_quoted"));
+    }
+
+    #[test]
+    fn quote_token_in_message_content_routes_to_the_quoted_message() {
+        let mut event = receive_event(
+            "post",
+            serde_json::json!({
+                "content": [
+                    [{ "tag": "quote", "token": "om_done" }],
+                    [{ "tag": "text", "text": "继续处理" }]
+                ]
+            }),
+            serde_json::json!({ "root_id": "om_root" }),
+        );
+        event["event"]["message"]["mentions"] = serde_json::json!([]);
+
+        let cmd = lark_inbound_command(&event, 7)
+            .expect("a quote block should dispatch without an @ mention");
+        assert_eq!(cmd.command_text, "继续处理");
+        assert_eq!(cmd.quoted_message_id.as_deref(), Some("om_done"));
     }
 
     #[test]

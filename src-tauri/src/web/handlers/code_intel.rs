@@ -7,8 +7,8 @@ use serde::Deserialize;
 use crate::agent::code_intel::CodeIntelConfig;
 use crate::app_error::AppCommandError;
 use crate::commands::code_intel::{
-    get_code_intel_settings_core, get_code_intel_status_core, set_code_intel_settings_core,
-    CodeIntelStatus,
+    get_code_intel_settings_core, get_code_intel_status_core, retry_code_intel_core,
+    set_code_intel_settings_core, CodeIntelStatus,
 };
 
 pub async fn get_code_intel_settings() -> Result<Json<CodeIntelConfig>, AppCommandError> {
@@ -36,4 +36,10 @@ pub async fn get_code_intel_status(
     Json(params): Json<GetCodeIntelStatusParams>,
 ) -> Result<Json<CodeIntelStatus>, AppCommandError> {
     Ok(Json(get_code_intel_status_core(params.cwd)))
+}
+
+pub async fn retry_code_intel(
+    Json(params): Json<GetCodeIntelStatusParams>,
+) -> Result<Json<CodeIntelStatus>, AppCommandError> {
+    Ok(Json(retry_code_intel_core(params.cwd).await))
 }

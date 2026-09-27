@@ -102,6 +102,10 @@ pub fn build_router(
             post(handlers::code_intel::get_code_intel_status),
         )
         .route(
+            "/retry_code_intel",
+            post(handlers::code_intel::retry_code_intel),
+        )
+        .route(
             "/get_question_settings",
             post(handlers::question::get_question_settings),
         )
