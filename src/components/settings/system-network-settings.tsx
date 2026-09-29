@@ -53,7 +53,6 @@ import {
 } from "@/lib/api"
 import { isLocalDesktop, openUrl } from "@/lib/platform"
 import type { AppLocale } from "@/lib/types"
-import { readLastCheck } from "@/lib/update-check-storage"
 import { describeAppUpdateError, usesTauriUpdater } from "@/lib/updater"
 import { useAppUpdate } from "@/components/providers/update-provider"
 import { APP_LOCALES } from "@/lib/i18n"

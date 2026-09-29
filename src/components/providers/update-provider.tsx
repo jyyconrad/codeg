@@ -646,11 +646,6 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     }
   }, [selfUpdateBlocker, refreshLocalStatus])
 
-  // Floor between automatic attempts, so a failing check (which deliberately
-  // does NOT record a completion time, so recovery isn't blocked for 6h) can't
-  // be re-fired on every tab focus.
-  const lastAttemptRef = useRef(0)
-
   const dismissAvailable = useCallback(() => {
     if (!available) return
     writeDismissedVersion(available.version)
