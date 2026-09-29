@@ -7321,8 +7321,6 @@ mod tests {
     use super::extract_response_item_user_image_blocks;
     use super::extract_turn_usage_from_codex_usage;
     use super::codex_line_ordinal;
-    use super::codex_parent_thread_id;
-    use super::completed_mcp_call;
     use super::serialize_preview;
     use super::truncate_str;
     use super::BudgetedSink;
@@ -7335,13 +7333,10 @@ mod tests {
     use super::parse_codex_subagent_stats;
     use super::redact_encrypted_args;
     use super::resolve_codex_home_dir_from;
-    use super::serialize_preview;
     use super::should_skip_duplicate_user_message;
     use super::strip_blocked_resource_mentions;
     use super::trim_subagent_replay_prefix;
-    use super::truncate_str;
     use super::AgentParser;
-    use super::BudgetedSink;
     use super::CodexParser;
     use super::RolloutFileName;
     use super::CODEX_PLAN_APPROVAL_PROMPT;
@@ -7350,7 +7345,6 @@ mod tests {
     use super::CODEX_SUBAGENT_LAUNCH_KEY;
     use super::CODEX_SUBAGENT_STATE_KEY;
     use super::COLLAB_OP_KEY;
-    use super::MCP_RESULT_FALLBACK_CAP;
     use crate::models::{
         ContentBlock, MessageRole, MessageTurn, SessionStats, TurnRole, TurnUsage, UnifiedMessage,
     };

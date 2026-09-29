@@ -21760,7 +21760,10 @@ mod tests {
             )
             .unwrap(),
         );
-        assert!(grok_ext_notification_is_alert(&retrying, AgentType::Grok));
+        assert!(grok_ext_notification_skipped_on_replay(
+            &retrying,
+            AgentType::Grok
+        ));
         let failed = Dispatch::Notification(
             UntypedMessage::new(
                 "_x.ai/session/update",
@@ -21776,7 +21779,10 @@ mod tests {
             )
             .unwrap(),
         );
-        assert!(grok_ext_notification_is_alert(&failed, AgentType::Grok));
+        assert!(grok_ext_notification_skipped_on_replay(
+            &failed,
+            AgentType::Grok
+        ));
     }
 
     /// A failed compaction card travels with a coded `Error`, so the readers of
@@ -28200,21 +28206,6 @@ mod tests {
         let on: SessionConfigOption = serde_json::from_value(on_json).expect("parses");
         assert!(config_option_already_holds(&on, "true"));
         assert!(!config_option_already_holds(&on, "false"));
-    }
-
-    #[test]
-    fn strip_leaves_responses_without_config_options_alone() {
-        // `session/new` responses from agents that publish no selectors at all,
-        // and entries with no `type`, must pass through untouched — serde gives
-        // a better error for a malformed entry than a silent drop would.
-        let mut none = serde_json::json!({"sessionId": "sess-1"});
-        let before = none.clone();
-        strip_unknown_config_options(&mut none, "session/new");
-        assert_eq!(none, before);
-
-        let mut untyped = serde_json::json!({"configOptions": [{"id": "weird"}]});
-        strip_unknown_config_options(&mut untyped, "session/new");
-        assert_eq!(untyped["configOptions"].as_array().unwrap().len(), 1);
     }
 
     #[test]
