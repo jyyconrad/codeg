@@ -26,3 +26,4 @@ pub use super::work_task::Entity as WorkTask;
 pub use super::work_task_event::Entity as WorkTaskEvent;
 pub use super::work_task_settings::Entity as WorkTaskSettings;
 pub use super::work_task_template::Entity as WorkTaskTemplate;
+pub use super::workflow_follow_up::Entity as WorkflowFollowUp;

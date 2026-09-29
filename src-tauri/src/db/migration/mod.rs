@@ -53,6 +53,7 @@ mod m20260914_000002_wiki_pipeline;
 mod m20260914_000003_wiki_attempts;
 mod m20260915_000001_folder_chat_channel_chat_id;
 mod m20260915_000002_chat_channel_message_map;
+mod m20260929_000001_workflow_follow_up;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -112,6 +113,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260914_000003_wiki_attempts::Migration),
             Box::new(m20260915_000001_folder_chat_channel_chat_id::Migration),
             Box::new(m20260915_000002_chat_channel_message_map::Migration),
+            Box::new(m20260929_000001_workflow_follow_up::Migration),
         ]
     }
 }

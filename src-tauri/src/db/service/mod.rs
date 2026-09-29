@@ -23,3 +23,4 @@ pub mod token_usage_service;
 pub mod wiki_pipeline_service;
 pub mod wiki_service;
 pub mod work_task_service;
+pub mod workflow_follow_up_service;

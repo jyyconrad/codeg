@@ -38,9 +38,17 @@ use crate::acp::types::{
     AcpEvent, AgentOptionsSnapshot, ConfigStaleKind, ConnectionInfo, ConnectionStatus,
     ForkResultInfo, PromptCapabilitiesInfo, PromptInputBlock,
 };
+use crate::acp::workflow_follow_up::{
+    extract_terminal_evidence, follow_up_message_id, host_wake_policy,
+    render_workflow_follow_up_prompt, FollowUpPrompt, HostWakePolicy,
+};
 use crate::agent::inspect_native_prompt;
 use crate::db::entities::conversation::{self, ConversationKind, ConversationStatus};
+use crate::db::error::DbError;
 use crate::db::service::conversation_service;
+use crate::db::service::workflow_follow_up_service::{
+    self, ClaimOutcome, FollowUpKey, FollowUpUpsert, UpsertPendingOutcome,
+};
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
 use crate::web::event_bridge::{emit_with_state, emit_with_state_gated, EventEmitter};
@@ -510,6 +518,19 @@ pub struct ConnectionManager {
     /// In-process sessions whose map entry may already be gone but whose
     /// terminals / MCP children are still being reaped.
     native_sessions: Arc<Mutex<HashMap<String, Arc<NativeShutdownHandle>>>>,
+    /// Serializes workflow follow-up flushes per connection. Not `prompt_lock`:
+    /// that lock is not reentrant, and a flush has to call
+    /// `send_prompt_linked_with_source` which takes it. Two flushes must not
+    /// interleave a claim with its revert. Entries live for the process,
+    /// bounded by distinct connection ids, same as `spawn_locks`.
+    workflow_flush_gates: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Test seam. Taken once after a follow-up claim and before enqueue, so a
+    /// test can switch the session or stop the run inside that window.
+    /// `std::sync::Mutex` is released before the future is polled.
+    #[cfg(test)]
+    workflow_before_send: Arc<
+        std::sync::Mutex<Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>>,
+    >,
 }
 
 /// Origin of a linked prompt. Public senders are `User`; timer fire is
@@ -518,6 +539,48 @@ pub struct ConnectionManager {
 pub(crate) enum PromptSource {
     User,
     SessionTimer,
+    /// Host wake after a workflow this session started reached `completed` or
+    /// `failed`. Not a person and not a timer: it must not cancel a session
+    /// timer, seed the conversation title, or emit `UserPromptSent`.
+    WorkflowCompletion,
+}
+
+/// One accepted follow-up that is ready to claim. Built only when the
+/// conversation and external session ids are both present.
+struct WorkflowFollowUpReady {
+    ticket: crate::acp::session_state::WorkflowFollowUpTicket,
+    conversation_id: i32,
+    external_session_id: String,
+    folder_id: Option<i32>,
+    agent_type: AgentType,
+    body: crate::acp::workflow_follow_up::WorkflowResultBody,
+}
+
+enum WorkflowWakeStep {
+    /// This ticket is closed without a prompt. Look at the next due ticket.
+    Continue,
+    /// A prompt was enqueued, a turn is in flight, or the row needs a later retry.
+    Stop,
+}
+
+/// What an unchanged delivery row should do on this flush.
+enum UnchangedFollowUp {
+    /// Row is pending again. Claim it and send if the session still matches.
+    ClaimNow,
+    Continue,
+    Stop,
+}
+
+struct FollowUpBinding {
+    same_session: bool,
+    coalescing: bool,
+    reopen_claimed: bool,
+}
+
+impl FollowUpBinding {
+    fn still_current(&self) -> bool {
+        self.same_session && self.coalescing
+    }
 }
 
 /// A parked `ask_user_question` awaiting its answer. The `sender` resolves the
@@ -552,6 +615,56 @@ fn abort_live_timer(timer: LiveSessionTimer) {
     }
 }
 
+fn follow_up_db_error_kind(err: &DbError) -> &'static str {
+    match err {
+        DbError::Validation(_) => "validation",
+        DbError::NotFound(_) => "not_found",
+        DbError::Conflict(_) => "conflict",
+        DbError::Migration(_) => "migration",
+        DbError::Io(_) => "io",
+        DbError::Database(_) => "database",
+    }
+}
+
+/// `DbConversationSummary.status` is the serde snake_case wire value.
+fn conversation_status_from_wire(status: &str) -> Option<ConversationStatus> {
+    match status {
+        "in_progress" => Some(ConversationStatus::InProgress),
+        "pending_review" => Some(ConversationStatus::PendingReview),
+        "completed" => Some(ConversationStatus::Completed),
+        "cancelled" => Some(ConversationStatus::Cancelled),
+        _ => None,
+    }
+}
+
+async fn follow_up_binding(
+    state: &Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+    key: &FollowUpKey,
+) -> FollowUpBinding {
+    let session = state.read().await;
+    FollowUpBinding {
+        same_session: session.conversation_id == Some(key.conversation_id)
+            && session.external_id.as_deref() == Some(key.external_session_id.as_str()),
+        coalescing: session.workflow_follow_up_is_coalescing(&key.run_id),
+        reopen_claimed: session.workflow_follow_up_should_reopen_claimed(&key.run_id),
+    }
+}
+
+/// Sleep, then flush again. Kept out of [`ConnectionManager::flush_workflow_follow_ups`]
+/// so the spawned task does not make that async fn's future refer to itself.
+/// A self-spawned async fn is rejected as `!Send` even when every capture is `Send`.
+fn schedule_workflow_follow_up_flush(
+    mgr: ConnectionManager,
+    db: AppDatabase,
+    conn_id: String,
+    delay: Duration,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        mgr.flush_workflow_follow_ups(&db, &conn_id).await;
+    });
+}
+
 impl Default for ConnectionManager {
     fn default() -> Self {
         Self::new()
@@ -575,6 +688,9 @@ impl ConnectionManager {
             session_timers: Arc::new(Mutex::new(HashMap::new())),
             timer_db: Arc::new(std::sync::OnceLock::new()),
             native_sessions: Arc::new(Mutex::new(HashMap::new())),
+            workflow_flush_gates: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            workflow_before_send: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -595,6 +711,9 @@ impl ConnectionManager {
             session_timers: self.session_timers.clone(),
             timer_db: self.timer_db.clone(),
             native_sessions: self.native_sessions.clone(),
+            workflow_flush_gates: self.workflow_flush_gates.clone(),
+            #[cfg(test)]
+            workflow_before_send: self.workflow_before_send.clone(),
         }
     }
 
@@ -653,6 +772,9 @@ impl ConnectionManager {
             session_timers: Arc::new(Mutex::new(HashMap::new())),
             timer_db: Arc::new(std::sync::OnceLock::new()),
             native_sessions: Arc::new(Mutex::new(HashMap::new())),
+            workflow_flush_gates: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            workflow_before_send: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -898,16 +1020,20 @@ impl ConnectionManager {
     /// "Idle" means: status is `Connected`, no `pending_permission`, no
     /// launched-but-unresolved background work (async sub-agent / background
     /// shell — disconnecting kills the agent CLI and the background work with
-    /// it), no unexpired session timer, and no activity (no events, no
-    /// commands) for at least `idle_timeout`. `Prompting` connections are
-    /// always preserved (a turn is in flight). Returns the number of
-    /// connections that were disconnected.
+    /// it), no unexpired session timer, no coalescing workflow follow-up, and
+    /// no activity (no events, no commands) for at least `idle_timeout`.
+    /// `Prompting` connections are always preserved (a turn is in flight).
+    /// A coalescing follow-up is flushed when a timer DB is installed, including
+    /// when a session timer or background work already keeps the connection.
+    /// That scan is the backstop for a lifecycle frame the worker missed.
+    /// Returns the number of connections that were disconnected.
     pub async fn sweep_idle(&self, idle_timeout: Duration) -> usize {
         let now = chrono::Utc::now();
         let timeout = match chrono::Duration::from_std(idle_timeout) {
             Ok(d) => d,
             Err(_) => return 0,
         };
+        let mut to_flush = Vec::new();
         let to_disconnect: Vec<String> = {
             let connections = self.connections.lock().await;
             let mut victims = Vec::new();
@@ -915,19 +1041,24 @@ impl ConnectionManager {
                 let Ok(state) = conn.state.try_read() else {
                     // Per-state writer holds the lock; a future tick will
                     // re-evaluate this entry. Don't block the connections
-                    // mutex on it.
+                    // mutex on it. Skip both the disconnect and the flush.
                     continue;
                 };
                 if state.status != ConnectionStatus::Connected {
                     continue;
                 }
-                if state.pending_permission.is_some() {
-                    continue;
+                // Flush even when another exemption already keeps the
+                // connection. A session timer or background task must not
+                // hide a follow-up the lifecycle worker missed.
+                let pending_follow_up = state.has_pending_workflow_follow_up();
+                if pending_follow_up {
+                    to_flush.push(id.clone());
                 }
-                if state.has_active_background_work(now) {
-                    continue;
-                }
-                if state.has_pending_session_timer(now) {
+                if state.pending_permission.is_some()
+                    || state.has_active_background_work(now)
+                    || state.has_pending_session_timer(now)
+                    || pending_follow_up
+                {
                     continue;
                 }
                 let elapsed = now.signed_duration_since(state.last_activity_at);
@@ -942,6 +1073,11 @@ impl ConnectionManager {
             tracing::info!("[ACP] idle sweep disconnecting connection={}", id);
             if self.disconnect(&id).await.is_ok() {
                 disconnected += 1;
+            }
+        }
+        if let Some(db) = self.timer_db.get() {
+            for id in to_flush {
+                self.flush_workflow_follow_ups(db, &id).await;
             }
         }
         disconnected
@@ -1158,6 +1294,513 @@ impl ConnectionManager {
             PromptSource::SessionTimer,
         )
         .await
+    }
+
+    /// One-shot hook polled after a follow-up claim and before enqueue.
+    #[cfg(test)]
+    pub(crate) fn install_workflow_before_send_hook(
+        &self,
+        hook: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        *self
+            .workflow_before_send
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::pin(hook));
+    }
+
+    #[cfg(test)]
+    async fn run_workflow_before_send_hook(&self) {
+        let hook = self
+            .workflow_before_send
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(hook) = hook {
+            hook.await;
+        }
+    }
+
+    /// Per-connection flush gate. The map lock is not held across the flush.
+    async fn workflow_flush_gate(&self, conn_id: &str) -> Arc<Mutex<()>> {
+        let mut gates = self.workflow_flush_gates.lock().await;
+        gates
+            .entry(conn_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Send at most one due workflow follow-up, or arm a coalesce sleep.
+    ///
+    /// The gate is not `prompt_lock`. It is held across claim and send so two
+    /// flushes cannot revert each other's claim. The spawned sleep locks the
+    /// gate only after this call returns.
+    pub(crate) async fn flush_workflow_follow_ups(&self, db: &AppDatabase, conn_id: &str) {
+        let gate = self.workflow_flush_gate(conn_id).await;
+        let _guard = gate.lock().await;
+        if let Some(delay) = self.deliver_due_workflow_follow_up(db, conn_id).await {
+            tracing::debug!(
+                connection_id = %conn_id,
+                wait_ms = delay.as_millis() as u64,
+                "[ACP] workflow follow-up waiting for a conclusion"
+            );
+            schedule_workflow_follow_up_flush(
+                self.clone_ref(),
+                AppDatabase {
+                    conn: db.conn.clone(),
+                },
+                conn_id.to_string(),
+                delay,
+            );
+        }
+    }
+
+    /// `Some(delay)` schedules another flush. `None` means stop: nothing is
+    /// waiting, a prompt was enqueued, a turn is in flight, or a later sweep
+    /// should retry a database error.
+    async fn deliver_due_workflow_follow_up(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+    ) -> Option<std::time::Duration> {
+        loop {
+            let Some(state) = self.get_state(conn_id).await else {
+                return None;
+            };
+            let now = chrono::Utc::now();
+            // Copy the decision out before returning. A `return` while the read
+            // guard is still in scope keeps that guard live across the other
+            // awaits in this function, and the flush future stops being `Send`.
+            enum DuePick {
+                Busy,
+                Wait(Option<Duration>),
+                Ready(
+                    crate::acp::session_state::WorkflowFollowUpTicket,
+                    Option<i32>,
+                    String,
+                    Option<i32>,
+                    AgentType,
+                ),
+            }
+            let picked = {
+                let session = state.read().await;
+                if session.turn_in_flight {
+                    DuePick::Busy
+                } else {
+                    let mut due = session.due_workflow_follow_ups(now);
+                    if due.is_empty() {
+                        DuePick::Wait(session.next_workflow_follow_up_delay(now))
+                    } else {
+                        let ticket = due.remove(0);
+                        DuePick::Ready(
+                            ticket,
+                            session.conversation_id,
+                            session.external_id.clone().unwrap_or_default(),
+                            session.folder_id,
+                            session.agent_type,
+                        )
+                    }
+                }
+            };
+            let (ticket, conversation_id, external_session_id, folder_id, agent_type) = match picked
+            {
+                DuePick::Busy => return None,
+                DuePick::Wait(delay) => return delay,
+                DuePick::Ready(
+                    ticket,
+                    conversation_id,
+                    external_session_id,
+                    folder_id,
+                    agent_type,
+                ) => (
+                    ticket,
+                    conversation_id,
+                    external_session_id,
+                    folder_id,
+                    agent_type,
+                ),
+            };
+            if conversation_id.is_none() || external_session_id.trim().is_empty() {
+                let suppressed = state
+                    .write()
+                    .await
+                    .mark_workflow_follow_up_suppressed(&ticket.run_id);
+                if !suppressed {
+                    return None;
+                }
+                tracing::info!(
+                    connection_id = %conn_id,
+                    run_id = %ticket.run_id,
+                    "[ACP] workflow follow-up suppressed: conversation or session id missing"
+                );
+                continue;
+            }
+            let body = extract_terminal_evidence(
+                &ticket.terminal_status,
+                ticket.terminal_summary.as_deref(),
+                ticket.terminal_error_detail.as_deref(),
+                ticket.current_phase.as_deref(),
+            );
+            let ready = WorkflowFollowUpReady {
+                conversation_id: conversation_id.expect("checked above"),
+                external_session_id,
+                folder_id,
+                agent_type,
+                body,
+                ticket,
+            };
+            match self
+                .deliver_one_workflow_follow_up(db, &state, conn_id, ready)
+                .await
+            {
+                WorkflowWakeStep::Continue => continue,
+                WorkflowWakeStep::Stop => return None,
+            }
+        }
+    }
+
+    async fn deliver_one_workflow_follow_up(
+        &self,
+        db: &AppDatabase,
+        state: &Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+        conn_id: &str,
+        ready: WorkflowFollowUpReady,
+    ) -> WorkflowWakeStep {
+        let key = FollowUpKey {
+            conversation_id: ready.conversation_id,
+            external_session_id: ready.external_session_id.clone(),
+            run_id: ready.ticket.run_id.clone(),
+        };
+        let upsert = FollowUpUpsert {
+            key: key.clone(),
+            agent_type: ready.agent_type.as_wire().into_owned(),
+            terminal_status: ready.ticket.terminal_status.clone(),
+            workflow_name: ready.ticket.workflow_name.clone(),
+            result_source: ready.body.source.storage_key().to_string(),
+            evidence_text: ready.body.text.clone(),
+        };
+        match host_wake_policy(ready.agent_type) {
+            HostWakePolicy::Skip => {
+                self.skip_workflow_follow_up(db, state, conn_id, &key, upsert, &ready)
+                    .await
+            }
+            HostWakePolicy::Wake => {
+                self.wake_workflow_follow_up(db, state, conn_id, &key, upsert, ready)
+                    .await
+            }
+        }
+    }
+
+    async fn skip_workflow_follow_up(
+        &self,
+        db: &AppDatabase,
+        state: &Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+        conn_id: &str,
+        key: &FollowUpKey,
+        upsert: FollowUpUpsert,
+        ready: &WorkflowFollowUpReady,
+    ) -> WorkflowWakeStep {
+        match workflow_follow_up_service::upsert_pending(&db.conn, upsert).await {
+            Ok(UpsertPendingOutcome::Unchanged) => {
+                state
+                    .write()
+                    .await
+                    .mark_workflow_follow_up_dispatched(&key.run_id);
+                WorkflowWakeStep::Continue
+            }
+            Ok(UpsertPendingOutcome::Inserted | UpsertPendingOutcome::Updated) => {
+                if let Err(err) =
+                    workflow_follow_up_service::mark_skipped(&db.conn, key, "host wake disabled")
+                        .await
+                {
+                    self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+                    return WorkflowWakeStep::Stop;
+                }
+                let suppressed = state
+                    .write()
+                    .await
+                    .mark_workflow_follow_up_suppressed(&key.run_id);
+                tracing::info!(
+                    connection_id = %conn_id,
+                    run_id = %key.run_id,
+                    agent_type = %ready.agent_type.as_wire(),
+                    status = %ready.ticket.terminal_status,
+                    "[ACP] workflow follow-up skipped: host wake disabled"
+                );
+                if suppressed {
+                    WorkflowWakeStep::Continue
+                } else {
+                    WorkflowWakeStep::Stop
+                }
+            }
+            Err(err) => {
+                self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+                if matches!(err, DbError::Validation(_)) {
+                    state
+                        .write()
+                        .await
+                        .mark_workflow_follow_up_suppressed(&key.run_id);
+                }
+                WorkflowWakeStep::Stop
+            }
+        }
+    }
+
+    async fn wake_workflow_follow_up(
+        &self,
+        db: &AppDatabase,
+        state: &Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+        conn_id: &str,
+        key: &FollowUpKey,
+        upsert: FollowUpUpsert,
+        ready: WorkflowFollowUpReady,
+    ) -> WorkflowWakeStep {
+        match workflow_follow_up_service::upsert_pending(&db.conn, upsert.clone()).await {
+            Ok(UpsertPendingOutcome::Unchanged) => {
+                match self
+                    .reopen_unchanged_follow_up(db, state, conn_id, key, &upsert)
+                    .await
+                {
+                    UnchangedFollowUp::ClaimNow => {}
+                    UnchangedFollowUp::Continue => return WorkflowWakeStep::Continue,
+                    UnchangedFollowUp::Stop => return WorkflowWakeStep::Stop,
+                }
+            }
+            Ok(UpsertPendingOutcome::Inserted | UpsertPendingOutcome::Updated) => {}
+            Err(err) => {
+                self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+                if matches!(err, DbError::Validation(_)) {
+                    state
+                        .write()
+                        .await
+                        .mark_workflow_follow_up_suppressed(&key.run_id);
+                }
+                return WorkflowWakeStep::Stop;
+            }
+        }
+        match workflow_follow_up_service::claim(&db.conn, key).await {
+            Ok(ClaimOutcome::Claimed) => {}
+            Ok(ClaimOutcome::NotPending) => {
+                state
+                    .write()
+                    .await
+                    .mark_workflow_follow_up_dispatched(&key.run_id);
+                return WorkflowWakeStep::Continue;
+            }
+            Ok(ClaimOutcome::Missing) => {
+                tracing::warn!(
+                    connection_id = %conn_id,
+                    run_id = %key.run_id,
+                    "[ACP] workflow follow-up claim missed the row"
+                );
+                return WorkflowWakeStep::Stop;
+            }
+            Err(err) => {
+                self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+                return WorkflowWakeStep::Stop;
+            }
+        }
+
+        // The due ticket, session id, and claim were copied before this await.
+        // SessionStarted or a user stop can land in between. Send only while
+        // this connection is still that session and the ticket is still
+        // coalescing. Leave the row claimed: reverting it could deliver the
+        // copied prompt into a later session. TurnInProgress is the only
+        // path that puts a claim back to pending.
+        #[cfg(test)]
+        self.run_workflow_before_send_hook().await;
+        if !follow_up_binding(state, key).await.still_current() {
+            return self.abandon_claimed_follow_up(state, conn_id, key).await;
+        }
+
+        let evidence_bytes = ready.body.text.len();
+        let source_label = ready.body.source.label();
+        let terminal_status = ready.ticket.terminal_status.clone();
+        let prompt = render_workflow_follow_up_prompt(FollowUpPrompt {
+            workflow_name: &ready.ticket.workflow_name,
+            status: &ready.ticket.terminal_status,
+        });
+        let message_id = follow_up_message_id(&ready.ticket.run_id);
+        match self
+            .send_prompt_linked_with_source(
+                db,
+                conn_id,
+                vec![PromptInputBlock::Text { text: prompt }],
+                ready.folder_id,
+                None,
+                None,
+                Some(message_id),
+                PromptSource::WorkflowCompletion,
+            )
+            .await
+        {
+            Ok(_) => {
+                if let Err(err) = workflow_follow_up_service::mark_sent(&db.conn, key).await {
+                    self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+                }
+                state
+                    .write()
+                    .await
+                    .mark_workflow_follow_up_dispatched(&key.run_id);
+                tracing::info!(
+                    connection_id = %conn_id,
+                    run_id = %key.run_id,
+                    conversation_id = key.conversation_id,
+                    status = %terminal_status,
+                    source = source_label,
+                    evidence_bytes,
+                    "[ACP] workflow follow-up enqueued"
+                );
+                WorkflowWakeStep::Stop
+            }
+            Err(AcpError::TurnInProgress) => {
+                if let Err(err) =
+                    workflow_follow_up_service::revert_claim_to_pending(&db.conn, key).await
+                {
+                    self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+                }
+                WorkflowWakeStep::Stop
+            }
+            Err(AcpError::ConnectionNotFound(_) | AcpError::ProcessExited) => {
+                self.fail_workflow_follow_up(db, state, conn_id, key, "connection closed")
+                    .await;
+                WorkflowWakeStep::Stop
+            }
+            Err(_) => {
+                self.fail_workflow_follow_up(db, state, conn_id, key, "send failed")
+                    .await;
+                WorkflowWakeStep::Stop
+            }
+        }
+    }
+
+    /// An unchanged row is already past `pending`. Reopen it only when this
+    /// process aborted that claim because the run stopped, and a new
+    /// completed/failed edge is coalescing on the same session. `sent`,
+    /// `skipped`, and `failed` stay closed.
+    async fn reopen_unchanged_follow_up(
+        &self,
+        db: &AppDatabase,
+        state: &Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+        conn_id: &str,
+        key: &FollowUpKey,
+        upsert: &FollowUpUpsert,
+    ) -> UnchangedFollowUp {
+        let binding = follow_up_binding(state, key).await;
+        let row = match workflow_follow_up_service::get(&db.conn, key).await {
+            Ok(row) => row,
+            Err(err) => {
+                self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+                return UnchangedFollowUp::Stop;
+            }
+        };
+        let Some(row) = row else {
+            tracing::warn!(
+                connection_id = %conn_id,
+                run_id = %key.run_id,
+                "[ACP] workflow follow-up row missing"
+            );
+            return UnchangedFollowUp::Stop;
+        };
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        match row.delivery_status {
+            DeliveryStatus::Claimed if binding.same_session && binding.reopen_claimed => {
+                match workflow_follow_up_service::reopen_claimed(&db.conn, upsert).await {
+                    Ok(true) => UnchangedFollowUp::ClaimNow,
+                    Ok(false) => UnchangedFollowUp::Stop,
+                    Err(err) => {
+                        self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+                        UnchangedFollowUp::Stop
+                    }
+                }
+            }
+            DeliveryStatus::Claimed if !binding.same_session => {
+                state
+                    .write()
+                    .await
+                    .mark_workflow_follow_up_suppressed(&key.run_id);
+                UnchangedFollowUp::Continue
+            }
+            DeliveryStatus::Claimed => {
+                // Same session, no aborted-claim bit. A coalescing ticket is
+                // closed so a restarted process does not resend. A suppressed
+                // ticket is not coalescing, so this does not block a later edge.
+                state
+                    .write()
+                    .await
+                    .mark_workflow_follow_up_dispatched(&key.run_id);
+                UnchangedFollowUp::Continue
+            }
+            DeliveryStatus::Sent | DeliveryStatus::Skipped | DeliveryStatus::Failed => {
+                state
+                    .write()
+                    .await
+                    .mark_workflow_follow_up_dispatched(&key.run_id);
+                UnchangedFollowUp::Continue
+            }
+            DeliveryStatus::Pending => UnchangedFollowUp::ClaimNow,
+        }
+    }
+
+    /// The claim stands, and this ticket is not delivered into the connection's
+    /// current model session. A stop records the reopen bit. A session change
+    /// suppresses a ticket that is still coalescing under the old claim.
+    async fn abandon_claimed_follow_up(
+        &self,
+        state: &Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+        conn_id: &str,
+        key: &FollowUpKey,
+    ) -> WorkflowWakeStep {
+        let binding = follow_up_binding(state, key).await;
+        if binding.same_session {
+            state
+                .write()
+                .await
+                .note_workflow_follow_up_claim_aborted(&key.run_id);
+        } else {
+            state
+                .write()
+                .await
+                .mark_workflow_follow_up_suppressed(&key.run_id);
+        }
+        tracing::info!(
+            connection_id = %conn_id,
+            run_id = %key.run_id,
+            conversation_id = key.conversation_id,
+            "[ACP] workflow follow-up left claimed before enqueue"
+        );
+        WorkflowWakeStep::Continue
+    }
+
+    async fn fail_workflow_follow_up(
+        &self,
+        db: &AppDatabase,
+        state: &Arc<tokio::sync::RwLock<crate::acp::SessionState>>,
+        conn_id: &str,
+        key: &FollowUpKey,
+        reason: &'static str,
+    ) {
+        if let Err(err) = workflow_follow_up_service::mark_failed(&db.conn, key, reason).await {
+            self.log_follow_up_db_error(conn_id, &key.run_id, &err);
+        }
+        state
+            .write()
+            .await
+            .mark_workflow_follow_up_dispatched(&key.run_id);
+        tracing::info!(
+            connection_id = %conn_id,
+            run_id = %key.run_id,
+            reason,
+            "[ACP] workflow follow-up was not enqueued"
+        );
+    }
+
+    fn log_follow_up_db_error(&self, conn_id: &str, run_id: &str, err: &DbError) {
+        tracing::warn!(
+            connection_id = %conn_id,
+            run_id = %run_id,
+            kind = follow_up_db_error_kind(err),
+            "[ACP] workflow follow-up delivery record failed"
+        );
     }
 
     /// Compare each running connection's spawn-time config fingerprint against a
@@ -1436,6 +2079,42 @@ impl ConnectionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Status to restore when a workflow wake fails before the agent accepts it.
+    /// `None` means "do not write a replacement" — in particular, do not write
+    /// `cancelled` just because the read failed.
+    async fn workflow_conversation_status(
+        &self,
+        db: &AppDatabase,
+        conn_id: &str,
+        conversation_id: Option<i32>,
+    ) -> Option<ConversationStatus> {
+        let Some(cid) = conversation_id else {
+            return None;
+        };
+        match conversation_service::get_by_id(&db.conn, cid).await {
+            Ok(summary) => match conversation_status_from_wire(&summary.status) {
+                Some(status) => Some(status),
+                None => {
+                    tracing::warn!(
+                        connection_id = %conn_id,
+                        conversation_id = cid,
+                        "[ACP] workflow follow-up saw an unknown conversation status"
+                    );
+                    None
+                }
+            },
+            Err(err) => {
+                tracing::warn!(
+                    connection_id = %conn_id,
+                    conversation_id = cid,
+                    kind = follow_up_db_error_kind(&err),
+                    "[ACP] workflow follow-up could not read conversation status"
+                );
+                None
+            }
+        }
+    }
+
     async fn send_prompt_linked_with_source(
         &self,
         db: &AppDatabase,
@@ -1827,7 +2506,18 @@ impl ConnectionManager {
         // `update_status` is a single UPDATE — idempotent with respect to
         // the same status value, so re-writing `InProgress` is a benign no-op
         // on the row (touches `updated_at` only).
+        //
+        // A workflow wake that never reaches the agent must not land on
+        // `cancelled`: the model did not fail the user's turn. Read the row
+        // first so that send failure can put that status back. User and timer
+        // prompts still roll back to `cancelled`.
         let conversation_id_for_status = state_arc.read().await.conversation_id;
+        let status_before_workflow_prompt = if source == PromptSource::WorkflowCompletion {
+            self.workflow_conversation_status(db, conn_id, conversation_id_for_status)
+                .await
+        } else {
+            None
+        };
         if let Some(cid) = conversation_id_for_status {
             conversation_service::update_status(&db.conn, cid, ConversationStatus::InProgress)
                 .await
@@ -1844,11 +2534,15 @@ impl ConnectionManager {
         }
 
         // Capture a bounded preview of the user's message BEFORE `blocks` is
-        // moved into `send_prompt_inner`. Only on the genuine UI path
-        // (`delegation.is_none()`): delegation / sub-agent prompts are not user
-        // messages. Emitted after the send succeeds (below) so a prompt that
-        // never reached the agent produces no "user message" notification.
-        let user_prompt_preview = if delegation.is_none() {
+        // moved into `send_prompt_inner`. Delegation / sub-agent prompts are
+        // not user messages. A workflow-completion wake is a host event: it
+        // stays in the timeline as `UserMessage`, but it must not raise the
+        // "user just sent a message" notification or rename an untitled chat.
+        // Timer wakes stay on this path. Emitted after the send succeeds
+        // (below) so a prompt that never reached the agent produces no
+        // notification.
+        let announce_as_user = source != PromptSource::WorkflowCompletion && delegation.is_none();
+        let user_prompt_preview = if announce_as_user {
             user_prompt_text_preview(&blocks)
         } else {
             None
@@ -1857,7 +2551,7 @@ impl ConnectionManager {
         // "Untitled" while the agent is still working. Native ACP titles
         // (session_info_update) replace this later via refresh_auto_title.
         // Delegation children are already seeded at row create.
-        let first_prompt_title = if delegation.is_none() {
+        let first_prompt_title = if announce_as_user {
             delegation_child_title_seed(&blocks)
         } else {
             None
@@ -1903,11 +2597,14 @@ impl ConnectionManager {
         // sets the turn-in-flight gate, with no await before the infallible
         // `permit.send`; so a failure (channel closed / process exited) happens
         // at the reserve step, BEFORE the gate is set — there is nothing to roll
-        // back. On that failure we still flip the row to `Cancelled` so the UI
-        // doesn't strand on `in_progress`: no `TurnComplete` will ever arrive
-        // for a prompt that never reached the agent, so without this the
-        // lifecycle subscriber's PendingReview write also never fires and the
-        // row would be stuck until a follow-up `send_prompt_linked` re-flipped it.
+        // back. On that failure a user or timer prompt flips the row to
+        // `Cancelled` so the UI doesn't strand on `in_progress`: no
+        // `TurnComplete` will ever arrive for a prompt that never reached the
+        // agent, so without this the lifecycle subscriber's PendingReview write
+        // also never fires and the row would be stuck until a follow-up
+        // `send_prompt_linked` re-flipped it. A workflow wake restores the
+        // status from before this call instead, and does not write `cancelled`
+        // when that earlier status could not be read.
         match self.send_prompt_inner(conn_id, blocks, user_message).await {
             Ok(()) => {
                 // The prompt reached the agent: surface it to the chat-channel
@@ -1949,31 +2646,43 @@ impl ConnectionManager {
             }
             Err(send_err) => {
                 if let Some(cid) = conversation_id_for_status {
-                    match conversation_service::update_status(
-                        &db.conn,
-                        cid,
-                        ConversationStatus::Cancelled,
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            emit_with_state(
-                                &state_arc,
-                                &emitter,
-                                AcpEvent::ConversationStatusChanged {
-                                    conversation_id: cid,
-                                    status: ConversationStatus::Cancelled,
-                                },
-                            )
-                            .await;
-                        }
-                        Err(rollback_err) => {
-                            // Best-effort: original send error is the load-bearing
-                            // signal; rollback failure is logged but not surfaced.
-                            tracing::error!(
-                                "[ACP][ERROR] failed to mark conversation {cid} cancelled \
-                                 after send failure (original={send_err}): {rollback_err}"
-                            );
+                    let rolled_back = if source == PromptSource::WorkflowCompletion {
+                        status_before_workflow_prompt
+                    } else {
+                        Some(ConversationStatus::Cancelled)
+                    };
+                    if let Some(status) = rolled_back {
+                        match conversation_service::update_status(&db.conn, cid, status.clone())
+                            .await
+                        {
+                            Ok(_) => {
+                                emit_with_state(
+                                    &state_arc,
+                                    &emitter,
+                                    AcpEvent::ConversationStatusChanged {
+                                        conversation_id: cid,
+                                        status,
+                                    },
+                                )
+                                .await;
+                            }
+                            Err(rollback_err) => {
+                                // Best-effort: original send error is the load-bearing
+                                // signal; rollback failure is logged but not surfaced.
+                                if source == PromptSource::WorkflowCompletion {
+                                    tracing::error!(
+                                        conversation_id = cid,
+                                        kind = follow_up_db_error_kind(&rollback_err),
+                                        "[ACP] failed to restore conversation status after \
+                                         workflow follow-up send failure"
+                                    );
+                                } else {
+                                    tracing::error!(
+                                        "[ACP][ERROR] failed to mark conversation {cid} cancelled \
+                                         after send failure (original={send_err}): {rollback_err}"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -7669,6 +8378,888 @@ mod tests {
         backdate_last_activity(&mgr, "timed", 600).await;
         let n = mgr.sweep_idle(Duration::from_secs(300)).await;
         assert_eq!(n, 1);
+    }
+
+    fn follow_up_workflow_delta(run_id: &str, spawned: bool) -> crate::acp::types::WorkflowDelta {
+        crate::acp::types::WorkflowDelta {
+            run_id: run_id.to_string(),
+            spawned,
+            result_summary: None,
+            revision: None,
+            name: None,
+            objective: None,
+            state: None,
+            phases: None,
+            current_phase: None,
+            agents: None,
+            agents_done: None,
+            agents_running: None,
+            agents_used: None,
+            agent_budget: None,
+            agents_remaining: None,
+            elapsed_ms: None,
+            last_event: None,
+            last_event_detail: None,
+            can_stop: None,
+        }
+    }
+
+    /// SessionStarted before the workflow rows: the first session id clears
+    /// any rows that were applied while `external_id` was still empty.
+    async fn seed_completed_workflow(
+        mgr: &ConnectionManager,
+        conn_id: &str,
+        conversation_id: i32,
+        folder_id: i32,
+        run_id: &str,
+        summary: Option<&str>,
+        terminal_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        let state = mgr.get_state(conn_id).await.expect("connection");
+        let mut session = state.write().await;
+        if session.external_id.as_deref() != Some("ext-session-1") {
+            session.apply_event(&AcpEvent::SessionStarted {
+                session_id: "ext-session-1".into(),
+            });
+            session.apply_event(&AcpEvent::ConversationLinked {
+                conversation_id,
+                folder_id,
+                parent_conversation_id: None,
+                parent_tool_use_id: None,
+            });
+        }
+        session.apply_event(&AcpEvent::Workflow {
+            delta: crate::acp::types::WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("running".into()),
+                ..follow_up_workflow_delta(run_id, true)
+            },
+        });
+        session.apply_event(&AcpEvent::Workflow {
+            delta: crate::acp::types::WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: summary.map(str::to_string),
+                ..follow_up_workflow_delta(run_id, false)
+            },
+        });
+        session.backdate_workflow_follow_up_for_test(run_id, terminal_at);
+    }
+
+    fn assert_no_user_prompt_sent(
+        stream: &mut broadcast::Receiver<Arc<crate::acp::types::EventEnvelope>>,
+    ) {
+        loop {
+            match stream.try_recv() {
+                Ok(env) => assert!(
+                    !matches!(env.payload, AcpEvent::UserPromptSent { .. }),
+                    "workflow follow-up must not emit UserPromptSent"
+                ),
+                Err(broadcast::error::TryRecvError::Empty)
+                | Err(broadcast::error::TryRecvError::Closed) => break,
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    panic!("event stream lagged by {skipped}");
+                }
+            }
+        }
+    }
+
+    fn prompt_command_text(
+        cmd: crate::acp::connection::ConnectionCommand,
+    ) -> (String, Option<(String, Vec<String>)>) {
+        let ConnectionCommand::Prompt {
+            blocks,
+            user_message,
+        } = cmd
+        else {
+            panic!("expected a prompt command");
+        };
+        let text = blocks
+            .into_iter()
+            .filter_map(|block| match block {
+                PromptInputBlock::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user_message = user_message.map(|(id, blocks)| {
+            let texts = blocks
+                .into_iter()
+                .filter_map(|block| match block {
+                    crate::acp::types::UserMessageBlock::Text { text } => Some(text),
+                    _ => None,
+                })
+                .collect();
+            (id, texts)
+        });
+        (text, user_message)
+    }
+
+    fn assert_follow_up_prompt(text: &str, ended: &str) {
+        assert!(
+            text.starts_with("[system notification]\nWorkflow: deep-research\n"),
+            "{text}"
+        );
+        assert!(text.contains(&format!("\nStatus: {ended}\n")));
+        assert!(text.contains("do the next required step in this turn."));
+        assert!(!text.contains("all green"));
+        assert!(!text.contains("disk full"));
+        assert!(!text.contains("first"));
+        assert!(!text.contains("second"));
+        assert!(!text.contains("<workflow_result>"));
+        assert!(!text.contains("[Codeg"));
+    }
+
+    #[tokio::test]
+    async fn workflow_completion_does_not_emit_user_prompt_sent_or_seed_title() {
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        use crate::db::service::workflow_follow_up_service::{self, FollowUpKey};
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-send").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Grok).await;
+        let mgr = ConnectionManager::new();
+        mgr.install_timer_db(crate::db::AppDatabase {
+            conn: db.conn.clone(),
+        });
+        let conn_id = "conn-wf-1";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Grok,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        let terminal_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            terminal_at,
+        )
+        .await;
+        let ack = mgr
+            .set_session_timer(
+                conn_id,
+                crate::acp::session_timer::SessionTimerSpec {
+                    seconds: 1800,
+                    reason: None,
+                    cancel_on_user_message: true,
+                },
+            )
+            .await;
+        assert!(ack.ok);
+        let mut stream = subscribe_conn_stream(&mgr, conn_id).await;
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        let (text, user_message) = prompt_command_text(cmd_rx.try_recv().expect("prompt enqueued"));
+        assert_follow_up_prompt(&text, "completed");
+        let (message_id, user_texts) = user_message.expect("timeline message");
+        assert_eq!(message_id, "codeg-workflow-follow-up:run-1");
+        assert_eq!(user_texts, vec![text]);
+        assert!(cmd_rx.try_recv().is_err(), "only one prompt");
+        assert_no_user_prompt_sent(&mut stream);
+        let row = conversation_service::get_by_id(&db.conn, conversation_id)
+            .await
+            .unwrap();
+        assert!(row.title.is_none());
+        let stored = workflow_follow_up_service::get(
+            &db.conn,
+            &FollowUpKey {
+                conversation_id,
+                external_session_id: "ext-session-1".into(),
+                run_id: "run-1".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("delivery row");
+        assert_eq!(stored.delivery_status, DeliveryStatus::Sent);
+        assert_eq!(stored.result_source, "final_summary");
+        assert_eq!(stored.evidence_text, "all green");
+        assert!(stored.failure_reason.is_none());
+        let state = mgr.get_state(conn_id).await.unwrap();
+        assert!(!state.read().await.has_pending_workflow_follow_up());
+        assert!(mgr.session_timers.lock().await.contains_key(conn_id));
+        assert!(state.read().await.session_timer_deadline.is_some());
+        mgr.cancel_session_timer(conn_id).await;
+
+        state.write().await.turn_in_flight = false;
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a sent follow-up is not repeated"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_follow_up_waits_while_turn_in_flight() {
+        use crate::db::service::workflow_follow_up_service::{self, FollowUpKey};
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-busy").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Grok).await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-wf-busy";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Grok,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await;
+        {
+            let state = mgr.get_state(conn_id).await.unwrap();
+            state.write().await.turn_in_flight = true;
+        }
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        assert!(cmd_rx.try_recv().is_err());
+        let stored = workflow_follow_up_service::get(
+            &db.conn,
+            &FollowUpKey {
+                conversation_id,
+                external_session_id: "ext-session-1".into(),
+                run_id: "run-1".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(stored.is_none(), "a busy turn must not claim the row");
+        assert!(mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .has_pending_workflow_follow_up());
+    }
+
+    #[tokio::test]
+    async fn claude_workflow_follow_up_wakes_the_session() {
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        use crate::db::service::workflow_follow_up_service::{self, FollowUpKey};
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-claude").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::ClaudeCode).await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-wf-claude";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::ClaudeCode,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await;
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        let (text, user_message) = prompt_command_text(cmd_rx.try_recv().expect("prompt enqueued"));
+        assert_follow_up_prompt(&text, "completed");
+        assert_eq!(
+            user_message.expect("timeline").0,
+            "codeg-workflow-follow-up:run-1"
+        );
+        assert!(cmd_rx.try_recv().is_err(), "only one prompt");
+        let stored = workflow_follow_up_service::get(
+            &db.conn,
+            &FollowUpKey {
+                conversation_id,
+                external_session_id: "ext-session-1".into(),
+                run_id: "run-1".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("delivery row");
+        assert_eq!(stored.delivery_status, DeliveryStatus::Sent);
+        assert_eq!(stored.agent_type, "claude_code");
+        assert!(stored.failure_reason.is_none());
+        assert!(!mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .has_pending_workflow_follow_up());
+    }
+
+    #[tokio::test]
+    async fn gemini_workflow_follow_up_is_skipped() {
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        use crate::db::service::workflow_follow_up_service::{self, FollowUpKey};
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-gemini").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Gemini).await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-wf-gemini";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Gemini,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await;
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        assert!(cmd_rx.try_recv().is_err());
+        let stored = workflow_follow_up_service::get(
+            &db.conn,
+            &FollowUpKey {
+                conversation_id,
+                external_session_id: "ext-session-1".into(),
+                run_id: "run-1".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("skip still records delivery");
+        assert_eq!(stored.delivery_status, DeliveryStatus::Skipped);
+        assert_eq!(stored.failure_reason.as_deref(), Some("host wake disabled"));
+        assert_eq!(stored.agent_type, "gemini");
+        assert!(!mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .has_pending_workflow_follow_up());
+    }
+
+    #[tokio::test]
+    async fn two_due_workflows_send_one_until_turn_completes() {
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-two").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Grok).await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-wf-two";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Grok,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        let terminal_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-a",
+            Some("first"),
+            terminal_at,
+        )
+        .await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-b",
+            Some("second"),
+            terminal_at,
+        )
+        .await;
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+        let (text, user_message) = prompt_command_text(cmd_rx.try_recv().expect("first prompt"));
+        assert_follow_up_prompt(&text, "completed");
+        assert_eq!(
+            user_message.expect("timeline").0,
+            "codeg-workflow-follow-up:run-a"
+        );
+        assert!(cmd_rx.try_recv().is_err());
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "the next workflow waits until this turn ends"
+        );
+
+        mgr.get_state(conn_id)
+            .await
+            .unwrap()
+            .write()
+            .await
+            .turn_in_flight = false;
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+        let (text, user_message) = prompt_command_text(cmd_rx.try_recv().expect("second prompt"));
+        assert_follow_up_prompt(&text, "completed");
+        assert_eq!(
+            user_message.expect("timeline").0,
+            "codeg-workflow-follow-up:run-b"
+        );
+        assert!(cmd_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_keeps_connection_with_pending_workflow_follow_up() {
+        let mgr = ConnectionManager::new();
+        insert_fake_connection(
+            &mgr,
+            "stale",
+            AgentType::ClaudeCode,
+            None,
+            EventEmitter::Noop,
+        )
+        .await;
+        insert_fake_connection(&mgr, "pinned", AgentType::Grok, None, EventEmitter::Noop).await;
+        {
+            let state = mgr.get_state("pinned").await.unwrap();
+            let mut session = state.write().await;
+            session.apply_event(&AcpEvent::SessionStarted {
+                session_id: "ext-session-1".into(),
+            });
+            session.apply_event(&AcpEvent::Workflow {
+                delta: crate::acp::types::WorkflowDelta {
+                    name: Some("deep-research".into()),
+                    state: Some("running".into()),
+                    ..follow_up_workflow_delta("run-1", true)
+                },
+            });
+            session.apply_event(&AcpEvent::Workflow {
+                delta: crate::acp::types::WorkflowDelta {
+                    state: Some("completed".into()),
+                    ..follow_up_workflow_delta("run-1", false)
+                },
+            });
+            assert!(session.has_pending_workflow_follow_up());
+        }
+        backdate_last_activity(&mgr, "stale", 600).await;
+        backdate_last_activity(&mgr, "pinned", 600).await;
+
+        let n = mgr.sweep_idle(Duration::from_secs(300)).await;
+        assert_eq!(n, 1);
+        let connections = mgr.connections.lock().await;
+        assert!(!connections.contains_key("stale"));
+        assert!(connections.contains_key("pinned"));
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_flushes_follow_up_while_a_session_timer_keeps_the_connection() {
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-sweep-timer").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Grok).await;
+        let mgr = ConnectionManager::new();
+        mgr.install_timer_db(crate::db::AppDatabase {
+            conn: db.conn.clone(),
+        });
+        let conn_id = "conn-wf-sweep-timer";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Grok,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await;
+        let ack = mgr
+            .set_session_timer(
+                conn_id,
+                crate::acp::session_timer::SessionTimerSpec {
+                    seconds: 1800,
+                    reason: None,
+                    cancel_on_user_message: true,
+                },
+            )
+            .await;
+        assert!(ack.ok);
+        backdate_last_activity(&mgr, conn_id, 600).await;
+
+        let n = mgr.sweep_idle(Duration::from_secs(300)).await;
+
+        assert_eq!(n, 0);
+        assert!(mgr.connections.lock().await.contains_key(conn_id));
+        assert!(mgr.session_timers.lock().await.contains_key(conn_id));
+        let (text, _) = prompt_command_text(cmd_rx.try_recv().expect("sweep enqueued the prompt"));
+        assert_follow_up_prompt(&text, "completed");
+        mgr.cancel_session_timer(conn_id).await;
+    }
+
+    fn follow_up_delivery_key(
+        conversation_id: i32,
+        external_session_id: &str,
+        run_id: &str,
+    ) -> crate::db::service::workflow_follow_up_service::FollowUpKey {
+        crate::db::service::workflow_follow_up_service::FollowUpKey {
+            conversation_id,
+            external_session_id: external_session_id.to_string(),
+            run_id: run_id.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn follow_up_claim_window_session_change_does_not_enqueue() {
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        use crate::db::service::workflow_follow_up_service;
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-session").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Grok).await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-wf-session";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Grok,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await;
+        let state = mgr.get_state(conn_id).await.unwrap();
+        mgr.install_workflow_before_send_hook(async move {
+            state.write().await.apply_event(&AcpEvent::SessionStarted {
+                session_id: "ext-session-2".into(),
+            });
+        });
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "session change must not enqueue"
+        );
+        let key = follow_up_delivery_key(conversation_id, "ext-session-1", "run-1");
+        let stored = workflow_follow_up_service::get(&db.conn, &key)
+            .await
+            .unwrap()
+            .expect("claimed row stays");
+        assert_eq!(stored.delivery_status, DeliveryStatus::Claimed);
+        assert!(stored.failure_reason.is_none());
+        assert!(mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .workflow_follow_up("run-1")
+            .is_none());
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "new session must not be prompted"
+        );
+        assert_eq!(
+            workflow_follow_up_service::get(&db.conn, &key)
+                .await
+                .unwrap()
+                .unwrap()
+                .delivery_status,
+            DeliveryStatus::Claimed
+        );
+        assert!(workflow_follow_up_service::get(
+            &db.conn,
+            &follow_up_delivery_key(conversation_id, "ext-session-2", "run-1"),
+        )
+        .await
+        .unwrap()
+        .is_none());
+    }
+
+    #[tokio::test]
+    async fn follow_up_claim_window_stop_reopens_on_later_failure() {
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        use crate::db::service::workflow_follow_up_service;
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-stop").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Grok).await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-wf-stop";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Grok,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await;
+        let state = mgr.get_state(conn_id).await.unwrap();
+        mgr.install_workflow_before_send_hook(async move {
+            state.write().await.apply_event(&AcpEvent::Workflow {
+                delta: crate::acp::types::WorkflowDelta {
+                    state: Some("stopped".into()),
+                    ..follow_up_workflow_delta("run-1", false)
+                },
+            });
+        });
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        assert!(cmd_rx.try_recv().is_err(), "stop must not enqueue");
+        let key = follow_up_delivery_key(conversation_id, "ext-session-1", "run-1");
+        let stored = workflow_follow_up_service::get(&db.conn, &key)
+            .await
+            .unwrap()
+            .expect("claim is kept");
+        assert_eq!(stored.delivery_status, DeliveryStatus::Claimed);
+        assert!(stored.failure_reason.is_none());
+        {
+            let state = mgr.get_state(conn_id).await.unwrap();
+            let session = state.read().await;
+            assert!(!session.has_pending_workflow_follow_up());
+            assert!(!session.workflow_follow_up_should_reopen_claimed("run-1"));
+        }
+
+        {
+            let state = mgr.get_state(conn_id).await.unwrap();
+            let mut session = state.write().await;
+            session.apply_event(&AcpEvent::Workflow {
+                delta: crate::acp::types::WorkflowDelta {
+                    state: Some("failed".into()),
+                    result_summary: Some("disk full".into()),
+                    ..follow_up_workflow_delta("run-1", false)
+                },
+            });
+            session.backdate_workflow_follow_up_for_test(
+                "run-1",
+                chrono::Utc::now() - chrono::Duration::seconds(5),
+            );
+            assert!(session.workflow_follow_up_should_reopen_claimed("run-1"));
+        }
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        let (text, user_message) =
+            prompt_command_text(cmd_rx.try_recv().expect("corrected failure is sent"));
+        assert_follow_up_prompt(&text, "failed");
+        assert_eq!(
+            user_message.expect("timeline").0,
+            "codeg-workflow-follow-up:run-1"
+        );
+        assert!(cmd_rx.try_recv().is_err());
+        let sent = workflow_follow_up_service::get(&db.conn, &key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent.delivery_status, DeliveryStatus::Sent);
+        assert_eq!(sent.evidence_text, "disk full");
+        assert_eq!(sent.terminal_status, "failed");
+        assert_eq!(sent.result_source, "final_summary");
+    }
+
+    #[tokio::test]
+    async fn follow_up_claimed_without_abort_is_not_resent() {
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        use crate::db::service::workflow_follow_up_service::{self, FollowUpUpsert};
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-claimed").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Grok).await;
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-wf-claimed";
+        let mut cmd_rx = insert_live_connection(
+            &mgr,
+            conn_id,
+            AgentType::Grok,
+            Some(PathBuf::from("/tmp/wf")),
+        )
+        .await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await;
+        let key = follow_up_delivery_key(conversation_id, "ext-session-1", "run-1");
+        workflow_follow_up_service::upsert_pending(
+            &db.conn,
+            FollowUpUpsert {
+                key: key.clone(),
+                agent_type: "grok".into(),
+                terminal_status: "completed".into(),
+                workflow_name: "deep-research".into(),
+                result_source: "final_summary".into(),
+                evidence_text: "stale".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            workflow_follow_up_service::claim(&db.conn, &key)
+                .await
+                .unwrap(),
+            workflow_follow_up_service::ClaimOutcome::Claimed
+        );
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a claimed row is not resent without an aborted stop"
+        );
+        let stored = workflow_follow_up_service::get(&db.conn, &key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.delivery_status, DeliveryStatus::Claimed);
+        assert_eq!(stored.evidence_text, "stale");
+        assert!(!mgr
+            .get_state(conn_id)
+            .await
+            .unwrap()
+            .read()
+            .await
+            .has_pending_workflow_follow_up());
+    }
+
+    #[tokio::test]
+    async fn follow_up_send_failure_keeps_conversation_status() {
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        use crate::db::service::workflow_follow_up_service;
+        use crate::db::test_helpers;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up-status").await;
+        let conversation_id =
+            test_helpers::seed_conversation(&db, folder_id, AgentType::Grok).await;
+        conversation_service::update_status(
+            &db.conn,
+            conversation_id,
+            ConversationStatus::PendingReview,
+        )
+        .await
+        .unwrap();
+        let mgr = ConnectionManager::new();
+        let conn_id = "conn-wf-status";
+        insert_fake_connection(&mgr, conn_id, AgentType::Grok, None, EventEmitter::Noop).await;
+        seed_completed_workflow(
+            &mgr,
+            conn_id,
+            conversation_id,
+            folder_id,
+            "run-1",
+            Some("all green"),
+            chrono::Utc::now() - chrono::Duration::seconds(5),
+        )
+        .await;
+        let mut stream = subscribe_conn_stream(&mgr, conn_id).await;
+
+        mgr.flush_workflow_follow_ups(&db, conn_id).await;
+
+        let summary = conversation_service::get_by_id(&db.conn, conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.status, "pending_review");
+        let stored = workflow_follow_up_service::get(
+            &db.conn,
+            &follow_up_delivery_key(conversation_id, "ext-session-1", "run-1"),
+        )
+        .await
+        .unwrap()
+        .expect("failed delivery");
+        assert_eq!(stored.delivery_status, DeliveryStatus::Failed);
+        assert_eq!(stored.failure_reason.as_deref(), Some("connection closed"));
+        let mut statuses = Vec::new();
+        loop {
+            match stream.try_recv() {
+                Ok(env) => {
+                    if let AcpEvent::ConversationStatusChanged { status, .. } = &env.payload {
+                        statuses.push(status.clone());
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty)
+                | Err(broadcast::error::TryRecvError::Closed) => break,
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    panic!("event stream lagged by {skipped}");
+                }
+            }
+        }
+        assert!(
+            !statuses.contains(&ConversationStatus::Cancelled),
+            "workflow send failure must not cancel the conversation: {statuses:?}"
+        );
+        assert_eq!(statuses.last(), Some(&ConversationStatus::PendingReview));
     }
 
     #[tokio::test]

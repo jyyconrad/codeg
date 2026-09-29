@@ -28,6 +28,7 @@ use crate::chat_channel::terminal_message::TerminalKind;
 use crate::db::entities::conversation::ConversationStatus;
 use crate::db::error::DbError;
 use crate::db::service::conversation_service;
+use crate::db::AppDatabase;
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 use crate::models::AgentType;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
@@ -36,11 +37,12 @@ use tokio::sync::RwLock;
 /// Per-connection worker queue depth. Sized for the **filtered** event set
 /// only (see `is_lifecycle_relevant`) — high-frequency events (ContentDelta,
 /// ToolCall*, PermissionRequest) are dropped at the dispatcher and never
-/// enter the queue. The remaining 7 event types arrive at most a handful
-/// of times per turn, so 64 slots is comfortable headroom for a sustained
-/// SQLite stall without forcing the dispatcher to block on `send`.
+/// enter the queue. Those event types arrive at most a handful of times per
+/// turn, so 64 slots is comfortable headroom for a sustained SQLite stall
+/// without forcing the dispatcher to block on `send`.
 /// (SessionStarted, TurnComplete, ConversationLinked, NativeSessionTitle,
-/// TranscriptRolledOver, Disconnected, Error.)
+/// TranscriptRolledOver, Disconnected, Error, and a workflow frame whose
+/// state is `completed` or `failed`.)
 const WORKER_QUEUE_CAPACITY: usize = 64;
 
 /// Whether an event needs to reach the per-connection worker. Mirrors the
@@ -63,18 +65,24 @@ const WORKER_QUEUE_CAPACITY: usize = 64;
 /// `register_delegation_tool_call_from_event`, so these high-frequency events
 /// never need to reach a worker.
 fn is_lifecycle_relevant(event: &AcpEvent) -> bool {
-    matches!(
-        event,
+    match event {
         AcpEvent::SessionStarted { .. }
-            | AcpEvent::TurnComplete { .. }
-            | AcpEvent::ConversationLinked { .. }
-            | AcpEvent::NativeSessionTitle { .. }
-            | AcpEvent::TranscriptRolledOver { .. }
-            | AcpEvent::StatusChanged {
-                status: ConnectionStatus::Disconnected
-            }
-            | AcpEvent::Error { .. }
-    )
+        | AcpEvent::TurnComplete { .. }
+        | AcpEvent::ConversationLinked { .. }
+        | AcpEvent::NativeSessionTitle { .. }
+        | AcpEvent::TranscriptRolledOver { .. }
+        | AcpEvent::StatusChanged {
+            status: ConnectionStatus::Disconnected,
+        }
+        | AcpEvent::Error { .. } => true,
+        // Progress frames stay off the worker. Grok always sets state, so a
+        // real completion (including a later revision that brings the summary)
+        // is visible here. `stopped` is not a follow-up edge.
+        AcpEvent::Workflow { delta } => {
+            matches!(delta.state.as_deref(), Some("completed") | Some("failed"))
+        }
+        _ => false,
+    }
 }
 
 /// Whether this event starts or ends a prompt that BLOCKS the agent until a
@@ -303,14 +311,7 @@ pub(crate) async fn handle_event(
                     )
                     .await;
                 }
-                manager
-                    .flush_queued_timer_wake(
-                        &crate::db::AppDatabase {
-                            conn: db_conn.clone(),
-                        },
-                        &envelope.connection_id,
-                    )
-                    .await;
+                flush_prompts_after_turn(db_conn, manager, &envelope.connection_id).await;
                 return Ok(());
             };
             if let Some(ts) = target_status.clone() {
@@ -360,14 +361,7 @@ pub(crate) async fn handle_event(
                 )
                 .await;
             }
-            manager
-                .flush_queued_timer_wake(
-                    &crate::db::AppDatabase {
-                        conn: db_conn.clone(),
-                    },
-                    &envelope.connection_id,
-                )
-                .await;
+            flush_prompts_after_turn(db_conn, manager, &envelope.connection_id).await;
             Ok(())
         }
         AcpEvent::Error {
@@ -453,13 +447,9 @@ pub(crate) async fn handle_event(
                     return Ok(());
                 };
                 let continues: Vec<String> = current.external_id.into_iter().collect();
-                let preserved = conversation_service::bind_external_id(
-                    db_conn,
-                    cid,
-                    transcript_id,
-                    &continues,
-                )
-                .await?;
+                let preserved =
+                    conversation_service::bind_external_id(db_conn, cid, transcript_id, &continues)
+                        .await?;
                 crate::commands::conversations::emit_conversation_upsert(&emitter, db_conn, cid)
                     .await;
                 crate::commands::conversations::emit_preserved_conversation(
@@ -469,10 +459,40 @@ pub(crate) async fn handle_event(
             }
             Ok(())
         }
+        AcpEvent::Workflow { .. } => {
+            // Terminal frames only reach this arm (`is_lifecycle_relevant`).
+            // The ticket was opened when the event was applied to session
+            // state, before the bus delivered it here.
+            manager
+                .flush_workflow_follow_ups(
+                    &AppDatabase {
+                        conn: db_conn.clone(),
+                    },
+                    &envelope.connection_id,
+                )
+                .await;
+            Ok(())
+        }
         // Other events don't need cross-connection DB persistence today; extend
         // this dispatcher with new arms as the lifecycle scope grows.
         _ => Ok(()),
     }
+}
+
+/// Workflow follow-up first, then a queued session-timer wake. The timer
+/// flush already has to run after the turn gate drops; a follow-up that
+/// became due during the turn uses that same window, and one prompt at a
+/// time so the two cannot both pass the idle check.
+async fn flush_prompts_after_turn(
+    db_conn: &DatabaseConnection,
+    manager: &ConnectionManager,
+    conn_id: &str,
+) {
+    let db = AppDatabase {
+        conn: db_conn.clone(),
+    };
+    manager.flush_workflow_follow_ups(&db, conn_id).await;
+    manager.flush_queued_timer_wake(&db, conn_id).await;
 }
 
 /// Historical hook. Channel IM is owned by the Events-tab subscriber.
@@ -1727,7 +1747,7 @@ async fn connection_worker_loop(
 /// connections, workers run independently so a slow SQLite write on one
 /// connection doesn't backpressure the others.
 ///
-/// All forwarded events (the 7 types in `is_lifecycle_relevant`) use
+/// All forwarded events (the set in `is_lifecycle_relevant`) use
 /// blocking `send().await` to guarantee delivery even when the worker
 /// mailbox is full — `SessionStarted` (writes external_id) and
 /// `TurnComplete` (writes terminal status) are correctness-critical and
@@ -3216,6 +3236,36 @@ mod tests {
     use crate::acp::internal_bus::{EventBusMetrics, InternalEventBus};
     use std::time::Duration;
 
+    fn workflow_delta(state: Option<&str>, spawned: bool) -> crate::acp::types::WorkflowDelta {
+        crate::acp::types::WorkflowDelta {
+            run_id: "run-1".into(),
+            spawned,
+            result_summary: None,
+            revision: None,
+            name: None,
+            objective: None,
+            state: state.map(str::to_string),
+            phases: None,
+            current_phase: None,
+            agents: None,
+            agents_done: None,
+            agents_running: None,
+            agents_used: None,
+            agent_budget: None,
+            agents_remaining: None,
+            elapsed_ms: None,
+            last_event: None,
+            last_event_detail: None,
+            can_stop: None,
+        }
+    }
+
+    fn workflow_event(state: Option<&str>) -> AcpEvent {
+        AcpEvent::Workflow {
+            delta: workflow_delta(state, false),
+        }
+    }
+
     /// Predicate must accept exactly the event types the worker handles.
     /// If a future worker arm starts caring about a new event type without
     /// updating `is_lifecycle_relevant`, this test catches the drift.
@@ -3253,8 +3303,13 @@ mod tests {
             details: None,
             terminal: true,
         }));
+        assert!(is_lifecycle_relevant(&workflow_event(Some("completed"))));
+        assert!(is_lifecycle_relevant(&workflow_event(Some("failed"))));
 
         // Rejected (worker no-ops on these — must not enter the queue):
+        assert!(!is_lifecycle_relevant(&workflow_event(Some("running"))));
+        assert!(!is_lifecycle_relevant(&workflow_event(Some("stopped"))));
+        assert!(!is_lifecycle_relevant(&workflow_event(None)));
         assert!(!is_lifecycle_relevant(&AcpEvent::ContentDelta {
             text: "x".into(),
             parent_tool_use_id: None,
@@ -3294,6 +3349,88 @@ mod tests {
             meta: None,
             images: None,
         }));
+    }
+
+    /// The worker arm, not only the filter, has to flush. Gemini is outside
+    /// the workflow wake allow-list: a row is written and no prompt is sent.
+    #[tokio::test]
+    async fn terminal_workflow_event_records_a_skipped_follow_up() {
+        use crate::db::entities::workflow_follow_up::DeliveryStatus;
+        use crate::db::service::workflow_follow_up_service::{self, FollowUpKey};
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/wf-follow-up").await;
+        let conv =
+            conversation_service::create(&db.conn, folder_id, AgentType::ClaudeCode, None, None)
+                .await
+                .unwrap();
+        let mgr = ConnectionManager::new();
+        {
+            let mut map = mgr.connections.lock().await;
+            map.insert(
+                "c1".to_string(),
+                fake_connection_with_state("c1", Some(conv.id)),
+            );
+        }
+        {
+            let state = mgr.get_state("c1").await.expect("connection");
+            let mut session = state.write().await;
+            // The fake connection is Claude, which is on the wake allow-list.
+            // Point this session at an agent with no workflow channel so the
+            // worker records a skip instead of sending on a dropped channel.
+            session.agent_type = AgentType::Gemini;
+            session.apply_event(&AcpEvent::SessionStarted {
+                session_id: "ext-1".into(),
+            });
+            session.apply_event(&AcpEvent::Workflow {
+                delta: crate::acp::types::WorkflowDelta {
+                    name: Some("deep-research".into()),
+                    ..workflow_delta(Some("running"), true)
+                },
+            });
+            session.apply_event(&AcpEvent::Workflow {
+                delta: crate::acp::types::WorkflowDelta {
+                    result_summary: Some("all green".into()),
+                    ..workflow_delta(Some("completed"), false)
+                },
+            });
+            let at = Utc::now() - chrono::Duration::seconds(5);
+            session.backdate_workflow_follow_up_for_test("run-1", at);
+        }
+
+        handle_event(&db.conn, &mgr, &workflow_envelope("completed"), None)
+            .await
+            .unwrap();
+
+        let row = workflow_follow_up_service::get(
+            &db.conn,
+            &FollowUpKey {
+                conversation_id: conv.id,
+                external_session_id: "ext-1".into(),
+                run_id: "run-1".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("terminal workflow frame records a delivery");
+        assert_eq!(row.delivery_status, DeliveryStatus::Skipped);
+        assert_eq!(row.failure_reason.as_deref(), Some("host wake disabled"));
+        assert_eq!(row.agent_type, "gemini");
+        assert!(!mgr
+            .get_state("c1")
+            .await
+            .unwrap()
+            .read()
+            .await
+            .has_pending_workflow_follow_up());
+    }
+
+    fn workflow_envelope(state: &str) -> EventEnvelope {
+        EventEnvelope {
+            seq: 1,
+            connection_id: "c1".into(),
+            payload: workflow_event(Some(state)),
+        }
     }
 
     /// Dispatcher must drop the per-connection worker sender on either

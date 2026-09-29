@@ -20,7 +20,7 @@ use crate::acp::session_timer::SessionTimerSpec;
 use crate::acp::types::{
     AcpEvent, AsyncTaskRecord, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus,
     EventEnvelope, GrokModelSpec, PromptCapabilitiesInfo, SessionConfigOptionInfo,
-    SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo, WorkflowRun,
+    SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo, WorkflowDelta, WorkflowRun,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;
@@ -744,6 +744,12 @@ pub struct SessionState {
     /// rule as [`Self::async_tasks`].
     pub workflows: BTreeMap<String, WorkflowRun>,
 
+    /// Follow-up tickets for runs this session already knew that later entered
+    /// `completed` or `failed`. One run, one ticket. Cleared when `external_id`
+    /// changes. Backend-internal, like `turn_in_flight`: not on the snapshot.
+    /// Delivery phase is stored beside the ticket, not on it.
+    workflow_follow_ups: BTreeMap<String, WorkflowFollowUpEntry>,
+
     /// When the last async-task delta of any kind landed. Bounds the keep-alive
     /// exemption in `has_active_background_work` exactly the way
     /// `background_activity_at` bounds the watcher's half — see
@@ -860,6 +866,49 @@ pub struct SessionState {
     pub wiki_pending_snapshots: VecDeque<crate::wiki::snapshot::WikiTurnSnapshot>,
 }
 
+/// In-memory follow-up for a workflow run that entered `completed` or `failed`
+/// after this session had already seen it. Not part of the client snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowFollowUpTicket {
+    pub run_id: String,
+    pub workflow_name: String,
+    /// "completed" or "failed"
+    pub terminal_status: String,
+    pub terminal_summary: Option<String>,
+    pub terminal_error_detail: Option<String>,
+    pub current_phase: Option<String>,
+    pub revision: Option<u64>,
+    pub terminal_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowFollowUpPhase {
+    Coalescing,
+    Dispatched,
+    Suppressed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkflowFollowUpEntry {
+    phase: WorkflowFollowUpPhase,
+    /// This process claimed a delivery and then aborted it because the run
+    /// stopped. Copied onto a later coalescing ticket so that claimed row can
+    /// be reopened once. A restart has no ticket, so the row is not resent.
+    reopen_claimed: bool,
+    ticket: WorkflowFollowUpTicket,
+}
+
+/// Borrowed view of one accepted workflow merge, for follow-up bookkeeping.
+struct WorkflowFollowUpMerge<'a> {
+    delta: &'a WorkflowDelta,
+    previous_state: &'a str,
+    previous_name: &'a str,
+    previous_phase: Option<&'a str>,
+    resulting_state: &'a str,
+    resulting_phase: Option<String>,
+    resulting_revision: Option<u64>,
+}
+
 impl SessionState {
     pub fn new(
         connection_id: String,
@@ -919,6 +968,7 @@ impl SessionState {
             session_failures: BTreeMap::new(),
             async_tasks: BTreeMap::new(),
             workflows: BTreeMap::new(),
+            workflow_follow_ups: BTreeMap::new(),
             async_task_activity_at: None,
             last_assistant_text: None,
             pending_user_message: None,
@@ -1094,6 +1144,8 @@ impl SessionState {
                     // accepted between turns.
                     self.async_tasks.clear();
                     self.workflows.clear();
+                    // Tickets are keyed to the session that observed the run.
+                    self.workflow_follow_ups.clear();
                     self.async_task_activity_at = None;
                 }
                 self.external_id = Some(session_id.clone());
@@ -1689,19 +1741,9 @@ impl SessionState {
                 }
             }
             AcpEvent::Workflow { delta } => {
-                match self.workflows.get_mut(&delta.run_id) {
-                    Some(existing) => delta.apply_to(existing),
-                    None if delta.spawned => {
-                        self.workflows
-                            .insert(delta.run_id.clone(), delta.to_record());
-                    }
-                    None => {
-                        tracing::debug!(
-                            run_id = %delta.run_id,
-                            "[ACP] ignoring workflow delta for an unannounced run"
-                        );
-                    }
-                }
+                self.apply_workflow_delta(delta);
+                // Stamped for every delta, including stale and unannounced
+                // ones: the adapter is still talking about background work.
                 self.async_task_activity_at = Some(Utc::now());
             }
             AcpEvent::SessionNotice { .. } => {
@@ -1801,6 +1843,245 @@ impl SessionState {
         self.session_timer_deadline
             .map(|deadline| deadline > now)
             .unwrap_or(false)
+    }
+
+    /// Ticket for this run at any phase, including dispatched and suppressed.
+    pub fn workflow_follow_up(&self, run_id: &str) -> Option<&WorkflowFollowUpTicket> {
+        self.workflow_follow_ups
+            .get(run_id)
+            .map(|entry| &entry.ticket)
+    }
+
+    /// True while any ticket is still coalescing, even if it is not due yet.
+    /// Idle sweep must not disconnect while one is waiting. Dispatched and
+    /// suppressed tickets are not pending.
+    pub fn has_pending_workflow_follow_up(&self) -> bool {
+        self.workflow_follow_ups
+            .values()
+            .any(|entry| entry.phase == WorkflowFollowUpPhase::Coalescing)
+    }
+
+    /// Coalescing tickets whose wait has elapsed, ordered by
+    /// `(terminal_at, run_id)`. Due at 500ms when a terminal summary or a
+    /// failed ticket's real error detail is present; otherwise at 3s.
+    /// Not due until `now >= terminal_at + wait`.
+    pub fn due_workflow_follow_ups(&self, now: DateTime<Utc>) -> Vec<WorkflowFollowUpTicket> {
+        let mut due: Vec<WorkflowFollowUpTicket> = self
+            .workflow_follow_ups
+            .values()
+            .filter_map(|entry| {
+                if entry.phase == WorkflowFollowUpPhase::Coalescing
+                    && workflow_follow_up_is_due(&entry.ticket, now)
+                {
+                    Some(entry.ticket.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        due.sort_by_key(|ticket| (ticket.terminal_at, ticket.run_id.clone()));
+        due
+    }
+
+    /// Earliest remaining wait among coalescing tickets that are not due yet.
+    /// `None` when nothing is still waiting. A zero remainder becomes 1ms so a
+    /// scheduled wake cannot busy-loop.
+    pub fn next_workflow_follow_up_delay(&self, now: DateTime<Utc>) -> Option<std::time::Duration> {
+        let due_at = self
+            .workflow_follow_ups
+            .values()
+            .filter(|entry| entry.phase == WorkflowFollowUpPhase::Coalescing)
+            .map(|entry| workflow_follow_up_due_at(&entry.ticket))
+            .filter(|due_at| *due_at > now)
+            .min()?;
+        let remaining = due_at.signed_duration_since(now).to_std().ok()?;
+        Some(remaining.max(std::time::Duration::from_millis(1)))
+    }
+
+    /// Test seam: move the coalesce clock without sleeping.
+    #[cfg(test)]
+    pub(crate) fn backdate_workflow_follow_up_for_test(&mut self, run_id: &str, at: DateTime<Utc>) {
+        if let Some(entry) = self.workflow_follow_ups.get_mut(run_id) {
+            entry.ticket.terminal_at = at;
+        }
+    }
+
+    /// True only while this run's ticket is still waiting to be sent.
+    pub fn workflow_follow_up_is_coalescing(&self, run_id: &str) -> bool {
+        self.workflow_follow_ups
+            .get(run_id)
+            .is_some_and(|entry| entry.phase == WorkflowFollowUpPhase::Coalescing)
+    }
+
+    /// True when a later completed/failed edge re-armed a ticket whose claimed
+    /// send was aborted because the run had stopped.
+    pub fn workflow_follow_up_should_reopen_claimed(&self, run_id: &str) -> bool {
+        self.workflow_follow_ups.get(run_id).is_some_and(|entry| {
+            entry.phase == WorkflowFollowUpPhase::Coalescing && entry.reopen_claimed
+        })
+    }
+
+    /// Remember an aborted claim on a suppressed ticket. False unless the run
+    /// is currently suppressed: a coalescing, dispatched, or missing ticket
+    /// must not gain a reopen.
+    pub fn note_workflow_follow_up_claim_aborted(&mut self, run_id: &str) -> bool {
+        let Some(entry) = self.workflow_follow_ups.get_mut(run_id) else {
+            return false;
+        };
+        if entry.phase != WorkflowFollowUpPhase::Suppressed {
+            return false;
+        }
+        entry.reopen_claimed = true;
+        true
+    }
+
+    /// Coalescing -> Dispatched. False when no coalescing ticket exists.
+    pub fn mark_workflow_follow_up_dispatched(&mut self, run_id: &str) -> bool {
+        self.mark_workflow_follow_up_phase(run_id, WorkflowFollowUpPhase::Dispatched)
+    }
+
+    /// Coalescing -> Suppressed. False when no coalescing ticket exists.
+    pub fn mark_workflow_follow_up_suppressed(&mut self, run_id: &str) -> bool {
+        self.mark_workflow_follow_up_phase(run_id, WorkflowFollowUpPhase::Suppressed)
+    }
+
+    fn mark_workflow_follow_up_phase(
+        &mut self,
+        run_id: &str,
+        phase: WorkflowFollowUpPhase,
+    ) -> bool {
+        let Some(entry) = self.workflow_follow_ups.get_mut(run_id) else {
+            return false;
+        };
+        if entry.phase != WorkflowFollowUpPhase::Coalescing {
+            return false;
+        }
+        entry.phase = phase;
+        true
+    }
+
+    /// Merge `delta` into the workflow table, then open or revise a follow-up.
+    ///
+    /// A ticket is created only when the run already existed, the delta is
+    /// accepted, the previous state was neither `completed` nor `failed`, and
+    /// the state after the merge is one of those two. The stale-revision rule
+    /// matches [`WorkflowDelta::apply_to`]: both sides carry a revision and
+    /// `incoming <= stored` drops the whole delta. The first spawned frame,
+    /// even if it is already terminal, is a historical snapshot and opens
+    /// nothing. `terminal_at` stays at the first edge.
+    fn apply_workflow_delta(&mut self, delta: &WorkflowDelta) {
+        if !self.workflows.contains_key(&delta.run_id) {
+            if delta.spawned {
+                self.workflows
+                    .insert(delta.run_id.clone(), delta.to_record());
+            } else {
+                tracing::debug!(
+                    run_id = %delta.run_id,
+                    "[ACP] ignoring workflow delta for an unannounced run"
+                );
+            }
+            return;
+        }
+
+        let (previous_state, previous_name, previous_phase) = {
+            let existing = &self.workflows[&delta.run_id];
+            if let (Some(incoming), Some(stored)) = (delta.revision, existing.revision) {
+                if incoming <= stored {
+                    return;
+                }
+            }
+            (
+                existing.state.clone(),
+                existing.name.clone(),
+                existing.current_phase.clone(),
+            )
+        };
+
+        let applied = self.workflows.get_mut(&delta.run_id).map(|existing| {
+            delta.apply_to(existing);
+            (
+                existing.state.clone(),
+                existing.current_phase.clone(),
+                existing.revision,
+            )
+        });
+        let Some((resulting_state, resulting_phase, resulting_revision)) = applied else {
+            return;
+        };
+
+        self.sync_workflow_follow_up(WorkflowFollowUpMerge {
+            delta,
+            previous_state: &previous_state,
+            previous_name: &previous_name,
+            previous_phase: previous_phase.as_deref(),
+            resulting_state: &resulting_state,
+            resulting_phase,
+            resulting_revision,
+        });
+    }
+
+    fn sync_workflow_follow_up(&mut self, merge: WorkflowFollowUpMerge<'_>) {
+        let run_id = merge.delta.run_id.as_str();
+        if merge.resulting_state == "stopped" {
+            let _ = self.mark_workflow_follow_up_suppressed(run_id);
+            return;
+        }
+        if !workflow_state_is_completed_or_failed(merge.resulting_state) {
+            return;
+        }
+
+        let entered = !workflow_state_is_completed_or_failed(merge.previous_state);
+        let phase = self
+            .workflow_follow_ups
+            .get(run_id)
+            .map(|entry| entry.phase);
+        if phase == Some(WorkflowFollowUpPhase::Coalescing) {
+            self.revise_coalescing_workflow_follow_up(&merge);
+        } else if entered && phase != Some(WorkflowFollowUpPhase::Dispatched) {
+            // A suppressed ticket is re-armed by a new edge (stopped -> terminal).
+            // Dispatched stays closed: later revisions only update the row.
+            // The reopen bit is set only when this process aborted a claimed
+            // send; a fresh edge does not inherit it.
+            let reopen_claimed = phase == Some(WorkflowFollowUpPhase::Suppressed)
+                && self
+                    .workflow_follow_ups
+                    .get(run_id)
+                    .is_some_and(|entry| entry.reopen_claimed);
+            let ticket = new_workflow_follow_up_ticket(&merge, Utc::now());
+            self.workflow_follow_ups.insert(
+                merge.delta.run_id.clone(),
+                WorkflowFollowUpEntry {
+                    phase: WorkflowFollowUpPhase::Coalescing,
+                    reopen_claimed,
+                    ticket,
+                },
+            );
+        }
+    }
+
+    fn revise_coalescing_workflow_follow_up(&mut self, merge: &WorkflowFollowUpMerge<'_>) {
+        let Some(entry) = self.workflow_follow_ups.get_mut(&merge.delta.run_id) else {
+            return;
+        };
+        if entry.phase != WorkflowFollowUpPhase::Coalescing {
+            return;
+        }
+        let ticket = &mut entry.ticket;
+        ticket.terminal_status = merge.resulting_state.to_string();
+        if let Some(summary) = workflow_terminal_summary(merge.delta) {
+            ticket.terminal_summary = Some(summary);
+        }
+        ticket.workflow_name = workflow_follow_up_name(merge.delta, merge.previous_name);
+        ticket.current_phase = merge.resulting_phase.clone();
+        ticket.revision = merge.resulting_revision;
+        if merge.resulting_state == "failed" {
+            if let Some(detail) = workflow_terminal_error_detail(merge.delta, merge.previous_phase)
+            {
+                ticket.terminal_error_detail = Some(detail);
+            }
+        } else {
+            ticket.terminal_error_detail = None;
+        }
     }
 
     /// Whether any AIR async task is still non-terminal AND the adapter has
@@ -2331,12 +2612,10 @@ impl SessionState {
         // Both halves, because the question the early return answers is
         // "would shipping this whole be over budget", and the image bytes are
         // part of what ships either way.
-        let total = ordered
-            .iter()
-            .fold(0usize, |acc, (_, id, bytes)| {
-                acc.saturating_add(*bytes)
-                    .saturating_add(images_slice_size(&self.active_tool_calls[*id].images))
-            });
+        let total = ordered.iter().fold(0usize, |acc, (_, id, bytes)| {
+            acc.saturating_add(*bytes)
+                .saturating_add(images_slice_size(&self.active_tool_calls[*id].images))
+        });
         if total <= MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES {
             // The ordinary turn: nothing to trim, wire shape byte-identical.
             return self.active_tool_calls.values().cloned().collect();
@@ -2434,6 +2713,102 @@ impl SessionState {
             goal_actions: self.goal_actions.clone(),
             event_seq: self.event_seq,
         }
+    }
+}
+
+fn workflow_state_is_completed_or_failed(state: &str) -> bool {
+    matches!(state, "completed" | "failed")
+}
+
+fn trimmed_nonempty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Delta name when it has non-whitespace text, else the pre-merge row name,
+/// else "Workflow".
+fn workflow_follow_up_name(delta: &WorkflowDelta, existing_name: &str) -> String {
+    delta
+        .name
+        .as_deref()
+        .and_then(trimmed_nonempty)
+        .or_else(|| trimmed_nonempty(existing_name))
+        .unwrap_or_else(|| "Workflow".to_string())
+}
+
+/// Summary from this delta only. A progress frame may already have stored
+/// `WorkflowRun::result_summary`; a terminal frame that omits it must not
+/// inherit that text.
+fn workflow_terminal_summary(delta: &WorkflowDelta) -> Option<String> {
+    delta.result_summary.as_deref().and_then(trimmed_nonempty)
+}
+
+/// Set only for `failed`. A detail that trims equal to the phase name is a
+/// progress label, not an error conclusion. Phase is the delta's
+/// `current_phase` when present, otherwise the stored row's, then trimmed.
+fn workflow_terminal_error_detail(
+    delta: &WorkflowDelta,
+    stored_phase: Option<&str>,
+) -> Option<String> {
+    let detail = delta
+        .last_event_detail
+        .as_deref()
+        .and_then(trimmed_nonempty)?;
+    let phase = delta
+        .current_phase
+        .as_deref()
+        .or(stored_phase)
+        .map_or("", str::trim);
+    (detail != phase).then_some(detail)
+}
+
+fn workflow_follow_up_has_early_evidence(ticket: &WorkflowFollowUpTicket) -> bool {
+    ticket
+        .terminal_summary
+        .as_ref()
+        .is_some_and(|summary| !summary.trim().is_empty())
+        || (ticket.terminal_status == "failed"
+            && ticket
+                .terminal_error_detail
+                .as_ref()
+                .is_some_and(|detail| !detail.trim().is_empty()))
+}
+
+fn workflow_follow_up_due_at(ticket: &WorkflowFollowUpTicket) -> DateTime<Utc> {
+    let wait = if workflow_follow_up_has_early_evidence(ticket) {
+        chrono::Duration::milliseconds(500)
+    } else {
+        chrono::Duration::seconds(3)
+    };
+    ticket.terminal_at + wait
+}
+
+fn workflow_follow_up_is_due(ticket: &WorkflowFollowUpTicket, now: DateTime<Utc>) -> bool {
+    now >= workflow_follow_up_due_at(ticket)
+}
+
+fn new_workflow_follow_up_ticket(
+    merge: &WorkflowFollowUpMerge<'_>,
+    terminal_at: DateTime<Utc>,
+) -> WorkflowFollowUpTicket {
+    let terminal_error_detail = if merge.resulting_state == "failed" {
+        workflow_terminal_error_detail(merge.delta, merge.previous_phase)
+    } else {
+        None
+    };
+    WorkflowFollowUpTicket {
+        run_id: merge.delta.run_id.clone(),
+        workflow_name: workflow_follow_up_name(merge.delta, merge.previous_name),
+        terminal_status: merge.resulting_state.to_string(),
+        terminal_summary: workflow_terminal_summary(merge.delta),
+        terminal_error_detail,
+        current_phase: merge.resulting_phase.clone(),
+        revision: merge.resulting_revision,
+        terminal_at,
     }
 }
 
@@ -3091,6 +3466,21 @@ mod tests {
         }
     }
 
+    fn apply_workflow(state: &mut SessionState, delta: WorkflowDelta) {
+        state.apply_event(&AcpEvent::Workflow { delta });
+    }
+
+    fn spawn_running_workflow(state: &mut SessionState, run_id: &str) {
+        apply_workflow(
+            state,
+            WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("running".into()),
+                ..workflow_delta(run_id, true)
+            },
+        );
+    }
+
     #[test]
     fn workflow_rows_are_created_only_by_a_spawn_delta() {
         let mut s = fresh_state();
@@ -3214,6 +3604,736 @@ mod tests {
         });
         assert!(s.workflows.is_empty());
         assert!(!s.has_active_background_work(Utc::now()));
+    }
+
+    #[test]
+    fn running_to_completed_records_one_follow_up_using_terminal_summary() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        assert!(s.workflow_follow_up("wf_1").is_none());
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("all green".into()),
+                revision: Some(7),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+
+        assert_eq!(s.workflow_follow_ups.len(), 1);
+        let ticket = s.workflow_follow_up("wf_1").unwrap();
+        assert_eq!(ticket.run_id, "wf_1");
+        assert_eq!(ticket.workflow_name, "deep-research");
+        assert_eq!(ticket.terminal_status, "completed");
+        assert_eq!(ticket.terminal_summary.as_deref(), Some("all green"));
+        assert!(ticket.terminal_error_detail.is_none());
+        assert_eq!(ticket.revision, Some(7));
+        assert!(s.has_pending_workflow_follow_up());
+    }
+
+    #[test]
+    fn terminal_follow_up_ignores_result_summary_stored_by_an_earlier_progress_frame() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                result_summary: Some("partial notes".into()),
+                current_phase: Some("Research".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert!(s.workflow_follow_up("wf_1").is_none());
+        assert_eq!(
+            s.workflows["wf_1"].result_summary.as_deref(),
+            Some("partial notes")
+        );
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let ticket = s.workflow_follow_up("wf_1").unwrap();
+        assert!(ticket.terminal_summary.is_none());
+        assert!(ticket.terminal_error_detail.is_none());
+        assert_eq!(ticket.terminal_status, "completed");
+        assert_eq!(ticket.workflow_name, "deep-research");
+        assert_eq!(ticket.current_phase.as_deref(), Some("Research"));
+        assert_eq!(
+            s.workflows["wf_1"].result_summary.as_deref(),
+            Some("partial notes")
+        );
+    }
+
+    #[test]
+    fn later_accepted_terminal_revision_updates_summary_without_resetting_terminal_at() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("first".into()),
+                revision: Some(1),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let opened = s.workflow_follow_up("wf_1").unwrap().clone();
+        assert_eq!(opened.terminal_summary.as_deref(), Some("first"));
+        assert_eq!(opened.revision, Some(1));
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("  second  ".into()),
+                revision: Some(2),
+                name: Some("renamed".into()),
+                current_phase: Some("Write".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert_eq!(s.workflow_follow_ups.len(), 1);
+        let revised = s.workflow_follow_up("wf_1").unwrap();
+        assert_eq!(revised.terminal_summary.as_deref(), Some("second"));
+        assert_eq!(revised.terminal_at, opened.terminal_at);
+        assert_eq!(revised.revision, Some(2));
+        assert_eq!(revised.workflow_name, "renamed");
+        assert_eq!(revised.current_phase.as_deref(), Some("Write"));
+        assert_eq!(revised.terminal_status, "completed");
+        assert!(s.has_pending_workflow_follow_up());
+
+        // AIR publishes no revision, so this frame is not stale.
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("third".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let air = s.workflow_follow_up("wf_1").unwrap();
+        assert_eq!(air.terminal_summary.as_deref(), Some("third"));
+        assert_eq!(air.terminal_at, opened.terminal_at);
+        assert_eq!(air.revision, Some(2));
+        assert_eq!(s.workflow_follow_ups.len(), 1);
+    }
+
+    #[test]
+    fn stale_revision_does_not_update_summary_or_create_a_follow_up() {
+        let mut s = fresh_state();
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("running".into()),
+                revision: Some(4),
+                ..workflow_delta("wf_1", true)
+            },
+        );
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("ignored".into()),
+                revision: Some(4),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert_eq!(s.workflows["wf_1"].state, "running");
+        assert!(s.workflow_follow_up("wf_1").is_none());
+        assert!(!s.has_pending_workflow_follow_up());
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("kept".into()),
+                revision: Some(5),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let opened = s.workflow_follow_up("wf_1").unwrap().clone();
+        assert_eq!(opened.terminal_summary.as_deref(), Some("kept"));
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("stopped".into()),
+                result_summary: Some("stale replacement".into()),
+                revision: Some(3),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let ticket = s.workflow_follow_up("wf_1").unwrap();
+        assert_eq!(ticket.terminal_summary.as_deref(), Some("kept"));
+        assert_eq!(ticket.terminal_status, "completed");
+        assert_eq!(ticket.terminal_at, opened.terminal_at);
+        assert_eq!(ticket.revision, Some(5));
+        assert!(s.has_pending_workflow_follow_up());
+        assert_eq!(s.workflows["wf_1"].state, "completed");
+        assert_eq!(s.workflows["wf_1"].result_summary.as_deref(), Some("kept"));
+        assert_eq!(s.workflow_follow_ups.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_completed_frame_does_not_create_a_second_follow_up() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("done".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert_eq!(s.workflow_follow_ups.len(), 1);
+        assert_eq!(
+            s.workflow_follow_up("wf_1")
+                .unwrap()
+                .terminal_summary
+                .as_deref(),
+            Some("done")
+        );
+        assert!(s.has_pending_workflow_follow_up());
+    }
+
+    #[test]
+    fn stopped_does_not_create_a_follow_up_until_a_later_failure() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("stopped".into()),
+                result_summary: Some("cancelled".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert!(s.workflow_follow_up("wf_1").is_none());
+        assert!(!s.has_pending_workflow_follow_up());
+        assert_eq!(s.workflows["wf_1"].state, "stopped");
+        assert_eq!(
+            s.workflows["wf_1"].result_summary.as_deref(),
+            Some("cancelled")
+        );
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let ticket = s.workflow_follow_up("wf_1").unwrap();
+        assert_eq!(ticket.terminal_status, "failed");
+        assert!(ticket.terminal_summary.is_none());
+        assert_eq!(s.workflow_follow_ups.len(), 1);
+        assert!(s.has_pending_workflow_follow_up());
+        assert_eq!(
+            s.workflows["wf_1"].result_summary.as_deref(),
+            Some("cancelled")
+        );
+    }
+
+    #[test]
+    fn spawned_already_completed_does_not_create_a_follow_up() {
+        let mut s = fresh_state();
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("completed".into()),
+                result_summary: Some("historical".into()),
+                revision: Some(8),
+                ..workflow_delta("wf_1", true)
+            },
+        );
+        assert_eq!(s.workflows["wf_1"].state, "completed");
+        assert_eq!(
+            s.workflows["wf_1"].result_summary.as_deref(),
+            Some("historical")
+        );
+        assert!(s.workflow_follow_up("wf_1").is_none());
+        assert!(!s.has_pending_workflow_follow_up());
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("still historical".into()),
+                revision: Some(9),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert!(s.workflow_follow_up("wf_1").is_none());
+        assert_eq!(
+            s.workflows["wf_1"].result_summary.as_deref(),
+            Some("still historical")
+        );
+    }
+
+    #[test]
+    fn session_id_change_clears_workflow_follow_ups() {
+        let mut s = fresh_state();
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s1".into(),
+        });
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                result_summary: Some("broke".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert!(s.workflow_follow_up("wf_1").is_some());
+
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s1".into(),
+        });
+        assert!(s.workflow_follow_up("wf_1").is_some());
+        assert_eq!(s.workflows.len(), 1);
+
+        s.apply_event(&AcpEvent::SessionStarted {
+            session_id: "s2".into(),
+        });
+        assert!(s.workflows.is_empty());
+        assert!(s.workflow_follow_up("wf_1").is_none());
+        assert!(!s.has_pending_workflow_follow_up());
+        assert!(s.due_workflow_follow_ups(Utc::now()).is_empty());
+    }
+
+    #[test]
+    fn follow_up_with_summary_becomes_due_at_500ms() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("all green".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let at = s.workflow_follow_up("wf_1").unwrap().terminal_at;
+        assert!(s.has_pending_workflow_follow_up());
+        assert!(s
+            .due_workflow_follow_ups(at + chrono::Duration::milliseconds(499))
+            .is_empty());
+        let due = s.due_workflow_follow_ups(at + chrono::Duration::milliseconds(500));
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].run_id, "wf_1");
+        assert_eq!(due[0].terminal_summary.as_deref(), Some("all green"));
+        assert_eq!(
+            s.next_workflow_follow_up_delay(at),
+            Some(std::time::Duration::from_millis(500))
+        );
+        assert!(s
+            .next_workflow_follow_up_delay(at + chrono::Duration::milliseconds(500))
+            .is_none());
+    }
+
+    #[test]
+    fn follow_up_without_summary_becomes_due_at_3s() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("   ".into()),
+                last_event_detail: Some("not a conclusion".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let ticket = s.workflow_follow_up("wf_1").unwrap();
+        assert!(ticket.terminal_summary.is_none());
+        assert!(ticket.terminal_error_detail.is_none());
+        let at = ticket.terminal_at;
+        assert!(s.has_pending_workflow_follow_up());
+        assert!(s
+            .due_workflow_follow_ups(at + chrono::Duration::milliseconds(500))
+            .is_empty());
+        assert!(s
+            .due_workflow_follow_ups(
+                at + chrono::Duration::seconds(3) - chrono::Duration::milliseconds(1)
+            )
+            .is_empty());
+        let due = s.due_workflow_follow_ups(at + chrono::Duration::seconds(3));
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].terminal_status, "completed");
+    }
+
+    #[test]
+    fn failed_phase_equal_last_event_detail_is_due_at_3s() {
+        let mut s = fresh_state();
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("running".into()),
+                current_phase: Some("Research".into()),
+                ..workflow_delta("wf_1", true)
+            },
+        );
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                last_event_detail: Some("  Research  ".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let ticket = s.workflow_follow_up("wf_1").unwrap();
+        assert!(ticket.terminal_summary.is_none());
+        assert!(ticket.terminal_error_detail.is_none());
+        assert_eq!(ticket.terminal_status, "failed");
+        let at = ticket.terminal_at;
+        assert!(s
+            .due_workflow_follow_ups(at + chrono::Duration::milliseconds(500))
+            .is_empty());
+        assert_eq!(
+            s.due_workflow_follow_ups(at + chrono::Duration::seconds(3))
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_with_real_last_event_detail_is_due_at_500ms() {
+        let mut s = fresh_state();
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("running".into()),
+                current_phase: Some("Research".into()),
+                ..workflow_delta("wf_1", true)
+            },
+        );
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                last_event_detail: Some("disk full".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let ticket = s.workflow_follow_up("wf_1").unwrap();
+        assert!(ticket.terminal_summary.is_none());
+        assert_eq!(ticket.terminal_error_detail.as_deref(), Some("disk full"));
+        assert_eq!(ticket.terminal_status, "failed");
+        let at = ticket.terminal_at;
+        assert!(s
+            .due_workflow_follow_ups(at + chrono::Duration::milliseconds(499))
+            .is_empty());
+        let due = s.due_workflow_follow_ups(at + chrono::Duration::milliseconds(500));
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].terminal_error_detail.as_deref(), Some("disk full"));
+
+        // The failing frame omits `last_event_detail`, so a detail stored by
+        // an earlier progress frame is not the error conclusion.
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                name: Some("deep-research".into()),
+                state: Some("running".into()),
+                last_event_detail: Some("disk full".into()),
+                ..workflow_delta("wf_stored", true)
+            },
+        );
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                ..workflow_delta("wf_stored", false)
+            },
+        );
+        let stored = s.workflow_follow_up("wf_stored").unwrap();
+        assert!(stored.terminal_error_detail.is_none());
+        assert!(stored.terminal_summary.is_none());
+        assert_eq!(
+            s.workflows["wf_stored"].last_event_detail.as_deref(),
+            Some("disk full")
+        );
+        let stored_at = stored.terminal_at;
+        assert!(s
+            .due_workflow_follow_ups(stored_at + chrono::Duration::milliseconds(500))
+            .iter()
+            .all(|ticket| ticket.run_id != "wf_stored"));
+        assert!(s
+            .due_workflow_follow_ups(stored_at + chrono::Duration::seconds(3))
+            .iter()
+            .any(|ticket| ticket.run_id == "wf_stored"));
+    }
+
+    #[test]
+    fn dispatched_follow_up_is_not_pending_and_later_summary_does_not_reopen() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("original".into()),
+                revision: Some(1),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let at = s.workflow_follow_up("wf_1").unwrap().terminal_at;
+        assert!(s.mark_workflow_follow_up_dispatched("wf_1"));
+        assert!(!s.mark_workflow_follow_up_dispatched("wf_1"));
+        assert!(!s.mark_workflow_follow_up_dispatched("missing"));
+        assert!(!s.has_pending_workflow_follow_up());
+        assert!(s
+            .due_workflow_follow_ups(at + chrono::Duration::seconds(3))
+            .is_empty());
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("revised after send".into()),
+                revision: Some(2),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let ticket = s.workflow_follow_up("wf_1").unwrap();
+        assert_eq!(ticket.terminal_summary.as_deref(), Some("original"));
+        assert_eq!(ticket.revision, Some(1));
+        assert_eq!(ticket.terminal_at, at);
+        assert!(!s.has_pending_workflow_follow_up());
+        assert!(s
+            .due_workflow_follow_ups(Utc::now() + chrono::Duration::seconds(5))
+            .is_empty());
+        assert_eq!(
+            s.workflows["wf_1"].result_summary.as_deref(),
+            Some("revised after send")
+        );
+        assert_eq!(s.workflows["wf_1"].revision, Some(2));
+
+        // A later stop/fail correction updates the row only. The sent ticket
+        // stays closed and keeps the evidence from the send.
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("stopped".into()),
+                revision: Some(3),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                result_summary: Some("after dispatch".into()),
+                last_event_detail: Some("timeout".into()),
+                revision: Some(4),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let frozen = s.workflow_follow_up("wf_1").unwrap();
+        assert_eq!(frozen.terminal_summary.as_deref(), Some("original"));
+        assert_eq!(frozen.terminal_status, "completed");
+        assert_eq!(frozen.revision, Some(1));
+        assert!(frozen.terminal_error_detail.is_none());
+        assert!(!s.has_pending_workflow_follow_up());
+        assert_eq!(s.workflows["wf_1"].state, "failed");
+        assert_eq!(
+            s.workflows["wf_1"].result_summary.as_deref(),
+            Some("after dispatch")
+        );
+    }
+
+    #[test]
+    fn stopped_while_coalescing_suppresses_follow_up() {
+        let mut s = fresh_state();
+        spawn_running_workflow(&mut s, "wf_1");
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("early".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let at = s.workflow_follow_up("wf_1").unwrap().terminal_at;
+        assert!(s.has_pending_workflow_follow_up());
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("stopped".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert!(s.workflow_follow_up("wf_1").is_some());
+        assert_eq!(
+            s.workflow_follow_up("wf_1")
+                .unwrap()
+                .terminal_summary
+                .as_deref(),
+            Some("early")
+        );
+        assert!(!s.has_pending_workflow_follow_up());
+        assert!(s
+            .due_workflow_follow_ups(at + chrono::Duration::seconds(3))
+            .is_empty());
+        assert!(!s.mark_workflow_follow_up_suppressed("wf_1"));
+        assert!(!s.mark_workflow_follow_up_dispatched("wf_1"));
+
+        apply_workflow(
+            &mut s,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                result_summary: Some("corrected".into()),
+                last_event_detail: Some("timeout".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        let rearmed = s.workflow_follow_up("wf_1").unwrap();
+        assert_eq!(rearmed.terminal_status, "failed");
+        assert_eq!(rearmed.terminal_summary.as_deref(), Some("corrected"));
+        assert_eq!(rearmed.terminal_error_detail.as_deref(), Some("timeout"));
+        assert!(s.has_pending_workflow_follow_up());
+        assert_eq!(s.workflow_follow_ups.len(), 1);
+        assert!(s.mark_workflow_follow_up_suppressed("wf_1"));
+        assert!(!s.has_pending_workflow_follow_up());
+        assert!(s
+            .due_workflow_follow_ups(Utc::now() + chrono::Duration::seconds(5))
+            .is_empty());
+    }
+
+    #[test]
+    fn follow_up_reopen_bit_is_copied_only_after_an_aborted_claim() {
+        let mut aborted = fresh_state();
+        spawn_running_workflow(&mut aborted, "wf_1");
+        apply_workflow(
+            &mut aborted,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("early".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        apply_workflow(
+            &mut aborted,
+            WorkflowDelta {
+                state: Some("stopped".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert!(!aborted.workflow_follow_up_is_coalescing("wf_1"));
+        assert!(!aborted.note_workflow_follow_up_claim_aborted("missing"));
+        assert!(aborted.note_workflow_follow_up_claim_aborted("wf_1"));
+        assert!(!aborted.workflow_follow_up_should_reopen_claimed("wf_1"));
+        apply_workflow(
+            &mut aborted,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                result_summary: Some("corrected".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert!(aborted.workflow_follow_up_is_coalescing("wf_1"));
+        assert!(aborted.workflow_follow_up_should_reopen_claimed("wf_1"));
+
+        let mut plain = fresh_state();
+        spawn_running_workflow(&mut plain, "wf_1");
+        apply_workflow(
+            &mut plain,
+            WorkflowDelta {
+                state: Some("completed".into()),
+                result_summary: Some("early".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        apply_workflow(
+            &mut plain,
+            WorkflowDelta {
+                state: Some("stopped".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        apply_workflow(
+            &mut plain,
+            WorkflowDelta {
+                state: Some("failed".into()),
+                result_summary: Some("corrected".into()),
+                ..workflow_delta("wf_1", false)
+            },
+        );
+        assert!(plain.workflow_follow_up_is_coalescing("wf_1"));
+        assert!(!plain.workflow_follow_up_should_reopen_claimed("wf_1"));
+    }
+
+    #[test]
+    fn due_workflow_follow_ups_are_ordered_by_terminal_at_then_run_id() {
+        let mut s = fresh_state();
+        for run_id in ["wf_b", "wf_a"] {
+            spawn_running_workflow(&mut s, run_id);
+            apply_workflow(
+                &mut s,
+                WorkflowDelta {
+                    state: Some("completed".into()),
+                    result_summary: Some(run_id.into()),
+                    ..workflow_delta(run_id, false)
+                },
+            );
+        }
+        let t0 = Utc::now();
+        s.workflow_follow_ups
+            .get_mut("wf_b")
+            .unwrap()
+            .ticket
+            .terminal_at = t0;
+        s.workflow_follow_ups
+            .get_mut("wf_a")
+            .unwrap()
+            .ticket
+            .terminal_at = t0 + chrono::Duration::seconds(2);
+
+        let early = s.due_workflow_follow_ups(t0 + chrono::Duration::milliseconds(500));
+        assert_eq!(early.len(), 1);
+        assert_eq!(early[0].run_id, "wf_b");
+
+        let both = s.due_workflow_follow_ups(
+            t0 + chrono::Duration::seconds(2) + chrono::Duration::milliseconds(500),
+        );
+        assert_eq!(
+            both.iter()
+                .map(|ticket| ticket.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wf_b", "wf_a"]
+        );
+
+        s.workflow_follow_ups
+            .get_mut("wf_a")
+            .unwrap()
+            .ticket
+            .terminal_at = t0;
+        let tied = s.due_workflow_follow_ups(t0 + chrono::Duration::milliseconds(500));
+        assert_eq!(
+            tied.iter()
+                .map(|ticket| ticket.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wf_a", "wf_b"]
+        );
     }
 
     #[test]
@@ -4427,7 +5547,9 @@ mod tests {
         // The running call keeps its partial output at any size — nothing else
         // has it. So does the newest finished one.
         assert!(by_id["tc-running"].output.is_some());
-        assert!(by_id[format!("tc-{:04}", CALLS - 1).as_str()].output.is_some());
+        assert!(by_id[format!("tc-{:04}", CALLS - 1).as_str()]
+            .output
+            .is_some());
 
         // The oldest finished calls ship without the payload, but keep every
         // field that identifies the card.
@@ -4466,7 +5588,12 @@ mod tests {
         for i in 0..200 {
             run_tool_call(&mut s, &format!("tc-{i:04}"), 16 * 1024, true);
         }
-        run_tool_call(&mut s, "tc-huge", MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES + 1024, false);
+        run_tool_call(
+            &mut s,
+            "tc-huge",
+            MAX_SNAPSHOT_TOOL_PAYLOAD_BYTES + 1024,
+            false,
+        );
 
         let snap = s.to_snapshot();
         let huge = snap
