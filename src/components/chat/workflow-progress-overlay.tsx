@@ -237,11 +237,10 @@ function WorkflowProgressPanel({
 
   const body = (
     <div
+      data-testid="workflow-progress-body"
       className={cn(
-        "p-3",
-        overlay
-          ? "max-h-96 space-y-2 overflow-y-auto"
-          : "flex gap-2 overflow-x-auto"
+        "min-h-0 max-h-[160px] overflow-y-auto p-3",
+        overlay ? "space-y-2" : "flex gap-2 overflow-x-auto"
       )}
     >
       {runs.map((run) =>
@@ -265,7 +264,10 @@ function WorkflowProgressPanel({
   if (overlay) {
     return (
       <div className="pointer-events-none flex max-w-[min(22rem,calc(100%-2rem))]">
-        <div className="pointer-events-auto w-72 max-w-full rounded-xl border bg-card/60 shadow-lg backdrop-blur transition-colors hover:bg-card/95 supports-[backdrop-filter]:bg-card/50 supports-[backdrop-filter]:hover:bg-card/85">
+        <div
+          data-testid="workflow-progress-panel"
+          className="pointer-events-auto flex max-h-[200px] min-h-0 w-72 max-w-full flex-col rounded-xl border bg-card/60 shadow-lg backdrop-blur transition-colors hover:bg-card/95 supports-[backdrop-filter]:bg-card/50 supports-[backdrop-filter]:hover:bg-card/85"
+        >
           {header}
           {body}
         </div>
@@ -274,7 +276,10 @@ function WorkflowProgressPanel({
   }
 
   return (
-    <div className="mb-2 w-full rounded-xl border bg-card/60 shadow-lg backdrop-blur transition-colors hover:bg-card/95 supports-[backdrop-filter]:bg-card/50 supports-[backdrop-filter]:hover:bg-card/85">
+    <div
+      data-testid="workflow-progress-panel"
+      className="mb-2 flex max-h-[200px] min-h-0 w-full flex-col rounded-xl border bg-card/60 shadow-lg backdrop-blur transition-colors hover:bg-card/95 supports-[backdrop-filter]:bg-card/50 supports-[backdrop-filter]:hover:bg-card/85"
+    >
       {header}
       {body}
     </div>

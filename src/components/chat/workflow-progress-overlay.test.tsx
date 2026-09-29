@@ -212,6 +212,43 @@ describe("WorkflowProgressOverlay", () => {
     expect(screen.getByText("0s")).toBeInTheDocument()
   })
 
+  it("caps the workflow panel height and scrolls its content internally", () => {
+    const agents = Array.from({ length: 20 }, (_, index) => ({
+      agent_id: `agent-${index}`,
+      label: `researcher-${index}`,
+      phase: "Research",
+      state: "running",
+    }))
+
+    render(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <WorkflowProgressDockProvider runs={[run({ agents })]}>
+          <WorkflowProgressOverlay placement="overlay" />
+          <WorkflowProgressOverlay placement="composer" />
+        </WorkflowProgressDockProvider>
+      </NextIntlClientProvider>
+    )
+
+    expect(screen.getByTestId("workflow-progress-panel")).toHaveClass(
+      "max-h-[200px]"
+    )
+    expect(screen.getByTestId("workflow-progress-body")).toHaveClass(
+      "max-h-[160px]",
+      "overflow-y-auto"
+    )
+
+    fireEvent.click(screen.getByLabelText("Dock above the input"))
+
+    expect(screen.getByTestId("workflow-progress-panel")).toHaveClass(
+      "max-h-[200px]"
+    )
+    expect(screen.getByTestId("workflow-progress-body")).toHaveClass(
+      "max-h-[160px]",
+      "overflow-x-auto",
+      "overflow-y-auto"
+    )
+  })
+
   it("ticks a local clock while the run is live", () => {
     vi.useFakeTimers()
     render(
