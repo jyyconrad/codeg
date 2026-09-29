@@ -3622,7 +3622,8 @@
         "jumpToPreviousUserMessage": "跳轉到上一條使用者訊息",
         "showMore": "展開",
         "showLess": "收合",
-        "loadBackgroundActivity": "載入背景活動"
+        "loadBackgroundActivity": "載入背景活動",
+        "workflowFollowUpLabel": "Codeg · Workflow 結果"
       },
       "liveTurnStats": {
         "thinking": "思考中...",

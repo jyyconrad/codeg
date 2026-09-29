@@ -3622,7 +3622,8 @@
         "jumpToPreviousUserMessage": "跳转到上一条用户消息",
         "showMore": "展开",
         "showLess": "收起",
-        "loadBackgroundActivity": "加载后台活动"
+        "loadBackgroundActivity": "加载后台活动",
+        "workflowFollowUpLabel": "Codeg · Workflow 结果"
       },
       "liveTurnStats": {
         "thinking": "思考中...",

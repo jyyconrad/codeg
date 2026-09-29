@@ -3622,7 +3622,8 @@
         "jumpToPreviousUserMessage": "Jump to user message",
         "showMore": "Show more",
         "showLess": "Show less",
-        "loadBackgroundActivity": "Load background activity"
+        "loadBackgroundActivity": "Load background activity",
+        "workflowFollowUpLabel": "Codeg · Workflow result"
       },
       "liveTurnStats": {
         "thinking": "Thinking...",

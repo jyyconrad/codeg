@@ -74,6 +74,7 @@ import {
   extractLatestPlanEntriesFromMessages,
 } from "@/lib/agent-plan"
 import type { AgentType, ConnectionStatus, MessageTurn } from "@/lib/types"
+import { isWorkflowFollowUpMessage } from "@/lib/workflow-follow-up-message"
 import {
   lastRoundEditTarget,
   type LastRoundEditTarget,
@@ -498,6 +499,32 @@ function extractTextFromParts(parts: AdaptedContentPart[]): string {
     })
     .filter((text) => text.length > 0)
     .join("\n")
+}
+
+function textOfTurn(turn: MessageTurn): string {
+  let text = ""
+  for (const block of turn.blocks) {
+    if (block.type === "text") text += block.text
+  }
+  return text
+}
+
+/** Host workflow follow-up: the turn flag, the broadcast id, or the template. */
+function isWorkflowFollowUpGroup(
+  group: ResolvedMessageGroup,
+  sourceTurns: MessageTurn[] | undefined
+): boolean {
+  if (sourceTurns?.some((turn) => turn.host_origin === "workflow_completion")) {
+    return true
+  }
+  if (isWorkflowFollowUpMessage(group.id, extractTextFromParts(group.parts))) {
+    return true
+  }
+  return (
+    sourceTurns?.some((turn) =>
+      isWorkflowFollowUpMessage(turn.id, textOfTurn(turn))
+    ) ?? false
+  )
 }
 
 type AssistantTurnItem = Extract<ThreadRenderItem, { kind: "turn" }>
@@ -956,6 +983,7 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
   isThreadTail?: boolean
   onEditLastRound?: () => void
 }) {
+  const t = useTranslations("Folder.chat.messageList")
   if (group.role === "system") {
     return <CollapsibleSystemMessage parts={group.parts} />
   }
@@ -966,6 +994,8 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
     ? sourceTurns[sourceTurns.length - 1]
     : null
   const forkPointUnnamed = isForkPointUnnamed(forkPoint, isThreadTail)
+  const workflowFollowUp =
+    group.role === "user" && isWorkflowFollowUpGroup(group, sourceTurns)
 
   return (
     <div className={dimmed ? "opacity-70" : undefined}>
@@ -974,15 +1004,22 @@ const HistoricalMessageGroup = memo(function HistoricalMessageGroup({
           <UserImageAttachments images={group.images} className="self-end" />
         ) : null}
         {group.role === "user" ? (
-          <div className="group/user-msg flex w-fit ml-auto max-w-full items-start gap-1">
-            {onEditLastRound ? (
-              <UserMessageEditButton onEdit={onEditLastRound} />
+          <div className="ml-auto flex w-fit max-w-full flex-col items-end gap-1">
+            {workflowFollowUp ? (
+              <span className="px-1 text-xs font-medium text-muted-foreground">
+                {t("workflowFollowUpLabel")}
+              </span>
             ) : null}
-            <UserMessageTaskButton parts={group.parts} />
-            <UserMessageCopyButton parts={group.parts} />
-            <MessageContent>
-              <CollapsibleUserMessage parts={group.parts} />
-            </MessageContent>
+            <div className="group/user-msg flex w-fit max-w-full items-start gap-1">
+              {onEditLastRound && !workflowFollowUp ? (
+                <UserMessageEditButton onEdit={onEditLastRound} />
+              ) : null}
+              <UserMessageTaskButton parts={group.parts} />
+              <UserMessageCopyButton parts={group.parts} />
+              <MessageContent>
+                <CollapsibleUserMessage parts={group.parts} />
+              </MessageContent>
+            </div>
           </div>
         ) : (
           <MessageContent>

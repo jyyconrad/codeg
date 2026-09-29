@@ -3622,7 +3622,8 @@
         "jumpToPreviousUserMessage": "Ir para a mensagem do usuário",
         "showMore": "Mostrar mais",
         "showLess": "Mostrar menos",
-        "loadBackgroundActivity": "Carregar atividade em segundo plano"
+        "loadBackgroundActivity": "Carregar atividade em segundo plano",
+        "workflowFollowUpLabel": "Codeg · Resultado do workflow"
       },
       "liveTurnStats": {
         "thinking": "Pensando...",

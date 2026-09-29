@@ -314,6 +314,11 @@ export interface MessageTurn {
    * Absent on turns that came from the parser to begin with — those already ARE
    * `turn-N` — so read it as `turn.source_turn_id ?? turn.id`. */
   source_turn_id?: string | null
+  /** Host-generated prompt, not something the human typed. Omitted by older
+   * payloads and by parsers that only stamp the follow-up id. */
+  host_origin?: "workflow_completion" | null
+  /** Run id of a workflow follow-up. Omitted by older payloads. */
+  workflow_run_id?: string | null
 }
 
 export interface ConversationDetail {

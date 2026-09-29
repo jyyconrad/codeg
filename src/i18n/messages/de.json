@@ -3622,7 +3622,8 @@
         "jumpToPreviousUserMessage": "Zur Benutzernachricht springen",
         "showMore": "Mehr anzeigen",
         "showLess": "Weniger anzeigen",
-        "loadBackgroundActivity": "Hintergrundaktivität laden"
+        "loadBackgroundActivity": "Hintergrundaktivität laden",
+        "workflowFollowUpLabel": "Codeg · Workflow-Ergebnis"
       },
       "liveTurnStats": {
         "thinking": "Denkt nach...",

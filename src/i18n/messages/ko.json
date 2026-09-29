@@ -3622,7 +3622,8 @@
         "jumpToPreviousUserMessage": "이전 사용자 메시지로 이동",
         "showMore": "더보기",
         "showLess": "접기",
-        "loadBackgroundActivity": "백그라운드 활동 불러오기"
+        "loadBackgroundActivity": "백그라운드 활동 불러오기",
+        "workflowFollowUpLabel": "Codeg · 워크플로 결과"
       },
       "liveTurnStats": {
         "thinking": "생각 중...",

@@ -140,6 +140,10 @@ import {
 import { type LastRoundEditTarget } from "@/lib/edit-last-round"
 import { userPromptHistory } from "@/lib/composer-history"
 import { contentBlocksFromUserMessage } from "@/lib/user-message-blocks"
+import {
+  isWorkflowFollowUpMessage,
+  workflowFollowUpRunId,
+} from "@/lib/workflow-follow-up-message"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   getSavedModeId,
@@ -225,17 +229,28 @@ function buildOptimisticUserTurnFromDraft(
 /** Build a user `MessageTurn` from a broadcast `user_message` (event or
  *  snapshot `pending_user_message`). Used by cross-client VIEWERS to render the
  *  sender's prompt. The turn `id` is the broadcast `message_id` so the runtime
- *  reducer can dedup it idempotently. */
+ *  reducer can dedup it idempotently. A host workflow follow-up keeps that id
+ *  and is tagged so the timeline does not present it as a human message. */
 function buildUserTurnFromMessageBlocks(
   messageId: string,
   blocks: UserMessageBlock[]
 ): MessageTurn {
-  return {
+  let text = ""
+  for (const block of blocks) {
+    if (block.type === "text") text += block.text
+  }
+  const runId = workflowFollowUpRunId(messageId, text)
+  const turn: MessageTurn = {
     id: messageId,
     role: "user",
     blocks: contentBlocksFromUserMessage(blocks),
     timestamp: new Date().toISOString(),
   }
+  if (isWorkflowFollowUpMessage(messageId, text)) {
+    turn.host_origin = "workflow_completion"
+    if (runId) turn.workflow_run_id = runId
+  }
+  return turn
 }
 
 function buildVirtualConversationId(seed: string): number {

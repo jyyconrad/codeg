@@ -35,6 +35,11 @@ const GROK_TOOL_INPUT_CAP: usize = 8_000;
 /// rather than shredded downstream.
 const GROK_TASK_OUTPUT_CAP: usize = 48 * 1024;
 
+/// Live broadcast id for a host workflow follow-up: `codeg-workflow-follow-up:`
+/// plus the run id. History uses the same id so the timeline collapses to one turn.
+const WORKFLOW_FOLLOW_UP_ID_PREFIX: &str = "codeg-workflow-follow-up:";
+const WORKFLOW_FOLLOW_UP_TEXT_MARK: &str = "[Codeg workflow completion]";
+
 /// Tool name the parser assigns to grok's native `ask_user_question` (from its
 /// `_meta["x.ai/tool"].name`). Used to find the ask ToolResults whose answer must
 /// be recovered from `chat_history.jsonl` (see `inject_grok_ask_answers`).
@@ -1073,12 +1078,53 @@ fn parse_updates(path: &Path) -> ParsedUpdates {
     }
     flush_assistant(&mut assistant, &mut out.turns, &mut tool_result_idx);
 
-    // Assign stable, unique, index-based ids (the transcript is append-only, so
-    // positional ids are stable across re-parses).
+    // Positional ids stay stable across re-parses (the transcript is append-only).
+    // A host workflow follow-up instead keeps the live broadcast id so this
+    // history turn, the `user_message` event, and the mid-turn snapshot collapse.
     for (i, turn) in out.turns.iter_mut().enumerate() {
-        turn.id = format!("grok-turn-{i}");
+        if let Some(id) = workflow_follow_up_message_id(turn) {
+            turn.id = id;
+        } else {
+            turn.id = format!("grok-turn-{i}");
+        }
     }
     out
+}
+
+/// Run id from a host follow-up prompt: the first line is the mark, and a later
+/// line is exactly `Run ID: <id>`.
+fn workflow_follow_up_run_id(text: &str) -> Option<&str> {
+    let mut lines = text.lines();
+    if lines.next()? != WORKFLOW_FOLLOW_UP_TEXT_MARK {
+        return None;
+    }
+    for line in lines {
+        let Some(rest) = line.strip_prefix("Run ID: ") else {
+            continue;
+        };
+        if !rest.is_empty() && !rest.chars().any(char::is_whitespace) {
+            return Some(rest);
+        }
+    }
+    None
+}
+
+fn workflow_follow_up_message_id(turn: &MessageTurn) -> Option<String> {
+    if !matches!(turn.role, TurnRole::User) {
+        return None;
+    }
+    let mut joined = String::new();
+    for block in &turn.blocks {
+        let ContentBlock::Text { text } = block else {
+            continue;
+        };
+        if let Some(run_id) = workflow_follow_up_run_id(text) {
+            return Some(format!("{WORKFLOW_FOLLOW_UP_ID_PREFIX}{run_id}"));
+        }
+        joined.push_str(text);
+    }
+    let run_id = workflow_follow_up_run_id(&joined)?;
+    Some(format!("{WORKFLOW_FOLLOW_UP_ID_PREFIX}{run_id}"))
 }
 
 fn grok_opt_text(update: &Value, key: &str) -> Option<String> {
@@ -2464,6 +2510,157 @@ mod tests {
         assert!(
             matches!(&detail.turns[2].blocks[0], ContentBlock::Text { text } if text == "那次失败可以忽略")
         );
+    }
+
+    fn session_update_line(update: serde_json::Value, timestamp: i64) -> String {
+        serde_json::json!({
+            "method": "session/update",
+            "params": {"sessionId": "s", "update": update},
+            "timestamp": timestamp
+        })
+        .to_string()
+    }
+
+    /// The host prompt stays visible, but its id is the live broadcast id so a
+    /// reloaded transcript dedups with the in-flight `user_message`. A
+    /// `hideFromScrollback` reminder that happens to carry the same mark is
+    /// still dropped.
+    #[test]
+    fn workflow_follow_up_user_turn_id_matches_live_run_id() {
+        let prompt = "\
+[Codeg workflow completion]
+This is a host-generated event, not a new user request.
+Workflow: build
+Run ID: run-123
+Status: completed
+
+<workflow_result>
+done
+</workflow_result>
+";
+        let hidden = "\
+[Codeg workflow completion]
+Run ID: hidden-run
+";
+        let updates = [
+            session_update_line(
+                serde_json::json!({
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "ship it"},
+                    "_meta": {"promptIndex": 0}
+                }),
+                1783584019,
+            ),
+            session_update_line(
+                serde_json::json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "ok"}
+                }),
+                1783584020,
+            ),
+            session_update_line(
+                serde_json::json!({
+                    "sessionUpdate": "turn_completed",
+                    "stop_reason": "end_turn"
+                }),
+                1783584021,
+            ),
+            session_update_line(
+                serde_json::json!({
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": hidden},
+                    "_meta": {"promptIndex": 1, "hideFromScrollback": true}
+                }),
+                1783584022,
+            ),
+            session_update_line(
+                serde_json::json!({
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": prompt},
+                    "_meta": {"promptIndex": 2}
+                }),
+                1783584100,
+            ),
+            session_update_line(
+                serde_json::json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "noted"}
+                }),
+                1783584101,
+            ),
+        ]
+        .join("\n");
+        let (_tmp, sessions) = fixture(SUMMARY, &updates);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+
+        assert_eq!(detail.turns.len(), 4);
+        assert_eq!(detail.turns[0].id, "grok-turn-0");
+        assert!(matches!(detail.turns[0].role, TurnRole::User));
+        assert_eq!(detail.turns[1].id, "grok-turn-1");
+        assert_eq!(detail.turns[2].id, "codeg-workflow-follow-up:run-123");
+        assert!(matches!(detail.turns[2].role, TurnRole::User));
+        assert!(matches!(
+            &detail.turns[2].blocks[0],
+            ContentBlock::Text { text }
+                if text.starts_with("[Codeg workflow completion]") && text.contains("done")
+        ));
+        assert_eq!(detail.turns[3].id, "grok-turn-3");
+        assert!(!detail.turns.iter().any(|turn| turn.id.contains("hidden-run")));
+    }
+
+    #[test]
+    fn split_workflow_follow_up_chunks_share_one_run_id() {
+        let updates = [
+            session_update_line(
+                serde_json::json!({
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "[Codeg workflow completion]\nWorkflow: build\n"},
+                    "_meta": {"promptIndex": 0}
+                }),
+                1783584100,
+            ),
+            session_update_line(
+                serde_json::json!({
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "Run ID: run-456\nStatus: completed\n"},
+                    "_meta": {"promptIndex": 0}
+                }),
+                1783584100,
+            ),
+        ]
+        .join("\n");
+        let (_tmp, sessions) = fixture(SUMMARY, &updates);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        assert_eq!(detail.turns.len(), 1);
+        assert_eq!(detail.turns[0].id, "codeg-workflow-follow-up:run-456");
+        assert!(matches!(detail.turns[0].role, TurnRole::User));
+    }
+
+    #[test]
+    fn workflow_mark_off_the_first_line_keeps_positional_id() {
+        let text = "Result body\n[Codeg workflow completion]\nRun ID: run-123\n";
+        let updates = session_update_line(
+            serde_json::json!({
+                "sessionUpdate": "user_message_chunk",
+                "content": {"type": "text", "text": text},
+                "_meta": {"promptIndex": 0}
+            }),
+            1783584019,
+        );
+        let (_tmp, sessions) = fixture(SUMMARY, &updates);
+        let detail = GrokParser::with_base_dir(sessions)
+            .get_conversation("019f45e3-e1ef-7690-a29f-fe2554382b49")
+            .unwrap();
+        assert_eq!(detail.turns.len(), 1);
+        assert_eq!(detail.turns[0].id, "grok-turn-0");
+        assert!(matches!(
+            &detail.turns[0].blocks[0],
+            ContentBlock::Text { text: body } if body.contains("[Codeg workflow completion]")
+        ));
     }
 
     #[test]

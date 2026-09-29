@@ -3622,7 +3622,8 @@
         "jumpToPreviousUserMessage": "الانتقال إلى رسالة المستخدم",
         "showMore": "عرض المزيد",
         "showLess": "طي",
-        "loadBackgroundActivity": "تحميل نشاط الخلفية"
+        "loadBackgroundActivity": "تحميل نشاط الخلفية",
+        "workflowFollowUpLabel": "Codeg · نتيجة سير العمل"
       },
       "liveTurnStats": {
         "thinking": "جارٍ التفكير...",

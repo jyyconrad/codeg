@@ -3622,7 +3622,8 @@
         "jumpToPreviousUserMessage": "前のユーザーメッセージへ",
         "showMore": "もっと見る",
         "showLess": "折りたたむ",
-        "loadBackgroundActivity": "バックグラウンドの動作を読み込む"
+        "loadBackgroundActivity": "バックグラウンドの動作を読み込む",
+        "workflowFollowUpLabel": "Codeg · ワークフロー結果"
       },
       "liveTurnStats": {
         "thinking": "考え中...",
