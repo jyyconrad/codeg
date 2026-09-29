@@ -3097,6 +3097,9 @@ impl CodexParser {
         let mut task_start_markers: Vec<DateTime<Utc>> = Vec::new();
         let mut turn_context_markers: Vec<DateTime<Utc>> = Vec::new();
         let mut context_window_used_tokens: Option<u64> = None;
+        // Not every `token_count` reads the context: see
+        // `crate::acp::codex_context`, which the live ring shares.
+        let mut context_readings = crate::acp::codex_context::ContextReadings::default();
         let mut context_window_max_tokens: Option<u64> = None;
         let mut latest_total_usage: Option<TurnUsage> = None;
         let mut latest_total_tokens: Option<u64> = None;
@@ -3212,6 +3215,12 @@ impl CodexParser {
         //     writes several of these back to back (up to 28 in real rollouts),
         //     and emitting a card per record is what tore one thought into a
         //     column of 思考 cards.
+        // codex 0.149+ writes no section events: it announces each item with an
+        // `event_msg.item_completed` restating the summary that follows. That
+        // ends the run below like any record that is not reasoning, and so does
+        // everything else that turns out to render nothing — the cards they
+        // leave touching are joined once the transcript is assembled
+        // (`merge_touching_thinking_cards`).
         // So `grouped_reasoning` accumulates the settled text of the run while
         // `pending_reasoning` holds the section events not yet restated by a
         // grouped summary; the summary supersedes them (it is the same text,
@@ -3421,6 +3430,7 @@ impl CodexParser {
                                 if let Some(ts) = parse_codex_timestamp(&value) {
                                     push_turn_start(&mut task_start_markers, ts);
                                 }
+                                context_readings.turn_started();
                             }
                             "user_message" => {
                                 active_agent_count = 0;
@@ -3809,12 +3819,14 @@ impl CodexParser {
                                         }
                                     }
 
-                                    let total_tokens =
+                                    if let Some(used) =
                                         extract_context_window_used_tokens_from_token_count_info(
                                             info,
-                                        );
-                                    if total_tokens.is_some() {
-                                        context_window_used_tokens = total_tokens;
+                                        )
+                                    {
+                                        if context_readings.admit(used) {
+                                            context_window_used_tokens = Some(used);
+                                        }
                                     }
 
                                     let context_window =
@@ -4834,6 +4846,10 @@ impl CodexParser {
                                     emitted_image_ids.insert(id);
                                 }
                             }
+                            // Not rendered; it only marks the request whose
+                            // `token_count` will cover the provider's search
+                            // loop rather than the context.
+                            "web_search_call" => context_readings.web_search_ran(),
                             _ => {}
                         }
                     }
@@ -5061,7 +5077,15 @@ impl CodexParser {
         let folder_path = cwd.clone();
         let folder_name = folder_path.as_ref().map(|p| folder_name_from_path(p));
 
+        let turn_starts = if task_start_markers.is_empty() {
+            &turn_context_markers
+        } else {
+            &task_start_markers
+        };
         fold_shell_session_polls(&mut messages, &poll_origins);
+        // After every pass that drops messages, so it sees every pair of cards
+        // they leave touching.
+        merge_touching_thinking_cards(&mut messages, turn_starts);
         let mut turns = group_into_turns(messages);
         reconcile_turn_usage(&mut turns, &recorded_round_usage);
         super::relocate_orphaned_tool_results(&mut turns);
@@ -5069,11 +5093,6 @@ impl CodexParser {
         super::resolve_patch_line_numbers(&mut turns, cwd.as_deref());
         // After relocation every turn's `completed_at` is final — tile the
         // timeline into per-reply durations before stats aggregate them.
-        let turn_starts = if task_start_markers.is_empty() {
-            &turn_context_markers
-        } else {
-            &task_start_markers
-        };
         super::backfill_turn_durations(&mut turns, turn_starts);
         let mut session_stats = super::compute_session_stats(&turns);
         session_stats =
@@ -5401,6 +5420,69 @@ fn push_turn_start(turn_starts: &mut Vec<DateTime<Utc>>, ts: DateTime<Utc>) {
         Some(last) if ts <= *last => {}
         _ => turn_starts.push(ts),
     }
+}
+
+/// Join the thinking cards left touching once the transcript is assembled.
+///
+/// A reasoning run ends at the first record that is not reasoning, and many of
+/// those render nothing: codex 0.149+ announces every reasoning item with an
+/// `event_msg.item_completed` restating the summary that follows, an addressed
+/// inter-agent message never renders in place, a `write_stdin` poll or code-mode
+/// `wait` is folded into the call it collects. Each split one thought — the
+/// announcements alone gave every reasoning item a 思考 card of its own, where
+/// live streams the whole think as one. Whether a record renders is often known
+/// only now, so the cards are joined here, the way the run itself would have
+/// joined them: text in order, stamped with the later card's time, both cards'
+/// spend kept.
+fn merge_touching_thinking_cards(
+    messages: &mut Vec<UnifiedMessage>,
+    turn_starts: &[DateTime<Utc>],
+) {
+    let mut kept: Vec<UnifiedMessage> = Vec::with_capacity(messages.len());
+    for message in std::mem::take(messages) {
+        match kept.last_mut() {
+            Some(previous) if continues_thought(previous, &message, turn_starts) => {
+                if let (
+                    [ContentBlock::Thinking { text: earlier }],
+                    [ContentBlock::Thinking { text: later }],
+                ) = (previous.content.as_mut_slice(), message.content.as_slice())
+                {
+                    earlier.push_str("\n\n");
+                    earlier.push_str(later);
+                }
+                previous.timestamp = message.timestamp;
+                previous.completed_at = message.completed_at;
+                previous.usage = match (previous.usage.take(), message.usage) {
+                    (Some(earlier), Some(later)) => Some(codex_usage_add(&earlier, &later)),
+                    (earlier, later) => earlier.or(later),
+                };
+            }
+            _ => kept.push(message),
+        }
+    }
+    *messages = kept;
+}
+
+/// Whether `next` resumes the thought `previous` paused: both are thinking cards
+/// and no turn started between them. A new turn is a new prompt even when
+/// nothing visible marks it, and the duration tiling measures `next` from that
+/// start — a merged card would lose everything before it.
+fn continues_thought(
+    previous: &UnifiedMessage,
+    next: &UnifiedMessage,
+    turn_starts: &[DateTime<Utc>],
+) -> bool {
+    let is_thinking_card = |message: &UnifiedMessage| {
+        matches!(message.role, MessageRole::Assistant)
+            && matches!(message.content.as_slice(), [ContentBlock::Thinking { .. }])
+    };
+    let paused_at = previous.completed_at.unwrap_or(previous.timestamp);
+    let resumed_by = next.completed_at.unwrap_or(next.timestamp);
+    is_thinking_card(previous)
+        && is_thinking_card(next)
+        && !turn_starts
+            .iter()
+            .any(|start| *start > paused_at && *start <= resumed_by)
 }
 
 /// Close an open reasoning run: emit everything it gathered as a single Thinking
@@ -8382,6 +8464,209 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    /// A `token_count` whose `last_token_usage` is `[input, cached, output]`,
+    /// with the session total in the same shape.
+    fn usage_count_line(ts: &str, last: [u64; 3], total: [u64; 3], window: u64) -> String {
+        let usage = |[input, cached, output]: [u64; 3]| {
+            serde_json::json!({
+                "input_tokens": input,
+                "cached_input_tokens": cached,
+                "output_tokens": output,
+                "total_tokens": input + output,
+            })
+        };
+        rollout_line(
+            ts,
+            "event_msg",
+            serde_json::json!({
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": usage(total),
+                    "last_token_usage": usage(last),
+                    "model_context_window": window,
+                },
+            }),
+        )
+    }
+
+    /// Issue #846, with the reporter's own counters (glm-5.3 over a Responses
+    /// API, 996 147-token window). The request that ran the web searches
+    /// reported 530 278 tokens — 53 % — yet the very next request sent the whole
+    /// conversation in 74 215: that report sums the provider's server-side
+    /// search loop, not what the conversation holds.
+    #[test]
+    fn a_request_that_ran_a_hosted_web_search_is_not_a_context_reading() {
+        const WINDOW: u64 = 996_147;
+        let search = |ts: &str, query: &str| {
+            rollout_line(
+                ts,
+                "response_item",
+                serde_json::json!({
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": {"type": "search", "query": query},
+                }),
+            )
+        };
+        let turn_start = |ts: &str| {
+            rollout_line(
+                ts,
+                "event_msg",
+                serde_json::json!({"type": "task_started", "model_context_window": WINDOW}),
+            )
+        };
+        let searched_report = |ts: &str| {
+            usage_count_line(ts, [522_480, 450_432, 7_798], [579_422, 501_952, 8_158], WINDOW)
+        };
+        let first_turn = vec![
+            rollout_line(
+                "2026-09-26T14:17:00Z",
+                "session_meta",
+                serde_json::json!({"id": "ws-846", "cwd": "/tmp/demo"}),
+            ),
+            turn_start("2026-09-26T14:17:01Z"),
+            rollout_line(
+                "2026-09-26T14:17:01Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "research it"}),
+            ),
+            usage_count_line(
+                "2026-09-26T14:17:30Z",
+                [56_942, 51_520, 360],
+                [56_942, 51_520, 360],
+                WINDOW,
+            ),
+            search("2026-09-26T14:18:00Z", "one"),
+            search("2026-09-26T14:18:30Z", "two"),
+            search("2026-09-26T14:19:00Z", "three"),
+            rollout_line(
+                "2026-09-26T14:19:10Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_message", "message": "report"}),
+            ),
+            searched_report("2026-09-26T14:19:11Z"),
+            rollout_line(
+                "2026-09-26T14:19:12Z",
+                "event_msg",
+                serde_json::json!({"type": "task_complete"}),
+            ),
+        ];
+        let reading = |lines: &[String], tag: &str| {
+            let stats = parse_lines(lines, tag).session_stats.expect("session stats");
+            (stats.context_window_used_tokens, stats.context_window_usage_percent)
+        };
+
+        let (used, percent) = reading(&first_turn, "ws-846-searched");
+        assert_eq!(used, Some(57_302), "the reading before the search stands");
+        let percent = percent.expect("percent");
+        assert!((percent - 57_302.0 / WINDOW as f64 * 100.0).abs() < 1e-9, "{percent}");
+
+        // Older codex restates the latest report as the next request opens; a
+        // restatement of the report set aside is set aside with it.
+        let mut restated = first_turn.clone();
+        restated.push(turn_start("2026-09-26T14:30:00Z"));
+        restated.push(searched_report("2026-09-26T14:30:01Z"));
+        assert_eq!(reading(&restated, "ws-846-restated").0, Some(57_302));
+
+        // A search whose request never reported (the turn was interrupted)
+        // leaves the next turn's report alone.
+        let interrupted = vec![
+            first_turn[0].clone(),
+            turn_start("2026-09-26T14:17:01Z"),
+            search("2026-09-26T14:18:00Z", "one"),
+            rollout_line(
+                "2026-09-26T14:18:05Z",
+                "event_msg",
+                serde_json::json!({"type": "turn_aborted", "reason": "interrupted"}),
+            ),
+            turn_start("2026-09-26T14:30:00Z"),
+            usage_count_line(
+                "2026-09-26T14:30:27Z",
+                [74_215, 63_232, 5_119],
+                [74_215, 63_232, 5_119],
+                WINDOW,
+            ),
+        ];
+        assert_eq!(reading(&interrupted, "ws-846-interrupted").0, Some(79_334));
+
+        // The next request sends the conversation again, so it reads again.
+        let mut next_turn = first_turn;
+        next_turn.push(turn_start("2026-09-26T14:30:00Z"));
+        next_turn.push(rollout_line(
+            "2026-09-26T14:30:00Z",
+            "event_msg",
+            serde_json::json!({"type": "user_message", "message": "next"}),
+        ));
+        next_turn.push(rollout_line(
+            "2026-09-26T14:30:26Z",
+            "event_msg",
+            serde_json::json!({"type": "agent_message", "message": "ok"}),
+        ));
+        next_turn.push(usage_count_line(
+            "2026-09-26T14:30:27Z",
+            [74_215, 63_232, 5_119],
+            [653_637, 565_184, 13_277],
+            WINDOW,
+        ));
+        assert_eq!(reading(&next_turn, "ws-846-next").0, Some(79_334));
+    }
+
+    /// After compacting, codex reports its estimate of the compacted context in
+    /// `last_token_usage` while restating the session total unchanged. That is
+    /// a new reading, not a restatement of the one before it.
+    #[test]
+    fn the_estimate_codex_reports_after_compacting_is_a_context_reading() {
+        let lines = vec![
+            rollout_line(
+                "2026-06-05T15:43:48Z",
+                "session_meta",
+                serde_json::json!({"id": "compact-est", "cwd": "/tmp/demo"}),
+            ),
+            rollout_line(
+                "2026-06-05T15:43:49Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "go on"}),
+            ),
+            usage_count_line(
+                "2026-06-05T15:50:00Z",
+                [243_996, 4_352, 2_599],
+                [3_490_000, 3_000_000, 23_815],
+                258_400,
+            ),
+            rollout_line(
+                "2026-06-05T15:50:30Z",
+                "compacted",
+                serde_json::json!({"message": "summary"}),
+            ),
+            rollout_line(
+                "2026-06-05T15:50:30Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 3_490_000,
+                            "cached_input_tokens": 3_000_000,
+                            "output_tokens": 23_815,
+                            "total_tokens": 3_513_815,
+                        },
+                        "last_token_usage": {
+                            "input_tokens": 0,
+                            "cached_input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 13_620,
+                        },
+                        "model_context_window": 258_400,
+                    },
+                }),
+            ),
+        ];
+        let stats = parse_lines(&lines, "compact-est")
+            .session_stats
+            .expect("session stats");
+        assert_eq!(stats.context_window_used_tokens, Some(13_620));
+    }
+
     /// Sum the per-turn usage a parse produced — what the usage dashboard
     /// materializes and what the session panel adds up.
     fn turn_usage_total(detail: &crate::models::ConversationDetail) -> u64 {
@@ -10248,6 +10533,310 @@ mod tests {
             "the round spent inside the run belongs to the run's card"
         );
         assert_eq!(turn_usage_total(&detail), 1_680, "no round is lost");
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// One reasoning item as codex 0.149+ writes it: no `agent_reasoning`
+    /// sections, but an `event_msg.item_completed` announcing the item right
+    /// before its `response_item.reasoning`, restating the same summary.
+    fn announced_reasoning(ts: &str, id: &str, sections: &[&str]) -> Vec<String> {
+        vec![
+            rollout_line(
+                ts,
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item": {
+                        "type": "Reasoning",
+                        "id": id,
+                        "summary_text": sections,
+                        "raw_content": []
+                    }
+                }),
+            ),
+            rollout_line(
+                ts,
+                "response_item",
+                serde_json::json!({
+                    "type": "reasoning",
+                    "id": id,
+                    "summary": sections
+                        .iter()
+                        .map(|text| serde_json::json!({"type": "summary_text", "text": text}))
+                        .collect::<Vec<_>>(),
+                    "encrypted_content": "gAAAAredacted"
+                }),
+            ),
+        ]
+    }
+
+    /// The announcement renders nothing, so nothing separates the items it sits
+    /// between: a think spanning several — which live streams as one thought —
+    /// is ONE 思考 card, not one per item (what history used to show).
+    #[test]
+    fn announced_reasoning_items_stay_one_thinking_block() {
+        let mut lines = vec![
+            rollout_line(
+                "2026-09-24T07:19:52Z",
+                "event_msg",
+                serde_json::json!({"type": "task_started", "turn_id": "turn-1"}),
+            ),
+            rollout_line(
+                "2026-09-24T07:19:53Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "看下 /private/tmp"}]
+                }),
+            ),
+            rollout_line(
+                "2026-09-24T07:19:53Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item": {
+                        "type": "UserMessage",
+                        "id": "user-1",
+                        "content": [{"type": "text", "text": "看下 /private/tmp"}]
+                    }
+                }),
+            ),
+        ];
+        lines.extend(announced_reasoning(
+            "2026-09-24T07:21:02Z",
+            "rs_1",
+            &["**Checking directory usage**", "**Checking repository changes**"],
+        ));
+        lines.extend(announced_reasoning(
+            "2026-09-24T07:21:12Z",
+            "rs_2",
+            &["**我编写扫描 /private/tmp 的脚本**"],
+        ));
+        // Encrypted-only: announced like the rest, with nothing to show.
+        lines.extend(announced_reasoning("2026-09-24T07:21:16Z", "rs_3", &[]));
+        lines.extend(announced_reasoning(
+            "2026-09-24T07:21:20Z",
+            "rs_4",
+            &["**Reviewing disk usage snapshot**", "**Measuring temporary storage usage**"],
+        ));
+        // A tool call is visible and ends the run; its own announcement follows.
+        lines.extend([
+            rollout_line(
+                "2026-09-24T07:21:27Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "function_call",
+                    "name": "shell",
+                    "call_id": "call_1",
+                    "arguments": "{\"command\":[\"du\",\"-sh\",\"/private/tmp\"]}"
+                }),
+            ),
+            rollout_line(
+                "2026-09-24T07:21:28Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item": {
+                        "type": "CommandExecution",
+                        "id": "exec-1",
+                        "command": ["du", "-sh", "/private/tmp"]
+                    }
+                }),
+            ),
+            rollout_line(
+                "2026-09-24T07:21:28Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "21G\t/private/tmp"
+                }),
+            ),
+        ]);
+        lines.extend(announced_reasoning(
+            "2026-09-24T07:22:21Z",
+            "rs_5",
+            &["**Checking open handles**"],
+        ));
+        lines.extend([
+            rollout_line(
+                "2026-09-24T07:22:24Z",
+                "event_msg",
+                serde_json::json!({
+                    "type": "item_completed",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item": {
+                        "type": "AgentMessage",
+                        "id": "msg_1",
+                        "content": [{"type": "Text", "text": "约 21.5 GiB"}]
+                    }
+                }),
+            ),
+            rollout_line(
+                "2026-09-24T07:22:24Z",
+                "response_item",
+                serde_json::json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "约 21.5 GiB"}]
+                }),
+            ),
+            rollout_line(
+                "2026-09-24T07:22:25Z",
+                "event_msg",
+                serde_json::json!({"type": "task_complete", "turn_id": "turn-1"}),
+            ),
+        ]);
+        let path = write_temp_rollout("reasoning-announced", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "reasoning-announced")
+            .expect("parse ok");
+
+        assert_eq!(
+            thinking_texts(&detail),
+            vec![
+                "**Checking directory usage**\n\n**Checking repository changes**\n\n\
+                 **我编写扫描 /private/tmp 的脚本**\n\n\
+                 **Reviewing disk usage snapshot**\n\n**Measuring temporary storage usage**"
+                    .to_string(),
+                "**Checking open handles**".to_string(),
+            ],
+            "the items before the tool call are ONE card; the tool call starts the next"
+        );
+        let ordered: Vec<&str> = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Thinking { .. } => Some("thinking"),
+                ContentBlock::ToolUse { .. } => Some("tool"),
+                ContentBlock::Text { text } if text == "约 21.5 GiB" => Some("answer"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ordered, vec!["thinking", "tool", "thinking", "answer"]);
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// An addressed `response_item.agent_message` never renders in place (a
+    /// child's final answer is filed for its capsule, anything else is dropped)
+    /// and codex-acp never streams it: live shows the reasoning on either side
+    /// of it as one thought.
+    #[test]
+    fn an_inter_agent_message_inside_a_reasoning_run_does_not_split_it() {
+        let mut lines = vec![rollout_line(
+            "2026-09-17T03:27:00Z",
+            "event_msg",
+            serde_json::json!({"type": "user_message", "message": "review the diff"}),
+        )];
+        lines.extend(announced_reasoning(
+            "2026-09-17T03:27:47Z",
+            "rs_1",
+            &["**Assessing execution capabilities**"],
+        ));
+        lines.push(rollout_line(
+            "2026-09-17T03:28:17Z",
+            "response_item",
+            serde_json::json!({
+                "type": "agent_message",
+                "id": "amsg_1",
+                "author": "/root",
+                "recipient": "/root/review_points",
+                "content": [
+                    {"type": "input_text", "text": "Message Type: MESSAGE\nTask name: /root/review_points\nSender: /root\nPayload:\n"},
+                    {"type": "encrypted_content", "encrypted_content": "gAAAAredacted"}
+                ]
+            }),
+        ));
+        lines.extend(announced_reasoning(
+            "2026-09-17T03:28:34Z",
+            "rs_2",
+            &["**Determining the next step**"],
+        ));
+        lines.push(rollout_line(
+            "2026-09-17T03:28:35Z",
+            "response_item",
+            serde_json::json!({
+                "type": "function_call",
+                "name": "shell",
+                "call_id": "call_1",
+                "arguments": "{\"command\":[\"git\",\"diff\"]}"
+            }),
+        ));
+        let path = write_temp_rollout("reasoning-inter-agent", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "reasoning-inter-agent")
+            .expect("parse ok");
+
+        assert_eq!(
+            thinking_texts(&detail),
+            vec!["**Assessing execution capabilities**\n\n**Determining the next step**".to_string()]
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    /// Thinking cards left touching are joined, but not across a turn start: a
+    /// turn with no visible prompt (a sub-agent handed a new task) still begins
+    /// a new thought, not a pause in the previous one.
+    #[test]
+    fn a_new_turn_keeps_its_thinking_card_apart() {
+        let mut lines = vec![
+            rollout_line(
+                "2026-07-12T04:17:50Z",
+                "event_msg",
+                serde_json::json!({"type": "task_started", "turn_id": "turn-1"}),
+            ),
+            rollout_line(
+                "2026-07-12T04:17:51Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "run the build"}),
+            ),
+        ];
+        lines.extend(announced_reasoning(
+            "2026-07-12T04:17:55Z",
+            "rs_1",
+            &["**Preparing the build**"],
+        ));
+        lines.extend([
+            rollout_line(
+                "2026-07-12T04:17:56Z",
+                "event_msg",
+                serde_json::json!({"type": "task_complete", "turn_id": "turn-1"}),
+            ),
+            rollout_line(
+                "2026-07-12T04:18:30Z",
+                "event_msg",
+                serde_json::json!({"type": "task_started", "turn_id": "turn-2"}),
+            ),
+        ]);
+        lines.extend(announced_reasoning(
+            "2026-07-12T04:18:40Z",
+            "rs_2",
+            &["**Planning the next task**"],
+        ));
+        let path = write_temp_rollout("reasoning-new-turn", &lines);
+        let detail = CodexParser::new()
+            .parse_conversation_detail(&path, "reasoning-new-turn")
+            .expect("parse ok");
+
+        assert_eq!(
+            thinking_texts(&detail),
+            vec![
+                "**Preparing the build**".to_string(),
+                "**Planning the next task**".to_string(),
+            ]
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -13341,6 +13930,57 @@ mod tests {
         assert_eq!(results.len(), 1, "{results:?}");
         let output = results[0].1.clone().expect("output");
         assert_eq!(output, "   Compiling codeg\ntest result: ok. 1 passed");
+    }
+
+    /// The poll ended the reasoning run when it was read, but it is folded away
+    /// afterwards and leaves nothing between the thoughts on either side. Live
+    /// has no item for a poll and streams them as one thought, so they are one
+    /// card here too.
+    #[test]
+    fn reasoning_on_both_sides_of_a_folded_poll_is_one_thinking_card() {
+        let mut lines = background_session_head(serde_json::json!(
+            "Chunk ID: 523e44\nWall time: 30.0 seconds\nProcess running with session ID 22068\nOutput:\n   Compiling codeg"
+        ));
+        lines.extend(announced_reasoning(
+            "2026-07-20T08:40:02.500Z",
+            "rs_1",
+            &["**Waiting for the build**"],
+        ));
+        lines.extend(poll_lines(
+            "call_p",
+            "{\"session_id\":22068,\"chars\":\"\"}",
+            serde_json::json!(
+                "Chunk ID: 9a2\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\ntest result: ok. 1 passed"
+            ),
+        ));
+        lines.extend(announced_reasoning(
+            "2026-07-20T08:40:05Z",
+            "rs_2",
+            &["**Reading the results**"],
+        ));
+        lines.push(rollout_line(
+            "2026-07-20T08:40:06Z",
+            "event_msg",
+            serde_json::json!({"type": "agent_message", "message": "all green"}),
+        ));
+
+        let detail = parse_lines(&lines, "session-fold-thinking");
+        assert_eq!(
+            thinking_texts(&detail),
+            vec!["**Waiting for the build**\n\n**Reading the results**".to_string()]
+        );
+        let ordered: Vec<&str> = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Thinking { .. } => Some("thinking"),
+                ContentBlock::ToolUse { .. } => Some("tool"),
+                ContentBlock::Text { text } if text == "all green" => Some("answer"),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ordered, vec!["tool", "thinking", "answer"]);
     }
 
     /// The chunk envelope in its object form — what a script that prints its

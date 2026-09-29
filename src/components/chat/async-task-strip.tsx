@@ -6,14 +6,16 @@
  * These are the agent's NON-AGENT background jobs — Claude's
  * `Bash(run_in_background)` shells and monitors (claude-agent-acp 0.73+), and
  * Codex's background terminals (codex-acp 1.10+) — reported on the adapter's
- * own lifecycle channel. Workflow-typed AIR tasks are filtered out here and
- * rendered by `WorkflowProgressOverlay` instead. The transcript already draws
+ * own lifecycle channel. Workflow-typed tasks, including Claude AIR workflows
+ * and Grok background workflows, are filtered out here and rendered by
+ * `WorkflowProgressOverlay` instead. The transcript already draws
  * the tool call that LAUNCHED such a job, but it cannot say whether the job
  * is still alive:
  * the poll-derived card explicitly refuses to claim "running" because a
  * transcript can't tell a live task from one whose CLI died, and codex's
- * launching call simply never settles. This strip is the authoritative answer,
- * and it is the only surface that can offer a stop.
+ * launching call simply never settles. This strip is the authoritative answer
+ * for the jobs that stay here, and it is the only surface that can offer a
+ * stop. Grok workflows have no stop request; the overlay does not offer one.
  *
  * ABOVE the messages rather than docked under the composer: the strip is the
  * status of work happening NOW, and the composer end of the shell is where
@@ -118,11 +120,13 @@ function AsyncTaskRow({
     }
   }, [onStop, stopping, task.task_id])
 
-  // The meta line is the "is this making progress" evidence: a workflow's
-  // phase summary, the tool the task last ran, then its cost. All are absent
-  // until the first progress tick.
+  // Progress evidence: a task summary, a multi-step phase and its current
+  // agent, the tool last run (when there is no summary yet), then cost.
+  // Workflow rows never reach this line — they render on the overlay.
   const meta = [
     task.summary,
+    task.phase,
+    task.current_agent,
     !task.summary ? task.last_tool_name : null,
     task.usage && task.usage.total_tokens > 0
       ? t("tokens", { count: formatTokenCount(task.usage.total_tokens) })

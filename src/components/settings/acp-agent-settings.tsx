@@ -291,6 +291,7 @@ interface AgentDraft {
   claudeDefaultHaikuModel: string
   claudeDefaultSonnetModel: string
   claudeDefaultOpusModel: string
+  claudeDefaultFableModel: string
   claudeCustomModelOption: string
   claudeCustomModelOptionName: string
   claudeCustomModelOptionDescription: string
@@ -612,6 +613,7 @@ const CLAUDE_MODEL_ENV_KEYS = {
   claudeDefaultHaikuModel: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
   claudeDefaultSonnetModel: "ANTHROPIC_DEFAULT_SONNET_MODEL",
   claudeDefaultOpusModel: "ANTHROPIC_DEFAULT_OPUS_MODEL",
+  claudeDefaultFableModel: "ANTHROPIC_DEFAULT_FABLE_MODEL",
   claudeCustomModelOption: "ANTHROPIC_CUSTOM_MODEL_OPTION",
   claudeCustomModelOptionName: "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
   claudeCustomModelOptionDescription:
@@ -1040,6 +1042,7 @@ function extractImportantConfigValues(
   claudeDefaultHaikuModel: string
   claudeDefaultSonnetModel: string
   claudeDefaultOpusModel: string
+  claudeDefaultFableModel: string
   claudeCustomModelOption: string
   claudeCustomModelOptionName: string
   claudeCustomModelOptionDescription: string
@@ -1077,6 +1080,9 @@ function extractImportantConfigValues(
   ])
   const claudeDefaultOpusModel = findEnvValue(mergedEnv, [
     CLAUDE_MODEL_ENV_KEYS.claudeDefaultOpusModel,
+  ])
+  const claudeDefaultFableModel = findEnvValue(mergedEnv, [
+    CLAUDE_MODEL_ENV_KEYS.claudeDefaultFableModel,
   ])
   const claudeCustomModelOption = findEnvValue(mergedEnv, [
     CLAUDE_MODEL_ENV_KEYS.claudeCustomModelOption,
@@ -1121,6 +1127,8 @@ function extractImportantConfigValues(
       agentType === "claude_code" ? claudeDefaultSonnetModel : "",
     claudeDefaultOpusModel:
       agentType === "claude_code" ? claudeDefaultOpusModel : "",
+    claudeDefaultFableModel:
+      agentType === "claude_code" ? claudeDefaultFableModel : "",
     claudeCustomModelOption:
       agentType === "claude_code" ? claudeCustomModelOption : "",
     claudeCustomModelOptionName:
@@ -2031,14 +2039,15 @@ export function codexSandboxSeedsAcpPreset(shadowed: boolean): boolean {
 }
 
 /**
- * Whether to warn that the ACP adapter cannot honor a read-only sandbox.
+ * Whether to say that codex-acp 1.7.0–1.13.x cannot honor a read-only sandbox
+ * (2.0.0 restored it; an adapter resolved off PATH may still be older).
  *
  * Fires exactly when codeg will inject the `read-only` preset, because the
- * warning's second half promises that every escalation reaches the user — true
- * of that preset on codex-acp ≥1.7.0 (`approvalsReviewer: "user"`), and false
- * of the `agent` default a shadowed config falls back to (`auto_review`, where
- * a model forwards only what it judges unsafe). Showing it for a shadowed
- * config would pair "your sandbox key is ignored" with "you will be asked about
+ * note promises that every escalation reaches the user — true of that preset
+ * on every codex-acp since 1.7.0 (`approvalsReviewer: "user"`), and false of
+ * the `agent` default a shadowed config falls back to (`auto_review`, where a
+ * model forwards only what it judges unsafe). Showing it for a shadowed config
+ * would pair "your sandbox key is ignored" with "you will be asked about
  * everything" — the second being a guarantee codeg is not making.
  */
 export function showsCodexReadOnlyAcpWarning(
@@ -3378,6 +3387,10 @@ export function patchImportantConfigText(
       patch.claudeDefaultOpusModel
     )
     assignEnv(
+      CLAUDE_MODEL_ENV_KEYS.claudeDefaultFableModel,
+      patch.claudeDefaultFableModel
+    )
+    assignEnv(
       CLAUDE_MODEL_ENV_KEYS.claudeCustomModelOption,
       patch.claudeCustomModelOption
     )
@@ -3431,6 +3444,7 @@ export function applyClaudeProviderToConfigText(
     claudeDefaultHaikuModel: model.haiku ?? "",
     claudeDefaultSonnetModel: model.sonnet ?? "",
     claudeDefaultOpusModel: model.opus ?? "",
+    claudeDefaultFableModel: model.fable ?? "",
     claudeCustomModelOption: model.customOption ?? "",
     claudeCustomModelOptionName: model.customOptionName ?? "",
     claudeCustomModelOptionDescription: model.customOptionDescription ?? "",
@@ -3572,6 +3586,9 @@ function applyImportantFieldToDraft(
   if (key === "claudeDefaultOpusModel") {
     return { ...draft, claudeDefaultOpusModel: value }
   }
+  if (key === "claudeDefaultFableModel") {
+    return { ...draft, claudeDefaultFableModel: value }
+  }
   if (key === "claudeCustomModelOption") {
     return { ...draft, claudeCustomModelOption: value }
   }
@@ -3591,6 +3608,7 @@ function buildImportantPatchFromDraft(draft: AgentDraft): ImportantDraftPatch {
     claudeDefaultHaikuModel: draft.claudeDefaultHaikuModel,
     claudeDefaultSonnetModel: draft.claudeDefaultSonnetModel,
     claudeDefaultOpusModel: draft.claudeDefaultOpusModel,
+    claudeDefaultFableModel: draft.claudeDefaultFableModel,
     claudeCustomModelOption: draft.claudeCustomModelOption,
     claudeCustomModelOptionName: draft.claudeCustomModelOptionName,
     claudeCustomModelOptionDescription:
@@ -3795,6 +3813,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     claudeDefaultHaikuModel: important.claudeDefaultHaikuModel,
     claudeDefaultSonnetModel: important.claudeDefaultSonnetModel,
     claudeDefaultOpusModel: important.claudeDefaultOpusModel,
+    claudeDefaultFableModel: important.claudeDefaultFableModel,
     claudeCustomModelOption: important.claudeCustomModelOption,
     claudeCustomModelOptionName: important.claudeCustomModelOptionName,
     claudeCustomModelOptionDescription:
@@ -3946,6 +3965,31 @@ export function buildAcpAdapterCheck(
       },
     ],
   }
+}
+
+/**
+ * Which provider an agent should land on when it returns to "model_provider"
+ * auth mode with no binding in the draft.
+ *
+ * In order: `lastPick`, the user's own last pick for this agent in this panel;
+ * `savedBinding`, the provider the agent is bound to on disk; then the head of
+ * the list. Each candidate counts only while it is still listed (not deleted,
+ * not moved to another agent), so a stale pick falls through to a saved
+ * binding that is still good rather than straight to the head. Going straight
+ * to `available[0]` rebound the agent to its OLDEST provider (the list arrives
+ * ordered by row id) whenever the auth-mode dropdown round-tripped through
+ * another mode, and the rebind copies that provider's model names into the
+ * draft, the env text and the config text. The head stays the fallback for a
+ * first-time pick.
+ */
+export function providerToRebindTo(
+  available: readonly ModelProviderInfo[],
+  lastPick: number | null | undefined,
+  savedBinding: number | null | undefined
+): ModelProviderInfo | null {
+  const listed = (id: number | null | undefined) =>
+    id == null ? undefined : available.find((provider) => provider.id === id)
+  return listed(lastPick) ?? listed(savedBinding) ?? available[0] ?? null
 }
 
 // `uvReady` reports whether the uv runtime (uvx) is installed — only meaningful
@@ -5638,6 +5682,14 @@ export function AcpAgentSettings() {
     return modelProvidersForAgent(selectedAgent.agent_type, modelProviders)
   }, [modelProviders, selectedAgent])
 
+  // The provider each agent was last bound to, remembered across auth-mode
+  // changes. The auth-mode handlers drop `draft.modelProviderId` whenever the
+  // mode leaves "model_provider", so that a save in another mode cannot
+  // persist a binding. Without this memory, coming BACK to provider mode falls
+  // through to the auto-select below, which had no record of the user's own
+  // choice. See `providerToRebindTo`.
+  const lastBoundProviderRef = useRef<Partial<Record<AgentType, number>>>({})
+
   const selectedNeedsModelProvider = useMemo(() => {
     if (!selectedDraft) return false
     if (!selectedAgent) return false
@@ -5896,6 +5948,7 @@ export function AcpAgentSettings() {
         claudeDefaultHaikuModel: important.claudeDefaultHaikuModel,
         claudeDefaultSonnetModel: important.claudeDefaultSonnetModel,
         claudeDefaultOpusModel: important.claudeDefaultOpusModel,
+        claudeDefaultFableModel: important.claudeDefaultFableModel,
         claudeCustomModelOption: important.claudeCustomModelOption,
         claudeCustomModelOptionName: important.claudeCustomModelOptionName,
         claudeCustomModelOptionDescription:
@@ -6072,6 +6125,9 @@ export function AcpAgentSettings() {
     (providerIdStr: string, options?: { probe?: boolean }) => {
       if (!selectedAgent || !selectedDraft) return
       const providerId = providerIdStr ? Number(providerIdStr) : null
+      if (providerId != null) {
+        lastBoundProviderRef.current[selectedAgent.agent_type] = providerId
+      }
       const provider = providerId
         ? modelProviders.find((p) => p.id === providerId)
         : null
@@ -6088,6 +6144,7 @@ export function AcpAgentSettings() {
         const claudeHaiku = claudeModel.haiku ?? ""
         const claudeSonnet = claudeModel.sonnet ?? ""
         const claudeOpus = claudeModel.opus ?? ""
+        const claudeFable = claudeModel.fable ?? ""
         const claudeCustomOption = claudeModel.customOption ?? ""
         const claudeCustomOptionName = claudeModel.customOptionName ?? ""
         const claudeCustomOptionDescription =
@@ -6104,8 +6161,9 @@ export function AcpAgentSettings() {
             claudeDefaultHaikuModel: claudeHaiku,
             claudeDefaultSonnetModel: claudeSonnet,
             claudeDefaultOpusModel: claudeOpus,
+            claudeDefaultFableModel: claudeFable,
             // The custom model option travels with the provider's model JSON,
-            // authoritative like the five model fields: a defined value sets it,
+            // authoritative like the six model fields: a defined value sets it,
             // an empty/omitted value clears the key from config.env.
             claudeCustomModelOption: claudeCustomOption,
             claudeCustomModelOptionName: claudeCustomOptionName,
@@ -6162,6 +6220,12 @@ export function AcpAgentSettings() {
           nextEnvText = patchEnvByImportantKey(
             agentType,
             nextEnvText,
+            "claudeDefaultFableModel",
+            claudeFable
+          )
+          nextEnvText = patchEnvByImportantKey(
+            agentType,
+            nextEnvText,
             "claudeCustomModelOption",
             claudeCustomOption
           )
@@ -6187,6 +6251,7 @@ export function AcpAgentSettings() {
             claudeDefaultHaikuModel: claudeHaiku,
             claudeDefaultSonnetModel: claudeSonnet,
             claudeDefaultOpusModel: claudeOpus,
+            claudeDefaultFableModel: claudeFable,
             claudeCustomModelOption: claudeCustomOption,
             claudeCustomModelOptionName: claudeCustomOptionName,
             claudeCustomModelOptionDescription: claudeCustomOptionDescription,
@@ -6352,15 +6417,26 @@ export function AcpAgentSettings() {
     selectedModelProviders,
   ])
 
-  // Auto-select the first available provider when the user switches an agent to
-  // "model_provider" auth mode and hasn't picked one yet. If the list is empty,
-  // the existing "noModelProviderAvailable" hint handles the empty state.
+  // Auto-select a provider when the user switches an agent to
+  // "model_provider" auth mode and the draft holds no binding. If the list is
+  // empty, the existing "noModelProviderAvailable" hint handles the empty
+  // state. The user's own last pick (then the saved binding) wins over the head
+  // of the list, because an auth-mode round trip lands here too and rebinding
+  // to whichever provider happens to be first copies ITS model names over the
+  // one the user was actually on.
   useEffect(() => {
     if (!selectedNeedsModelProvider) return
     if (selectedDraft?.modelProviderId != null) return
-    if (selectedModelProviders.length === 0) return
-    handleModelProviderSelect(String(selectedModelProviders[0].id))
+    if (!selectedAgent) return
+    const target = providerToRebindTo(
+      selectedModelProviders,
+      lastBoundProviderRef.current[selectedAgent.agent_type],
+      selectedAgent.model_provider_id
+    )
+    if (!target) return
+    handleModelProviderSelect(String(target.id))
   }, [
+    selectedAgent,
     selectedNeedsModelProvider,
     selectedDraft?.modelProviderId,
     selectedModelProviders,
@@ -9161,18 +9237,18 @@ export function AcpAgentSettings() {
                             {t("codex.sandboxModeSeedsPresetHint")}
                           </p>
                         ) : null}
-                        {/* codex-acp 1.7.0 redefined its `read-only` preset to
-                            carry a workspace-write sandbox, and it re-sends
-                            that policy every turn — so an ACP session cannot
-                            honor a read-only sandbox at all any more. This
-                            control keeps working for codex CLI/IDE sessions,
-                            which is exactly why the divergence has to be said
-                            out loud rather than left to look effective. */}
+                        {/* codex-acp 1.7.0–1.13.x gave their `read-only`
+                            preset a workspace-write sandbox and re-send that
+                            policy every turn, so an ACP session on one of them
+                            cannot honor a read-only sandbox. 2.0.0 restored it,
+                            but launch prefers an adapter on PATH, which may be
+                            older — so the caveat stays, stated as a version
+                            note rather than a warning about the pinned one. */}
                         {showsCodexReadOnlyAcpWarning(
                           selectedDraft.codexSandboxMode,
                           selectedDraft.codexSandboxShadowed
                         ) ? (
-                          <p className="text-3xs text-yellow-500">
+                          <p className="text-3xs text-muted-foreground">
                             {t("codex.sandboxModeReadOnlyAcpWarning")}
                           </p>
                         ) : null}
@@ -10695,7 +10771,7 @@ supports_websockets = true`}
                             event.target.value
                           )
                         }}
-                        placeholder="claude-sonnet-5"
+                        placeholder="claude-sonnet-5-5"
                       />
                     </div>
 
@@ -10737,7 +10813,7 @@ supports_websockets = true`}
                         placeholder={`{
   "apiProvider": "anthropic",
   "apiKey": "sk-...",
-  "model": "claude-sonnet-5"
+  "model": "claude-sonnet-5-5"
 }`}
                       />
                       {selectedConfigError && (
@@ -12214,7 +12290,7 @@ supports_websockets = true`}
                                   event.target.value
                                 )
                               }}
-                              placeholder="claude-sonnet-5"
+                              placeholder="claude-sonnet-5-5"
                             />
                           </div>
                           <div className="space-y-1.5">
@@ -12271,10 +12347,10 @@ supports_websockets = true`}
                                   event.target.value
                                 )
                               }}
-                              placeholder="claude-sonnet-5"
+                              placeholder="claude-sonnet-5-5"
                             />
                           </div>
-                          <div className="space-y-1.5 md:col-span-2">
+                          <div className="space-y-1.5">
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.opusDefaultModel")}
                             </label>
@@ -12291,6 +12367,25 @@ supports_websockets = true`}
                                 )
                               }}
                               placeholder="claude-opus-5-5"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-2xs text-muted-foreground">
+                              {t("claude.fableDefaultModel")}
+                            </label>
+                            <Input
+                              value={selectedDraft.claudeDefaultFableModel}
+                              readOnly={
+                                selectedDraft.claudeAuthMode ===
+                                "model_provider"
+                              }
+                              onChange={(event) => {
+                                handleImportantConfigChange(
+                                  "claudeDefaultFableModel",
+                                  event.target.value
+                                )
+                              }}
+                              placeholder="claude-fable-5-1"
                             />
                           </div>
                         </div>
@@ -12426,7 +12521,7 @@ supports_websockets = true`}
                                 event.target.value
                               )
                             }}
-                            placeholder="gpt-6-astra / claude-sonnet-5 / gemini-3.1-pro-preview"
+                            placeholder="gpt-6-astra / claude-sonnet-5-5 / gemini-3.1-pro-preview"
                           />
                           {selectedAgent.agent_type === "codeg_agent" && (
                             <p className="text-2xs text-muted-foreground">

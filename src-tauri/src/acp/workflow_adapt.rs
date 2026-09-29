@@ -82,8 +82,12 @@ fn grok_delta(run_id: String, spawned: bool, update: &Value) -> WorkflowDelta {
     let state = match status {
         "complete" | "completed" => "completed",
         "failed" => "failed",
+        // `interrupted` stays with cancel: the host follow-up is suppressed
+        // for `stopped`, and a session that died mid-run is not a failure
+        // the user should be prompted to continue.
         "cancelled" | "canceled" | "interrupted" => "stopped",
-        "paused" => "paused",
+        "paused" | "user_paused" | "back_off_paused" | "no_progress_paused" | "infra_paused"
+        | "blocked" | "budget_limited" => "paused",
         _ => "running",
     }
     .to_string();
@@ -561,6 +565,8 @@ mod tests {
             usage: None,
             output_file_path: None,
             tool_call_id: Some("call-1".into()),
+            phase: None,
+            current_agent: None,
         }
     }
 

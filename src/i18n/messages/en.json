@@ -1112,9 +1112,9 @@
       "sandboxMode_read-only": "Read-only",
       "sandboxMode_workspace-write": "Workspace write",
       "sandboxMode_danger-full-access": "Full access (no sandbox)",
-      "sandboxModeReadOnlyAcpWarning": "The ACP adapter no longer ships a read-only sandbox, so codeg sessions run workspace-writable whatever this says. codeg picks the strictest preset it can — every escalation comes to you for approval — but edits inside the workspace no longer need one. codex CLI and IDE sessions still honor read-only.",
+      "sandboxModeReadOnlyAcpWarning": "codex-acp 1.7–1.13 ship no read-only sandbox: on those adapter versions a codeg session runs workspace-writable whatever this says, with every escalation still coming to you. codex-acp 2.0 restored it, so update the adapter if an older one is installed. codex CLI and IDE sessions always honor read-only.",
       "sandboxModeHint": "On Windows, workspace write is downgraded to read-only unless codex's experimental Windows sandbox is enabled.",
-      "sandboxModeSeedsPresetHint": "codeg also maps this onto the session's starting approval preset, so unlike approval policy it does reach ordinary prompts. Note that the adapter's default preset now has a model pre-screen escalations and forward only what it judges unsafe; pick \"Ask for approval\" in the composer to review every one yourself. The composer's preset always overrides this.",
+      "sandboxModeSeedsPresetHint": "codeg also maps this onto the session's starting approval preset, so unlike approval policy it does reach ordinary prompts. read-only starts in \"Read-only\". With approval policy never, danger-full-access starts in \"Full access\" and workspace-write in \"Auto review\", where a model pre-screens escalations and forwards only what it judges unsafe. With any other approval policy, workspace-write and danger-full-access start in \"Workspace access\", which brings every escalation to you, on codex-acp 2.0 and later, and in \"Auto review\" on older adapters. Unset leaves the adapter's default, \"Auto review\". The composer's preset always overrides this.",
       "writableRootsLabel": "Extra writable folders",
       "writableRootsHint": "One absolute path per line, in addition to the working directory.",
       "sandboxRootsRelativeError": "Must be an absolute path — codex resolves relative entries against ~/.codex: {path}",
@@ -1451,6 +1451,7 @@
       "haikuDefaultModel": "Default Haiku Model",
       "sonnetDefaultModel": "Default Sonnet Model",
       "opusDefaultModel": "Default Opus Model",
+      "fableDefaultModel": "Default Fable Model",
       "customModelOption": "Custom Model ID",
       "customModelOptionName": "Custom Model Name",
       "customModelOptionDescription": "Custom Model Description",
@@ -1619,7 +1620,8 @@
         "medium": "Medium",
         "high": "High",
         "minimal": "Minimal",
-        "xhigh": "Extra high"
+        "xhigh": "Extra high",
+        "max": "Max"
       },
       "apiKeyLabel": "API Key",
       "apiKeyHint": "Stored in ~/.pi/agent/auth.json for the selected provider.",
@@ -1633,7 +1635,9 @@
       "modeCustom": "Custom pi",
       "modeCustomHint": "Run your own pi build, install, or wrapper.",
       "commandLabel": "pi command or path",
-      "commandHint": "An absolute path, a command name on PATH, or a wrapper script (e.g. a monorepo ./pi-test.sh).",
+      "commandHint": "Use an absolute path or a command name on PATH.",
+      "relativeCommandPath": "Use an absolute Pi command path or a command name on PATH.",
+      "relativeAgentDir": "Use an absolute Pi agent directory or ~/...; relative directories differ between workspaces.",
       "commandNotFound": "Command not found",
       "validate": "Validate",
       "advanced": "Advanced",
@@ -1674,7 +1678,14 @@
       "levelsEmptyError": "Pick at least one level — with none, pi falls back to Off.",
       "wireValuesTitle": "Advanced: values sent to the provider",
       "wireValuesHint": "Leave blank to send the level name as-is. Set one when your endpoint expects something else — Google-style backends want LOW / HIGH.",
-      "defaultLevelUnlisted": "This level isn't in the available list above — pi would clamp it."
+      "defaultLevelUnlisted": "This level isn't in the available list above — pi would clamp it.",
+      "modelLevels": "{model} offers: {levels}.",
+      "modelNoThinking": "{model} has no thinking levels — Pi always runs it with thinking off.",
+      "levelClamped": "{model} doesn't offer {level}, so Pi runs it at {effective}. Models that offer {level} still get it.",
+      "modelNotListed": "Pi doesn't list this model for this provider. Check the model ID — Pi only lists providers it has an API key or login for.",
+      "catalogUnavailable": "Couldn't ask Pi which thinking levels this model offers.",
+      "configLoadFailed": "Couldn't read Pi's settings: {message}",
+      "runtimeTooOld": "This Pi is too old: Codeg needs Pi {min} or newer to open a session. Update it first."
     },
     "addCustomAgent": "Add custom agent",
     "addCustomAgentHint": "Register any ACP-compatible agent. Pick one from the public ACP registry, or paste its registry information.",
@@ -2154,7 +2165,12 @@
         "removeFromGroup": "No group",
         "newGroupAndMove": "New group…",
         "dropToUngroup": "Drop here to remove from group"
-      }
+      },
+      "recentFilterAll": "All",
+      "recentFilterTitle": "Show in Recent: {filter}",
+      "noRecentChats": "No recent chats",
+      "noRecentFolders": "No recent folder conversations",
+      "recentFilterMenuLabel": "Show in Recent"
     },
     "conversation": {
       "reloadFailed": "Failed to reload conversation: {message}",
@@ -3205,6 +3221,7 @@
           "turnFailedMaxTurnRequests": "{agent} reached the maximum number of allowed requests for this turn.",
           "turnFailedUnknown": "{agent} ended the turn with an unrecognized stop reason.",
           "turnFailedAuthRequired": "{agent} needs you to sign in again before it can run this turn. Sign in from Settings, then send the message again.",
+          "agentRuntimeOutdated": "{agent} is too old for this version of Codeg. Update it, then reopen this conversation.",
           "grokModelSwitchIncompatibleAgent": "{agent} can't switch to that model in an existing conversation. Start a new session to use it.",
           "setModeFailed": "{agent} couldn't switch modes.",
           "setConfigOptionFailed": "{agent} couldn't apply that setting.",
@@ -3237,7 +3254,8 @@
           "httpStatus": " (HTTP {status})"
         },
         "configOptionAdjusted": "{agent} set {option} to {actual} instead of {requested}",
-        "noticeTitle": "{agent}: {title}"
+        "noticeTitle": "{agent}: {title}",
+        "pluginLoadFailedTitle": "{agent} couldn't load {count, plural, one {# plugin} other {# plugins}}"
       },
       "connectionLifecycle": {
         "tasks": {
@@ -3884,7 +3902,22 @@
           "outputMissing": "Codex truncated the script output and dropped this command's separator, so none of the output could be attributed to it.",
           "sharedWith": "Also contains the output of {commands} — codex truncated their separators away.",
           "truncated": "truncated"
-        }
+        },
+        "visualizeTitle": "Visualization",
+        "visualizeWide": "Wide",
+        "visualizeLoading": "Loading visualization…",
+        "visualizeError": "Could not load the visualization",
+        "visualizeReload": "Reload",
+        "visualizeOpenFile": "Open file",
+        "visualizeExpand": "Show all",
+        "visualizeCollapse": "Show less",
+        "visualizeScriptsOn": "Scripts on",
+        "visualizeScriptsOff": "Enable scripts",
+        "visualizeScriptsHint": "Run the visualization's scripts so it is interactive. It runs in a sandbox and cannot reach the network or your files.",
+        "visualizeFrameTitle": "Codex visualization",
+        "htmlPreviewOpen": "Preview",
+        "htmlPreviewOpenAria": "Preview {name}",
+        "htmlPreviewHide": "Hide preview"
       },
       "messageNav": {
         "title": "Message navigation",
@@ -4494,6 +4527,7 @@
     "claudeHaikuDefaultModel": "Default Haiku Model",
     "claudeSonnetDefaultModel": "Default Sonnet Model",
     "claudeOpusDefaultModel": "Default Opus Model",
+    "claudeFableDefaultModel": "Default Fable Model",
     "claudeCustomModelOption": "Custom Model ID",
     "claudeCustomModelOptionName": "Custom Model Name",
     "claudeCustomModelOptionDescription": "Custom Model Description",
@@ -5675,8 +5709,8 @@
     "eventContextCompact": "Context compaction",
     "eventUserAction": "User action",
     "eventDiffStat": "Change snapshot",
-    "eventForgeWriteback": "Commented on the issue",
-    "eventForgeWritebackFailed": "Comment on the issue failed",
+    "eventForgeWriteback": "Commented on the item",
+    "eventForgeWritebackFailed": "Comment on the item failed",
     "actionDeliverPr": "Open pull request",
     "actionDeliverPrMr": "Open merge request",
     "actionDeliverPrBack": "Push to the pull request",
@@ -6214,7 +6248,7 @@
     "scenarioPlanFirst": "Plan first",
     "scenarioPlanFirstHint": "The agent confirms the problem is real, then delivers an implementation plan and stops — approve it by returning the task for implementation.",
     "scenarioReviewFix": "Review & fix",
-    "scenarioReviewFixHint": "Review the changes and fix problems on top; the commits go back to the branch once you accept.",
+    "scenarioReviewFixHint": "The agent first judges whether the approach itself holds up, and only then fixes problems on top — if it doesn't, it commits nothing and hands the review back to you to decide. Accepted fixes go back to the branch.",
     "scenarioReviewOnly": "Review only",
     "scenarioReviewOnlyHint": "A review report with findings and suggestions, no commits — return the task if you want fixes applied.",
     "settingsTitle": "Panel settings",
