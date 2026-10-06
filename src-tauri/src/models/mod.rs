@@ -43,9 +43,9 @@ pub use remote_workspace_connection::{
     RemoteWorkspaceConnectionInfo, RemoteWorkspaceHeader, ToHeaderMap,
 };
 pub use system::{
-    AvailableTerminalShells, GitCredentials, GitDetectResult, GitHubAccount,
+    AvailableTerminalApps, AvailableTerminalShells, GitCredentials, GitDetectResult, GitHubAccount,
     GitHubAccountsSettings, GitHubTokenValidation, GitSettings, SystemLanguageSettings,
-    SystemProxySettings, SystemTerminalSettings, TerminalShellOption,
+    SystemProxySettings, SystemTerminalSettings, TerminalAppOption, TerminalShellOption,
 };
 #[cfg(feature = "tauri-runtime")]
 pub use system::{
@@ -64,4 +64,3 @@ pub use work_task::{
     WorkTaskQueuedMerge, WorkTaskSource, WorkTaskStatus, WorkTaskTemplateDraft,
     WorkTaskTemplateInfo, DELIVERABLE_REPORT, STAGE_PROMPT_ALL,
 };
-

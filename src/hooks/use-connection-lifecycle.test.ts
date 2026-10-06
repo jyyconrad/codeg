@@ -1,5 +1,40 @@
 import { describe, expect, it } from "vitest"
-import { shouldDisconnectOnUnmount } from "@/hooks/use-connection-lifecycle"
+import {
+  shouldAutoConnect,
+  shouldDisconnectOnUnmount,
+} from "@/hooks/use-connection-lifecycle"
+
+describe("shouldAutoConnect", () => {
+  it("waits for the agent launch configuration before connecting", () => {
+    expect(
+      shouldAutoConnect({
+        isActive: true,
+        workingDir: "/repo",
+        launchMode: null,
+      })
+    ).toBe(false)
+  })
+
+  it("does not connect an agent configured for the terminal", () => {
+    expect(
+      shouldAutoConnect({
+        isActive: true,
+        workingDir: "/repo",
+        launchMode: "terminal",
+      })
+    ).toBe(false)
+  })
+
+  it("connects an active ACP agent after configuration is loaded", () => {
+    expect(
+      shouldAutoConnect({
+        isActive: true,
+        workingDir: "/repo",
+        launchMode: "acp",
+      })
+    ).toBe(true)
+  })
+})
 
 // Unmount cleanup (tab closed) must not kill an owner whose agent still has
 // work in flight: disconnecting kills the agent CLI, and any launched

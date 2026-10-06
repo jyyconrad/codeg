@@ -7,6 +7,7 @@ use sea_orm::{
     IntoActiveModel, QueryFilter, QueryOrder, Set, Statement,
 };
 
+use crate::acp::types::AgentLaunchMode;
 use crate::db::entities::agent_setting;
 use crate::db::error::DbError;
 use crate::models::agent::AgentType;
@@ -81,6 +82,7 @@ pub async fn ensure_defaults(
             installed_version: Set(None),
             env_json: Set(None),
             model_provider_id: Set(None),
+            launch_mode: Set(AgentLaunchMode::Acp.as_str().to_string()),
             created_at: Set(now),
             updated_at: Set(now),
         };
@@ -148,6 +150,26 @@ pub async fn update(
     active.enabled = Set(patch.enabled);
     active.env_json = Set(patch.env_json);
     active.model_provider_id = Set(patch.model_provider_id);
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    Ok(())
+}
+
+pub async fn update_launch_mode(
+    conn: &DatabaseConnection,
+    agent_type: AgentType,
+    launch_mode: AgentLaunchMode,
+) -> Result<(), DbError> {
+    let agent_type_str = serde_json::to_string(&agent_type)
+        .map_err(|e| DbError::Migration(format!("agent_type serialize failed: {e}")))?;
+    let model = agent_setting::Entity::find()
+        .filter(agent_setting::Column::AgentType.eq(agent_type_str.clone()))
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::Migration(format!("agent setting not found: {agent_type_str}")))?;
+
+    let mut active = model.into_active_model();
+    active.launch_mode = Set(launch_mode.as_str().to_string());
     active.updated_at = Set(Utc::now());
     active.update(conn).await?;
     Ok(())
@@ -236,6 +258,7 @@ fn is_sqlite_full_error(err: &DbError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::types::AgentLaunchMode;
     use crate::models::agent::AgentType;
 
     #[test]
@@ -243,5 +266,62 @@ mod tests {
         assert!(!default_enabled(AgentType::CodegAgent));
         assert!(default_enabled(AgentType::ClaudeCode));
         assert!(default_enabled(AgentType::Custom("goose")));
+    }
+
+    #[tokio::test]
+    async fn new_agent_setting_defaults_to_acp_launch_mode() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        ensure_defaults(
+            &db.conn,
+            &[AgentDefaultInput {
+                agent_type: AgentType::Codex,
+                registry_id: "codex-acp".to_string(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .expect("ensure default");
+
+        let setting = get_by_agent_type(&db.conn, AgentType::Codex)
+            .await
+            .expect("query setting")
+            .expect("setting exists");
+        assert_eq!(setting.launch_mode, AgentLaunchMode::Acp.as_str());
+    }
+
+    #[tokio::test]
+    async fn general_settings_update_preserves_terminal_launch_mode() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        ensure_defaults(
+            &db.conn,
+            &[AgentDefaultInput {
+                agent_type: AgentType::Codex,
+                registry_id: "codex-acp".to_string(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .expect("ensure default");
+        update_launch_mode(&db.conn, AgentType::Codex, AgentLaunchMode::Terminal)
+            .await
+            .expect("select terminal mode");
+
+        update(
+            &db.conn,
+            AgentType::Codex,
+            AgentSettingsUpdate {
+                enabled: false,
+                env_json: Some(r#"{"OPENAI_API_KEY":"secret"}"#.to_string()),
+                model_provider_id: None,
+            },
+        )
+        .await
+        .expect("update general settings");
+
+        let setting = get_by_agent_type(&db.conn, AgentType::Codex)
+            .await
+            .expect("query setting")
+            .expect("setting exists");
+        assert_eq!(setting.launch_mode, AgentLaunchMode::Terminal.as_str());
     }
 }

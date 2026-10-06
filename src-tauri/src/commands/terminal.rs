@@ -5,7 +5,15 @@ use tauri::Manager;
 #[cfg(feature = "tauri-runtime")]
 use tauri::State;
 
+#[cfg(feature = "tauri-runtime")]
+use crate::db::AppDatabase;
 use crate::git_credential;
+#[cfg(feature = "tauri-runtime")]
+use crate::models::agent::AgentType;
+#[cfg(feature = "tauri-runtime")]
+use crate::terminal::agent_hooks::{AgentHookRegistry, AgentTerminalState};
+#[cfg(feature = "tauri-runtime")]
+use crate::terminal::agent_launch::{spawn_agent, SpawnAgentResponse};
 #[cfg(feature = "tauri-runtime")]
 use crate::terminal::error::TerminalError;
 #[cfg(feature = "tauri-runtime")]
@@ -99,9 +107,65 @@ pub async fn terminal_spawn(
             initial_command,
             extra_env,
             temp_files: vec![],
+            on_exit: None,
         },
         EventEmitter::Tauri(app_handle),
     )
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
+pub async fn terminal_spawn_agent(
+    agent_type: AgentType,
+    working_dir: String,
+    prompt: String,
+    resume_session_id: Option<String>,
+    terminal_id: String,
+    shell: Option<String>,
+    manager: State<'_, TerminalManager>,
+    db: State<'_, AppDatabase>,
+    hooks: State<'_, std::sync::Arc<AgentHookRegistry>>,
+    app_handle: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<SpawnAgentResponse, TerminalError> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| TerminalError::SpawnFailed(error.to_string()))?;
+    let data_dir = crate::paths::resolve_effective_data_dir(&app_data_dir);
+    let runtime_env = crate::commands::acp::build_terminal_runtime_env(
+        &db,
+        agent_type,
+        resume_session_id.as_deref(),
+        &data_dir,
+    )
+    .await
+    .map_err(|error| TerminalError::SpawnFailed(error.to_string()))?;
+    spawn_agent(
+        &manager,
+        hooks.inner().clone(),
+        EventEmitter::Tauri(app_handle),
+        agent_type,
+        working_dir,
+        prompt,
+        resume_session_id,
+        terminal_id,
+        shell,
+        window.label().to_string(),
+        &data_dir,
+        runtime_env,
+    )
+    .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub fn terminal_agent_state(
+    terminal_id: String,
+    hooks: State<'_, std::sync::Arc<AgentHookRegistry>>,
+) -> Option<AgentTerminalState> {
+    hooks.state(&terminal_id)
 }
 
 #[cfg(feature = "tauri-runtime")]

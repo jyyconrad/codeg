@@ -781,6 +781,14 @@
     "selectLeftMcp": "请选择左侧 MCP。"
   },
   "AcpAgentSettings": {
+    "launchMode": {
+      "label": "启动方式",
+      "newSessions": "仅影响新会话；现有会话保持当前方式。",
+      "grokUnsupported": "Grok 暂不支持原生 CLI 状态事件。",
+      "saveFailed": "保存启动方式失败",
+      "acp": "ACP",
+      "terminal": "终端"
+    },
     "title": "Agent SDK管理",
     "description": "统一管理 Agent 的连接SDK、启用状态、环境变量、配置管理与版本预检信息。",
     "loadingAgents": "加载 Agent 列表中...",
@@ -1877,6 +1885,13 @@
     "terminalShellNotInstalled": "未安装",
     "terminalShellNotFoundWarning": "当前主机上不存在此路径。",
     "terminalCurrentShell": "当前使用：{path}",
+    "terminalAppTitle": "终端应用",
+    "terminalAppName": "终端",
+    "terminalAppDescription": "扫描本机已安装的终端应用，选择打开目录时默认启动哪一个。系统默认仍使用内置终端。上方的 Shell 是内置终端里的解释器。终端模式启动的智能体命令行仍留在这个视图中。",
+    "terminalAppCustomPath": "应用路径",
+    "terminalAppCustomPlaceholder": "/Applications/Ghostty.app",
+    "terminalAppCustomHint": "可填写 .app 包或可执行文件。自定义应用只打开目录。",
+    "terminalCurrentApp": "打开目录时使用：{name}",
     "colorizeCommandOutput": "为命令输出着色",
     "colorizeCommandOutputDescription": "强制智能体运行的命令输出 ANSI 颜色，使其在会话记录中以彩色而非纯文本呈现。对新建会话生效。",
     "renderingDescription": "如果应用出现黑屏或渲染异常（Windows 上常见于 AMD 显卡或部分 Intel 集成显卡，Linux 上常见于 NVIDIA 闭源驱动），可关闭硬件加速。仅 Windows 与 Linux 桌面端生效。",
@@ -2446,6 +2461,13 @@
       "more": "更多"
     },
     "terminal": {
+      "agentStatus": {
+        "unsupported": "原生状态不可用",
+        "started": "任务轮次已开始",
+        "stopped": "已收到停止事件",
+        "waiting": "等待原生状态事件",
+        "exited": "终端进程已退出"
+      },
       "rename": "重命名",
       "close": "关闭",
       "closeOthers": "关闭其它",
@@ -3023,6 +3045,7 @@
       "toasts": {
         "openDirectoryFailed": "打开目录失败",
         "openBuiltinTerminalFailed": "无法打开内置终端",
+        "openExternalTerminalFailed": "无法打开所选终端应用",
         "openInCodeFailed": "无法在 Code 打开",
         "openCommitWindowFailed": "打开提交窗口失败",
         "noAddableFilesInDir": "该目录下没有可添加到 VCS 的变更文件",
@@ -3274,6 +3297,7 @@
         }
       },
       "shared": {
+        "terminalAttachmentsUnsupported": "终端启动仅支持纯文本任务。请移除图片和附加资源后重试。",
         "attachedResources": "附加资源",
         "toolCallFailed": "工具调用失败"
       },
@@ -3359,6 +3383,11 @@
         "deleteItem": "删除",
         "steerItemNow": "插入当前回合",
         "steerItemAsNote": "作为留言，供下次检查时读取"
+      },
+      "sessionTerminal": {
+        "preparing": "正在准备工作目录…",
+        "openSettings": "打开 Agents 设置",
+        "region": "{agent} 终端"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "设置 > Agents",

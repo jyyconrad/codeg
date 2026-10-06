@@ -44,10 +44,10 @@ const messageListViewSource = readFileSync(
 describe("ConversationDetailPanel new conversation layout", () => {
   it("keeps the new-conversation input in the welcome panel with the original scroll layout", () => {
     expect(source).toContain(
-      "hideInput={isWelcomeMode || Boolean(acpLoadError)}"
+      "hideInput={sessionTerminalMode || isWelcomeMode || Boolean(acpLoadError)}"
     )
 
-    const welcomeBranchStart = source.indexOf("{isWelcomeMode ? (")
+    const welcomeBranchStart = source.indexOf(") : isWelcomeMode ? (")
     const nextBranchStart = source.indexOf(
       ") : showDraftHeader ?",
       welcomeBranchStart
@@ -501,7 +501,7 @@ describe("ConversationDetailPanel session-load failure surface", () => {
   it("docks the load error at the composer with the recovery actions", () => {
     // The composer input stays hidden (a send can't reach the dead session)…
     expect(source).toContain(
-      "hideInput={isWelcomeMode || Boolean(acpLoadError)}"
+      "hideInput={sessionTerminalMode || isWelcomeMode || Boolean(acpLoadError)}"
     )
     // …and the banner takes its place, explaining why and offering recovery.
     // The slot also hosts the last-round-edit notice; the load-error banner

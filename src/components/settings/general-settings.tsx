@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import {
+  AppWindow,
   Cpu,
   FolderCog,
   Loader2,
@@ -29,16 +30,23 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import {
+  getAvailableTerminalApps,
   getAvailableTerminalShells,
   getSystemRenderingSettings,
   getSystemTerminalSettings,
+  probeTerminalAppPath,
   probeTerminalShellPath,
   updateSystemRenderingSettings,
   updateSystemTerminalSettings,
 } from "@/lib/api"
 import { isDesktop } from "@/lib/platform"
 import { getActiveRemoteConnectionId } from "@/lib/transport"
-import type { AvailableTerminalShells, TerminalShellOption } from "@/lib/types"
+import type {
+  AvailableTerminalApps,
+  AvailableTerminalShells,
+  TerminalAppOption,
+  TerminalShellOption,
+} from "@/lib/types"
 import { usePlatform } from "@/hooks/use-platform"
 import { relaunchApp } from "@/lib/updater"
 import { toErrorMessage } from "@/lib/app-error"
@@ -62,6 +70,42 @@ function resolveSelectedShellId(
     (opt) => opt.value !== null && opt.value === storedShell
   )
   return matched?.id ?? TERMINAL_SHELL_OPTION_CUSTOM
+}
+
+function resolveSelectedAppId(
+  storedApp: string | null,
+  options: TerminalAppOption[]
+): string {
+  if (!storedApp || storedApp === TERMINAL_SHELL_OPTION_SYSTEM) {
+    return TERMINAL_SHELL_OPTION_SYSTEM
+  }
+  const matched = options.find(
+    (opt) => opt.value !== null && opt.value === storedApp
+  )
+  return matched?.id ?? TERMINAL_SHELL_OPTION_CUSTOM
+}
+
+function terminalAppLabel(
+  opt: TerminalAppOption,
+  tDynamic: (key: string) => string
+): string {
+  const name = opt.label?.trim()
+  return name || tDynamic(opt.label_key)
+}
+
+function currentTerminalAppName(
+  apps: AvailableTerminalApps,
+  selectedAppId: string,
+  customAppPath: string,
+  storedApp: string | null,
+  tDynamic: (key: string) => string
+): string {
+  const opt = apps.options.find((item) => item.id === selectedAppId)
+  if (!opt) return tDynamic("terminalSystemDefault")
+  if (opt.accepts_custom_path) {
+    return customAppPath.trim() || storedApp || tDynamic(opt.label_key)
+  }
+  return terminalAppLabel(opt, tDynamic)
 }
 
 // Captured the first time the rendering section loads: represents the value
@@ -100,16 +144,26 @@ export function GeneralSettings() {
   )
   const [customShellPath, setCustomShellPath] = useState<string>("")
   const [customPathExists, setCustomPathExists] = useState<boolean | null>(null)
-  // The last persisted `default_shell`, kept verbatim. Both terminal settings
-  // share one stored row, so saving the color toggle has to send the shell
-  // back unchanged — and `selectedShellId`/`customShellPath` can't reconstruct
-  // it (the custom row is cleared until the user presses Save).
+  const [availableApps, setAvailableApps] =
+    useState<AvailableTerminalApps | null>(null)
+  const [selectedAppId, setSelectedAppId] = useState<string>(
+    TERMINAL_SHELL_OPTION_SYSTEM
+  )
+  const [customAppPath, setCustomAppPath] = useState<string>("")
+  const [customAppExists, setCustomAppExists] = useState<boolean | null>(null)
+  // The last persisted shell and terminal app, kept verbatim. Shell, app, and
+  // the color toggle share one stored row, so every save has to send the other
+  // fields back unchanged. The custom path inputs can't reconstruct them (the
+  // custom row is cleared until the user presses Save).
   //
   // Tri-state, and the third state carries weight: `undefined` means the load
-  // never landed, which is NOT the same as `null` ("use the system shell").
-  // Sending `null` for an unknown shell would persist "system" over whatever
-  // the user had chosen, so the color toggle stays inert until this is known.
+  // never landed, which is NOT the same as `null` ("use the system default").
+  // Sending `null` for an unknown field would persist "system" over whatever
+  // the user had chosen, so a save stays inert until both are known.
   const [storedDefaultShell, setStoredDefaultShell] = useState<
+    string | null | undefined
+  >(undefined)
+  const [storedDefaultTerminalApp, setStoredDefaultTerminalApp] = useState<
     string | null | undefined
   >(undefined)
   const [colorizeCommandOutput, setColorizeCommandOutput] = useState(false)
@@ -128,17 +182,26 @@ export function GeneralSettings() {
     setLoadError(null)
 
     try {
-      const [terminalSettings, terminalShells, renderingSettings] =
-        await Promise.all([
-          getSystemTerminalSettings(),
-          getAvailableTerminalShells(),
-          renderingSettingsLoadable
-            ? getSystemRenderingSettings()
-            : Promise.resolve(null),
-        ])
+      const [
+        terminalSettings,
+        terminalShells,
+        terminalApps,
+        renderingSettings,
+      ] = await Promise.all([
+        getSystemTerminalSettings(),
+        getAvailableTerminalShells(),
+        // A failed scan must not blank the shell picker. The stored app id
+        // still comes from the settings row below, so later saves keep it.
+        getAvailableTerminalApps().catch(() => null),
+        renderingSettingsLoadable
+          ? getSystemRenderingSettings()
+          : Promise.resolve(null),
+      ])
 
       setAvailableShells(terminalShells)
+      setAvailableApps(terminalApps)
       setStoredDefaultShell(terminalSettings.default_shell)
+      setStoredDefaultTerminalApp(terminalSettings.default_terminal_app ?? null)
       setColorizeCommandOutput(terminalSettings.colorize_command_output)
       const initialId = resolveSelectedShellId(
         terminalSettings.default_shell,
@@ -155,6 +218,28 @@ export function GeneralSettings() {
       } else {
         setCustomShellPath("")
         setCustomPathExists(null)
+      }
+
+      if (terminalApps) {
+        const initialAppId = resolveSelectedAppId(
+          terminalSettings.default_terminal_app ?? null,
+          terminalApps.options
+        )
+        setSelectedAppId(initialAppId)
+        if (
+          initialAppId === TERMINAL_SHELL_OPTION_CUSTOM &&
+          terminalSettings.default_terminal_app
+        ) {
+          setCustomAppPath(terminalSettings.default_terminal_app)
+          setCustomAppExists(
+            await probeTerminalAppPath(
+              terminalSettings.default_terminal_app
+            ).catch(() => null)
+          )
+        } else {
+          setCustomAppPath("")
+          setCustomAppExists(null)
+        }
       }
 
       if (renderingSettings) {
@@ -185,20 +270,24 @@ export function GeneralSettings() {
   /// back whatever it moved ahead of the save.
   const persistTerminalShell = useCallback(
     async (defaultShell: string | null): Promise<boolean> => {
+      if (storedDefaultTerminalApp === undefined) return false
       setSavingTerminal(true)
       try {
         const result = await updateSystemTerminalSettings({
           default_shell: defaultShell,
           // Sent back unchanged — the save replaces the whole stored row, so
-          // omitting it would silently reset the color opt-in.
+          // omitting either field would silently reset the color opt-in or the
+          // chosen terminal app.
+          default_terminal_app: storedDefaultTerminalApp,
           colorize_command_output: colorizeCommandOutput,
         })
-        // Record the persisted shell BEFORE anything else that can throw. The
+        // Record the persisted row BEFORE anything else that can throw. The
         // row is already written at this point, so every later failure is
-        // cosmetic — except leaving this stale, which would have the color
-        // toggle send the superseded shell back and undo the save that just
+        // cosmetic — except leaving this stale, which would have the next save
+        // send the superseded values back and undo the save that just
         // succeeded.
         setStoredDefaultShell(result.default_shell)
+        setStoredDefaultTerminalApp(result.default_terminal_app ?? null)
 
         // Everything below only refreshes what is on screen. It is scoped
         // separately because a failure here is NOT a failed save: reporting it
@@ -239,18 +328,66 @@ export function GeneralSettings() {
         setSavingTerminal(false)
       }
     },
-    [colorizeCommandOutput, t]
+    [colorizeCommandOutput, storedDefaultTerminalApp, t]
   )
 
-  // Persist the command-color opt-in, sending the current shell back
+  const refreshTerminalApps = useCallback(async (storedApp: string | null) => {
+    const refreshed = await getAvailableTerminalApps()
+    setAvailableApps(refreshed)
+    const nextSelectedId = resolveSelectedAppId(storedApp, refreshed.options)
+    setSelectedAppId(nextSelectedId)
+    if (nextSelectedId === TERMINAL_SHELL_OPTION_CUSTOM && storedApp) {
+      setCustomAppPath(storedApp)
+      setCustomAppExists(
+        await probeTerminalAppPath(storedApp).catch(() => null)
+      )
+    } else {
+      setCustomAppPath("")
+      setCustomAppExists(null)
+    }
+  }, [])
+
+  const persistTerminalApp = useCallback(
+    async (defaultApp: string | null): Promise<boolean> => {
+      if (storedDefaultShell === undefined) return false
+      setSavingTerminal(true)
+      try {
+        const result = await updateSystemTerminalSettings({
+          default_shell: storedDefaultShell,
+          default_terminal_app: defaultApp,
+          colorize_command_output: colorizeCommandOutput,
+        })
+        setStoredDefaultShell(result.default_shell)
+        setStoredDefaultTerminalApp(result.default_terminal_app ?? null)
+        try {
+          await refreshTerminalApps(result.default_terminal_app ?? null)
+        } catch (err) {
+          console.error("[Settings] refresh terminal apps failed:", err)
+        }
+        return true
+      } catch (err) {
+        const message = toErrorMessage(err)
+        toast.error(t("terminalSaveFailed", { message }))
+        return false
+      } finally {
+        setSavingTerminal(false)
+      }
+    },
+    [colorizeCommandOutput, refreshTerminalApps, storedDefaultShell, t]
+  )
+
+  // Persist the command-color opt-in, sending the shell and terminal app back
   // unchanged. Reverts the switch on failure so it never shows a state the
   // backend rejected.
   const persistColorizeCommandOutput = useCallback(
     async (next: boolean, prev: boolean) => {
       // The switch is disabled in this state; the guard is here too because a
-      // save that guessed at `default_shell` would overwrite a setting the
-      // user never touched, and that is not something to leave to one prop.
-      if (storedDefaultShell === undefined) {
+      // save that guessed at either field would overwrite a setting the user
+      // never touched, and that is not something to leave to one prop.
+      if (
+        storedDefaultShell === undefined ||
+        storedDefaultTerminalApp === undefined
+      ) {
         setColorizeCommandOutput(prev)
         return
       }
@@ -258,8 +395,11 @@ export function GeneralSettings() {
       try {
         const result = await updateSystemTerminalSettings({
           default_shell: storedDefaultShell,
+          default_terminal_app: storedDefaultTerminalApp,
           colorize_command_output: next,
         })
+        setStoredDefaultShell(result.default_shell)
+        setStoredDefaultTerminalApp(result.default_terminal_app ?? null)
         setColorizeCommandOutput(result.colorize_command_output)
       } catch (err) {
         setColorizeCommandOutput(prev)
@@ -269,7 +409,7 @@ export function GeneralSettings() {
         setSavingTerminal(false)
       }
     },
-    [storedDefaultShell, t]
+    [storedDefaultShell, storedDefaultTerminalApp, t]
   )
 
   const onShellSelectChange = useCallback(
@@ -299,6 +439,29 @@ export function GeneralSettings() {
     if (!trimmed) return
     void persistTerminalShell(trimmed)
   }, [customShellPath, persistTerminalShell])
+
+  const onAppSelectChange = useCallback(
+    (nextId: string) => {
+      const previousId = selectedAppId
+      setSelectedAppId(nextId)
+      if (nextId === TERMINAL_SHELL_OPTION_CUSTOM) {
+        setCustomAppPath("")
+        setCustomAppExists(null)
+        return
+      }
+      const matched = availableApps?.options.find((opt) => opt.id === nextId)
+      void persistTerminalApp(matched?.value ?? null).then((saved) => {
+        if (!saved) setSelectedAppId(previousId)
+      })
+    },
+    [availableApps, persistTerminalApp, selectedAppId]
+  )
+
+  const onCustomAppSave = useCallback(() => {
+    const trimmed = customAppPath.trim()
+    if (!trimmed) return
+    void persistTerminalApp(trimmed)
+  }, [customAppPath, persistTerminalApp])
 
   const saveRenderingSettings = useCallback(
     async (next: boolean, prev: boolean) => {
@@ -445,6 +608,97 @@ export function GeneralSettings() {
           )}
         </SettingsSection>
 
+        <SettingsSection
+          icon={AppWindow}
+          title={t("terminalAppTitle")}
+          description={
+            <>
+              {t("terminalAppDescription")}
+              {availableApps ? (
+                <span className="mt-1 block">
+                  {t("terminalCurrentApp", {
+                    name: currentTerminalAppName(
+                      availableApps,
+                      selectedAppId,
+                      customAppPath,
+                      storedDefaultTerminalApp ?? null,
+                      tDynamic
+                    ),
+                  })}
+                </span>
+              ) : null}
+            </>
+          }
+          htmlFor="terminal-default-app"
+          control={
+            <Select
+              value={selectedAppId}
+              onValueChange={onAppSelectChange}
+              disabled={savingTerminal || !availableApps}
+            >
+              <SelectTrigger
+                id="terminal-default-app"
+                size="sm"
+                className="w-52 bg-background text-xs"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {availableApps?.options.map((opt) => (
+                  <SelectItem key={opt.id} value={opt.id}>
+                    <span className="flex items-center gap-2">
+                      <span>{terminalAppLabel(opt, tDynamic)}</span>
+                      {!opt.exists && !opt.accepts_custom_path && (
+                        <span className="text-3xs text-muted-foreground">
+                          ({t("terminalShellNotInstalled")})
+                        </span>
+                      )}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+        >
+          {selectedAppId === TERMINAL_SHELL_OPTION_CUSTOM && (
+            <SettingCard>
+              <SettingRow
+                icon={FolderCog}
+                title={t("terminalAppCustomPath")}
+                description={t("terminalAppCustomHint")}
+                htmlFor="terminal-custom-app"
+              >
+                <div className="flex gap-2">
+                  <Input
+                    id="terminal-custom-app"
+                    value={customAppPath}
+                    onChange={(event) => {
+                      setCustomAppPath(event.target.value)
+                      setCustomAppExists(null)
+                    }}
+                    placeholder={t("terminalAppCustomPlaceholder")}
+                    disabled={savingTerminal}
+                    className="h-8 flex-1 bg-background font-mono text-xs"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={onCustomAppSave}
+                    disabled={savingTerminal || !customAppPath.trim()}
+                  >
+                    {t("terminalShellCustomSave")}
+                  </Button>
+                </div>
+                {customAppExists === false && customAppPath.trim() && (
+                  <p className="text-2xs text-amber-500">
+                    {t("terminalShellNotFoundWarning")}
+                  </p>
+                )}
+              </SettingRow>
+            </SettingCard>
+          )}
+        </SettingsSection>
+
         {/* Titled by the option rather than by "Color": the switch forces color
             ON for every command an agent runs, so the heading has to say what
             it does, not which category it files under. */}
@@ -461,7 +715,11 @@ export function GeneralSettings() {
               // the whole row, so toggling on a failed load would write the
               // shell field back as "system" and silently drop the user's
               // choice. The shell picker above is gated the same way.
-              disabled={savingTerminal || storedDefaultShell === undefined}
+              disabled={
+                savingTerminal ||
+                storedDefaultShell === undefined ||
+                storedDefaultTerminalApp === undefined
+              }
               onCheckedChange={(next) => {
                 const prev = colorizeCommandOutput
                 setColorizeCommandOutput(next)

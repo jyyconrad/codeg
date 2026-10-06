@@ -95,8 +95,9 @@ fn read_tokens_at_checked(path: &Path) -> Result<HashMap<String, String>, String
         }
     }
     match std::fs::read_to_string(path) {
-        Ok(raw) => serde_json::from_str(&raw)
-            .map_err(|e| format!("token store is not readable JSON: {e}")),
+        Ok(raw) => {
+            serde_json::from_str(&raw).map_err(|e| format!("token store is not readable JSON: {e}"))
+        }
         // A store that was never written is legitimately empty.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
         Err(err) => Err(format!("token store read error: {err}")),

@@ -781,6 +781,14 @@
     "selectLeftMcp": "Sélectionnez un MCP à gauche."
   },
   "AcpAgentSettings": {
+    "launchMode": {
+      "label": "Mode de lancement",
+      "newSessions": "S'applique aux nouvelles sessions.",
+      "grokUnsupported": "Les événements d'état CLI natifs ne sont pas disponibles pour Grok.",
+      "saveFailed": "Échec de l'enregistrement du mode",
+      "acp": "ACP",
+      "terminal": "Terminal"
+    },
     "title": "Gestion du SDK des agents",
     "description": "Gérez en un seul endroit la connexion SDK des agents, l'état activé, les variables d'environnement, la gestion de configuration et les informations de préflight de version.",
     "loadingAgents": "Chargement de la liste des agents...",
@@ -1877,6 +1885,13 @@
     "terminalShellNotInstalled": "non installé",
     "terminalShellNotFoundWarning": "Ce chemin n’existe pas sur cet hôte.",
     "terminalCurrentShell": "Actuellement utilisé : {path}",
+    "terminalAppTitle": "Application de terminal",
+    "terminalAppName": "Terminal",
+    "terminalAppDescription": "Choisissez quelle application de terminal installée ouvre un dossier. La valeur par défaut du système conserve le terminal intégré. Le shell ci-dessus est l’interpréteur de ce terminal. Les CLI d’agents lancées en mode terminal restent dans cette vue.",
+    "terminalAppCustomPath": "Chemin de l’application",
+    "terminalAppCustomPlaceholder": "/Applications/Ghostty.app",
+    "terminalAppCustomHint": "Un paquet .app ou un exécutable. Une application personnalisée n’ouvre que le dossier.",
+    "terminalCurrentApp": "Ouvre les dossiers avec : {name}",
     "colorizeCommandOutput": "Coloriser la sortie des commandes",
     "colorizeCommandOutputDescription": "Force la couleur ANSI dans les commandes exécutées par les agents, afin que leur sortie s'affiche en couleur dans la transcription plutôt qu'en texte brut. S'applique aux nouvelles sessions.",
     "renderingDescription": "Désactivez l’accélération matérielle si l’application affiche un écran noir ou des défauts de rendu (fréquent sur certaines GPU AMD ou GPU Intel intégrées sous Windows, et avec le pilote propriétaire NVIDIA sous Linux). N’a d’effet que sur les versions de bureau Windows et Linux.",
@@ -2446,6 +2461,13 @@
       "more": "Plus"
     },
     "terminal": {
+      "agentStatus": {
+        "unsupported": "État natif indisponible",
+        "started": "Tour démarré",
+        "stopped": "Événement d'arrêt reçu",
+        "waiting": "En attente d'un événement d'état natif",
+        "exited": "Le processus du terminal est terminé"
+      },
       "rename": "Renommer",
       "close": "Fermer",
       "closeOthers": "Fermer les autres",
@@ -3023,6 +3045,7 @@
       "toasts": {
         "openDirectoryFailed": "Échec de l'ouverture du dossier",
         "openBuiltinTerminalFailed": "Impossible d'ouvrir le terminal intégré",
+        "openExternalTerminalFailed": "Impossible d’ouvrir l’application de terminal sélectionnée",
         "openInCodeFailed": "Impossible d'ouvrir dans Code",
         "openCommitWindowFailed": "Échec de l'ouverture de la fenêtre de commit",
         "noAddableFilesInDir": "Aucun fichier modifié de ce dossier ne peut être ajouté au VCS",
@@ -3274,6 +3297,7 @@
         }
       },
       "shared": {
+        "terminalAttachmentsUnsupported": "Le lancement dans le terminal accepte uniquement du texte. Retirez les images et ressources jointes.",
         "attachedResources": "Ressources jointes",
         "toolCallFailed": "Échec de l'appel d'outil"
       },
@@ -3359,6 +3383,11 @@
         "deleteItem": "Supprimer",
         "steerItemNow": "Insérer dans le tour en cours",
         "steerItemAsNote": "Envoyer comme note pour la prochaine vérification"
+      },
+      "sessionTerminal": {
+        "preparing": "Préparation du répertoire de travail…",
+        "openSettings": "Ouvrir les paramètres Agents",
+        "region": "Terminal {agent}"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Paramètres > Agents",

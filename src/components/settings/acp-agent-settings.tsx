@@ -102,6 +102,7 @@ import {
   acpDeleteCustomAgent,
   acpUninstallAgent,
   acpUpdateAgentConfig,
+  acpUpdateAgentLaunchMode,
   acpUpdateAgentEnv,
   acpUpdateHermesConfig,
   acpRevealHermesHome,
@@ -115,6 +116,7 @@ import {
 } from "@/lib/api"
 import type {
   AcpAgentInfo,
+  AgentLaunchMode,
   AdapterInfo,
   AgentType,
   CheckStatus,
@@ -212,6 +214,8 @@ import {
   type OpenCodeModelOptionGroup,
 } from "@/lib/opencode-connect"
 import { toErrorMessage } from "@/lib/app-error"
+import { LatestSerialQueue } from "@/lib/latest-serial-queue"
+import { rebaseAgentLaunchMode } from "@/lib/agent-launch-mode-draft"
 import { getInstallErrorHintKey } from "@/lib/agent-install-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
@@ -243,6 +247,7 @@ const CLAUDE_AUTH_MODES = [
 type ClaudeAuthMode = (typeof CLAUDE_AUTH_MODES)[number]
 
 interface AgentDraft {
+  launchMode: AgentLaunchMode
   enabled: boolean
   envText: string
   configText: string
@@ -3748,6 +3753,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
           })
         : (codegDraft?.envText ?? rawEnvText)
   return {
+    launchMode: agent.launch_mode ?? "acp",
     enabled: agent.enabled,
     envText,
     configText,
@@ -4503,6 +4509,7 @@ export function AcpAgentSettings() {
   )
   const draftsRef = useRef(drafts)
   draftsRef.current = drafts
+  const launchModeSaveQueueRef = useRef(new LatestSerialQueue<AgentType>())
   const [configErrors, setConfigErrors] = useState<
     Partial<Record<AgentType, string | null>>
   >({})
@@ -4595,55 +4602,71 @@ export function AcpAgentSettings() {
     [searchParams]
   )
 
-  const refreshAgents = useCallback(async () => {
-    setLoadingAgents(true)
-    setLoadingError(null)
-    try {
-      const [next, providers] = await Promise.all([
-        acpListAgents(),
-        listModelProviders().catch(() => [] as ModelProviderInfo[]),
-      ])
-      setAgents(next)
-      publishAgentDisplay(next)
-      setModelProviders(providers)
-      setDrafts((prev) => {
-        const updated = { ...prev }
-        for (const agent of next) {
-          if (!updated[agent.agent_type]) {
-            updated[agent.agent_type] = buildAgentDraft(agent)
-            continue
+  const refreshAgents = useCallback(
+    async (launchModeRefresh?: {
+      agentType: AgentType
+      hasNewerPending: () => boolean
+    }) => {
+      setLoadingAgents(true)
+      setLoadingError(null)
+      try {
+        const [next, providers] = await Promise.all([
+          acpListAgents(),
+          listModelProviders().catch(() => [] as ModelProviderInfo[]),
+        ])
+        setAgents(next)
+        publishAgentDisplay(next)
+        setModelProviders(providers)
+        setDrafts((prev) => {
+          const updated = { ...prev }
+          for (const agent of next) {
+            if (!updated[agent.agent_type]) {
+              updated[agent.agent_type] = buildAgentDraft(agent)
+              continue
+            }
+            // An EXISTING draft is deliberately kept (it may hold in-progress
+            // edits) — but for the keys a structured panel owns, keeping it is
+            // what loses data: the enable switch persists `draft.envText`
+            // wholesale, so a draft still holding this window's pre-refresh
+            // values would restore them over whatever another window (or
+            // another surface here) just saved. Rebase only those keys; every
+            // other key, and every unsaved edit to them, is untouched.
+            const existing = updated[agent.agent_type]
+            if (existing) {
+              const rebased = rebaseAgentLaunchMode(
+                existing,
+                agent.launch_mode,
+                launchModeRefresh?.agentType === agent.agent_type
+                  ? launchModeRefresh.hasNewerPending()
+                  : launchModeSaveQueueRef.current.hasPending(agent.agent_type)
+              )
+              updated[agent.agent_type] =
+                agent.agent_type === "deepseek"
+                  ? rebaseDeepSeekDraft(rebased, agent)
+                  : rebased
+            }
           }
-          // An EXISTING draft is deliberately kept (it may hold in-progress
-          // edits) — but for the keys a structured panel owns, keeping it is
-          // what loses data: the enable switch persists `draft.envText`
-          // wholesale, so a draft still holding this window's pre-refresh
-          // values would restore them over whatever another window (or
-          // another surface here) just saved. Rebase only those keys; every
-          // other key, and every unsaved edit to them, is untouched.
-          const existing = updated[agent.agent_type]
-          if (agent.agent_type === "deepseek" && existing) {
-            updated[agent.agent_type] = rebaseDeepSeekDraft(existing, agent)
+          return updated
+        })
+        setConfigErrors((prev) => {
+          const updated = { ...prev }
+          for (const agent of next) {
+            if (typeof updated[agent.agent_type] !== "undefined") continue
+            const configText =
+              typeof agent.config_json === "string" ? agent.config_json : ""
+            updated[agent.agent_type] = parseConfigJsonText(configText).error
           }
-        }
-        return updated
-      })
-      setConfigErrors((prev) => {
-        const updated = { ...prev }
-        for (const agent of next) {
-          if (typeof updated[agent.agent_type] !== "undefined") continue
-          const configText =
-            typeof agent.config_json === "string" ? agent.config_json : ""
-          updated[agent.agent_type] = parseConfigJsonText(configText).error
-        }
-        return updated
-      })
-    } catch (err) {
-      const message = toErrorMessage(err)
-      setLoadingError(message)
-    } finally {
-      setLoadingAgents(false)
-    }
-  }, [])
+          return updated
+        })
+      } catch (err) {
+        const message = toErrorMessage(err)
+        setLoadingError(message)
+      } finally {
+        setLoadingAgents(false)
+      }
+    },
+    []
+  )
 
   const runPreflight = useCallback(
     async (agentType: AgentType, forceRefresh?: boolean) => {
@@ -8224,6 +8247,88 @@ export function AcpAgentSettings() {
                 <p className="mt-2 text-xs text-muted-foreground">
                   {selectedAgent.description}
                 </p>
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium">
+                      {t("launchMode.label")}
+                    </p>
+                    <p className="text-2xs text-muted-foreground">
+                      {selectedAgent.agent_type === "grok" &&
+                      selectedDraft.launchMode === "terminal"
+                        ? t("launchMode.grokUnsupported")
+                        : t("launchMode.newSessions")}
+                    </p>
+                  </div>
+                  <Select
+                    value={selectedDraft.launchMode}
+                    onValueChange={(value) => {
+                      const launchMode = value as AgentLaunchMode
+                      const agentType = selectedAgent.agent_type
+                      const previousMode = selectedDraft.launchMode
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [agentType]: {
+                          ...selectedDraft,
+                          launchMode,
+                        },
+                      }))
+                      void launchModeSaveQueueRef.current.enqueue(
+                        agentType,
+                        () => acpUpdateAgentLaunchMode(agentType, launchMode),
+                        {
+                          onLatestSuccess: (context) =>
+                            refreshAgents({
+                              agentType,
+                              hasNewerPending: context.hasNewerPending,
+                            }),
+                          onLatestFailure: (_error, context) => {
+                            setDrafts((prev) => {
+                              const current = prev[agentType]
+                              if (
+                                !current ||
+                                current.launchMode !== launchMode
+                              ) {
+                                return prev
+                              }
+                              return {
+                                ...prev,
+                                [agentType]: {
+                                  ...current,
+                                  launchMode: previousMode,
+                                },
+                              }
+                            })
+                            return refreshAgents({
+                              agentType,
+                              hasNewerPending: context.hasNewerPending,
+                            })
+                          },
+                          onFailure: (error) => {
+                            toast.error(t("launchMode.saveFailed"), {
+                              description: toErrorMessage(error),
+                            })
+                          },
+                        }
+                      )
+                    }}
+                  >
+                    <SelectTrigger
+                      className="w-36"
+                      aria-label={t("launchMode.label")}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                      <SelectItem value="acp">{t("launchMode.acp")}</SelectItem>
+                      <SelectItem
+                        value="terminal"
+                        disabled={selectedAgent.terminal_available !== true}
+                      >
+                        {t("launchMode.terminal")}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <AgentDiagnosticsDialog
@@ -11333,7 +11438,7 @@ supports_websockets = true`}
                 ) : selectedAgent.agent_type === "kimi_code" ? (
                   <KimiCodeConfigPanel
                     agent={selectedAgent}
-                    onSaved={refreshAgents}
+                    onSaved={() => refreshAgents()}
                   />
                 ) : selectedAgent.agent_type === "pi" ? (
                   <PiConfigPanel
@@ -11347,7 +11452,7 @@ supports_websockets = true`}
                         selectedAgent.model_provider_id
                       )
                     }
-                    onSaved={refreshAgents}
+                    onSaved={() => refreshAgents()}
                   />
                 ) : selectedAgent.agent_type === "cursor" ? (
                   <CursorConfigPanel
@@ -11361,7 +11466,7 @@ supports_websockets = true`}
                         selectedAgent.model_provider_id
                       )
                     }
-                    onSaved={refreshAgents}
+                    onSaved={() => refreshAgents()}
                     onAffectedSessions={reportAffectedSessions}
                   />
                 ) : selectedAgent.agent_type === "deepseek" ? (
@@ -11421,7 +11526,7 @@ supports_websockets = true`}
                         }
                       )
                     }
-                    onSaved={refreshAgents}
+                    onSaved={() => refreshAgents()}
                     onAffectedSessions={reportAffectedSessions}
                   />
                 ) : selectedAgent.agent_type === "antigravity" ? (
@@ -11447,7 +11552,7 @@ supports_websockets = true`}
                         )
                       )
                     }
-                    onSaved={refreshAgents}
+                    onSaved={() => refreshAgents()}
                   />
                 ) : selectedAgent.agent_type === "grok" ? (
                   <div className="space-y-3 rounded-md border bg-muted/10 p-3">

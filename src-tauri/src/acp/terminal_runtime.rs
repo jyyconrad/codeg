@@ -60,7 +60,9 @@ pub enum TerminalRuntimeError {
 impl TerminalRuntimeError {
     pub fn into_rpc_error(self) -> agent_client_protocol::Error {
         match self {
-            Self::InvalidParams(message) => agent_client_protocol::Error::invalid_params().data(message),
+            Self::InvalidParams(message) => {
+                agent_client_protocol::Error::invalid_params().data(message)
+            }
             Self::Internal(message) => agent_client_protocol::util::internal_error(message),
         }
     }
@@ -797,11 +799,13 @@ impl TerminalRuntime {
         let terminal = Arc::new(TerminalInstance::new(
             session_id,
             Some(output_byte_limit),
-            self.service_watch.as_ref().map(|watch| TerminalServiceWatch {
-                watch: watch.clone(),
-                terminal_id: terminal_id.clone(),
-                scanner: std::sync::Mutex::new(ServiceScanner::new()),
-            }),
+            self.service_watch
+                .as_ref()
+                .map(|watch| TerminalServiceWatch {
+                    watch: watch.clone(),
+                    terminal_id: terminal_id.clone(),
+                    scanner: std::sync::Mutex::new(ServiceScanner::new()),
+                }),
         ));
 
         let mut handles: Vec<JoinHandle<()>> = Vec::new();
@@ -1289,7 +1293,9 @@ mod shell_config_tests {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{EnvVariable, SessionId, TerminalId, WaitForTerminalExitRequest};
+    use agent_client_protocol::schema::v1::{
+        EnvVariable, SessionId, TerminalId, WaitForTerminalExitRequest,
+    };
 
     /// Regression: when an ACP agent calls `terminal/create` (e.g. to run
     /// `git push`), the runtime's base env — populated by the connection

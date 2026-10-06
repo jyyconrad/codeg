@@ -15,6 +15,8 @@ type JsPreviewer = {
 
 type OfficeJsKind = "pdf" | "docx" | "pptx"
 
+const PPTX_FALLBACK_WIDTH = 960
+
 async function createPreviewer(
   kind: OfficeJsKind,
   container: HTMLElement
@@ -32,7 +34,12 @@ async function createPreviewer(
     return mod.default.init(container)
   }
   const mod = await import("pptx-preview")
-  return mod.init(container, { mode: "list" }) as JsPreviewer
+  // `pptx-preview` does not infer a viewport from the host element. Without a
+  // concrete width it computes a NaN scale and creates zero-sized slides.
+  return mod.init(container, {
+    mode: "list",
+    width: container.clientWidth || PPTX_FALLBACK_WIDTH,
+  }) as JsPreviewer
 }
 
 export function OfficeJsPreview({
@@ -64,7 +71,11 @@ export function OfficeJsPreview({
       setLoading(true)
       setError(null)
       try {
-        const bytes = await readOfficeFileBytesWithRetry(rootPath, relPath, path)
+        const bytes = await readOfficeFileBytesWithRetry(
+          rootPath,
+          relPath,
+          path
+        )
         if (cancelled || !container) return
         previewerRef.current?.destroy()
         previewerRef.current = null

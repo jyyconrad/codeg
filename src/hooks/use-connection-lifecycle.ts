@@ -9,13 +9,18 @@ import { extractAppCommandError } from "@/lib/app-error"
 import { notify } from "@/lib/notify"
 import { isConnectionBusy } from "@/lib/connection-teardown"
 import { TurnBusyError } from "@/lib/turn-busy"
-import { type AgentType, type PromptDraft } from "@/lib/types"
+import {
+  type AgentLaunchMode,
+  type AgentType,
+  type PromptDraft,
+} from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 
 interface UseConnectionLifecycleOptions {
   contextKey: string
   agentType: AgentType
   isActive: boolean
+  launchMode?: AgentLaunchMode | null
   workingDir?: string
   sessionId?: string
   /**
@@ -50,6 +55,14 @@ interface UseConnectionLifecycleOptions {
    * connection under the same contextKey.
    */
   isTransientUnmount?: () => boolean
+}
+
+export function shouldAutoConnect(args: {
+  isActive: boolean
+  workingDir?: string
+  launchMode: AgentLaunchMode | null
+}): boolean {
+  return Boolean(args.isActive && args.workingDir && args.launchMode === "acp")
 }
 
 export interface UseConnectionLifecycleReturn {
@@ -130,6 +143,7 @@ export function useConnectionLifecycle({
   contextKey,
   agentType,
   isActive,
+  launchMode = "acp",
   workingDir,
   sessionId,
   conversationId,
@@ -236,8 +250,7 @@ export function useConnectionLifecycle({
   // agentType differs. Status changes must NOT re-trigger this to avoid
   // infinite reconnect loops on transient errors.
   useEffect(() => {
-    if (!isActive) return
-    if (!workingDir) return
+    if (!shouldAutoConnect({ isActive, workingDir, launchMode })) return
     let cancelled = false
     connConnectRef
       .current(
@@ -266,7 +279,7 @@ export function useConnectionLifecycle({
     return () => {
       cancelled = true
     }
-  }, [isActive, workingDir, agentType])
+  }, [isActive, workingDir, agentType, launchMode])
 
   // Status-bar task for the two legs that precede a usable session:
   //   "preparing"  — the caller is resolving what to connect to (see `preparing`)
@@ -408,7 +421,7 @@ export function useConnectionLifecycle({
     // Respect the caller's readiness gate — e.g. historical conversations
     // set isActive=false until the session's external_id resolves, to
     // avoid connecting with sessionId=undefined and orphaning context.
-    if (!isActive) return
+    if (!shouldAutoConnect({ isActive, workingDir, launchMode })) return
     touchActivity(contextKey)
     if (!status || status === "disconnected" || status === "error") {
       setLastAutoConnectError(null)
@@ -422,6 +435,7 @@ export function useConnectionLifecycle({
     }
   }, [
     isActive,
+    launchMode,
     agentType,
     workingDir,
     sessionId,

@@ -272,6 +272,42 @@ describe("MessageInput (RichComposer integration)", () => {
     expect(sendButton).toBeDisabled()
   })
 
+  it("keeps an async draft until send succeeds and ignores duplicate submits", async () => {
+    let resolveSend!: () => void
+    const onSend = vi.fn(
+      () => new Promise<void>((resolve) => (resolveSend = resolve))
+    )
+    const { container } = renderInput({ onSend })
+    await waitFor(() => expect(composerHandle.current).not.toBeNull())
+    act(() => composerHandle.current?.setText("launch agent"))
+    const sendButton = container.querySelector<HTMLButtonElement>(
+      `button[title="${enMessages.Folder.chat.messageInput.send}"]`
+    )!
+
+    fireEvent.click(sendButton)
+    fireEvent.click(sendButton)
+    expect(onSend).toHaveBeenCalledTimes(1)
+    expect(composerHandle.current?.getText()).toBe("launch agent")
+
+    await act(async () => resolveSend())
+    await waitFor(() => expect(composerHandle.current?.getText()).toBe(""))
+  })
+
+  it("keeps an async draft when send fails", async () => {
+    const onSend = vi.fn(() => Promise.reject(new Error("spawn failed")))
+    const { container } = renderInput({ onSend })
+    await waitFor(() => expect(composerHandle.current).not.toBeNull())
+    act(() => composerHandle.current?.setText("retry me"))
+    fireEvent.click(
+      container.querySelector<HTMLButtonElement>(
+        `button[title="${enMessages.Folder.chat.messageInput.send}"]`
+      )!
+    )
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+    expect(composerHandle.current?.getText()).toBe("retry me")
+  })
+
   it("claims a mouse press on the input's empty chrome (P8d focus wiring)", async () => {
     const { container } = renderInput({})
     await waitFor(() =>

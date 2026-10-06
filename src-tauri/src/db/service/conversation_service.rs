@@ -120,6 +120,7 @@ async fn create_inner(
         deleted_at: Set(None),
         pinned_at: Set(None),
         origin_cwd: Set(None),
+        launch_mode: Set("acp".to_string()),
     };
     Ok(model.insert(conn).await?)
 }
@@ -877,6 +878,322 @@ pub async fn bind_external_id(
     }
 }
 
+/// Inputs for [`establish_terminal_session`].
+///
+/// A terminal CLI does not open an ACP connection. When its hook reports a
+/// native session id, this adopts or creates the conversation row the way
+/// `SessionStarted` does for ACP: `external_id`, an unlocked title, and an
+/// optional model. The caller keeps the PTY on screen.
+#[derive(Debug, Clone)]
+pub struct EstablishTerminalSessionRequest {
+    pub agent_type: AgentType,
+    pub external_id: String,
+    /// Tab row to bind when it does not already hold a different session.
+    pub preferred_conversation_id: Option<i32>,
+    /// Folder for a new row. `None` or `<= 0` means the caller must create a
+    /// chat folder first ([`EstablishTerminalSessionOutcome::NeedsFolder`]).
+    pub folder_id: Option<i32>,
+    /// Agent session name. Replaces an unlocked title.
+    pub title: Option<String>,
+    /// First-prompt seed. Fills an empty title and does not replace one.
+    pub title_seed: Option<String>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EstablishedTerminalSession {
+    pub conversation_id: i32,
+    pub folder_id: i32,
+    pub title: Option<String>,
+    pub changed: bool,
+    pub preserved_id: Option<i32>,
+    /// False when this event's session id is not the id stored on the row.
+    /// A later id on an empty terminal reuses the row, but its start/stop
+    /// must not clear or cancel the turn that still belongs to the stored id.
+    pub applies_status: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EstablishTerminalSessionOutcome {
+    Established(EstablishedTerminalSession),
+    NeedsFolder,
+}
+
+/// Find or create the conversation a terminal-launched CLI belongs to.
+///
+/// Lookup is by the live `(agent_type, external_id)` pair. A preferred row is
+/// bound when its `external_id` is empty or already this session. An empty,
+/// unlocked preferred row is reused when a later hook reports a different
+/// session id, so one terminal does not grow a stack of untitled rows; a row
+/// that already has messages is left alone and the new id gets its own row.
+/// Creating a row that then loses the unique index deletes only that new
+/// unbound row and returns the holder. Titles are never locked.
+pub async fn establish_terminal_session(
+    conn: &DatabaseConnection,
+    request: EstablishTerminalSessionRequest,
+) -> Result<EstablishTerminalSessionOutcome, DbError> {
+    let external_id = request.external_id.trim();
+    if external_id.is_empty() {
+        return Err(DbError::Validation(
+            "terminal session id is empty".to_string(),
+        ));
+    }
+    let external_id = external_id.to_string();
+    let wire = request.agent_type.as_wire().into_owned();
+
+    if let Some(holder) = find_live_by_external(conn, &wire, &external_id).await? {
+        let changed = apply_terminal_metadata(
+            conn,
+            holder.id,
+            request.title.clone(),
+            request.title_seed.clone(),
+            request.model.clone(),
+        )
+        .await?;
+        return Ok(EstablishTerminalSessionOutcome::Established(
+            finish_established(conn, holder.id, changed, None, true).await?,
+        ));
+    }
+
+    if let Some(preferred_id) = request.preferred_conversation_id {
+        if let Some(preferred) = live_preferred(conn, preferred_id, &wire).await? {
+            let already = preferred.external_id.as_deref() == Some(external_id.as_str());
+            let unbound = preferred.external_id.is_none();
+            if already || unbound {
+                let mut changed = false;
+                let mut preserved_id = None;
+                if unbound {
+                    match bind_external_id(conn, preferred.id, &external_id, &[]).await {
+                        Ok(preserved) => {
+                            changed = true;
+                            preserved_id = preserved;
+                        }
+                        Err(DbError::Conflict(_)) => {
+                            return adopt_external_holder(conn, &wire, &external_id, &request)
+                                .await;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                changed |= apply_terminal_metadata(
+                    conn,
+                    preferred.id,
+                    request.title.clone(),
+                    request.title_seed.clone(),
+                    request.model.clone(),
+                )
+                .await?;
+                return Ok(EstablishTerminalSessionOutcome::Established(
+                    finish_established(conn, preferred.id, changed, preserved_id, true).await?,
+                ));
+            }
+            // One terminal tab, one sidebar row. The CLI (and the subagents it
+            // spawns in-process) report further session ids before any
+            // transcript exists. Inserting a row for each of those left a
+            // stack of untitled conversations. An empty, unlocked preferred
+            // row stays the row; a row that already has messages keeps the
+            // split below so its history is not detached from the id it holds.
+            // Status stays with the id already stored: a child session end
+            // must not cancel the turn the sidebar is showing.
+            if preferred.message_count == 0 && !preferred.title_locked {
+                let changed = apply_terminal_metadata(
+                    conn,
+                    preferred.id,
+                    request.title.clone(),
+                    request.title_seed.clone(),
+                    request.model.clone(),
+                )
+                .await?;
+                return Ok(EstablishTerminalSessionOutcome::Established(
+                    finish_established(conn, preferred.id, changed, None, false).await?,
+                ));
+            }
+        }
+    }
+
+    let Some(folder_id) = request.folder_id.filter(|id| *id > 0) else {
+        return Ok(EstablishTerminalSessionOutcome::NeedsFolder);
+    };
+    let initial =
+        nonempty_text(request.title.clone()).or_else(|| nonempty_text(request.title_seed.clone()));
+    let created = create(conn, folder_id, request.agent_type, initial, None).await?;
+    match bind_external_id(conn, created.id, &external_id, &[]).await {
+        Ok(preserved) => {
+            let mut changed = true;
+            changed |= apply_terminal_metadata(
+                conn,
+                created.id,
+                request.title.clone(),
+                request.title_seed.clone(),
+                request.model.clone(),
+            )
+            .await?;
+            Ok(EstablishTerminalSessionOutcome::Established(
+                finish_established(conn, created.id, changed, preserved, true).await?,
+            ))
+        }
+        Err(DbError::Conflict(_)) => {
+            if let Err(error) = delete_unbound_conversation(conn, created.id).await {
+                tracing::warn!(
+                    conversation_id = created.id,
+                    "failed to drop the terminal row that lost its session id: {error}"
+                );
+            }
+            adopt_external_holder(conn, &wire, &external_id, &request).await
+        }
+        Err(error) => {
+            if let Err(cleanup) = delete_unbound_conversation(conn, created.id).await {
+                tracing::warn!(
+                    conversation_id = created.id,
+                    "failed to drop a terminal row after bind failed: {cleanup}"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Hard-delete a row that never received an external id. Used when a terminal
+/// session row loses the unique-index race, and when a chat folder created for
+/// that race is discarded. A row that already holds a session is left alone.
+pub async fn delete_unbound_conversation(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<bool, DbError> {
+    let Some(row) = conversation::Entity::find_by_id(conversation_id)
+        .one(conn)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if row.external_id.is_some() {
+        return Ok(false);
+    }
+    conversation::Entity::delete_by_id(conversation_id)
+        .exec(conn)
+        .await?;
+    Ok(true)
+}
+
+async fn find_live_by_external(
+    conn: &DatabaseConnection,
+    agent_wire: &str,
+    external_id: &str,
+) -> Result<Option<conversation::Model>, DbError> {
+    Ok(conversation::Entity::find()
+        .filter(conversation::Column::ExternalId.eq(external_id))
+        .filter(conversation::Column::AgentType.eq(agent_wire))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?)
+}
+
+async fn live_preferred(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    agent_wire: &str,
+) -> Result<Option<conversation::Model>, DbError> {
+    Ok(conversation::Entity::find_by_id(conversation_id)
+        .filter(conversation::Column::AgentType.eq(agent_wire))
+        .filter(conversation::Column::DeletedAt.is_null())
+        .one(conn)
+        .await?)
+}
+
+async fn adopt_external_holder(
+    conn: &DatabaseConnection,
+    agent_wire: &str,
+    external_id: &str,
+    request: &EstablishTerminalSessionRequest,
+) -> Result<EstablishTerminalSessionOutcome, DbError> {
+    let Some(holder) = find_live_by_external(conn, agent_wire, external_id).await? else {
+        return Err(DbError::Conflict(format!(
+            "agent session {external_id} is already bound; no live conversation holds it"
+        )));
+    };
+    let changed = apply_terminal_metadata(
+        conn,
+        holder.id,
+        request.title.clone(),
+        request.title_seed.clone(),
+        request.model.clone(),
+    )
+    .await?;
+    Ok(EstablishTerminalSessionOutcome::Established(
+        finish_established(conn, holder.id, changed, None, true).await?,
+    ))
+}
+
+async fn stamp_terminal_launch(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<(), DbError> {
+    let active = conversation::ActiveModel {
+        id: Set(conversation_id),
+        launch_mode: Set("terminal".to_string()),
+        ..Default::default()
+    };
+    active.update(conn).await?;
+    Ok(())
+}
+
+async fn finish_established(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    changed: bool,
+    preserved_id: Option<i32>,
+    applies_status: bool,
+) -> Result<EstablishedTerminalSession, DbError> {
+    // Every adopted row, including a reused holder whose status this event
+    // does not own. Reopening the list row has to find `terminal` here.
+    stamp_terminal_launch(conn, conversation_id).await?;
+    let summary = get_by_id(conn, conversation_id).await?;
+    Ok(EstablishedTerminalSession {
+        conversation_id: summary.id,
+        folder_id: summary.folder_id,
+        title: summary.title,
+        changed,
+        preserved_id,
+        applies_status,
+    })
+}
+
+async fn apply_terminal_metadata(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    title: Option<String>,
+    title_seed: Option<String>,
+    model: Option<String>,
+) -> Result<bool, DbError> {
+    let mut changed = false;
+    if let Some(title) = nonempty_text(title) {
+        if refresh_auto_title(conn, conversation_id, title).await? {
+            changed = true;
+        }
+    }
+    if let Some(seed) = nonempty_text(title_seed) {
+        if seed_auto_title_if_empty(conn, conversation_id, seed).await? {
+            changed = true;
+        }
+    }
+    if let Some(model) = nonempty_text(model) {
+        let model = crate::parsers::truncate_str(&model, 200);
+        if seed_model_if_empty(conn, conversation_id, &model).await? {
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+fn nonempty_text(value: Option<String>) -> Option<String> {
+    let text = value?.trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 /// What [`bind_external_id`]'s transaction concluded.
 ///
 /// A refusal has to leave the closure as a distinct VALUE rather than an early
@@ -913,6 +1230,7 @@ struct CarriedOverRow {
     created_at: chrono::DateTime<Utc>,
     updated_at: chrono::DateTime<Utc>,
     origin_cwd: Option<String>,
+    launch_mode: String,
 }
 
 impl CarriedOverRow {
@@ -951,6 +1269,7 @@ impl CarriedOverRow {
             // `origin_cwd ?? folder.path`, so dropping this would break
             // history lookup for a re-parented conversation.
             origin_cwd: row.origin_cwd.clone(),
+            launch_mode: row.launch_mode.clone(),
         }
     }
 
@@ -980,6 +1299,7 @@ impl CarriedOverRow {
             // not to the history.
             pinned_at: Set(None),
             origin_cwd: Set(self.origin_cwd),
+            launch_mode: Set(self.launch_mode),
         }
     }
 }
@@ -1155,6 +1475,7 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         parent_tool_use_id: r.parent_tool_use_id,
         delegation_call_id: r.delegation_call_id,
         origin_cwd: r.origin_cwd,
+        launch_mode: r.launch_mode,
     }
 }
 
@@ -3418,5 +3739,276 @@ mod tests {
             !rows.iter().any(|r| r.title.as_deref() == Some("hide")),
             "loop row must be excluded"
         );
+    }
+
+    fn terminal_request(
+        external_id: &str,
+        folder_id: Option<i32>,
+        preferred: Option<i32>,
+        title: Option<&str>,
+        title_seed: Option<&str>,
+    ) -> EstablishTerminalSessionRequest {
+        EstablishTerminalSessionRequest {
+            agent_type: AgentType::ClaudeCode,
+            external_id: external_id.to_string(),
+            preferred_conversation_id: preferred,
+            folder_id,
+            title: title.map(str::to_string),
+            title_seed: title_seed.map(str::to_string),
+            model: None,
+        }
+    }
+
+    fn established(outcome: EstablishTerminalSessionOutcome) -> EstablishedTerminalSession {
+        match outcome {
+            EstablishTerminalSessionOutcome::Established(row) => row,
+            EstablishTerminalSessionOutcome::NeedsFolder => {
+                panic!("expected an established conversation")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn establish_terminal_session_creates_then_reuses_and_keeps_titles_unlocked() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-terminal-establish").await;
+
+        let created = established(
+            establish_terminal_session(
+                &db.conn,
+                terminal_request("sid-1", Some(folder), None, None, Some("first prompt")),
+            )
+            .await
+            .expect("create"),
+        );
+        assert!(created.changed);
+        assert_eq!(created.title.as_deref(), Some("first prompt"));
+        let raw = raw_row(&db.conn, created.conversation_id).await;
+        assert_eq!(raw.external_id.as_deref(), Some("sid-1"));
+        assert_eq!(raw.launch_mode, "terminal");
+        assert!(!raw.title_locked);
+
+        let seeded_again = established(
+            establish_terminal_session(
+                &db.conn,
+                terminal_request("sid-1", Some(folder), None, None, Some("later prompt")),
+            )
+            .await
+            .expect("reuse seed"),
+        );
+        assert_eq!(seeded_again.conversation_id, created.conversation_id);
+        assert!(!seeded_again.changed);
+        assert_eq!(seeded_again.title.as_deref(), Some("first prompt"));
+
+        let renamed = established(
+            establish_terminal_session(
+                &db.conn,
+                terminal_request(
+                    "sid-1",
+                    Some(folder),
+                    None,
+                    Some("Agent title"),
+                    Some("ignored seed"),
+                ),
+            )
+            .await
+            .expect("refresh title"),
+        );
+        assert!(renamed.changed);
+        assert_eq!(renamed.title.as_deref(), Some("Agent title"));
+        assert!(
+            !raw_row(&db.conn, renamed.conversation_id)
+                .await
+                .title_locked
+        );
+
+        update_title(&db.conn, renamed.conversation_id, "User pick".into())
+            .await
+            .expect("lock");
+        let locked = established(
+            establish_terminal_session(
+                &db.conn,
+                terminal_request("sid-1", Some(folder), None, Some("Agent again"), None),
+            )
+            .await
+            .expect("locked refresh"),
+        );
+        assert!(!locked.changed);
+        assert_eq!(locked.title.as_deref(), Some("User pick"));
+    }
+
+    #[tokio::test]
+    async fn establish_terminal_session_binds_a_preferred_row_and_reuses_the_live_holder() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-terminal-establish-bind").await;
+        let preferred = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("preferred");
+
+        let bound = established(
+            establish_terminal_session(
+                &db.conn,
+                terminal_request(
+                    "sid-pref",
+                    Some(folder),
+                    Some(preferred.id),
+                    None,
+                    Some("from prompt"),
+                ),
+            )
+            .await
+            .expect("bind preferred"),
+        );
+        assert_eq!(bound.conversation_id, preferred.id);
+        assert_eq!(bound.title.as_deref(), Some("from prompt"));
+
+        let other = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("other");
+        let holder = established(
+            establish_terminal_session(
+                &db.conn,
+                terminal_request("sid-pref", Some(folder), Some(other.id), None, None),
+            )
+            .await
+            .expect("conflict returns holder"),
+        );
+        assert_eq!(holder.conversation_id, preferred.id);
+        let other_row = raw_row(&db.conn, other.id).await;
+        assert!(other_row.external_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn establish_terminal_session_reuses_an_empty_preferred_row_for_a_new_id() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-terminal-establish-reuse").await;
+        let preferred = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("preferred");
+        bind_external_id(&db.conn, preferred.id, "sid-first", &[])
+            .await
+            .expect("first id");
+
+        let reused = established(
+            establish_terminal_session(
+                &db.conn,
+                terminal_request(
+                    "sid-next",
+                    Some(folder),
+                    Some(preferred.id),
+                    None,
+                    Some("from the prompt"),
+                ),
+            )
+            .await
+            .expect("reuse empty row"),
+        );
+        assert_eq!(reused.conversation_id, preferred.id);
+        assert_eq!(reused.title.as_deref(), Some("from the prompt"));
+        let row = raw_row(&db.conn, preferred.id).await;
+        assert_eq!(
+            row.external_id.as_deref(),
+            Some("sid-first"),
+            "a later id must not fork the row or steal the id already on it"
+        );
+        assert!(
+            !reused.applies_status,
+            "a different session id must not rewrite this row's running state"
+        );
+        let rows = conversation::Entity::find()
+            .all(&db.conn)
+            .await
+            .expect("rows");
+        assert_eq!(rows.len(), 1, "no sibling untitled row: {rows:?}");
+    }
+
+    #[tokio::test]
+    async fn establish_terminal_session_splits_when_the_preferred_row_has_messages() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-terminal-establish-split").await;
+        let preferred = create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+            .await
+            .expect("preferred");
+        bind_external_id(&db.conn, preferred.id, "sid-first", &[])
+            .await
+            .expect("first id");
+        refresh_external_activity(
+            &db.conn,
+            preferred.id,
+            Utc::now() + chrono::Duration::seconds(5),
+            3,
+        )
+        .await
+        .expect("messages");
+
+        let created = established(
+            establish_terminal_session(
+                &db.conn,
+                terminal_request("sid-next", Some(folder), Some(preferred.id), None, None),
+            )
+            .await
+            .expect("new session"),
+        );
+        assert_ne!(created.conversation_id, preferred.id);
+        let kept = raw_row(&db.conn, preferred.id).await;
+        assert_eq!(kept.external_id.as_deref(), Some("sid-first"));
+        assert_eq!(kept.message_count, 3);
+        let fresh = raw_row(&db.conn, created.conversation_id).await;
+        assert_eq!(fresh.external_id.as_deref(), Some("sid-next"));
+    }
+
+    #[tokio::test]
+    async fn establish_terminal_session_drops_a_row_that_loses_the_session_id() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-terminal-establish-race").await;
+        let hidden = create(
+            &db.conn,
+            folder,
+            AgentType::ClaudeCode,
+            Some("gone".into()),
+            None,
+        )
+        .await
+        .expect("hidden");
+        bind_external_id(&db.conn, hidden.id, "sid-dead", &[])
+            .await
+            .expect("bind hidden");
+        soft_delete(&db.conn, hidden.id).await.expect("hide");
+
+        let err = establish_terminal_session(
+            &db.conn,
+            terminal_request("sid-dead", Some(folder), None, Some("new"), None),
+        )
+        .await
+        .expect_err("soft-deleted holder still owns the id");
+        assert!(matches!(err, DbError::Conflict(_)), "{err:?}");
+
+        let rows = conversation::Entity::find()
+            .all(&db.conn)
+            .await
+            .expect("rows");
+        assert_eq!(rows.len(), 1, "the losing row must be deleted: {rows:?}");
+        assert_eq!(rows[0].id, hidden.id);
+    }
+
+    #[tokio::test]
+    async fn establish_terminal_session_rejects_an_empty_id_and_asks_for_a_folder() {
+        let db = fresh_in_memory_db().await;
+        let err =
+            establish_terminal_session(&db.conn, terminal_request("  ", Some(1), None, None, None))
+                .await
+                .expect_err("empty id");
+        assert!(matches!(err, DbError::Validation(_)), "{err:?}");
+
+        let needs = establish_terminal_session(
+            &db.conn,
+            terminal_request("sid-chat", None, None, None, Some("chat")),
+        )
+        .await
+        .expect("chat draft");
+        assert!(matches!(
+            needs,
+            EstablishTerminalSessionOutcome::NeedsFolder
+        ));
     }
 }

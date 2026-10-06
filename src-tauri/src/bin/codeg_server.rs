@@ -17,6 +17,10 @@ fn main() -> ExitCode {
 
     // Support --version flag
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--agent-hook") {
+        codeg_lib::terminal::agent_hooks::run_agent_hook_helper();
+        return ExitCode::SUCCESS;
+    }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
@@ -285,6 +289,9 @@ async fn async_main() -> ExitCode {
         db,
         connection_manager,
         terminal_manager: codeg_lib::app_state::default_terminal_manager(),
+        agent_hooks: Arc::new(codeg_lib::terminal::agent_hooks::AgentHookRegistry::new(
+            emitter.clone(),
+        )),
         event_broadcaster: broadcaster,
         acp_event_bus: acp_event_bus.clone(),
         emitter,

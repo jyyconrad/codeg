@@ -661,6 +661,29 @@ pub struct AcpUpdateAgentPreferencesParams {
     pub codex_config_toml: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpUpdateAgentLaunchModeParams {
+    pub agent_type: AgentType,
+    pub launch_mode: crate::acp::types::AgentLaunchMode,
+}
+
+pub async fn acp_update_agent_launch_mode(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<AcpUpdateAgentLaunchModeParams>,
+) -> Result<Json<()>, AppCommandError> {
+    let emitter = state.emitter.clone();
+    acp_commands::acp_update_agent_launch_mode_core(
+        params.agent_type,
+        params.launch_mode,
+        &state.db,
+        &emitter,
+    )
+    .await
+    .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
+    Ok(Json(()))
+}
+
 pub async fn acp_update_agent_preferences(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<AcpUpdateAgentPreferencesParams>,

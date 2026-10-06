@@ -27,13 +27,13 @@
 
 use std::sync::Arc;
 
+use agent_client_protocol::schema::v1::{
+    CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+    ElicitationAction, ElicitationContentValue, ElicitationMode, ElicitationPropertySchema,
+    ElicitationScope, MultiSelectItems, StringPropertySchema,
+};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use agent_client_protocol::schema::v1::{
-    CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction,
-    ElicitationContentValue, ElicitationMode, ElicitationPropertySchema, ElicitationScope,
-    MultiSelectItems, StringPropertySchema,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1059,10 +1059,7 @@ fn codex_form_shape(raw: &Value, peer: ElicitationPeer) -> Option<CodexUserInput
     let ElicitationPeer::Codex(running) = peer else {
         return None;
     };
-    let properties = raw
-        .get("requestedSchema")?
-        .get("properties")?
-        .as_object()?;
+    let properties = raw.get("requestedSchema")?.get("properties")?.as_object()?;
     let mut is_codex_form = false;
     let mut companion_shape = None;
     for id in properties.keys() {
@@ -1070,8 +1067,8 @@ fn codex_form_shape(raw: &Value, peer: ElicitationPeer) -> Option<CodexUserInput
             companion_shape = Some(shape);
             continue;
         }
-        is_codex_form |= codex_property_meta(raw, id)
-            .is_some_and(|codex| codex.get("isOther").is_some());
+        is_codex_form |=
+            codex_property_meta(raw, id).is_some_and(|codex| codex.get("isOther").is_some());
     }
     if !is_codex_form && companion_shape.is_none() {
         return None;
@@ -1235,10 +1232,7 @@ fn is_mcp_tool_call_approval(raw: &Value) -> bool {
 /// [`crate::acp::manager::ConnectionManager::register_question`] re-runs
 /// [`validate_specs`]. Errors only on non-form / undeserializable requests,
 /// which the connection handler turns into a graceful decline.
-pub fn classify_elicitation(
-    raw: &Value,
-    peer: ElicitationPeer,
-) -> Result<ElicitationPlan, String> {
+pub fn classify_elicitation(raw: &Value, peer: ElicitationPeer) -> Result<ElicitationPlan, String> {
     let req: CreateElicitationRequest = serde_json::from_value(raw.clone())
         .map_err(|e| format!("unparseable elicitation request: {e}"))?;
     let ElicitationMode::Form(form) = &req.mode else {
@@ -1927,7 +1921,11 @@ mod tests {
             q.specs[0].header, "Approach",
             "…and the short tab label in `description`"
         );
-        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(
             labels,
             ["Incremental", "Rewrite"],
@@ -1961,7 +1959,11 @@ mod tests {
             json!(["q1"]),
         );
         let q = expect_questions(classify_elicitation(&raw, ElicitationPeer::Codex(None)).unwrap());
-        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(labels, ["Incremental", "None of the above"]);
     }
 
@@ -2024,7 +2026,11 @@ mod tests {
 
         // Running ≥1.12.0 — `title` is the question.
         let q = expect_questions(
-            classify_elicitation(&raw, ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInTitle))).unwrap(),
+            classify_elicitation(
+                &raw,
+                ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInTitle)),
+            )
+            .unwrap(),
         );
         assert_eq!(q.specs[0].question, "Which approach should I take?");
         assert_eq!(q.specs[0].header, "Approach");
@@ -2032,7 +2038,11 @@ mod tests {
         // Running ≤1.11.0 — the old reading, even though no marker dates the
         // form. A custom pin is a supported configuration.
         let q = expect_questions(
-            classify_elicitation(&raw, ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInDescription))).unwrap(),
+            classify_elicitation(
+                &raw,
+                ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInDescription)),
+            )
+            .unwrap(),
         );
         assert_eq!(q.specs[0].question, "Approach");
         // …and the question text lands in the header slot, where the
@@ -2074,7 +2084,11 @@ mod tests {
             json!([]),
         );
         let q = expect_questions(
-            classify_elicitation(&raw, ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInTitle))).unwrap(),
+            classify_elicitation(
+                &raw,
+                ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInTitle)),
+            )
+            .unwrap(),
         );
         assert_eq!(q.specs[0].question, "Approach", "running version wins");
         // …and with no running version, the marker dates it the old way.
@@ -2113,7 +2127,11 @@ mod tests {
             ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInDescription)),
         ] {
             let q = expect_questions(classify_elicitation(&raw, peer).unwrap());
-            let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+            let labels: Vec<_> = q.specs[0]
+                .options
+                .iter()
+                .map(|o| o.label.as_str())
+                .collect();
             assert_eq!(
                 labels,
                 ["Incremental", "None of the above"],
@@ -2171,7 +2189,11 @@ mod tests {
         );
         assert_eq!(q.specs[0].question, "Which approach should I take?");
         assert_eq!(q.specs[0].header, "Approach");
-        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(labels, ["Incremental", "None of the above"]);
 
         // The identical payload from codex: companion skipped, 1.12 orientation,
@@ -2186,7 +2208,11 @@ mod tests {
         );
         assert_eq!(q.specs.len(), 1);
         assert_eq!(q.specs[0].question, "Approach");
-        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(labels, ["Incremental"]);
     }
 
@@ -2231,7 +2257,11 @@ mod tests {
             )
             .unwrap(),
         );
-        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(
             labels,
             ["None of the above"],
@@ -2268,9 +2298,17 @@ mod tests {
             json!(["q1"]),
         );
         let q = expect_questions(
-            classify_elicitation(&raw, ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInTitle))).unwrap(),
+            classify_elicitation(
+                &raw,
+                ElicitationPeer::Codex(Some(CodexUserInputShape::QuestionInTitle)),
+            )
+            .unwrap(),
         );
-        let labels: Vec<_> = q.specs[0].options.iter().map(|o| o.label.as_str()).collect();
+        let labels: Vec<_> = q.specs[0]
+            .options
+            .iter()
+            .map(|o| o.label.as_str())
+            .collect();
         assert_eq!(labels, ["Incremental", "None of the above"]);
     }
 
@@ -2290,7 +2328,10 @@ mod tests {
             json!(["port"]),
         );
         let q = expect_questions(classify_elicitation(&raw, ElicitationPeer::Codex(None)).unwrap());
-        assert_eq!(q.specs[0].question, "Which port should the server listen on?");
+        assert_eq!(
+            q.specs[0].question,
+            "Which port should the server listen on?"
+        );
         assert_eq!(q.specs[0].header, "Port");
     }
 
@@ -2572,7 +2613,8 @@ mod tests {
             },
             "_meta": {"codex_approval_kind": "mcp_tool_call", "persist": ["session", "always"]}
         });
-        let approval = expect_approval(classify_elicitation(&raw, ElicitationPeer::Codex(None)).unwrap());
+        let approval =
+            expect_approval(classify_elicitation(&raw, ElicitationPeer::Codex(None)).unwrap());
         assert_eq!(approval.message, "Allow tool call?");
         assert_eq!(approval.tool_call_id.as_deref(), Some("call-1"));
         assert!(approval.persist_in_content);
@@ -2619,7 +2661,8 @@ mod tests {
             "requestedSchema": {"type": "object", "properties": {}},
             "_meta": {"codex_approval_kind": "mcp_tool_call"}
         });
-        let approval = expect_approval(classify_elicitation(&raw, ElicitationPeer::Codex(None)).unwrap());
+        let approval =
+            expect_approval(classify_elicitation(&raw, ElicitationPeer::Codex(None)).unwrap());
         assert!(!approval.persist_in_content);
         let ids: Vec<_> = approval
             .options
@@ -2641,7 +2684,8 @@ mod tests {
         // A non-approval form with nothing to fill in (a bare MCP server
         // confirmation) renders Accept/Decline rather than auto-declining.
         let raw = elicitation_raw(json!({}), json!([]));
-        let approval = expect_approval(classify_elicitation(&raw, ElicitationPeer::Codex(None)).unwrap());
+        let approval =
+            expect_approval(classify_elicitation(&raw, ElicitationPeer::Codex(None)).unwrap());
         assert_eq!(approval.message, "Input requested");
         let ids: Vec<_> = approval
             .options

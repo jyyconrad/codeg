@@ -781,6 +781,14 @@
     "selectLeftMcp": "왼쪽에서 MCP를 선택하세요."
   },
   "AcpAgentSettings": {
+    "launchMode": {
+      "label": "실행 모드",
+      "newSessions": "새 세션에만 적용됩니다.",
+      "grokUnsupported": "Grok에서는 네이티브 CLI 상태 이벤트를 사용할 수 없습니다.",
+      "saveFailed": "실행 모드를 저장하지 못했습니다",
+      "acp": "ACP",
+      "terminal": "터미널"
+    },
     "title": "Agent SDK 관리",
     "description": "Agent SDK 연결, 활성화 상태, 환경 변수, 구성 관리, 버전 사전 점검 정보를 한곳에서 관리합니다.",
     "loadingAgents": "에이전트 목록 불러오는 중...",
@@ -1877,6 +1885,13 @@
     "terminalShellNotInstalled": "설치되지 않음",
     "terminalShellNotFoundWarning": "이 경로는 현재 호스트에 존재하지 않습니다.",
     "terminalCurrentShell": "현재 사용 중: {path}",
+    "terminalAppTitle": "터미널 앱",
+    "terminalAppName": "터미널",
+    "terminalAppDescription": "설치된 터미널 앱을 살펴 디렉터리를 열 때 기본으로 실행할 앱을 고릅니다. 시스템 기본값은 내장 터미널을 그대로 사용합니다. 위의 셸은 내장 터미널의 인터프리터입니다. 터미널 모드로 시작한 에이전트 CLI는 이 화면에 남습니다.",
+    "terminalAppCustomPath": "앱 경로",
+    "terminalAppCustomPlaceholder": "/Applications/Ghostty.app",
+    "terminalAppCustomHint": ".app 번들이나 실행 파일을 입력합니다. 사용자 지정 앱은 디렉터리만 엽니다.",
+    "terminalCurrentApp": "디렉터리를 열 때 사용: {name}",
     "colorizeCommandOutput": "명령 출력에 색 입히기",
     "colorizeCommandOutputDescription": "에이전트가 실행하는 명령에 ANSI 색상을 강제해, 그 출력이 대화 기록에서 일반 텍스트가 아닌 컬러로 표시되게 합니다. 새 세션부터 적용됩니다.",
     "renderingDescription": "앱이 검은 화면이 되거나 렌더링 문제가 발생하면(Windows에서는 일부 AMD GPU 또는 Intel 내장 GPU, Linux에서는 NVIDIA 독점 드라이버에서 보고됨) 하드웨어 가속을 끄세요. Windows 및 Linux 데스크톱에서만 적용됩니다.",
@@ -2446,6 +2461,13 @@
       "more": "더 보기"
     },
     "terminal": {
+      "agentStatus": {
+        "unsupported": "네이티브 상태를 사용할 수 없음",
+        "started": "턴 시작됨",
+        "stopped": "중지 이벤트 수신",
+        "waiting": "네이티브 상태 이벤트 대기 중",
+        "exited": "터미널 프로세스 종료됨"
+      },
       "rename": "이름 변경",
       "close": "닫기",
       "closeOthers": "다른 항목 닫기",
@@ -3023,6 +3045,7 @@
       "toasts": {
         "openDirectoryFailed": "디렉터리를 열지 못했습니다",
         "openBuiltinTerminalFailed": "내장 터미널을 열 수 없습니다",
+        "openExternalTerminalFailed": "선택한 터미널 앱을 열 수 없습니다",
         "openInCodeFailed": "Code에서 열지 못했습니다",
         "openCommitWindowFailed": "커밋 창을 열지 못했습니다",
         "noAddableFilesInDir": "이 디렉터리에는 VCS에 추가할 수 있는 변경 파일이 없습니다",
@@ -3274,6 +3297,7 @@
         }
       },
       "shared": {
+        "terminalAttachmentsUnsupported": "터미널 실행은 텍스트 작업만 지원합니다. 이미지와 첨부 리소스를 제거하세요.",
         "attachedResources": "첨부된 리소스",
         "toolCallFailed": "도구 호출 실패"
       },
@@ -3359,6 +3383,11 @@
         "deleteItem": "삭제",
         "steerItemNow": "현재 턴에 삽입",
         "steerItemAsNote": "메모로 보내 다음 점검 때 읽도록 함"
+      },
+      "sessionTerminal": {
+        "preparing": "작업 디렉터리를 준비하는 중…",
+        "openSettings": "Agents 설정 열기",
+        "region": "{agent} 터미널"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "설정 > 에이전트",

@@ -16,9 +16,11 @@ import {
   type OpenedDraftTarget,
   type TabItem,
 } from "@/stores/tab-store"
+import { applyTerminalSessionEvent } from "@/lib/terminal-session-establish"
 import {
   CONVERSATION_CHANGED_EVENT,
   TABS_CHANGED_EVENT,
+  type AgentTerminalEvent,
   type ConversationChange,
   type TabsChanged,
 } from "@/lib/types"
@@ -146,6 +148,26 @@ export function TabProvider({ children }: TabProviderProps) {
       disposed = true
       unlisten?.()
       offReconnect?.()
+    }
+  }, [])
+
+  // A terminal CLI reports its native session through hooks. Bind that session
+  // onto the tab that owns the PTY. The bottom terminal panel has its own
+  // listener and does not see session terminals.
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    void (async () => {
+      const dispose = await subscribe<AgentTerminalEvent>(
+        "agent-terminal://event",
+        (event) => applyTerminalSessionEvent(event)
+      )
+      if (disposed) dispose()
+      else unlisten = dispose
+    })()
+    return () => {
+      disposed = true
+      unlisten?.()
     }
   }, [])
 

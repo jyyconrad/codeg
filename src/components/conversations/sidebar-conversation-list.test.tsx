@@ -58,7 +58,7 @@ const stableWorkspaceFns = vi.hoisted(() => ({
 }))
 
 const stableTabFns = vi.hoisted(() => ({
-  openTab: () => {},
+  openTab: vi.fn(),
   closeConversationTab: () => {},
   closeTabsByFolder: () => {},
   openNewConversationTab: () => {},
@@ -334,6 +334,33 @@ beforeEach(() => {
   virtuaCtl.scrollOffset = 0
   virtuaCtl.onScroll = null
   virtuaCtl.scrollToIndex.mockClear()
+  stableTabFns.openTab.mockClear()
+})
+
+describe("SidebarConversationList — conversation selection", () => {
+  beforeEach(() => {
+    const folders = [folder(1, "Repo")]
+    store.activeTabId = null
+    store.tabSpec = []
+    useAppWorkspaceStore.setState({
+      folders,
+      allFolders: folders,
+      conversations: [conv(11, 1), conv(12, 1)],
+    })
+  })
+
+  it("pins a selected conversation so the next same-agent click cannot replace it", () => {
+    render(tree())
+
+    fireEvent.click(document.querySelector('[data-conversation-id="11"]')!)
+
+    expect(stableTabFns.openTab).toHaveBeenCalledWith(
+      1,
+      11,
+      "claude_code",
+      true
+    )
+  })
 })
 
 describe("SidebarConversationList — single status event re-render scope", () => {

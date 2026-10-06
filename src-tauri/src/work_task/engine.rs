@@ -1596,7 +1596,9 @@ impl TaskEngine {
                     (branch, tip.clone(), tip)
                 }
                 None => {
-                    let head = resolve_git_head(&root.path).await.map_err(|e| e.to_string())?;
+                    let head = resolve_git_head(&root.path)
+                        .await
+                        .map_err(|e| e.to_string())?;
                     let base_branch = head.branch.ok_or_else(|| {
                         "project folder is not on a branch (detached HEAD?)".to_string()
                     })?;
@@ -6852,13 +6854,14 @@ async fn instruction_scan(conn: &sea_orm::DatabaseConnection, task_id: i32) -> I
                         )
                         .unwrap_or_default();
                         let returned =
-                            payload.get("feedback").and_then(|v| v.as_str()).map(|text| {
-                                Outstanding {
+                            payload
+                                .get("feedback")
+                                .and_then(|v| v.as_str())
+                                .map(|text| Outstanding {
                                     kind: OutstandingKind::Review(intent),
                                     text: text.to_string(),
                                     attachments: payload_blocks(&payload),
-                                }
-                            });
+                                });
                         if scan.outstanding.is_none() {
                             let Some(returned) = returned else {
                                 break;
@@ -8513,9 +8516,14 @@ mod tests {
         );
         assert!(joined.contains("check the logs first"));
         // Oldest first: the turn, then the note that refines it.
-        let question = joined.find("why did you pick a map here?").expect("question");
+        let question = joined
+            .find("why did you pick a map here?")
+            .expect("question");
         let note = joined.find("check the logs first").expect("note");
-        assert!(question < note, "the note refines the turn, so it follows it");
+        assert!(
+            question < note,
+            "the note refines the turn, so it follows it"
+        );
         // And it is still a question, so the licence stays read-only.
         let guard = texts(&blocks)
             .into_iter()
@@ -10800,8 +10808,14 @@ mod tests {
         assert_eq!(comments.len(), 1, "one settle, one comment");
         let (kind, number, body) = &comments[0];
         assert_eq!((*kind, *number), (ForgeItemKind::Change, 7));
-        assert!(body.contains("nothing was pushed to this pull request"), "{body}");
-        assert!(!body.to_lowercase().contains("accept"), "reads as an approval: {body}");
+        assert!(
+            body.contains("nothing was pushed to this pull request"),
+            "{body}"
+        );
+        assert!(
+            !body.to_lowercase().contains("accept"),
+            "reads as an approval: {body}"
+        );
     }
 
     /// The comment is a fact sheet: the link and the counters. Nothing the
@@ -11863,7 +11877,9 @@ mod tests {
         let (engine, task_id, home, feature_tip, _main_tip) =
             branch_choice_fixture(serde_json::json!({ "base_branch": "feature" })).await;
         let task = row(&engine, task_id).await;
-        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+        let root = get_folder_core(&engine.db, task.folder_id)
+            .await
+            .expect("root");
 
         let wt = engine
             .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())
@@ -11893,7 +11909,9 @@ mod tests {
         let (engine, task_id, home, _feature_tip, main_tip) =
             branch_choice_fixture(serde_json::json!({})).await;
         let task = row(&engine, task_id).await;
-        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+        let root = get_folder_core(&engine.db, task.folder_id)
+            .await
+            .expect("root");
 
         engine
             .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())
@@ -11915,7 +11933,9 @@ mod tests {
         let (engine, task_id, home, _feature_tip, _main_tip) =
             branch_choice_fixture(serde_json::json!({ "base_branch": "gone" })).await;
         let task = row(&engine, task_id).await;
-        let root = get_folder_core(&engine.db, task.folder_id).await.expect("root");
+        let root = get_folder_core(&engine.db, task.folder_id)
+            .await
+            .expect("root");
 
         let err = engine
             .ensure_worktree(&task, &root, &WorkTaskFolderSettings::default())

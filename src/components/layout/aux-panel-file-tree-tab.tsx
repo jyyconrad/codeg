@@ -114,6 +114,7 @@ import {
 } from "@/components/ui/collapsible"
 import { Skeleton } from "@/components/ui/skeleton"
 import { joinFsPath } from "@/lib/path-utils"
+import { openDirectoryInTerminal } from "@/lib/open-directory-in-terminal"
 import { toErrorMessage } from "@/lib/app-error"
 import { cn } from "@/lib/utils"
 
@@ -2118,6 +2119,15 @@ export function FileTreeTab() {
 
   const handleOpenDirInTerminal = useCallback(
     async (dirPath: string, fileName: string) => {
+      try {
+        const launch = await openDirectoryInTerminal(dirPath)
+        if (launch === "external") return
+      } catch (error) {
+        toast.error(t("toasts.openExternalTerminalFailed"), {
+          description: toErrorMessage(error),
+        })
+        return
+      }
       const terminalTitle = t("terminalTitle", { name: baseName(fileName) })
       const terminalId = await createTerminalInDirectory(dirPath, terminalTitle)
       if (!terminalId) {

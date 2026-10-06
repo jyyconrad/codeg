@@ -13,6 +13,8 @@ function agent(
     enabled?: boolean
     available?: boolean
     installed_version?: string | null
+    launch_mode?: "acp" | "terminal"
+    terminal_available?: boolean
     agent_type?: AgentType
   } = {}
 ) {
@@ -24,6 +26,8 @@ function agent(
       overrides.installed_version !== undefined
         ? overrides.installed_version
         : "1.0.0",
+    launch_mode: overrides.launch_mode ?? "acp",
+    terminal_available: overrides.terminal_available ?? false,
   }
 }
 
@@ -42,6 +46,19 @@ describe("isAvailableAgent", () => {
 
   it("rejects an uninstalled agent", () => {
     expect(isAvailableAgent(agent({ installed_version: null }))).toBe(false)
+  })
+
+  it("accepts a Terminal agent whose native CLI is available", () => {
+    expect(
+      isAvailableAgent(
+        agent({
+          launch_mode: "terminal",
+          terminal_available: true,
+          installed_version: null,
+          available: false,
+        })
+      )
+    ).toBe(true)
   })
 })
 

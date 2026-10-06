@@ -11,10 +11,12 @@ import {
 import { useTranslations } from "next-intl"
 import { AgentSelector } from "@/components/chat/agent-selector"
 import { ConversationShell } from "@/components/chat/conversation-shell"
+import { SessionTerminalInput } from "@/components/terminal/session-terminal-input"
 import type { ConversationFolderPickerOverride } from "@/components/chat/conversation-context-bar"
 import { MessageListView } from "@/components/message/message-list-view"
 import { useAcpActions } from "@/contexts/acp-connections-context"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
 import {
   acpStopAsyncTask,
@@ -24,6 +26,8 @@ import {
 } from "@/lib/api"
 import { toErrorMessage } from "@/lib/app-error"
 import { notify } from "@/lib/notify"
+import { newSessionLaunchRoute } from "@/lib/agent-launch-mode"
+import { releaseAndSettleSessionTerminal } from "@/lib/terminal-session-establish"
 import { getAgentLabel } from "@/lib/custom-agents"
 import {
   extractUserImagesFromDraft,
@@ -183,6 +187,7 @@ export function CanvasConversationSurface({
 }: CanvasConversationSurfaceProps) {
   const t = useTranslations("Canvas")
   const sharedT = useTranslations("Folder.chat.shared")
+  const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
   const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
   const acpActions = useAcpActions()
   const {
@@ -264,6 +269,14 @@ export function CanvasConversationSurface({
   const [modeId, setModeId] = useState<string | null>(() =>
     getSavedModeId(agentType)
   )
+  const { agents: acpAgents, fresh: agentConfigLoaded } = useAcpAgents()
+  const launchMode =
+    conversationId != null
+      ? "acp"
+      : agentConfigLoaded
+        ? (acpAgents.find((agent) => agent.agent_type === agentType)
+            ?.launch_mode ?? "acp")
+        : null
   const [sendSignal, setSendSignal] = useState(0)
   const creatingRef = useRef(false)
   // Mirrors `creatingRef` as state, purely so the card can refuse to be thrown
@@ -278,6 +291,7 @@ export function CanvasConversationSurface({
   // between the eager connect and the first send.
   const chatDirRef = useRef<string | null>(null)
   const [chatDir, setChatDir] = useState<string | null>(null)
+  const [chatDirFailed, setChatDirFailed] = useState(false)
 
   const {
     detail,
@@ -346,8 +360,10 @@ export function CanvasConversationSurface({
         if (cancelled) return
         chatDirRef.current = dir.path
         setChatDir(dir.path)
+        setChatDirFailed(false)
       } catch (e) {
         console.error("[canvas] prepare chat dir:", e)
+        if (!cancelled) setChatDirFailed(true)
       }
     })()
     return () => {
@@ -368,6 +384,7 @@ export function CanvasConversationSurface({
   } = useConnectionLifecycle({
     contextKey,
     agentType,
+    launchMode,
     // Without a cwd there is nothing to connect to yet (a chat draft before its
     // scratch dir lands); auto-connect would fire with an undefined dir.
     isActive: isActive && workingDir != null && !awaitingHistoricalSessionId,
@@ -519,6 +536,17 @@ export function CanvasConversationSurface({
 
   const handleSend = useCallback(
     (draft: PromptDraft, selectedModeIdArg?: string | null) => {
+      if (
+        dbConversationIdRef.current == null &&
+        newSessionLaunchRoute(launchMode) === "wait"
+      ) {
+        return Promise.reject(
+          new Error("Agent launch configuration is loading")
+        )
+      }
+      if (dbConversationIdRef.current == null && launchMode === "terminal") {
+        return Promise.resolve()
+      }
       // Bail BEFORE the optimistic turn exists. A second submit while the first
       // one is still minting the conversation row cannot be sent (there is no
       // row to send it against yet), and painting it into the transcript first
@@ -645,6 +673,7 @@ export function CanvasConversationSurface({
       draftTarget,
       effectiveConversationId,
       lifecycleSend,
+      launchMode,
       onConversationCreated,
       refreshConversations,
       removeOptimisticTurn,
@@ -743,6 +772,26 @@ export function CanvasConversationSurface({
   )
 
   const isDraft = dbConversationId == null
+  const showSessionTerminal = isDraft && launchMode === "terminal"
+  const sessionTerminalOwner = `canvas:${contextKey}`
+  const terminalInfo =
+    acpAgents.find((agent) => agent.agent_type === agentType) ?? null
+  const terminalUnavailable =
+    showSessionTerminal &&
+    terminalInfo != null &&
+    terminalInfo.terminal_available !== true
+  const composerStatus =
+    isDraft && launchMode === "terminal" ? "connected" : connStatus
+
+  useEffect(() => {
+    if (showSessionTerminal && !terminalUnavailable) return
+    releaseAndSettleSessionTerminal(sessionTerminalOwner)
+  }, [sessionTerminalOwner, showSessionTerminal, terminalUnavailable])
+  useEffect(() => {
+    return () => {
+      releaseAndSettleSessionTerminal(sessionTerminalOwner)
+    }
+  }, [sessionTerminalOwner])
 
   return (
     <div className={cn("flex h-full min-h-0 w-full flex-col", className)}>
@@ -753,7 +802,7 @@ export function CanvasConversationSurface({
           added here later. */}
       <div className="nowheel flex min-h-0 flex-1 flex-col">
         <ConversationShell
-          status={connStatus}
+          status={composerStatus}
           promptCapabilities={conn.promptCapabilities}
           defaultPath={workingDir}
           agentName={getAgentLabel(agentType)}
@@ -776,9 +825,13 @@ export function CanvasConversationSurface({
           onAnswerPlanApproval={handleAnswerPlanApproval}
           modes={connectionModes}
           configOptions={connectionConfigOptions}
-          modeLoading={modeLoading}
-          configOptionsLoading={configOptionsLoading}
-          selectorsLoading={selectorsLoading}
+          modeLoading={launchMode === "terminal" ? false : modeLoading}
+          configOptionsLoading={
+            launchMode === "terminal" ? false : configOptionsLoading
+          }
+          selectorsLoading={
+            launchMode === "terminal" ? false : selectorsLoading
+          }
           selectedModeId={selectedModeId}
           onModeChange={handleModeChange}
           onConfigOptionChange={handleSetConfigOption}
@@ -792,37 +845,76 @@ export function CanvasConversationSurface({
           attachmentTabId={contextKey}
           folderPickerOverride={folderPickerOverride}
           isActive={isActive}
+          hideInput={showSessionTerminal}
         >
-          {isDraft && onAgentTypeChange && (
-            <div className="flex shrink-0 justify-center border-b border-border/60 px-3 py-2">
-              <AgentSelector
-                align="center"
-                defaultAgentType={agentType}
-                onSelect={onAgentTypeChange}
-                onFallback={onAgentTypeChange}
-                disabled={conn.status === "connecting"}
+          {showSessionTerminal ? (
+            <div className="flex h-full min-h-0 flex-col">
+              {isDraft && onAgentTypeChange && (
+                <div className="flex shrink-0 justify-center px-3 py-2">
+                  <AgentSelector
+                    align="center"
+                    defaultAgentType={agentType}
+                    onSelect={onAgentTypeChange}
+                    onFallback={onAgentTypeChange}
+                    disabled={conn.status === "connecting"}
+                  />
+                </div>
+              )}
+              <SessionTerminalInput
+                ownerKey={sessionTerminalOwner}
+                agentType={agentType}
+                agentName={getAgentLabel(agentType)}
+                workingDir={workingDir}
+                isActive={isActive}
+                notice={
+                  terminalUnavailable
+                    ? tWelcome(
+                        terminalInfo?.is_acp_adapter
+                          ? "agentAdapterNotInstalled"
+                          : "agentNotInstalled",
+                        { agent: getAgentLabel(agentType) }
+                      )
+                    : !workingDir && chatDirFailed
+                      ? tWelcome("prepareSessionFailed")
+                      : null
+                }
+                showSettings={terminalUnavailable}
               />
             </div>
+          ) : (
+            <>
+              {isDraft && onAgentTypeChange && (
+                <div className="flex shrink-0 justify-center border-b border-border/60 px-3 py-2">
+                  <AgentSelector
+                    align="center"
+                    defaultAgentType={agentType}
+                    onSelect={onAgentTypeChange}
+                    onFallback={onAgentTypeChange}
+                    disabled={conn.status === "connecting"}
+                  />
+                </div>
+              )}
+              <MessageListView
+                conversationId={effectiveConversationId}
+                // The card's own cwd, which it already knows before any
+                // conversation row exists — a draft's first reply has no persisted
+                // detail to derive a folder from, so without this its screenshots
+                // stay unresolved until a later refetch. `undefined` (never a
+                // wrong guess) leaves MessageListView's folder fallback in place.
+                imageRoot={workingDir}
+                agentType={agentType}
+                connStatus={connStatus}
+                isActive={isActive}
+                sendSignal={sendSignal}
+                detailLoading={detailLoading}
+                detailError={detailError}
+                acpLoadError={acpLoadError}
+                hideEmptyState={isDraft}
+                showMessageNav={false}
+                onSaveNoteSelection={onSaveSelectionAsNote}
+              />
+            </>
           )}
-          <MessageListView
-            conversationId={effectiveConversationId}
-            // The card's own cwd, which it already knows before any
-            // conversation row exists — a draft's first reply has no persisted
-            // detail to derive a folder from, so without this its screenshots
-            // stay unresolved until a later refetch. `undefined` (never a
-            // wrong guess) leaves MessageListView's folder fallback in place.
-            imageRoot={workingDir}
-            agentType={agentType}
-            connStatus={connStatus}
-            isActive={isActive}
-            sendSignal={sendSignal}
-            detailLoading={detailLoading}
-            detailError={detailError}
-            acpLoadError={acpLoadError}
-            hideEmptyState={isDraft}
-            showMessageNav={false}
-            onSaveNoteSelection={onSaveSelectionAsNote}
-          />
         </ConversationShell>
       </div>
     </div>

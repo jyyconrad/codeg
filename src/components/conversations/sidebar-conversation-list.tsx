@@ -182,6 +182,7 @@ import {
 import { cn } from "@/lib/utils"
 import { FolderAliasLabel } from "./folder-alias-label"
 import { toErrorMessage } from "@/lib/app-error"
+import { openDirectoryInTerminal } from "@/lib/open-directory-in-terminal"
 
 // Layout effect on the client (so the sticky overlay is positioned before
 // paint) but a no-op-safe passive effect during the static-export prerender.
@@ -1384,6 +1385,15 @@ export function SidebarConversationList({
     async (folderId: number) => {
       const folder = folderIndex.get(folderId)
       if (!folder) return
+      try {
+        const launch = await openDirectoryInTerminal(folder.path)
+        if (launch === "external") return
+      } catch (error) {
+        toast.error(tFileTree("toasts.openExternalTerminalFailed"), {
+          description: toErrorMessage(error),
+        })
+        return
+      }
       const title = tFileTree("terminalTitle", { name: folder.name })
       const id = await createTerminalInDirectory(folder.path, title)
       if (!id) {
@@ -2176,7 +2186,11 @@ export function SidebarConversationList({
       // Selecting a conversation returns to the conversation workspace if a
       // workbench route (e.g. Automations) was taking over the content region.
       openConversations()
-      openTab(folderId, id, agentType as Parameters<typeof openTab>[2], false)
+      // A sidebar selection is an explicit request to open a conversation. Keep
+      // the resulting tab pinned so selecting another conversation (especially
+      // one handled by the same agent) cannot replace the current surface as a
+      // transient preview.
+      openTab(folderId, id, agentType as Parameters<typeof openTab>[2], true)
     },
     [openTab, openConversations]
   )

@@ -185,7 +185,7 @@ export interface ComposerInjectContent {
 }
 
 interface MessageInputProps {
-  onSend: (draft: PromptDraft, modeId?: string | null) => void
+  onSend: (draft: PromptDraft, modeId?: string | null) => void | Promise<void>
   placeholder?: string
   defaultPath?: string
   disabled?: boolean
@@ -546,6 +546,15 @@ export function MessageInput({
   // Bridge so the early `onChange` handler can call the editor-driven slash
   // detection that is defined further down (after the slash state).
   const detectSlashTriggerRef = useRef<(() => void) | null>(null)
+  const sendInFlightRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     isPromptingRef.current = isPrompting
@@ -1577,11 +1586,35 @@ export function MessageInput({
       return
     }
 
-    onSend(draft, showModeSelector ? effectiveModeId : null)
-    if (effectiveDraftStorageKey) {
-      clearMessageInputDraftV2(effectiveDraftStorageKey)
+    if (sendInFlightRef.current) return
+    const beforeSendDoc = editorRef.current?.getJSON()
+    const result = onSend(draft, showModeSelector ? effectiveModeId : null)
+    if (!result || typeof result.then !== "function") {
+      if (effectiveDraftStorageKey) {
+        clearMessageInputDraftV2(effectiveDraftStorageKey)
+      }
+      resetComposer()
+      return
     }
-    resetComposer()
+
+    sendInFlightRef.current = true
+    void result
+      .then(() => {
+        if (!mountedRef.current) return
+        const currentDoc = editorRef.current?.getJSON()
+        if (JSON.stringify(currentDoc) !== JSON.stringify(beforeSendDoc)) return
+        if (effectiveDraftStorageKey) {
+          clearMessageInputDraftV2(effectiveDraftStorageKey)
+        }
+        resetComposer()
+      })
+      .catch(() => {
+        // The caller owns error presentation. Keeping the editor and persisted
+        // draft intact is the retry path.
+      })
+      .finally(() => {
+        sendInFlightRef.current = false
+      })
   }, [
     disabled,
     hasUploadingImage,

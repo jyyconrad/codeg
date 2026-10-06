@@ -95,8 +95,7 @@ impl GeminiParser {
         if parent_name == "chats" {
             return None;
         }
-        (parent.parent()?.file_name()?.to_str()? == "chats")
-            .then(|| parent_name.to_string())
+        (parent.parent()?.file_name()?.to_str()? == "chats").then(|| parent_name.to_string())
     }
 
     fn parse_chat_value(path: &Path, raw: &str) -> Option<Value> {
@@ -212,7 +211,11 @@ impl GeminiParser {
 
             // Own the id before handing `value` over: `object` borrows `value`,
             // so a `&str` into it cannot survive the move.
-            if let Some(id) = object.get("id").and_then(|v| v.as_str()).map(str::to_string) {
+            if let Some(id) = object
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+            {
                 Self::upsert_message(&mut messages, &mut index_by_id, &id, value);
                 continue;
             }
@@ -229,10 +232,7 @@ impl GeminiParser {
                 continue;
             }
 
-            let is_partial_metadata = object
-                .get("sessionId")
-                .and_then(|v| v.as_str())
-                .is_some()
+            let is_partial_metadata = object.get("sessionId").and_then(|v| v.as_str()).is_some()
                 && object.get("projectHash").and_then(|v| v.as_str()).is_some();
             if is_partial_metadata {
                 for (key, value) in object {

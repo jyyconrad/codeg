@@ -258,6 +258,33 @@ describe("AgentSelector", () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
+  it("does not fall back from a Terminal agent whose native CLI is available", async () => {
+    mockUseAcpAgents.mockReturnValue({
+      agents: [
+        agent("claude_code", {
+          launch_mode: "terminal",
+          terminal_available: true,
+          available: false,
+          installed_version: null,
+        }),
+        agent("codex"),
+      ],
+      fresh: true,
+      refresh: async () => {},
+    })
+    const onFallback = vi.fn()
+    renderWithIntl(
+      <AgentSelector
+        defaultAgentType="claude_code"
+        onSelect={vi.fn()}
+        onFallback={onFallback}
+      />
+    )
+
+    await Promise.resolve()
+    expect(onFallback).not.toHaveBeenCalled()
+  })
+
   it("falls back through onSelect when onFallback is not provided (legacy)", async () => {
     // Without onFallback, the auto-pick must still surface as onSelect for
     // backwards compatibility with older call sites.

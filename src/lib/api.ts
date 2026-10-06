@@ -21,6 +21,9 @@ import type {
   LeakedTempReclaim,
   LeakedTempScan,
   AgentType,
+  AgentLaunchMode,
+  TerminalAgentLaunchResult,
+  TerminalAgentState,
   AgentDelegationDefaults,
   AgentOptionsSnapshot,
   Automation,
@@ -103,6 +106,7 @@ import type {
   CanvasNodeMovePayload,
   CanvasSnapshot,
   CreateChatConversationResult,
+  EstablishTerminalSessionResult,
   CreateChatDirResult,
   WorktreeResolution,
   GitWorktreeRemoval,
@@ -145,6 +149,7 @@ import type {
   WorkspaceSnapshotResponse,
   GitLogResult,
   GitLogFileChange,
+  AvailableTerminalApps,
   AvailableTerminalShells,
   SystemLanguageSettings,
   SystemProxySettings,
@@ -599,6 +604,16 @@ export async function acpUpdateAgentPreferences(
     opencodeAuthJson: params.opencode_auth_json ?? null,
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
+  })
+}
+
+export async function acpUpdateAgentLaunchMode(
+  agentType: AgentType,
+  launchMode: AgentLaunchMode
+): Promise<void> {
+  return getTransport().call("acp_update_agent_launch_mode", {
+    agentType,
+    launchMode,
   })
 }
 
@@ -1875,6 +1890,20 @@ export async function getAvailableTerminalShells(): Promise<AvailableTerminalShe
 
 export async function probeTerminalShellPath(path: string): Promise<boolean> {
   return getTransport().call("probe_terminal_shell_path", { path })
+}
+
+export async function getAvailableTerminalApps(): Promise<AvailableTerminalApps> {
+  return getTransport().call("get_available_terminal_apps")
+}
+
+export async function probeTerminalAppPath(path: string): Promise<boolean> {
+  return getTransport().call("probe_terminal_app_path", { path })
+}
+
+export async function openDirectoryInTerminalApp(
+  path: string
+): Promise<{ launchedExternal: boolean }> {
+  return getTransport().call("open_directory_in_terminal_app", { path })
 }
 
 export async function getSystemRenderingSettings(): Promise<SystemRenderingSettings> {
@@ -3364,6 +3393,34 @@ export async function createHyperframesProject(params: {
 
 // Conversation CRUD commands
 
+export async function establishTerminalSession(params: {
+  folderId: number
+  agentType: AgentType
+  externalId: string
+  preferredConversationId?: number | null
+  title?: string | null
+  titleSeed?: string | null
+  model?: string | null
+  workingDir?: string | null
+  observation?: string | null
+  terminalId?: string | null
+  noticeBody?: string | null
+}): Promise<EstablishTerminalSessionResult> {
+  return getTransport().call("establish_terminal_session", {
+    folderId: params.folderId,
+    agentType: params.agentType,
+    externalId: params.externalId,
+    preferredConversationId: params.preferredConversationId ?? null,
+    title: params.title ?? null,
+    titleSeed: params.titleSeed ?? null,
+    model: params.model ?? null,
+    workingDir: params.workingDir ?? null,
+    observation: params.observation ?? null,
+    terminalId: params.terminalId ?? null,
+    noticeBody: params.noticeBody ?? null,
+  })
+}
+
 export async function createConversation(
   folderId: number,
   agentType: AgentType,
@@ -4776,6 +4833,32 @@ export async function terminalSpawn(
     initialCommand: initialCommand ?? null,
     terminalId: terminalId ?? null,
   })
+}
+
+export async function terminalSpawnAgent(params: {
+  agentType: AgentType
+  workingDir: string
+  prompt: string
+  terminalId: string
+  shell?: string
+  resumeSessionId?: string | null
+}): Promise<TerminalAgentLaunchResult> {
+  return getTransport().call("terminal_spawn_agent", {
+    agentType: params.agentType,
+    workingDir: params.workingDir,
+    prompt: params.prompt,
+    terminalId: params.terminalId,
+    shell: params.shell ?? null,
+    ...(params.resumeSessionId
+      ? { resumeSessionId: params.resumeSessionId }
+      : {}),
+  })
+}
+
+export async function terminalAgentState(
+  terminalId: string
+): Promise<TerminalAgentState | null> {
+  return getTransport().call("terminal_agent_state", { terminalId })
 }
 
 export async function terminalWrite(

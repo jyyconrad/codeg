@@ -488,9 +488,12 @@ impl OpenCodeParser {
                         input_preview: None,
                         status: None,
                         meta: Some(serde_json::Value::Object(
-                            [("contextCompaction".to_string(), serde_json::Value::Object(marker))]
-                                .into_iter()
-                                .collect(),
+                            [(
+                                "contextCompaction".to_string(),
+                                serde_json::Value::Object(marker),
+                            )]
+                            .into_iter()
+                            .collect(),
                         )),
                     });
                     // The pair is required: a ToolUse with no result reads as a
@@ -2849,7 +2852,10 @@ mod tests {
         // rendered as single-select.
         let call = normalized("question", question_state());
         let input = input_of(&call);
-        assert_eq!(input["questions"][1]["multiSelect"], serde_json::json!(true));
+        assert_eq!(
+            input["questions"][1]["multiSelect"],
+            serde_json::json!(true)
+        );
         // Untouched where the source said nothing, and the rest is verbatim.
         assert!(input["questions"][0].get("multiSelect").is_none());
         assert_eq!(
@@ -2988,7 +2994,9 @@ mod tests {
         assert!(super::is_compaction_only(&[compaction(), result()]));
         // Anything the user actually said keeps the message theirs.
         assert!(!super::is_compaction_only(&[
-            ContentBlock::Text { text: "carry on".into() },
+            ContentBlock::Text {
+                text: "carry on".into()
+            },
             compaction(),
         ]));
         // A different tool's pair is not a compaction, and neither is nothing.
@@ -3038,7 +3046,9 @@ mod tests {
     /// renaming one to that must not send it back to the fallback.
     #[test]
     fn only_opencodes_own_generated_name_counts_as_untitled() {
-        assert!(super::is_default_title("New session - 2026-09-16T03:09:14.543Z"));
+        assert!(super::is_default_title(
+            "New session - 2026-09-16T03:09:14.543Z"
+        ));
         assert!(super::is_default_title(
             "Child session - 2026-09-16T03:09:14.543Z"
         ));
@@ -3128,7 +3138,10 @@ mod tests {
             ),
             None
         );
-        assert_eq!(super::resolve_title(None, Some("hi".into())).as_deref(), Some("hi"));
+        assert_eq!(
+            super::resolve_title(None, Some("hi".into())).as_deref(),
+            Some("hi")
+        );
     }
 
     /// The fallback runs the same folding and capping every other agent's

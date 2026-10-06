@@ -6,6 +6,9 @@ use serde::Deserialize;
 use crate::app_error::AppCommandError;
 use crate::app_state::AppState;
 use crate::commands::terminal::prepare_credential_env;
+use crate::models::agent::AgentType;
+use crate::terminal::agent_hooks::AgentTerminalState;
+use crate::terminal::agent_launch::{spawn_agent, SpawnAgentResponse};
 use crate::terminal::manager::SpawnOptions;
 use crate::terminal::types::{TerminalInfo, TerminalSnapshot};
 
@@ -20,6 +23,19 @@ pub struct TerminalSpawnParams {
     pub shell: Option<String>,
     pub initial_command: Option<String>,
     pub terminal_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSpawnAgentParams {
+    pub agent_type: AgentType,
+    pub working_dir: String,
+    pub prompt: String,
+    pub terminal_id: String,
+    pub shell: Option<String>,
+    /// Native session id to resume. Absent on a fresh launch.
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -69,12 +85,51 @@ pub async fn terminal_spawn(
                 initial_command: params.initial_command,
                 extra_env,
                 temp_files: vec![],
+                on_exit: None,
             },
             state.emitter.clone(),
         )
         .map_err(|e| AppCommandError::task_execution_failed(e.to_string()))?;
 
     Ok(Json(id))
+}
+
+pub async fn terminal_spawn_agent(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<TerminalSpawnAgentParams>,
+) -> Result<Json<SpawnAgentResponse>, AppCommandError> {
+    let runtime_env = crate::commands::acp::build_terminal_runtime_env(
+        &state.db,
+        params.agent_type,
+        params.resume_session_id.as_deref(),
+        &state.data_dir,
+    )
+    .await
+    .map_err(|error| AppCommandError::task_execution_failed(error.to_string()))?;
+    let response = spawn_agent(
+        &state.terminal_manager,
+        state.agent_hooks.clone(),
+        state.emitter.clone(),
+        params.agent_type,
+        params.working_dir,
+        params.prompt,
+        params.resume_session_id,
+        params.terminal_id,
+        params.shell,
+        "web".to_string(),
+        &state.data_dir,
+        runtime_env,
+    )
+    .await
+    .map_err(|error| AppCommandError::task_execution_failed(error.to_string()))?;
+    Ok(Json(response))
+}
+
+pub async fn terminal_agent_state(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<TerminalIdParams>,
+) -> Result<Json<Option<AgentTerminalState>>, AppCommandError> {
+    Ok(Json(state.agent_hooks.state(&params.terminal_id)))
 }
 
 pub async fn terminal_write(

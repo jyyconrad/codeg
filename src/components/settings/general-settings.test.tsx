@@ -29,15 +29,45 @@ const shellOptions = vi.hoisted(() => [
   },
 ])
 
+const appOptions = vi.hoisted(() => [
+  {
+    id: "system",
+    label_key: "terminalSystemDefault",
+    value: null,
+    exists: true,
+    accepts_custom_path: false,
+  },
+  {
+    id: "ghostty",
+    label_key: "terminalAppName",
+    label: "Ghostty",
+    value: "ghostty",
+    exists: true,
+    accepts_custom_path: false,
+  },
+  {
+    id: "custom",
+    label_key: "terminalShellCustom",
+    value: null,
+    exists: true,
+    accepts_custom_path: true,
+  },
+])
+
 vi.mock("@/lib/api", () => ({
   getSystemTerminalSettings: vi.fn(async () => ({
     default_shell: null,
+    default_terminal_app: null,
     colorize_command_output: false,
   })),
   getAvailableTerminalShells: vi.fn(async () => ({
     resolved_shell: "/bin/zsh",
     options: shellOptions,
   })),
+  getAvailableTerminalApps: vi.fn(async () => ({
+    options: appOptions,
+  })),
+  probeTerminalAppPath: vi.fn(async () => true),
   getSystemRenderingSettings: vi.fn(async () => ({
     disable_hardware_acceleration: false,
   })),
@@ -81,6 +111,7 @@ vi.mock("@/lib/updater", () => ({ relaunchApp: vi.fn() }))
 import { toast } from "sonner"
 
 import {
+  getAvailableTerminalApps,
   getAvailableTerminalShells,
   getSystemTerminalSettings,
   updateSystemTerminalSettings,
@@ -135,6 +166,7 @@ describe("GeneralSettings", () => {
     // that option, so these double as the labels asserted above.
     for (const heading of [
       "Default Terminal",
+      "Terminal app",
       "Colorize command output",
       "Disable hardware acceleration",
       "Desktop notifications",
@@ -161,8 +193,9 @@ describe("GeneralSettings", () => {
    * The command-color switch ships OFF and has to stay that way — forcing
    * color on the agent breaks machine parsing of everything the agent runs, so
    * an accidental default flip is the regression worth catching. The save also
-   * has to carry `default_shell` back unchanged: both settings share one stored
-   * row, so a payload missing it would wipe the user's shell choice.
+   * has to carry `default_shell` and `default_terminal_app` back unchanged:
+   * shell, app, and color share one stored row, so a payload missing either
+   * would wipe the user's choice.
    */
   it("defaults command color off and preserves the shell when toggling it", async () => {
     renderSettings()
@@ -177,6 +210,7 @@ describe("GeneralSettings", () => {
     )
     expect(vi.mocked(updateSystemTerminalSettings)).toHaveBeenCalledWith({
       default_shell: null,
+      default_terminal_app: null,
       colorize_command_output: true,
     })
   })
@@ -224,6 +258,7 @@ describe("GeneralSettings", () => {
     // is the save route that needs no Select interaction.
     vi.mocked(getSystemTerminalSettings).mockResolvedValueOnce({
       default_shell: "/opt/fish",
+      default_terminal_app: null,
       colorize_command_output: false,
     })
 
@@ -243,6 +278,7 @@ describe("GeneralSettings", () => {
     await waitFor(() =>
       expect(vi.mocked(updateSystemTerminalSettings)).toHaveBeenCalledWith({
         default_shell: "/opt/fish2",
+        default_terminal_app: null,
         colorize_command_output: false,
       })
     )
@@ -259,6 +295,7 @@ describe("GeneralSettings", () => {
     await waitFor(() =>
       expect(vi.mocked(updateSystemTerminalSettings)).toHaveBeenLastCalledWith({
         default_shell: "/opt/fish2",
+        default_terminal_app: null,
         colorize_command_output: true,
       })
     )
@@ -273,6 +310,7 @@ describe("GeneralSettings", () => {
   it("puts the picker back when the save is rejected", async () => {
     vi.mocked(getSystemTerminalSettings).mockResolvedValueOnce({
       default_shell: "/opt/fish",
+      default_terminal_app: null,
       colorize_command_output: false,
     })
     vi.mocked(getAvailableTerminalShells).mockResolvedValueOnce(
@@ -290,11 +328,14 @@ describe("GeneralSettings", () => {
     expect(picker).toHaveTextContent("Custom path")
 
     fireEvent.keyDown(picker, { key: "Enter" })
-    fireEvent.click(await screen.findByText("System default"))
+    fireEvent.click(
+      await screen.findByRole("option", { name: "System default" })
+    )
 
     await waitFor(() =>
       expect(vi.mocked(updateSystemTerminalSettings)).toHaveBeenLastCalledWith({
         default_shell: null,
+        default_terminal_app: null,
         colorize_command_output: false,
       })
     )
@@ -314,6 +355,7 @@ describe("GeneralSettings", () => {
   it("re-reads the resolved shell after a save", async () => {
     vi.mocked(getSystemTerminalSettings).mockResolvedValueOnce({
       default_shell: "/opt/fish",
+      default_terminal_app: null,
       colorize_command_output: false,
     })
     vi.mocked(getAvailableTerminalShells).mockResolvedValueOnce(
@@ -352,6 +394,40 @@ describe("GeneralSettings", () => {
     expect(
       screen.getByLabelText("Disable hardware acceleration")
     ).toBeInTheDocument()
+  })
+
+  it("saves the chosen terminal app without dropping the shell or color", async () => {
+    renderSettings()
+
+    const picker = await screen.findByLabelText("Terminal app")
+    fireEvent.keyDown(picker, { key: "Enter" })
+    fireEvent.click(await screen.findByRole("option", { name: "Ghostty" }))
+
+    await waitFor(() =>
+      expect(vi.mocked(updateSystemTerminalSettings)).toHaveBeenCalledWith({
+        default_shell: null,
+        default_terminal_app: "ghostty",
+        colorize_command_output: false,
+      })
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByText("Opens directories with: Ghostty")
+      ).toBeInTheDocument()
+    )
+  })
+
+  it("still loads the shell when the terminal app scan fails", async () => {
+    vi.mocked(getAvailableTerminalApps).mockRejectedValueOnce(
+      new Error("scan failed")
+    )
+    renderSettings()
+
+    expect(await screen.findByLabelText("Default Terminal")).toBeEnabled()
+    expect(screen.getByLabelText("Terminal app")).toBeDisabled()
+    await waitFor(() =>
+      expect(screen.getByLabelText("Colorize command output")).toBeEnabled()
+    )
   })
 
   it("hides the rendering toggle on macOS", async () => {

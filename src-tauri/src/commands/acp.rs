@@ -15,11 +15,11 @@ use crate::acp::opencode_plugins::{self, PluginCheckSummary};
 use crate::acp::preflight::{self, PreflightResult};
 use crate::acp::registry;
 use crate::acp::types::{
-    AcpAgentInfo, AgentDiagnosticsReport, AgentSkillContent, AgentSkillItem, AgentSkillLayout,
-    AgentSkillLocation, AgentSkillScope, AgentSkillsListResult, CodexGranularApproval,
-    CodexSandboxSettings, CodexSandboxStructuredConfig, CodexWorkspaceWrite, ConfigStaleKind,
-    ConnectionStatus, DiagCheck, DiagLevel, DiagSection, DiagnosticsVerdict, GrokSettings,
-    GrokStructuredConfig,
+    AcpAgentInfo, AgentDiagnosticsReport, AgentLaunchMode, AgentSkillContent, AgentSkillItem,
+    AgentSkillLayout, AgentSkillLocation, AgentSkillScope, AgentSkillsListResult,
+    CodexGranularApproval, CodexSandboxSettings, CodexSandboxStructuredConfig, CodexWorkspaceWrite,
+    ConfigStaleKind, ConnectionStatus, DiagCheck, DiagLevel, DiagSection, DiagnosticsVerdict,
+    GrokSettings, GrokStructuredConfig,
 };
 #[cfg(feature = "tauri-runtime")]
 use crate::acp::types::{ConnectionInfo, ForkResultInfo, PromptInputBlock};
@@ -290,10 +290,12 @@ pub(crate) fn resolve_system_agent_binary_for(agent_type: AgentType, cmd: &str) 
         cmd.to_string()
     };
     let home = home_dir_or_default();
-    registry::binary_system_dirs(agent_type).iter().find_map(|dir| {
-        let cand = home.join(dir).join(&exe);
-        cand.is_file().then_some(cand)
-    })
+    registry::binary_system_dirs(agent_type)
+        .iter()
+        .find_map(|dir| {
+            let cand = home.join(dir).join(&exe);
+            cand.is_file().then_some(cand)
+        })
 }
 
 /// Resolve the VENDOR CLI wrapped by an ACP adapter agent (`claude`, `codex`
@@ -3102,7 +3104,9 @@ fn cline_model_id_keys_for_provider(provider: &str) -> (&'static str, &'static s
 /// written by `cline auth` reads back correctly. With several entries and no
 /// usable `lastUsedProvider` there is no defensible "current" provider, so this
 /// reports none rather than guessing one and overwriting it on the next save.
-fn load_cline_provider_settings_at(path: &Path) -> Option<serde_json::Map<String, serde_json::Value>> {
+fn load_cline_provider_settings_at(
+    path: &Path,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
     let root = fs::read_to_string(path)
         .ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())?;
@@ -3125,14 +3129,21 @@ fn load_cline_provider_settings_at(path: &Path) -> Option<serde_json::Map<String
         "apiProvider".to_string(),
         serde_json::Value::String(normalize_cline_provider_id(&selected)),
     );
-    for (source, target) in [("apiKey", "apiKey"), ("model", "model"), ("baseUrl", "apiBaseUrl")] {
+    for (source, target) in [
+        ("apiKey", "apiKey"),
+        ("model", "model"),
+        ("baseUrl", "apiBaseUrl"),
+    ] {
         if let Some(value) = settings
             .get(source)
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty())
         {
-            merged.insert(target.to_string(), serde_json::Value::String(value.to_string()));
+            merged.insert(
+                target.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
     }
     Some(merged)
@@ -3300,7 +3311,10 @@ fn persist_cline_provider_settings_at(
         .ok_or_else(|| AcpError::protocol("cline providers.json root must be an object"))?;
     // `version` is a zod literal — anything else and cline reads the file as empty.
     root_obj.insert("version".to_string(), serde_json::json!(1));
-    if !root_obj.get("modes").is_some_and(serde_json::Value::is_object) {
+    if !root_obj
+        .get("modes")
+        .is_some_and(serde_json::Value::is_object)
+    {
         root_obj.insert("modes".to_string(), serde_json::json!({}));
     }
     root_obj.insert(
@@ -3345,18 +3359,17 @@ fn persist_cline_provider_settings_at(
     // not otherwise recognize, and is honoured for the same reason.
     let agent_managed_credential =
         cline_provider_is_agent_managed(provider) || token_source == "oauth";
-    for (key, value) in [
-        ("apiKey", api_key),
-        ("model", model),
-        ("baseUrl", base_url),
-    ] {
+    for (key, value) in [("apiKey", api_key), ("model", model), ("baseUrl", base_url)] {
         let credential = key != "model";
         match value {
             Some(value) => {
                 if credential && agent_managed_credential {
                     continue;
                 }
-                settings.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+                settings.insert(
+                    key.to_string(),
+                    serde_json::Value::String(value.to_string()),
+                );
             }
             None => {
                 if credential && agent_managed_credential {
@@ -7144,7 +7157,7 @@ async fn query_pi_model_catalog(
 
 pub async fn list_pi_model_catalog_core(db: &AppDatabase, data_dir: &Path) -> PiModelCatalog {
     let Ok(runtime_env) =
-        build_runtime_env_for_agent(db, AgentType::Pi, None, data_dir, true).await
+        build_runtime_env_for_agent(db, AgentType::Pi, None, data_dir, true, true).await
     else {
         return PiModelCatalog::unavailable(PiCatalogStatus::Failed);
     };
@@ -7426,7 +7439,9 @@ pub(crate) fn load_pi_config_core() -> PiConfigProjection {
     load_pi_config_at(&pi_agent_dir())
 }
 
-pub(crate) async fn load_pi_config_for_db(db: &AppDatabase) -> Result<PiConfigProjection, AcpError> {
+pub(crate) async fn load_pi_config_for_db(
+    db: &AppDatabase,
+) -> Result<PiConfigProjection, AcpError> {
     Ok(load_pi_config_at(&pi_settings_dir_from_db(db).await?))
 }
 
@@ -10426,7 +10441,8 @@ fn agent_env_keys(agent_type: AgentType) -> (&'static str, &'static str, &'stati
 /// [`build_runtime_env_from_setting`] (see [`agent_env_keys`]); this only fills
 /// what is still missing, so an explicit `env_json` row keeps winning.
 fn apply_cline_launch_env(config_json: Option<&str>, merged: &mut BTreeMap<String, String>) {
-    let Some(config) = config_json.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+    let Some(config) =
+        config_json.and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
     else {
         return;
     };
@@ -11095,7 +11111,24 @@ pub(crate) async fn build_session_runtime_env(
     session_id: Option<&str>,
     data_dir: &Path,
 ) -> Result<BTreeMap<String, String>, AcpError> {
-    build_runtime_env_for_agent(db, agent_type, session_id, data_dir, false).await
+    build_runtime_env_for_agent(db, agent_type, session_id, data_dir, false, true).await
+}
+
+/// Build the same Codeg-resolved environment for a native terminal launch.
+///
+/// The terminal launcher adds its credential helper after this function
+/// returns, so this variant deliberately omits that one per-process temp-file
+/// layer. Keeping the configuration merge here means env_json, native config
+/// projections, model-provider bindings, enabled checks, and volatile session
+/// flags stay identical between ACP and terminal launches without leaking a
+/// helper script that a different launcher would own.
+pub(crate) async fn build_terminal_runtime_env(
+    db: &AppDatabase,
+    agent_type: AgentType,
+    session_id: Option<&str>,
+    data_dir: &Path,
+) -> Result<BTreeMap<String, String>, AcpError> {
+    build_runtime_env_for_agent(db, agent_type, session_id, data_dir, false, false).await
 }
 
 /// Settings may inspect Pi's local model catalog while the agent is disabled.
@@ -11107,6 +11140,7 @@ async fn build_runtime_env_for_agent(
     session_id: Option<&str>,
     data_dir: &Path,
     allow_disabled: bool,
+    include_credential_env: bool,
 ) -> Result<BTreeMap<String, String>, AcpError> {
     let setting = agent_setting_service::get_by_agent_type(&db.conn, agent_type)
         .await
@@ -11147,9 +11181,11 @@ async fn build_runtime_env_for_agent(
     // `MODEL_PROVIDER` to stop resumed sessions falling back to "openai" is now
     // redundant and was removed.
 
-    if let Some(cred_env) = crate::commands::terminal::prepare_credential_env(data_dir) {
-        for (key, value) in cred_env {
-            runtime_env.insert(key, value);
+    if include_credential_env {
+        if let Some(cred_env) = crate::commands::terminal::prepare_credential_env(data_dir) {
+            for (key, value) in cred_env {
+                runtime_env.insert(key, value);
+            }
         }
     }
 
@@ -12004,8 +12040,31 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         } else {
             None
         };
+        let terminal_available = match agent_type {
+            AgentType::ClaudeCode | AgentType::Codex => {
+                let relation = registry::acp_adapter_relation(agent_type)
+                    .expect("terminal vendor agents have an adapter relation");
+                terminal_available_from_probes(
+                    agent_type,
+                    resolve_vendor_cli(relation.native_cmd, relation.extra_dirs)
+                        .await
+                        .is_some(),
+                    false,
+                )
+            }
+            AgentType::Grok => terminal_available_from_probes(
+                agent_type,
+                false,
+                resolve_npx_command("grok").await.is_some(),
+            ),
+            _ => false,
+        };
         agents.push(AcpAgentInfo {
             agent_type,
+            launch_mode: setting
+                .map(|m| AgentLaunchMode::from_storage(&m.launch_mode))
+                .unwrap_or(AgentLaunchMode::Acp),
+            terminal_available,
             registry_id: registry::registry_id_for(agent_type).to_string(),
             registry_version: meta.registry_version().map(ToString::to_string),
             supports_custom_version: meta.supports_custom_version(),
@@ -12059,12 +12118,67 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
     Ok(agents)
 }
 
+fn terminal_available_from_probes(
+    agent_type: AgentType,
+    vendor_cli_available: bool,
+    grok_cli_available: bool,
+) -> bool {
+    match agent_type {
+        AgentType::ClaudeCode | AgentType::Codex => vendor_cli_available,
+        AgentType::Grok => grok_cli_available,
+        _ => false,
+    }
+}
+
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn acp_list_agents(
     db: tauri::State<'_, AppDatabase>,
 ) -> Result<Vec<AcpAgentInfo>, AcpError> {
     acp_list_agents_core(&db).await
+}
+
+pub(crate) async fn acp_update_agent_launch_mode_core(
+    agent_type: AgentType,
+    launch_mode: AgentLaunchMode,
+    db: &AppDatabase,
+    emitter: &EventEmitter,
+) -> Result<(), AcpError> {
+    if launch_mode == AgentLaunchMode::Terminal
+        && !matches!(
+            agent_type,
+            AgentType::ClaudeCode | AgentType::Codex | AgentType::Grok
+        )
+    {
+        return Err(AcpError::protocol(
+            "this agent has no native terminal launch adapter",
+        ));
+    }
+    let default = agent_setting_service::AgentDefaultInput {
+        agent_type,
+        registry_id: registry::registry_id_for(agent_type).to_string(),
+        default_sort_order: i32::MAX / 2,
+    };
+    agent_setting_service::ensure_defaults(&db.conn, &[default])
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    agent_setting_service::update_launch_mode(&db.conn, agent_type, launch_mode)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    emit_acp_agents_updated(emitter, "launch_mode_updated", Some(agent_type));
+    Ok(())
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_update_agent_launch_mode(
+    agent_type: AgentType,
+    launch_mode: AgentLaunchMode,
+    db: tauri::State<'_, AppDatabase>,
+    app: tauri::AppHandle,
+) -> Result<(), AcpError> {
+    let emitter = EventEmitter::Tauri(app);
+    acp_update_agent_launch_mode_core(agent_type, launch_mode, &db, &emitter).await
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -12082,8 +12196,7 @@ pub async fn acp_clear_binary_cache(agent_type: AgentType) -> Result<(), AcpErro
 /// Scan the system temp directory for artifacts leaked by agent launches from
 /// BEFORE per-launch temp isolation shipped. Read-only.
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_scan_leaked_temp(
-) -> Result<crate::acp::temp_reclaim::LeakedTempScan, AcpError> {
+pub async fn acp_scan_leaked_temp() -> Result<crate::acp::temp_reclaim::LeakedTempScan, AcpError> {
     tokio::task::spawn_blocking(crate::acp::temp_reclaim::scan)
         .await
         .map_err(|e| AcpError::protocol(e.to_string()))
@@ -12928,7 +13041,9 @@ pub async fn acp_update_pi_config(
 /// directory resolution.
 #[cfg(feature = "tauri-runtime")]
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn acp_load_pi_config(db: State<'_, AppDatabase>) -> Result<PiConfigProjection, AcpError> {
+pub async fn acp_load_pi_config(
+    db: State<'_, AppDatabase>,
+) -> Result<PiConfigProjection, AcpError> {
     load_pi_config_for_db(&db).await
 }
 
@@ -13076,7 +13191,6 @@ pub async fn acp_open_hermes_setup_terminal(kind: String) -> Result<(), AcpError
 
 #[cfg(feature = "tauri-runtime")]
 fn open_external_terminal_impl(command: &str, cwd: Option<&str>) -> Result<(), AcpError> {
-    use std::process::Command;
     // Reject control characters: a newline breaks out of the macOS AppleScript
     // string literal (and would corrupt the cmd/shell line elsewhere), turning a
     // single command into multiple statements.
@@ -13088,73 +13202,9 @@ fn open_external_terminal_impl(command: &str, cwd: Option<&str>) -> Result<(), A
     let dir = cwd
         .map(|c| c.to_string())
         .unwrap_or_else(|| home_dir_or_default().display().to_string());
-
-    #[cfg(target_os = "macos")]
-    {
-        // Hand `cd <dir> && <command>` to Terminal.app via AppleScript. Quote the
-        // dir for the shell, then escape the whole string for the AppleScript
-        // literal (backslashes first, then double-quotes).
-        let shell_cmd = format!("cd {} && {}", shell_single_quote(&dir), command);
-        let escaped = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
-        let osa =
-            format!("tell application \"Terminal\"\nactivate\ndo script \"{escaped}\"\nend tell");
-        Command::new("osascript")
-            .arg("-e")
-            .arg(osa)
-            .spawn()
-            .map_err(|e| AcpError::protocol(format!("open Terminal failed: {e}")))?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // `start "" cmd /K <command>` opens a new console that stays open. The
-        // empty "" is the window title `start` would otherwise eat.
-        Command::new("cmd")
-            .args(["/C", "start", "", "cmd", "/K", command])
-            .current_dir(&dir)
-            .spawn()
-            .map_err(|e| AcpError::protocol(format!("open terminal failed: {e}")))?;
-        return Ok(());
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        // Probe common Linux terminal emulators in order; keep the window open
-        // after the command by re-exec'ing the user's shell.
-        let keep_open = format!("{command}; exec \"${{SHELL:-bash}}\"");
-        let candidates: [(&str, [&str; 3]); 4] = [
-            ("x-terminal-emulator", ["-e", "sh", "-c"]),
-            ("gnome-terminal", ["--", "sh", "-c"]),
-            ("konsole", ["-e", "sh", "-c"]),
-            ("xterm", ["-e", "sh", "-c"]),
-        ];
-        for (term, args) in candidates {
-            if resolve_command_on_path(term).is_some() {
-                return Command::new(term)
-                    .args(args)
-                    .arg(&keep_open)
-                    .current_dir(&dir)
-                    .spawn()
-                    .map(|_| ())
-                    .map_err(|e| AcpError::protocol(format!("open {term} failed: {e}")));
-            }
-        }
-        return Err(AcpError::protocol(
-            "no supported terminal emulator found (tried x-terminal-emulator, gnome-terminal, konsole, xterm)",
-        ));
-    }
-
-    #[allow(unreachable_code)]
-    Err(AcpError::protocol(
-        "unsupported platform for terminal launch",
-    ))
-}
-
-/// Quote a string for a single-quoted POSIX shell argument.
-#[cfg(all(feature = "tauri-runtime", target_os = "macos"))]
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+    let preference = crate::terminal::external_apps::preferred_terminal_app();
+    crate::terminal::external_apps::launch_now(preference.as_deref(), command, &dir)
+        .map_err(|error| AcpError::protocol(error.message().to_string()))
 }
 
 /// Ensure `~/.hermes` exists and reveal it in the system file manager.
@@ -14420,6 +14470,74 @@ pub(crate) async fn codex_poll_device_code_core(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn launch_mode_update_broadcasts_agents_updated_without_connection_refresh() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let broadcaster = std::sync::Arc::new(crate::web::event_bridge::WebEventBroadcaster::new());
+        let mut events = broadcaster.subscribe();
+        let emitter = EventEmitter::test_web_only(broadcaster);
+
+        acp_update_agent_launch_mode_core(
+            AgentType::Codex,
+            AgentLaunchMode::Terminal,
+            &db,
+            &emitter,
+        )
+        .await
+        .expect("update launch mode");
+
+        let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("agents-updated event timeout")
+            .expect("agents-updated event");
+        assert_eq!(event.channel, ACP_AGENTS_UPDATED_EVENT);
+        assert_eq!(event.payload["reason"], "launch_mode_updated");
+        assert_eq!(event.payload["agent_type"], "codex");
+        let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::Codex)
+            .await
+            .expect("query setting")
+            .expect("setting exists");
+        assert_eq!(setting.launch_mode, "terminal");
+    }
+
+    #[tokio::test]
+    async fn built_in_codeg_agent_cannot_select_native_terminal() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let result = acp_update_agent_launch_mode_core(
+            AgentType::CodegAgent,
+            AgentLaunchMode::Terminal,
+            &db,
+            &EventEmitter::Noop,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn terminal_availability_is_independent_from_acp_adapter_availability() {
+        assert!(terminal_available_from_probes(
+            AgentType::ClaudeCode,
+            true,
+            false,
+        ));
+        assert!(terminal_available_from_probes(
+            AgentType::Codex,
+            true,
+            false,
+        ));
+        assert!(terminal_available_from_probes(AgentType::Grok, false, true,));
+        assert!(!terminal_available_from_probes(
+            AgentType::ClaudeCode,
+            false,
+            true,
+        ));
+        assert!(!terminal_available_from_probes(
+            AgentType::Gemini,
+            true,
+            true,
+        ));
+    }
+
     #[test]
     fn extract_version_token_finds_the_version_in_common_banners() {
         assert_eq!(extract_version_token("0.21.0").as_deref(), Some("0.21.0"));
@@ -14761,9 +14879,7 @@ mod tests {
         // No approvals wanted: no preset says exactly that without widening the
         // sandbox, and the model-screened default is the nearest.
         assert_eq!(
-            initial_mode_for(
-                "approval_policy = \"never\"\nsandbox_mode = \"workspace-write\"\n"
-            ),
+            initial_mode_for("approval_policy = \"never\"\nsandbox_mode = \"workspace-write\"\n"),
             Some("agent")
         );
     }
@@ -16107,7 +16223,11 @@ base_url = \"https://example.test/v1\"
             "reasoning-model",
             Some(&pi_reasoning_spec(
                 true,
-                &[("minimal", Some("minimal")), ("max", Some("max")), ("ultra", Some("ultra"))],
+                &[
+                    ("minimal", Some("minimal")),
+                    ("max", Some("max")),
+                    ("ultra", Some("ultra")),
+                ],
             )),
         );
 
@@ -16358,8 +16478,16 @@ base_url = \"https://example.test/v1\"
     fn pi_config_projection_reads_selected_agent_directory() {
         let default = tempfile::tempdir().unwrap();
         let custom = tempfile::tempdir().unwrap();
-        fs::write(default.path().join("settings.json"), r#"{"defaultModel":"wrong"}"#).unwrap();
-        fs::write(custom.path().join("settings.json"), r#"{"defaultModel":"right","defaultThinkingLevel":"max"}"#).unwrap();
+        fs::write(
+            default.path().join("settings.json"),
+            r#"{"defaultModel":"wrong"}"#,
+        )
+        .unwrap();
+        fs::write(
+            custom.path().join("settings.json"),
+            r#"{"defaultModel":"right","defaultThinkingLevel":"max"}"#,
+        )
+        .unwrap();
         let loaded = load_pi_config_at(custom.path());
         assert_eq!(loaded.default_model.as_deref(), Some("right"));
         assert_eq!(loaded.default_thinking_level.as_deref(), Some("max"));
@@ -16401,8 +16529,14 @@ esac
 "#,
         );
         let mut env = BTreeMap::new();
-        env.insert("PI_ACP_PI_COMMAND".into(), script.to_string_lossy().into_owned());
-        env.insert("PI_CODING_AGENT_DIR".into(), temp.path().to_string_lossy().into_owned());
+        env.insert(
+            "PI_ACP_PI_COMMAND".into(),
+            script.to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "PI_CODING_AGENT_DIR".into(),
+            temp.path().to_string_lossy().into_owned(),
+        );
         let catalog = query_pi_model_catalog(&env, PI_ANSWER_DEADLINE).await;
         assert_eq!(catalog.status, PiCatalogStatus::Ok);
         assert_eq!(catalog.models.len(), 1);
@@ -16510,7 +16644,10 @@ echo {"id":"codeg-models","type":"response","command":"get_available_models","su
 "#.replace('\n', "\r\n"),
         ).unwrap();
         let mut env = BTreeMap::new();
-        env.insert("PI_ACP_PI_COMMAND".into(), script.to_string_lossy().into_owned());
+        env.insert(
+            "PI_ACP_PI_COMMAND".into(),
+            script.to_string_lossy().into_owned(),
+        );
         let catalog = query_pi_model_catalog(&env, PI_ANSWER_DEADLINE).await;
         assert_eq!(catalog.status, PiCatalogStatus::Ok);
         assert_eq!(catalog.models.len(), 1);
@@ -20596,7 +20733,11 @@ model = "gpt"
     /// each of these assertions is the difference between a working agent and a
     /// user whose every provider silently vanished.
     fn assert_valid_cline_provider_store(root: &serde_json::Value) {
-        assert_eq!(root["version"], serde_json::json!(1), "version is a zod literal");
+        assert_eq!(
+            root["version"],
+            serde_json::json!(1),
+            "version is a zod literal"
+        );
         assert!(root["modes"].is_object(), "`modes` must be an object");
         for (id, entry) in root["providers"].as_object().expect("providers object") {
             let token_source = entry["tokenSource"].as_str().unwrap_or_default();
@@ -20733,7 +20874,10 @@ model = "gpt"
             root["providers"]["deepseek"]["settings"]["reasoning"]["effort"],
             "high"
         );
-        assert_eq!(root["providers"]["deepseek"]["settings"]["apiKey"], "sk-rotated");
+        assert_eq!(
+            root["providers"]["deepseek"]["settings"]["apiKey"],
+            "sk-rotated"
+        );
         assert_eq!(root["lastUsedProvider"], "deepseek");
     }
 
@@ -20741,13 +20885,27 @@ model = "gpt"
     fn cline_save_clears_a_field_the_panel_emptied() {
         let store = ClineStore::new();
         store
-            .save("openai-native", Some("sk-a"), Some("gpt-5.4"), Some("https://a.example/v1"))
+            .save(
+                "openai-native",
+                Some("sk-a"),
+                Some("gpt-5.4"),
+                Some("https://a.example/v1"),
+            )
             .expect("save");
-        store.save("openai-native", Some("sk-a"), None, None).expect("save 2");
+        store
+            .save("openai-native", Some("sk-a"), None, None)
+            .expect("save 2");
 
-        let settings = read_cline_json(&store.providers)["providers"]["openai-native"]["settings"].clone();
-        assert!(settings.get("model").is_none(), "cleared model must be removed");
-        assert!(settings.get("baseUrl").is_none(), "cleared base URL must be removed");
+        let settings =
+            read_cline_json(&store.providers)["providers"]["openai-native"]["settings"].clone();
+        assert!(
+            settings.get("model").is_none(),
+            "cleared model must be removed"
+        );
+        assert!(
+            settings.get("baseUrl").is_none(),
+            "cleared base URL must be removed"
+        );
     }
 
     #[test]
@@ -20771,7 +20929,9 @@ model = "gpt"
         )
         .expect("seed");
 
-        store.save("openai-codex", Some("sk-x"), None, None).expect("save");
+        store
+            .save("openai-codex", Some("sk-x"), None, None)
+            .expect("save");
         assert_eq!(
             read_cline_json(&store.providers)["providers"]["openai-codex"]["tokenSource"],
             "oauth",
@@ -20800,7 +20960,9 @@ model = "gpt"
         )
         .expect("seed");
 
-        store.save("deepseek", Some("sk-x"), None, None).expect("save");
+        store
+            .save("deepseek", Some("sk-x"), None, None)
+            .expect("save");
         // Round-tripping the out-of-enum value would hand cline a file it reads
         // as empty — every provider gone, endpoint and key with it.
         assert_valid_cline_provider_store(&read_cline_json(&store.providers));
@@ -20842,16 +21004,29 @@ model = "gpt"
     fn cline_models_catalog_keeps_models_registered_elsewhere() {
         let store = ClineStore::new();
         store
-            .save("openai-compatible", Some("sk"), Some("first"), Some("https://a.example/v1"))
+            .save(
+                "openai-compatible",
+                Some("sk"),
+                Some("first"),
+                Some("https://a.example/v1"),
+            )
             .expect("save");
         store
-            .save("openai-compatible", Some("sk"), Some("second"), Some("https://b.example/v1"))
+            .save(
+                "openai-compatible",
+                Some("sk"),
+                Some("second"),
+                Some("https://b.example/v1"),
+            )
             .expect("save 2");
 
         let entry = read_cline_json(&store.models)["providers"]["openai-compatible"].clone();
         assert_eq!(entry["provider"]["defaultModelId"], "second");
         assert_eq!(entry["provider"]["baseUrl"], "https://b.example/v1");
-        assert!(entry["models"]["first"].is_object(), "earlier model stays selectable");
+        assert!(
+            entry["models"]["first"].is_object(),
+            "earlier model stays selectable"
+        );
         assert!(entry["models"]["second"].is_object());
     }
 
@@ -20873,16 +21048,28 @@ model = "gpt"
         );
 
         store
-            .save("openai-compatible", Some("sk"), Some("m"), Some("http://127.0.0.1:11434/v1"))
+            .save(
+                "openai-compatible",
+                Some("sk"),
+                Some("m"),
+                Some("http://127.0.0.1:11434/v1"),
+            )
             .expect("a plain-http loopback endpoint is legitimate");
     }
 
     #[test]
     fn cline_reader_picks_the_last_used_provider() {
         let store = ClineStore::new();
-        store.save("deepseek", Some("sk-deep"), Some("deepseek-chat"), None).expect("save");
         store
-            .save("openai-compatible", Some("sk-compat"), Some("m"), Some("https://a.example/v1"))
+            .save("deepseek", Some("sk-deep"), Some("deepseek-chat"), None)
+            .expect("save");
+        store
+            .save(
+                "openai-compatible",
+                Some("sk-compat"),
+                Some("m"),
+                Some("https://a.example/v1"),
+            )
             .expect("save 2");
 
         let loaded = load_cline_provider_settings_at(&store.providers).expect("load");
@@ -20955,7 +21142,10 @@ model = "gpt"
             "model": "my-model",
             "apiBaseUrl": "https://proxy.example/v1",
         }));
-        assert_eq!(env.get("CLINE_API_KEY").map(String::as_str), Some("sk-test"));
+        assert_eq!(
+            env.get("CLINE_API_KEY").map(String::as_str),
+            Some("sk-test")
+        );
         assert_eq!(
             env.get("CLINE_PROVIDER").map(String::as_str),
             Some("openai-compatible"),
@@ -20965,7 +21155,10 @@ model = "gpt"
         // The endpoint travels in providers.json — `CLINE_API_BASE_URL` is
         // cline's ACCOUNT service and must never receive an LLM endpoint.
         assert!(!env.contains_key("CLINE_API_BASE_URL"));
-        assert!(!env.contains_key("OPENAI_API_KEY"), "the cline key must not leak into OPENAI_*");
+        assert!(
+            !env.contains_key("OPENAI_API_KEY"),
+            "the cline key must not leak into OPENAI_*"
+        );
     }
 
     #[test]
@@ -21158,7 +21351,10 @@ model = "gpt"
         }));
         // Ollama has no API key, but the gate only tests the var for emptiness.
         assert_eq!(env.get("CLINE_API_KEY").map(String::as_str), Some("local"));
-        assert_eq!(env.get("CLINE_PROVIDER").map(String::as_str), Some("ollama"));
+        assert_eq!(
+            env.get("CLINE_PROVIDER").map(String::as_str),
+            Some("ollama")
+        );
     }
 
     #[test]
@@ -21173,6 +21369,7 @@ model = "gpt"
             installed_version: None,
             env_json: Some(serde_json::json!({ "CLINE_PROVIDER": "cline-pass" }).to_string()),
             model_provider_id: None,
+            launch_mode: "acp".to_string(),
             created_at: now,
             updated_at: now,
         };
@@ -21181,6 +21378,9 @@ model = "gpt"
             Some(&setting),
             Some(&serde_json::json!({ "apiProvider": "deepseek", "apiKey": "sk" }).to_string()),
         );
-        assert_eq!(env.get("CLINE_PROVIDER").map(String::as_str), Some("cline-pass"));
+        assert_eq!(
+            env.get("CLINE_PROVIDER").map(String::as_str),
+            Some("cline-pass")
+        );
     }
 }

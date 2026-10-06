@@ -470,6 +470,22 @@ export interface CreateChatConversationResult {
 }
 
 /**
+ * Result of `establishTerminalSession`: the conversation a terminal CLI's hook
+ * belongs to. `folder` is set only when this call created a hidden chat folder.
+ */
+export interface EstablishTerminalSessionResult {
+  conversationId: number
+  folderId: number
+  title: string | null
+  folder?: FolderDetail | null
+  /**
+   * Process exit found no row. Callers must not bind conversation id 0.
+   * Omitted when the row exists.
+   */
+  absent?: boolean
+}
+
+/**
  * Result of `createChatDir`: a freshly created chat-mode scratch directory
  * (filesystem only — no DB rows). Used to connect ACP at a real cwd the instant
  * "no-folder mode" is selected; the conversation is still created lazily on the
@@ -521,6 +537,9 @@ export interface DbConversationSummary {
    *  worktree path it originally ran in. Drives the "source worktree removed"
    *  badge. */
   origin_cwd?: string | null
+  /** `terminal` when this row was opened in the native CLI. Absent on older
+   * payloads, which stay on the ACP transcript. */
+  launch_mode?: "acp" | "terminal"
 }
 
 /** Payload for the global `conversation://changed` side-channel that keeps
@@ -3367,6 +3386,10 @@ export interface ConversationConnectionInfo {
 // ACP agent info returned by acp_list_agents
 export interface AcpAgentInfo {
   agent_type: AgentType
+  /** Missing only when talking to an older backend; callers treat it as ACP. */
+  launch_mode?: AgentLaunchMode
+  /** Whether the vendor's native CLI is available for Terminal launches. */
+  terminal_available?: boolean
   /**
    * Whether this agent has a codeg-known skill store — every built-in, and
    * custom agents that declared the shared `.agents/skills` store. Gates the
@@ -3447,6 +3470,8 @@ export interface AcpAgentInfo {
    *  hand-drawn marks in `agent-icon.tsx`. */
   icon_url: string | null
 }
+
+export type AgentLaunchMode = "acp" | "terminal"
 
 /** Parsed sandbox / approval keys from ~/.codex/config.toml. Serialized
  * snake_case to match AcpAgentInfo.
@@ -3906,6 +3931,11 @@ export interface SystemTerminalSettings {
    * like `gh … --json`.
    */
   colorize_command_output: boolean
+  /**
+   * Terminal application that opens a directory. `null` keeps the built-in
+   * terminal. This is not the PTY shell in `default_shell`.
+   */
+  default_terminal_app: string | null
 }
 
 export interface TerminalShellOption {
@@ -3919,6 +3949,20 @@ export interface TerminalShellOption {
 export interface AvailableTerminalShells {
   options: TerminalShellOption[]
   resolved_shell: string
+}
+
+/** One row in the terminal-app picker. Proper nouns arrive in `label`. */
+export interface TerminalAppOption {
+  id: string
+  label_key: string
+  label?: string | null
+  value: string | null
+  exists: boolean
+  accepts_custom_path: boolean
+}
+
+export interface AvailableTerminalApps {
+  options: TerminalAppOption[]
 }
 
 export interface SystemRenderingSettings {
@@ -4581,6 +4625,42 @@ export interface TerminalSnapshot {
   alive: boolean
   data: string
   seq: number
+}
+
+export type TerminalAgentHookSupport = "available" | "unsupported"
+
+export interface TerminalAgentLaunchResult {
+  terminal_id: string
+  run_id: string
+  hook_support: TerminalAgentHookSupport
+}
+
+export interface TerminalAgentState {
+  terminal_id: string
+  agent_type: AgentType
+  run_id: string
+  hook_support: TerminalAgentHookSupport
+  active: boolean
+  latest_event: AgentTerminalEvent | null
+}
+
+export interface AgentTerminalEvent {
+  terminal_id: string
+  agent_type: AgentType
+  run_id: string
+  event_id: string
+  type: "turn_started" | "turn_stopped" | "session_started" | "session_ended"
+  native_event: string
+  native_session_id?: string
+  native_turn_id?: string
+  /** Agent session name. Replaces an unlocked conversation title. */
+  title?: string
+  /** Truncated prompt seed. Fills an empty title and does not replace one. */
+  title_seed?: string
+  model?: string
+  /** Prompt or last assistant text for the chat card. */
+  notice_body?: string
+  received_at: string
 }
 
 export interface TokenBreakdown {

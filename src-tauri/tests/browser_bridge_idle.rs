@@ -58,7 +58,9 @@ fn base(grant: &BridgeGrant) -> String {
 async fn listeners_close_when_released_and_idle() {
     configure();
     let upstream = spawn_upstream().await;
-    let grant = browser_bridge::open(upstream, "tab-idle", None).await.unwrap();
+    let grant = browser_bridge::open(upstream, "tab-idle", None)
+        .await
+        .unwrap();
     let before = browser_bridge::listener_count();
     let now = Instant::now();
 
@@ -77,14 +79,19 @@ async fn listeners_close_when_released_and_idle() {
         .header(header::COOKIE, cookie_for(&grant))
         .send()
         .await;
-    assert!(result.is_err(), "closed listener still answered: {result:?}");
+    assert!(
+        result.is_err(),
+        "closed listener still answered: {result:?}"
+    );
 
     // A held listener still closes after two hours without a request. The
     // clock starts again here: the request above waits on a port that was
     // just closed, which Windows refuses only after ~2 s (macOS in
     // milliseconds), and the margin the sweep below leaves is one second.
     let now = Instant::now();
-    let held = browser_bridge::open(upstream, "tab-held", None).await.unwrap();
+    let held = browser_bridge::open(upstream, "tab-held", None)
+        .await
+        .unwrap();
     assert_ne!(port_of(&held), 0);
     assert_eq!(browser_bridge::sweep(now + Duration::from_secs(60 * 60)), 0);
     assert_eq!(

@@ -781,6 +781,14 @@
     "selectLeftMcp": "اختر MCP من الجهة اليسرى."
   },
   "AcpAgentSettings": {
+    "launchMode": {
+      "label": "وضع التشغيل",
+      "newSessions": "يطبق على الجلسات الجديدة فقط.",
+      "grokUnsupported": "أحداث حالة CLI الأصلية غير متاحة لـ Grok.",
+      "saveFailed": "تعذر حفظ وضع التشغيل",
+      "acp": "ACP",
+      "terminal": "الطرفية"
+    },
     "title": "إدارة Agent SDK",
     "description": "أدر اتصال Agent SDK وحالة التمكين ومتغيرات البيئة وإدارة الإعدادات ومعلومات فحص الإصدار المسبق في مكان واحد.",
     "loadingAgents": "جارٍ تحميل قائمة الوكلاء...",
@@ -1877,6 +1885,13 @@
     "terminalShellNotInstalled": "غير مثبّت",
     "terminalShellNotFoundWarning": "هذا المسار غير موجود على هذا المضيف.",
     "terminalCurrentShell": "قيد الاستخدام: {path}",
+    "terminalAppTitle": "تطبيق الطرفية",
+    "terminalAppName": "طرفية",
+    "terminalAppDescription": "اختر تطبيق الطرفية المثبت الذي يفتح المجلد. الإعداد الافتراضي للنظام يبقي ذلك في الطرفية المدمجة. الصدفة أعلاه هي المفسر داخل الطرفية المدمجة. تبقى أسطر أوامر الوكلاء التي تبدأ في وضع الطرفية في هذا العرض.",
+    "terminalAppCustomPath": "مسار التطبيق",
+    "terminalAppCustomPlaceholder": "/Applications/Ghostty.app",
+    "terminalAppCustomHint": "حزمة .app أو ملف تنفيذي. التطبيق المخصص يفتح المجلد فقط.",
+    "terminalCurrentApp": "يفتح المجلدات باستخدام: {name}",
     "colorizeCommandOutput": "تلوين مُخرجات الأوامر",
     "colorizeCommandOutputDescription": "فرض ألوان ANSI على الأوامر التي تنفّذها الوكلاء، بحيث تظهر مخرجاتها ملوّنة في السجل بدلاً من نص عادي. يسري على الجلسات الجديدة.",
     "renderingDescription": "أوقف تشغيل تسريع الأجهزة إذا ظهرت شاشة سوداء أو أخطاء في العرض (شائع على بعض كروت AMD أو كروت Intel المدمجة على ويندوز، وعلى تعريف NVIDIA المغلق على لينكس). يسري على إصدارات سطح المكتب لويندوز ولينكس فقط.",
@@ -2446,6 +2461,13 @@
       "more": "المزيد"
     },
     "terminal": {
+      "agentStatus": {
+        "unsupported": "الحالة الأصلية غير متاحة",
+        "started": "بدأت الجولة",
+        "stopped": "تم استلام حدث التوقف",
+        "waiting": "بانتظار حدث الحالة الأصلي",
+        "exited": "انتهت عملية الطرفية"
+      },
       "rename": "إعادة تسمية",
       "close": "إغلاق",
       "closeOthers": "إغلاق البقية",
@@ -3023,6 +3045,7 @@
       "toasts": {
         "openDirectoryFailed": "فشل فتح المجلد",
         "openBuiltinTerminalFailed": "تعذر فتح الطرفية المدمجة",
+        "openExternalTerminalFailed": "تعذر فتح تطبيق الطرفية المحدد",
         "openInCodeFailed": "فشل الفتح في Code",
         "openCommitWindowFailed": "فشل فتح نافذة الالتزام",
         "noAddableFilesInDir": "لا توجد ملفات متغيرة في هذا المجلد يمكن إضافتها إلى VCS",
@@ -3274,6 +3297,7 @@
         }
       },
       "shared": {
+        "terminalAttachmentsUnsupported": "تشغيل الطرفية يدعم المهام النصية فقط. أزل الصور والموارد المرفقة ثم حاول مجددًا.",
         "attachedResources": "الموارد المرفقة",
         "toolCallFailed": "فشل استدعاء الأداة"
       },
@@ -3359,6 +3383,11 @@
         "deleteItem": "حذف",
         "steerItemNow": "إدراج في الدور الحالي",
         "steerItemAsNote": "إرسال كملاحظة للفحص التالي"
+      },
+      "sessionTerminal": {
+        "preparing": "جارٍ تجهيز مجلد العمل…",
+        "openSettings": "فتح إعدادات Agents",
+        "region": "طرفية {agent}"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "الإعدادات > الوكلاء",

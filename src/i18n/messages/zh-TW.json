@@ -781,6 +781,14 @@
     "selectLeftMcp": "請選擇左側 MCP。"
   },
   "AcpAgentSettings": {
+    "launchMode": {
+      "label": "啟動方式",
+      "newSessions": "僅影響新工作階段；現有工作階段保持目前方式。",
+      "grokUnsupported": "Grok 暫不支援原生 CLI 狀態事件。",
+      "saveFailed": "儲存啟動方式失敗",
+      "acp": "ACP",
+      "terminal": "終端機"
+    },
     "title": "Agent SDK管理",
     "description": "統一管理 Agent 的連接SDK、啟用狀態、環境變數、配置管理與版本預檢資訊。",
     "loadingAgents": "載入 Agent 列表中...",
@@ -1877,6 +1885,13 @@
     "terminalShellNotInstalled": "未安裝",
     "terminalShellNotFoundWarning": "目前主機上不存在此路徑。",
     "terminalCurrentShell": "目前使用：{path}",
+    "terminalAppTitle": "終端應用",
+    "terminalAppName": "終端",
+    "terminalAppDescription": "掃描本機已安裝的終端應用，選擇開啟目錄時預設啟動哪一個。系統預設仍使用內建終端。上方的 Shell 是內建終端裡的解譯器。終端模式啟動的智能體命令列仍留在這個檢視中。",
+    "terminalAppCustomPath": "應用路徑",
+    "terminalAppCustomPlaceholder": "/Applications/Ghostty.app",
+    "terminalAppCustomHint": "可填寫 .app 套件或可執行檔。自訂應用只開啟目錄。",
+    "terminalCurrentApp": "開啟目錄時使用：{name}",
     "colorizeCommandOutput": "為命令輸出著色",
     "colorizeCommandOutputDescription": "強制智慧代理執行的命令輸出 ANSI 色彩，使其在對話記錄中以彩色而非純文字呈現。對新建工作階段生效。",
     "renderingDescription": "若應用出現黑屏或渲染異常（Windows 上常見於 AMD 顯示卡或部分 Intel 內顯，Linux 上常見於 NVIDIA 閉源驅動），可關閉硬體加速。僅 Windows 與 Linux 桌面端生效。",
@@ -2446,6 +2461,13 @@
       "more": "更多"
     },
     "terminal": {
+      "agentStatus": {
+        "unsupported": "原生狀態不可用",
+        "started": "工作輪次已開始",
+        "stopped": "已收到停止事件",
+        "waiting": "等待原生狀態事件",
+        "exited": "終端機程序已結束"
+      },
       "rename": "重新命名",
       "close": "關閉",
       "closeOthers": "關閉其它",
@@ -3023,6 +3045,7 @@
       "toasts": {
         "openDirectoryFailed": "開啟目錄失敗",
         "openBuiltinTerminalFailed": "無法開啟內建終端",
+        "openExternalTerminalFailed": "無法開啟所選終端應用",
         "openInCodeFailed": "無法在 Code 開啟",
         "openCommitWindowFailed": "打開提交視窗失敗",
         "noAddableFilesInDir": "該目錄下沒有可加入到 VCS 的變更檔案",
@@ -3274,6 +3297,7 @@
         }
       },
       "shared": {
+        "terminalAttachmentsUnsupported": "終端機啟動僅支援純文字任務。請移除圖片和附加資源後重試。",
         "attachedResources": "附加資源",
         "toolCallFailed": "工具呼叫失敗"
       },
@@ -3359,6 +3383,11 @@
         "deleteItem": "刪除",
         "steerItemNow": "插入目前回合",
         "steerItemAsNote": "作為留言，供下次檢查時讀取"
+      },
+      "sessionTerminal": {
+        "preparing": "正在準備工作目錄…",
+        "openSettings": "開啟 Agents 設定",
+        "region": "{agent} 終端機"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "設定 > Agents",

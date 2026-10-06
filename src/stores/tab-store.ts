@@ -106,6 +106,14 @@ export interface TabItemInternal {
    * composer hides the branch picker and shows the "no-folder" chip.
    */
   isChat?: boolean
+  /**
+   * A CLI launched in this tab owns the surface. Set when the session terminal
+   * claims a PTY and kept after the conversation row is bound, so the pane
+   * stays a terminal instead of switching to ACP. Cleared only if the process
+   * exits before a row exists. **Not persisted** — a restart has no PTY to
+   * reattach, and the bound row opens through its normal path.
+   */
+  terminalSession?: boolean
 }
 
 export type TabItem = TabItemInternal
@@ -289,6 +297,13 @@ export interface TabStoreState {
     folderId?: number,
     workingDir?: string
   ) => void
+  /** A terminal-launched draft is occupied and must not be reused. */
+  markTerminalSession: (tabId: string) => void
+  /**
+   * Release a terminal draft that exited before a conversation row existed.
+   * A bound terminal session keeps the flag so the exited CLI stays on screen.
+   */
+  clearTerminalSession: (tabId: string) => void
   setTabRuntimeConversationId: (
     tabId: string,
     runtimeConversationId: number
@@ -558,8 +573,14 @@ function sameDerivedTab(a: TabItemInternal, b: TabItemInternal): boolean {
     a.workingDir === b.workingDir &&
     a.status === b.status &&
     a.agentTypeProvisional === b.agentTypeProvisional &&
-    a.isChat === b.isChat
+    a.isChat === b.isChat &&
+    a.terminalSession === b.terminalSession
   )
+}
+
+/** A draft "new conversation" may reuse. A running terminal CLI is not one. */
+function isReusableConversationDraft(tab: TabItemInternal): boolean {
+  return tab.conversationId == null && tab.terminalSession !== true
 }
 
 /** Build the persisted (synced) tab payload: conversation-bound tabs only
@@ -1798,7 +1819,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const targetGroup = resolveTargetGroup(prevState, options?.targetGroup)
     const existingTab = prevState.rawTabs.find(
       (t) =>
-        t.conversationId == null &&
+        isReusableConversationDraft(t) &&
         groupOfTab(prevState.groupOf, prevState.groupLayout, t.id) ===
           targetGroup
     )
@@ -1904,7 +1925,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const inTargetGroup = (t: TabItemInternal) =>
       groupOfTab(st.groupOf, st.groupLayout, t.id) === targetGroup
     const existingDraft = st.rawTabs.find(
-      (t) => t.conversationId == null && inTargetGroup(t)
+      (t) => isReusableConversationDraft(t) && inTargetGroup(t)
     )
     const needsDisconnect =
       existingDraft != null &&
@@ -1913,7 +1934,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
     const tabId = makeNewConversationTabId()
     const prevState = get()
     const existingTab = prevState.rawTabs.find(
-      (t) => t.conversationId == null && inTargetGroup(t)
+      (t) => isReusableConversationDraft(t) && inTargetGroup(t)
     )
 
     if (!existingTab) {
@@ -2101,6 +2122,34 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         ? prevState.activeTabId
         : (boundTab?.id ?? nextTabs[0]?.id ?? null),
     })
+    recomputeTabs()
+  },
+
+  markTerminalSession: (tabId) => {
+    const prev = get().rawTabs
+    let changed = false
+    const next = prev.map((tab) => {
+      if (tab.id !== tabId || tab.terminalSession === true) return tab
+      changed = true
+      return { ...tab, terminalSession: true }
+    })
+    if (!changed) return
+    set({ rawTabs: next })
+    recomputeTabs()
+  },
+
+  clearTerminalSession: (tabId) => {
+    const prev = get().rawTabs
+    let changed = false
+    const next = prev.map((tab) => {
+      if (tab.id !== tabId || tab.terminalSession !== true) return tab
+      // Bound sessions keep the flag: the exited CLI stays the surface.
+      if (tab.conversationId != null) return tab
+      changed = true
+      return { ...tab, terminalSession: undefined }
+    })
+    if (!changed) return
+    set({ rawTabs: next })
     recomputeTabs()
   },
 
@@ -2799,6 +2848,8 @@ export function useTabActions() {
       confirmDraftAgent: s.confirmDraftAgent,
       setDraftAgentFromFallback: s.setDraftAgentFromFallback,
       bindConversationTab: s.bindConversationTab,
+      markTerminalSession: s.markTerminalSession,
+      clearTerminalSession: s.clearTerminalSession,
       setTabRuntimeConversationId: s.setTabRuntimeConversationId,
       reorderTabs: s.reorderTabs,
       consumeRemoteActivation: s.consumeRemoteActivation,

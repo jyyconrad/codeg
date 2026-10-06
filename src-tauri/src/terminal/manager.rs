@@ -58,7 +58,47 @@ impl Scrollback {
     }
 }
 
+#[derive(Default)]
+struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    fn push(&mut self, bytes: &[u8]) -> String {
+        let mut combined = std::mem::take(&mut self.pending);
+        combined.extend_from_slice(bytes);
+        let mut output = String::new();
+        let mut offset = 0;
+        while offset < combined.len() {
+            match std::str::from_utf8(&combined[offset..]) {
+                Ok(valid) => {
+                    output.push_str(valid);
+                    break;
+                }
+                Err(error) => {
+                    let end = offset + error.valid_up_to();
+                    output.push_str(std::str::from_utf8(&combined[offset..end]).unwrap_or(""));
+                    offset = end;
+                    if let Some(invalid_len) = error.error_len() {
+                        output.push('\u{fffd}');
+                        offset += invalid_len;
+                    } else {
+                        self.pending.extend_from_slice(&combined[offset..]);
+                        break;
+                    }
+                }
+            }
+        }
+        output
+    }
+
+    fn finish(&mut self) -> String {
+        String::from_utf8_lossy(&std::mem::take(&mut self.pending)).into_owned()
+    }
+}
+
 struct TerminalInstance {
+    instance_id: uuid::Uuid,
     write_tx: mpsc::Sender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
     _child: Box<dyn portable_pty::Child + Send>,
@@ -70,6 +110,7 @@ struct TerminalInstance {
     scrollback: Arc<Mutex<Scrollback>>,
     /// Temp files (credential store + helper script) to clean up on exit.
     temp_files: Vec<std::path::PathBuf>,
+    on_exit: Option<Box<dyn FnOnce() + Send>>,
 }
 
 pub struct TerminalManager {
@@ -285,6 +326,7 @@ pub struct SpawnOptions {
     pub initial_command: Option<String>,
     pub extra_env: Option<HashMap<String, String>>,
     pub temp_files: Vec<std::path::PathBuf>,
+    pub on_exit: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl TerminalManager {
@@ -340,10 +382,16 @@ impl TerminalManager {
         configure_shell_command(&mut cmd, &shell, opts.initial_command.as_deref());
         cmd.cwd(&opts.working_dir);
 
-        // Inject extra environment variables (e.g. git credential helper config)
+        // Inject extra environment variables (e.g. git credential helper config).
+        // Match ACP's launch convention: an empty value removes an inherited
+        // variable instead of leaving an empty variable visible to the CLI.
         if let Some(env) = &opts.extra_env {
             for (key, value) in env {
-                cmd.env(key, value);
+                if value.is_empty() {
+                    cmd.env_remove(key);
+                } else {
+                    cmd.env(key, value);
+                }
             }
         }
 
@@ -365,6 +413,7 @@ impl TerminalManager {
             .map_err(|e| TerminalError::SpawnFailed(e.to_string()))?;
 
         let terminal_id = opts.terminal_id;
+        let instance_id = uuid::Uuid::new_v4();
         // Boundary-, length-, and NUL-safe prefix for the PTY thread names; see
         // `thread_name_prefix`. `terminal_id` is caller-supplied.
         let short_id = thread_name_prefix(&terminal_id);
@@ -374,6 +423,7 @@ impl TerminalManager {
 
         let owner_window = opts.owner_window_label.clone();
         let instance = TerminalInstance {
+            instance_id,
             write_tx,
             master: pair.master,
             _child: child,
@@ -381,17 +431,21 @@ impl TerminalManager {
             owner_window_label: opts.owner_window_label,
             scrollback: scrollback.clone(),
             temp_files: opts.temp_files,
+            on_exit: opts.on_exit,
         };
 
         lock_terminals(&self.terminals).insert(terminal_id.clone(), instance);
 
         // Named writer thread
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name(format!("pty-writer-{short_id}"))
             .spawn(move || {
                 write_loop(writer, write_rx);
             })
-            .map_err(|e| TerminalError::SpawnFailed(e.to_string()))?;
+        {
+            let _ = self.kill(&terminal_id);
+            return Err(TerminalError::SpawnFailed(error.to_string()));
+        }
 
         // Named reader thread — emits per-terminal events
         let id_for_reader = terminal_id.clone();
@@ -401,19 +455,23 @@ impl TerminalManager {
         // window is known; it probes and emits on threads of its own, so the
         // reader below never waits on a socket.
         let watch = ServiceWatch::new(emitter.clone(), owner_window, ServiceSource::Terminal);
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name(format!("pty-reader-{short_id}"))
             .spawn(move || {
                 read_loop(
                     reader,
                     id_for_reader,
+                    instance_id,
                     &emitter,
                     &terminals_ref,
                     &scrollback,
                     &watch,
                 );
             })
-            .map_err(|e| TerminalError::SpawnFailed(e.to_string()))?;
+        {
+            let _ = self.kill(&terminal_id);
+            return Err(TerminalError::SpawnFailed(error.to_string()));
+        }
 
         Ok(terminal_id)
     }
@@ -522,7 +580,7 @@ impl TerminalManager {
 
         for terminal_id in &exited_terminal_ids {
             if let Some(mut instance) = terminals.remove(terminal_id) {
-                cleanup_temp_files(&mut instance.temp_files);
+                finish_terminal(&mut instance);
             }
         }
 
@@ -541,13 +599,13 @@ impl TerminalManager {
             })
             .collect();
 
-        drop(terminals);
-
         if let Some(emitter) = emitter {
             for terminal_id in exited_terminal_ids {
                 emit_terminal_exit_event(emitter, &terminal_id);
             }
         }
+
+        drop(terminals);
 
         infos
     }
@@ -570,13 +628,13 @@ impl TerminalManager {
             .filter(|instance| instance.owner_window_label == owner_window_label)
             .count();
 
-        drop(terminals);
-
         if let Some(emitter) = emitter {
             for terminal_id in exited_terminal_ids {
                 emit_terminal_exit_event(emitter, &terminal_id);
             }
         }
+
+        drop(terminals);
 
         live
     }
@@ -628,14 +686,32 @@ impl TerminalManager {
 }
 
 fn terminate_terminal(instance: &mut TerminalInstance) {
+    if instance.on_exit.is_some() && matches!(instance._child.try_wait(), Ok(None)) {
+        if let Some(pid) = instance._child.process_id() {
+            let config = kill_tree::Config {
+                signal: "SIGKILL".to_string(),
+                ..Default::default()
+            };
+            if let Err(error) = kill_tree::blocking::kill_tree_with_config(pid, &config) {
+                tracing::warn!("[TERM] failed to stop agent process tree {pid}: {error}");
+            }
+        }
+    }
     let _ = instance._child.kill();
     let _ = instance._child.wait();
+    finish_terminal(instance);
+}
+
+fn finish_terminal(instance: &mut TerminalInstance) {
     cleanup_temp_files(&mut instance.temp_files);
+    if let Some(on_exit) = instance.on_exit.take() {
+        on_exit();
+    }
 }
 
 fn cleanup_temp_files(files: &mut Vec<std::path::PathBuf>) {
     for path in files.drain(..) {
-        let _ = std::fs::remove_file(&path);
+        let _ = super::agent_launch::cleanup_agent_temp_path(&path);
     }
 }
 
@@ -658,6 +734,7 @@ fn write_loop(mut writer: Box<dyn Write + Send>, rx: mpsc::Receiver<Vec<u8>>) {
 fn read_loop(
     mut reader: Box<dyn Read + Send>,
     terminal_id: String,
+    instance_id: uuid::Uuid,
     emitter: &EventEmitter,
     terminals: &Arc<Mutex<HashMap<String, TerminalInstance>>>,
     scrollback: &Arc<Mutex<Scrollback>>,
@@ -667,49 +744,56 @@ fn read_loop(
     let mut buf = [0u8; 8192];
     // Thread-confined, so the carry buffer and the rate limit need no lock.
     let mut services = ServiceScanner::new();
+    let mut decoder = Utf8StreamDecoder::default();
+
+    let mut publish = |data: String| {
+        if data.is_empty() {
+            return;
+        }
+        let seq = scrollback
+            .lock()
+            .map(|mut scrollback| scrollback.append(&data))
+            .unwrap_or_default();
+        watch.feed(&mut services, &data, &terminal_id);
+        let event = TerminalEvent {
+            terminal_id: terminal_id.clone(),
+            data,
+            seq,
+        };
+        crate::web::event_bridge::emit_event(emitter, &output_event, event);
+    };
 
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                // Record BEFORE emitting, and take the seq from the same
-                // critical section: a snapshot read concurrent with this chunk
-                // either sees it (and reports a seq at least this high) or does
-                // not (and reports one below it). Either way the receiving
-                // client can tell overlap from new output — see `TerminalEvent`.
-                // A poisoned lock is not fatal here: the buffer is an
-                // optimisation, so fall back to an un-deduplicable seq of 0
-                // rather than killing the reader thread and the terminal with it.
-                let seq = scrollback
-                    .lock()
-                    .map(|mut s| s.append(&data))
-                    .unwrap_or_default();
-                // Before the emit, not after: this is the only place a
-                // terminal's output passes through in one piece, and a viewer
-                // that is not mounted (the mobile drawer, a canvas card on
-                // another route) never sees it at all.
-                watch.feed(&mut services, &data, &terminal_id);
-                let event = TerminalEvent {
-                    terminal_id: terminal_id.clone(),
-                    data,
-                    seq,
-                };
-                crate::web::event_bridge::emit_event(emitter, &output_event, event.clone());
+                // A multibyte character may straddle PTY reads. Retain only
+                // its incomplete suffix, then publish complete text in order.
+                publish(decoder.push(&buf[..n]));
             }
             Err(_) => break,
         }
     }
+    publish(decoder.finish());
 
     // Terminal exited — remove from map and clean up temp files. Poison-tolerant
     // like the scrollback lock above: this runs on the long-lived `pty-reader-*`
     // thread, and refusing the removal would leak the entry and its temp files
     // for the rest of the process.
-    if let Some(mut instance) = lock_terminals(terminals).remove(&terminal_id) {
-        cleanup_temp_files(&mut instance.temp_files);
+    {
+        let mut map = lock_terminals(terminals);
+        if map
+            .get(&terminal_id)
+            .is_some_and(|instance| instance.instance_id == instance_id)
+        {
+            if let Some(mut instance) = map.remove(&terminal_id) {
+                finish_terminal(&mut instance);
+            }
+            // Keep the id unavailable to a replacement until its old exit
+            // notification has been published.
+            emit_terminal_exit_event(emitter, &terminal_id);
+        }
     }
-
-    emit_terminal_exit_event(emitter, &terminal_id);
 }
 
 fn emit_terminal_exit_event(emitter: &EventEmitter, terminal_id: &str) {
@@ -740,9 +824,74 @@ fn thread_name_prefix(terminal_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{thread_name_prefix, Scrollback, Utf8StreamDecoder, SCROLLBACK_MAX_CHARS};
     #[cfg(not(target_os = "windows"))]
     use super::{Arc, EventEmitter, SpawnOptions, TerminalManager};
-    use super::{thread_name_prefix, Scrollback, SCROLLBACK_MAX_CHARS};
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn stale_reader_cannot_remove_a_reused_terminal_id() {
+        use super::read_loop;
+        use crate::browser::services::ServiceWatch;
+        use crate::browser::types::ServiceSource;
+        use std::io::Cursor;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex;
+
+        let manager = TerminalManager::new();
+        let emitter = EventEmitter::Noop;
+        let exits = Arc::new(AtomicUsize::new(0));
+        let exit_counter = exits.clone();
+        manager
+            .spawn_with_id(
+                SpawnOptions {
+                    terminal_id: "reused-id".into(),
+                    working_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+                    owner_window_label: "main".into(),
+                    shell: Some("/bin/sh".into()),
+                    initial_command: None,
+                    extra_env: None,
+                    temp_files: Vec::new(),
+                    on_exit: Some(Box::new(move || {
+                        exit_counter.fetch_add(1, Ordering::SeqCst);
+                    })),
+                },
+                emitter.clone(),
+            )
+            .unwrap();
+        let current_generation = super::lock_terminals(&manager.terminals)
+            .get("reused-id")
+            .unwrap()
+            .instance_id;
+        let stale_generation = uuid::Uuid::new_v4();
+        assert_ne!(current_generation, stale_generation);
+        let scrollback = Arc::new(Mutex::new(Scrollback::default()));
+        let watch = ServiceWatch::new(emitter.clone(), "main".into(), ServiceSource::Terminal);
+        read_loop(
+            Box::new(Cursor::new(Vec::<u8>::new())),
+            "reused-id".into(),
+            stale_generation,
+            &emitter,
+            &manager.terminals,
+            &scrollback,
+            &watch,
+        );
+        assert!(manager.snapshot("reused-id").alive);
+        assert_eq!(exits.load(Ordering::SeqCst), 0);
+        manager.kill("reused-id").unwrap();
+        assert_eq!(exits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn utf8_decoder_preserves_characters_split_across_reads() {
+        let mut decoder = Utf8StreamDecoder::default();
+        let text = "中文🙂";
+        let bytes = text.as_bytes();
+        assert_eq!(decoder.push(&bytes[..2]), "");
+        assert_eq!(decoder.push(&bytes[2..5]), "中");
+        assert_eq!(decoder.push(&bytes[5..]), "文🙂");
+        assert_eq!(decoder.finish(), "");
+    }
 
     #[test]
     fn scrollback_seq_counts_every_chunk_and_never_rewinds() {
@@ -867,6 +1016,7 @@ mod tests {
                     )),
                     extra_env: None,
                     temp_files: vec![],
+                    on_exit: None,
                 },
                 emitter,
             )
@@ -892,5 +1042,55 @@ mod tests {
         assert_eq!(payload["terminalId"], "svc-e2e");
 
         let _ = manager.kill("svc-e2e");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn empty_extra_env_removes_inherited_values() {
+        use crate::web::event_bridge::WebEventBroadcaster;
+        use std::collections::HashMap;
+        use std::time::Duration;
+
+        let key = format!("CODEG_TERMINAL_ENV_TEST_{}", uuid::Uuid::new_v4());
+        std::env::set_var(&key, "inherited-secret");
+        let command =
+            format!("if env | grep -q '^{key}='; then printf present; else printf absent; fi");
+        let broadcaster = Arc::new(WebEventBroadcaster::new());
+        let mut events = broadcaster.subscribe();
+        let manager = TerminalManager::new();
+        manager
+            .spawn_with_id(
+                SpawnOptions {
+                    terminal_id: "empty-env".to_string(),
+                    working_dir: std::env::temp_dir().to_string_lossy().to_string(),
+                    owner_window_label: "main".to_string(),
+                    shell: Some("/bin/sh".to_string()),
+                    initial_command: Some(command),
+                    extra_env: Some(HashMap::from([(key.clone(), String::new())])),
+                    temp_files: vec![],
+                    on_exit: None,
+                },
+                EventEmitter::test_web_only(broadcaster),
+            )
+            .expect("spawn");
+
+        let output = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.expect("event bus");
+                if event.channel == "terminal://output/empty-env" {
+                    if let Some(data) = event.payload["data"].as_str() {
+                        if !data.is_empty() {
+                            break data.to_string();
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("shell output");
+
+        assert!(output.contains("absent"), "output={output:?}");
+        let _ = manager.kill("empty-env");
+        std::env::remove_var(key);
     }
 }

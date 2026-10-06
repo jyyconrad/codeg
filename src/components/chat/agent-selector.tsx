@@ -102,10 +102,12 @@ export function AgentSelector({
   // forwards via `onSelect`, which patches `defaultAgentType` upstream.
   const selected = useMemo<AgentType | null>(() => {
     const found = defaultAgentType
-      ? agents.find((a) => a.agent_type === defaultAgentType && a.available)
+      ? agents.find(
+          (a) => a.agent_type === defaultAgentType && isAvailableAgent(a)
+        )
       : null
     if (found) return found.agent_type
-    const first = agents.find((a) => a.available)
+    const first = agents.find(isAvailableAgent)
     return first?.agent_type ?? null
   }, [agents, defaultAgentType])
 
@@ -306,10 +308,12 @@ export function AgentSelector({
   useEffect(() => {
     onAgentsLoadedRef.current?.(agents)
     const found = defaultAgentType
-      ? agents.find((a) => a.agent_type === defaultAgentType && a.available)
+      ? agents.find(
+          (a) => a.agent_type === defaultAgentType && isAvailableAgent(a)
+        )
       : null
     if (found) return
-    const first = agents.find((a) => a.available)
+    const first = agents.find(isAvailableAgent)
     if (!first) return
     const fallback = onFallbackRef.current
     if (fallback) {

@@ -53,6 +53,7 @@ import type {
   FileSaveResult,
   WorkspaceSnapshotResponse,
   GitLogResult,
+  AvailableTerminalApps,
   AvailableTerminalShells,
   AppLocale,
   SystemLanguageSettings,
@@ -367,6 +368,20 @@ export async function getAvailableTerminalShells(): Promise<AvailableTerminalShe
 
 export async function probeTerminalShellPath(path: string): Promise<boolean> {
   return invoke("probe_terminal_shell_path", { path })
+}
+
+export async function getAvailableTerminalApps(): Promise<AvailableTerminalApps> {
+  return invoke("get_available_terminal_apps")
+}
+
+export async function probeTerminalAppPath(path: string): Promise<boolean> {
+  return invoke("probe_terminal_app_path", { path })
+}
+
+export async function openDirectoryInTerminalApp(
+  path: string
+): Promise<{ launchedExternal: boolean }> {
+  return invoke("open_directory_in_terminal_app", { path })
 }
 
 export async function getSystemRenderingSettings(): Promise<SystemRenderingSettings> {

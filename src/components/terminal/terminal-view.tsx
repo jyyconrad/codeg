@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react"
 import { subscribe } from "@/lib/platform"
 import {
   terminalSpawn,
+  terminalSpawnAgent,
+  terminalAgentState,
   terminalSnapshot,
   terminalWrite,
   terminalResize,
@@ -35,7 +37,10 @@ import {
   useOpenUrlTarget,
 } from "@/hooks/use-open-url-target"
 import { detectPlatform } from "@/hooks/use-platform"
-import type { TerminalEvent } from "@/lib/types"
+import type { AgentTerminalEvent, TerminalEvent } from "@/lib/types"
+import type { TerminalAgentLaunch } from "@/contexts/terminal-context"
+import { shouldKillTerminalAfterCancelledMount } from "@/lib/terminal-agent-state"
+import { startTerminalAgentOnce } from "@/lib/terminal-agent-spawn"
 import type { ITerminalAddon, Terminal as XTermTerminal } from "@xterm/xterm"
 
 function computeTerminalFontSize(base: number, zoomLevel: number): number {
@@ -81,8 +86,18 @@ interface TerminalViewProps {
   workingDir: string
   shell?: string
   initialCommand?: string
+  agentLaunch?: TerminalAgentLaunch
+  /** Restored Agent tab: attach to its PTY, never spawn without the prompt. */
+  agentAttachOnly?: boolean
   isActive: boolean
   isVisible: boolean
+  /**
+   * Paint and fit while this view is on screen but not the focused tab.
+   * Split session terminals need this: `isActive` is the workspace focus, and
+   * a visible pane that is not focused must keep its CLI. The stacked terminal
+   * panel leaves this off so inactive tabs stay hidden.
+   */
+  keepVisible?: boolean
   /**
    * 移动端虚拟键栏可见性。父级基于 `useIsMobile()` + 折叠开关判定；桌面端
    * 永远为 false。
@@ -106,6 +121,14 @@ interface TerminalViewProps {
    */
   ignoreAppZoom?: boolean
   onProcessExited?: (terminalId: string) => void
+  onAgentLaunched?: (
+    terminalId: string,
+    runId: string,
+    hookSupport: "available" | "unsupported",
+    latestEvent?: AgentTerminalEvent
+  ) => void
+  onAgentLaunchFailed?: (terminalId: string, error: unknown) => void
+  isExplicitlyClosed?: (terminalId: string) => boolean
 }
 
 export function TerminalView({
@@ -113,12 +136,18 @@ export function TerminalView({
   workingDir,
   shell,
   initialCommand,
+  agentLaunch,
+  agentAttachOnly = false,
   isActive,
   isVisible,
+  keepVisible = false,
   keybarVisible = false,
   attach = false,
   ignoreAppZoom = false,
   onProcessExited,
+  onAgentLaunched,
+  onAgentLaunchFailed,
+  isExplicitlyClosed,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const fitAddonRef = useRef<{ fit: () => void } | null>(null)
@@ -126,7 +155,11 @@ export function TerminalView({
   const lastResizeRef = useRef<{ cols: number; rows: number } | null>(null)
   const isActiveRef = useRef(isActive)
   const isVisibleRef = useRef(isVisible)
+  const keepVisibleRef = useRef(keepVisible)
   const onProcessExitedRef = useRef(onProcessExited)
+  const onAgentLaunchedRef = useRef(onAgentLaunched)
+  const onAgentLaunchFailedRef = useRef(onAgentLaunchFailed)
+  const isExplicitlyClosedRef = useRef(isExplicitlyClosed)
   // Link clicks route through the app's link decision (built-in browser vs
   // system browser, ⌘/Ctrl inverts). xterm's default handler is a bare
   // `window.open`, which the desktop webview turns into a dead click.
@@ -234,11 +267,24 @@ export function TerminalView({
   useEffect(() => {
     isActiveRef.current = isActive
     isVisibleRef.current = isVisible
-  }, [isActive, isVisible])
+    keepVisibleRef.current = keepVisible
+  }, [isActive, isVisible, keepVisible])
 
   useEffect(() => {
     onProcessExitedRef.current = onProcessExited
   }, [onProcessExited])
+
+  useEffect(() => {
+    onAgentLaunchedRef.current = onAgentLaunched
+  }, [onAgentLaunched])
+
+  useEffect(() => {
+    onAgentLaunchFailedRef.current = onAgentLaunchFailed
+  }, [onAgentLaunchFailed])
+
+  useEffect(() => {
+    isExplicitlyClosedRef.current = isExplicitlyClosed
+  }, [isExplicitlyClosed])
 
   useEffect(() => {
     openUrlTargetRef.current = openUrlTarget
@@ -249,6 +295,7 @@ export function TerminalView({
     let cleanup: (() => void) | undefined
 
     async function init() {
+      let spawnedByThisMount = false
       const { Terminal } = await import("@xterm/xterm")
       const { FitAddon } = await import("@xterm/addon-fit")
       const { WebLinksAddon } = await import("@xterm/addon-web-links")
@@ -466,6 +513,22 @@ export function TerminalView({
         setLoading(false)
       }
 
+      const publishAgentState = async (fallback?: {
+        terminal_id: string
+        run_id: string
+        hook_support: "available" | "unsupported"
+      }) => {
+        const state = await terminalAgentState(terminalId).catch(() => null)
+        const resolved = state ?? fallback
+        if (!resolved || cancelled) return
+        onAgentLaunchedRef.current?.(
+          resolved.terminal_id,
+          resolved.run_id,
+          resolved.hook_support,
+          state?.latest_event ?? undefined
+        )
+      }
+
       /** 卸载已经发生：拆掉这次挂载建立的一切。attach 模式下 PTY 不归这次挂载，
        *  所以调用方各自决定要不要 kill。 */
       const teardown = () => {
@@ -491,6 +554,7 @@ export function TerminalView({
         if (snapshot?.alive) {
           attached = true
           applySnapshot(snapshot)
+          if (agentLaunch || agentAttachOnly) await publishAgentState()
         }
         // 没活着时**不**在这里放行缓冲：spawn 还有一次往返，而那段窗口里到达的
         // 输出可能属于「别的窗口刚 spawn 成功的那个 PTY」。现在写进屏幕，等下面
@@ -499,9 +563,39 @@ export function TerminalView({
       }
 
       // Spawn the terminal AFTER subscribing to events
-      if (!attached) {
+      if (!attached && agentAttachOnly && !agentLaunch) {
+        flushReplay(null)
+        onProcessExitedRef.current?.(terminalId)
+        term.write(
+          "\r\n\x1b[90m[Agent terminal is no longer running]\x1b[0m\r\n"
+        )
+        setLoading(false)
+      } else if (!attached) {
         try {
-          await terminalSpawn(workingDir, shell, initialCommand, terminalId)
+          if (agentLaunch) {
+            const spawn = startTerminalAgentOnce(terminalId, () =>
+              terminalSpawnAgent({
+                agentType: agentLaunch.agentType,
+                workingDir,
+                prompt: agentLaunch.prompt,
+                terminalId,
+                shell,
+                resumeSessionId: agentLaunch.resumeSessionId,
+              })
+            )
+            spawnedByThisMount = spawn.owner
+            const launch = await spawn.promise
+            if (cancelled) {
+              if (isExplicitlyClosedRef.current?.(terminalId)) {
+                terminalKill(terminalId).catch(() => {})
+              }
+              teardown()
+              return
+            }
+            await publishAgentState(launch)
+          } else {
+            await terminalSpawn(workingDir, shell, initialCommand, terminalId)
+          }
           // spawn 成功 ⇒ 这个 id 上此前没有 PTY，缓冲里只可能是我们刚起的这个
           // 进程的头几个字节，没有任何东西需要去重。
           flushReplay(null)
@@ -521,8 +615,14 @@ export function TerminalView({
           if (retry?.alive) {
             attached = true
             applySnapshot(retry)
+            if (agentLaunch) {
+              await publishAgentState()
+            }
           } else {
             flushReplay(null)
+            if (agentLaunch) {
+              onAgentLaunchFailedRef.current?.(terminalId, err)
+            }
             onProcessExitedRef.current?.(terminalId)
             term.write(
               `\r\n\x1b[31m[Failed to start terminal: ${err}]\x1b[0m\r\n`
@@ -538,7 +638,16 @@ export function TerminalView({
       // not to this mount — that is the whole point of attaching, and killing
       // here would take a running command down with a view switch.
       if (cancelled) {
-        if (!attach) terminalKill(terminalId).catch(() => {})
+        if (
+          shouldKillTerminalAfterCancelledMount(
+            attach,
+            spawnedByThisMount,
+            agentLaunch != null || agentAttachOnly,
+            isExplicitlyClosedRef.current?.(terminalId) === true
+          )
+        ) {
+          terminalKill(terminalId).catch(() => {})
+        }
         teardown()
         return
       }
@@ -546,7 +655,8 @@ export function TerminalView({
       const fitIfReady = () => {
         const el = containerRef.current
         if (!el) return
-        if (!isActiveRef.current || !isVisibleRef.current) return
+        if (!isVisibleRef.current) return
+        if (!isActiveRef.current && !keepVisibleRef.current) return
         if (el.clientWidth <= 0 || el.clientHeight <= 0) return
         fitAddon.fit()
       }
@@ -595,20 +705,29 @@ export function TerminalView({
       // menu must not outlive it and open the old terminal's link.
       setLinkClick(null)
     }
-  }, [terminalId, workingDir, shell, initialCommand, attach])
+  }, [
+    terminalId,
+    workingDir,
+    shell,
+    initialCommand,
+    agentLaunch,
+    agentAttachOnly,
+    attach,
+  ])
 
-  // Refit and focus when becoming active or panel becomes visible
+  // Refit when the view is actually on screen. Keyboard focus stays with the
+  // active tab so a background split pane cannot steal it.
+  const painted = isVisible && (isActive || keepVisible)
   useEffect(() => {
-    if (isActive && isVisible) {
-      requestAnimationFrame(() => {
-        const el = containerRef.current
-        if (el && el.clientWidth > 0 && el.clientHeight > 0) {
-          fitAddonRef.current?.fit()
-        }
-        termRef.current?.focus()
-      })
-    }
-  }, [isActive, isVisible])
+    if (!painted) return
+    requestAnimationFrame(() => {
+      const el = containerRef.current
+      if (el && el.clientWidth > 0 && el.clientHeight > 0) {
+        fitAddonRef.current?.fit()
+      }
+      if (isActive) termRef.current?.focus()
+    })
+  }, [painted, isActive])
 
   // React to zoom / font-family / font-size changes. Updates refs synchronously so
   // async init() always reads the latest values, and pushes them to already-mounted
@@ -653,10 +772,10 @@ export function TerminalView({
     <div
       className="absolute inset-0 h-full w-full p-2"
       style={{
-        visibility: isActive ? "visible" : "hidden",
-        pointerEvents: isActive ? "auto" : "none",
+        visibility: painted ? "visible" : "hidden",
+        pointerEvents: isActive && isVisible ? "auto" : "none",
       }}
-      aria-hidden={!isActive}
+      aria-hidden={!painted}
     >
       {/* xterm + 键栏所在的 flex 列：kbdLift 收缩外层高度，让键栏抬到软键盘上方。
           键盘收起时改让底部安全区（刘海屏 home indicator）——移动端终端走的是
@@ -699,7 +818,7 @@ export function TerminalView({
           termRef.current?.focus()
         }}
       />
-      {loading && isActive && (
+      {loading && painted && (
         <div className="absolute inset-0 flex items-center justify-center bg-background/80">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <svg

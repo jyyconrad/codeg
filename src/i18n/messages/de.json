@@ -781,6 +781,14 @@
     "selectLeftMcp": "Wähle links ein MCP aus."
   },
   "AcpAgentSettings": {
+    "launchMode": {
+      "label": "Startmodus",
+      "newSessions": "Gilt nur für neue Sitzungen.",
+      "grokUnsupported": "Native CLI-Statusereignisse sind für Grok nicht verfügbar.",
+      "saveFailed": "Startmodus konnte nicht gespeichert werden",
+      "acp": "ACP",
+      "terminal": "Terminal"
+    },
     "title": "Agent SDK-Verwaltung",
     "description": "Verwalten Sie Agent-SDK-Verbindung, Aktivierungsstatus, Umgebungsvariablen, Konfigurationsverwaltung und Versions-Preflight-Infos zentral an einem Ort.",
     "loadingAgents": "Agentenliste wird geladen...",
@@ -1877,6 +1885,13 @@
     "terminalShellNotInstalled": "nicht installiert",
     "terminalShellNotFoundWarning": "Dieser Pfad existiert auf diesem Host nicht.",
     "terminalCurrentShell": "Aktuell verwendet: {path}",
+    "terminalAppTitle": "Terminal-App",
+    "terminalAppName": "Terminal",
+    "terminalAppDescription": "Wählen Sie, welche installierte Terminal-App ein Verzeichnis öffnet. Systemstandard behält dafür das eingebaute Terminal. Die Shell darüber ist der Interpreter im eingebauten Terminal. Agenten-CLIs im Terminalmodus bleiben in dieser Ansicht.",
+    "terminalAppCustomPath": "App-Pfad",
+    "terminalAppCustomPlaceholder": "/Applications/Ghostty.app",
+    "terminalAppCustomHint": "Ein .app-Bundle oder eine ausführbare Datei. Eine eigene App öffnet nur das Verzeichnis.",
+    "terminalCurrentApp": "Öffnet Verzeichnisse mit: {name}",
     "colorizeCommandOutput": "Befehlsausgabe einfärben",
     "colorizeCommandOutputDescription": "Erzwingt ANSI-Farben in den Befehlen, die Agenten ausführen, sodass deren Ausgabe im Verlauf farbig statt als reiner Text erscheint. Gilt ab neuen Sitzungen.",
     "renderingDescription": "Deaktivieren Sie die Hardwarebeschleunigung, wenn die App einen schwarzen Bildschirm oder Render-Fehler zeigt (häufig bei bestimmten AMD-GPUs oder integrierten Intel-GPUs unter Windows sowie beim proprietären NVIDIA-Treiber unter Linux). Wirkt sich nur auf die Windows- und Linux-Desktop-Versionen aus.",
@@ -2446,6 +2461,13 @@
       "more": "Mehr"
     },
     "terminal": {
+      "agentStatus": {
+        "unsupported": "Nativer Status nicht verfügbar",
+        "started": "Runde gestartet",
+        "stopped": "Stop-Ereignis empfangen",
+        "waiting": "Warten auf natives Statusereignis",
+        "exited": "Terminalprozess beendet"
+      },
       "rename": "Umbenennen",
       "close": "Schließen",
       "closeOthers": "Andere schließen",
@@ -3023,6 +3045,7 @@
       "toasts": {
         "openDirectoryFailed": "Verzeichnis konnte nicht geöffnet werden",
         "openBuiltinTerminalFailed": "Integriertes Terminal konnte nicht geöffnet werden",
+        "openExternalTerminalFailed": "Die ausgewählte Terminal-App konnte nicht geöffnet werden",
         "openInCodeFailed": "In Code öffnen fehlgeschlagen",
         "openCommitWindowFailed": "Commit-Fenster konnte nicht geöffnet werden",
         "noAddableFilesInDir": "Keine geänderten Dateien in diesem Verzeichnis können zu VCS hinzugefügt werden",
@@ -3274,6 +3297,7 @@
         }
       },
       "shared": {
+        "terminalAttachmentsUnsupported": "Der Terminalstart unterstützt nur Text. Entferne Bilder und angehängte Ressourcen.",
         "attachedResources": "Angehängte Ressourcen",
         "toolCallFailed": "Tool-Aufruf fehlgeschlagen"
       },
@@ -3359,6 +3383,11 @@
         "deleteItem": "Entfernen",
         "steerItemNow": "In aktuellen Turn einfügen",
         "steerItemAsNote": "Als Notiz für die nächste Abfrage senden"
+      },
+      "sessionTerminal": {
+        "preparing": "Arbeitsverzeichnis wird vorbereitet…",
+        "openSettings": "Agenten-Einstellungen öffnen",
+        "region": "{agent}-Terminal"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Einstellungen > Agenten",

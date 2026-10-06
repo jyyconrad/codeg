@@ -781,6 +781,14 @@
     "selectLeftMcp": "左側でMCPを選択してください。"
   },
   "AcpAgentSettings": {
+    "launchMode": {
+      "label": "起動モード",
+      "newSessions": "新しいセッションにのみ適用されます。",
+      "grokUnsupported": "Grok ではネイティブ CLI 状態イベントを利用できません。",
+      "saveFailed": "起動モードを保存できませんでした",
+      "acp": "ACP",
+      "terminal": "ターミナル"
+    },
     "title": "Agent SDK 管理",
     "description": "Agent SDK の接続、有効化状態、環境変数、設定管理、バージョン事前チェック情報を一元管理します。",
     "loadingAgents": "エージェント一覧を読み込み中...",
@@ -1877,6 +1885,13 @@
     "terminalShellNotInstalled": "未インストール",
     "terminalShellNotFoundWarning": "このパスはホスト上に存在しません。",
     "terminalCurrentShell": "現在使用中: {path}",
+    "terminalAppTitle": "ターミナルアプリ",
+    "terminalAppName": "ターミナル",
+    "terminalAppDescription": "インストール済みのターミナルアプリをスキャンし、ディレクトリを開くときに起動するアプリを選びます。システムのデフォルトは内蔵ターミナルのままです。上のシェルは内蔵ターミナルのインタプリタです。ターミナルモードで起動したエージェントの CLI はこのビューに残ります。",
+    "terminalAppCustomPath": "アプリのパス",
+    "terminalAppCustomPlaceholder": "/Applications/Ghostty.app",
+    "terminalAppCustomHint": ".app バンドルか実行ファイルを指定します。カスタムアプリはディレクトリを開くだけです。",
+    "terminalCurrentApp": "ディレクトリを開くアプリ: {name}",
     "colorizeCommandOutput": "コマンド出力に色を付ける",
     "colorizeCommandOutputDescription": "エージェントが実行するコマンドに ANSI カラーを強制し、その出力をトランスクリプト上でプレーンテキストではなくカラーで表示します。新しいセッションから有効になります。",
     "renderingDescription": "アプリで黒画面や描画不具合が発生する場合（Windows では一部の AMD GPU や Intel 内蔵 GPU、Linux では NVIDIA プロプライエタリドライバーで報告あり）、ハードウェアアクセラレーションを無効化してください。Windows と Linux のデスクトップ版のみ有効です。",
@@ -2446,6 +2461,13 @@
       "more": "その他"
     },
     "terminal": {
+      "agentStatus": {
+        "unsupported": "ネイティブ状態は利用できません",
+        "started": "ターン開始",
+        "stopped": "停止イベントを受信",
+        "waiting": "ネイティブ状態イベントを待機中",
+        "exited": "ターミナルプロセスが終了しました"
+      },
       "rename": "名前を変更",
       "close": "閉じる",
       "closeOthers": "他を閉じる",
@@ -3023,6 +3045,7 @@
       "toasts": {
         "openDirectoryFailed": "ディレクトリを開けませんでした",
         "openBuiltinTerminalFailed": "内蔵ターミナルを開けませんでした",
+        "openExternalTerminalFailed": "選択したターミナルアプリを開けませんでした",
         "openInCodeFailed": "Code で開けませんでした",
         "openCommitWindowFailed": "コミットウィンドウを開けませんでした",
         "noAddableFilesInDir": "このディレクトリには VCS に追加できる変更ファイルがありません",
@@ -3274,6 +3297,7 @@
         }
       },
       "shared": {
+        "terminalAttachmentsUnsupported": "ターミナル起動はテキストのみ対応しています。画像と添付リソースを削除してください。",
         "attachedResources": "添付リソース",
         "toolCallFailed": "ツール呼び出しに失敗しました"
       },
@@ -3359,6 +3383,11 @@
         "deleteItem": "削除",
         "steerItemNow": "現在のターンに挿入",
         "steerItemAsNote": "メモとして送信し次回チェック時に読ませる"
+      },
+      "sessionTerminal": {
+        "preparing": "作業ディレクトリを準備しています…",
+        "openSettings": "Agents 設定を開く",
+        "region": "{agent} ターミナル"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "設定 > エージェント",

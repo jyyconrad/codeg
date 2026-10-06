@@ -82,6 +82,28 @@ pub async fn probe_terminal_shell_path(
     )))
 }
 
+pub async fn get_available_terminal_apps(
+    Extension(state): Extension<Arc<AppState>>,
+) -> Result<Json<AvailableTerminalApps>, AppCommandError> {
+    let settings = settings_commands::load_system_terminal_settings(&state.db.conn).await?;
+    Ok(Json(settings_commands::available_terminal_apps_core(
+        settings.default_terminal_app.as_deref(),
+    )))
+}
+
+#[derive(Deserialize)]
+pub struct ProbeTerminalAppPathParams {
+    pub path: String,
+}
+
+pub async fn probe_terminal_app_path(
+    Json(params): Json<ProbeTerminalAppPathParams>,
+) -> Result<Json<bool>, AppCommandError> {
+    Ok(Json(
+        crate::terminal::external_apps::probe_terminal_app_path(&params.path),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Update handlers
 // ---------------------------------------------------------------------------

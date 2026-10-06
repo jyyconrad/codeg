@@ -10,12 +10,36 @@ import {
   useState,
   type ReactNode,
 } from "react"
-import { getSystemTerminalSettings, terminalKill } from "@/lib/api"
+import {
+  getSystemTerminalSettings,
+  terminalAgentState,
+  terminalKill,
+  terminalSnapshot,
+} from "@/lib/api"
 import { getTransport } from "@/lib/transport"
 import { randomUUID } from "@/lib/utils"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useShortcutSettings } from "@/hooks/use-shortcut-settings"
 import { matchShortcutEvent } from "@/lib/keyboard-shortcuts"
+import { newerAgentTerminalEvent } from "@/lib/terminal-agent-state"
+import {
+  parseStoredAgentTerminalTabs,
+  markStoredAgentTerminalLaunched,
+  serializeAgentTerminalTabs,
+  waitForRestorableAgentTerminal,
+} from "@/lib/terminal-agent-tabs"
+import type {
+  AgentTerminalEvent,
+  AgentType,
+  TerminalAgentHookSupport,
+} from "@/lib/types"
+
+export interface TerminalAgentLaunch {
+  agentType: AgentType
+  prompt: string
+  /** Native session to reopen. Absent on a fresh launch. */
+  resumeSessionId?: string
+}
 
 export interface TerminalTab {
   id: string
@@ -24,12 +48,22 @@ export interface TerminalTab {
   workingDir: string
   shell?: string
   initialCommand?: string
+  agentLaunch?: TerminalAgentLaunch
+  agentAttach?: boolean
+  agentType?: AgentType
+  agentRun?: {
+    runId: string
+    hookSupport: TerminalAgentHookSupport
+    latestEvent?: AgentTerminalEvent
+    latestEventType?: AgentTerminalEvent["type"]
+  }
 }
 
 const DEFAULT_HEIGHT = 300
 const MIN_HEIGHT = 150
 const MAX_HEIGHT = 600
 const TERMINAL_SETTINGS_UPDATED_EVENT = "app://terminal-settings-updated"
+const AGENT_TERMINAL_TABS_STORAGE_KEY = "codeg:agent-terminal-tabs"
 
 interface TerminalContextValue {
   isOpen: boolean
@@ -42,6 +76,14 @@ interface TerminalContextValue {
   activeTabId: string | null
   exitedTerminals: Set<string>
   markTerminalExited: (id: string) => void
+  markAgentLaunched: (
+    id: string,
+    runId: string,
+    hookSupport: TerminalAgentHookSupport,
+    latestEvent?: AgentTerminalEvent
+  ) => void
+  markAgentLaunchFailed: (id: string, error: unknown) => void
+  isTerminalExplicitlyClosed: (id: string) => boolean
   createTerminal: () => Promise<void>
   createTerminalInDirectory: (
     workingDir: string,
@@ -51,6 +93,12 @@ interface TerminalContextValue {
   createTerminalWithCommand: (
     title: string,
     command: string
+  ) => Promise<string | null>
+  createAgentTerminal: (
+    agentType: AgentType,
+    workingDir: string,
+    prompt: string,
+    title: string
   ) => Promise<string | null>
   closeTerminal: (id: string) => void
   closeOtherTerminals: (id: string) => void
@@ -84,6 +132,15 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   const lastMouseActivityInTerminalRef = useRef(false)
   // Keep a ref of tabs for cleanup on unmount (effect [] captures stale state)
   const tabsRef = useRef(tabs)
+  const pendingAgentLaunchesRef = useRef(
+    new Map<
+      string,
+      { resolve: (id: string) => void; reject: (error: unknown) => void }
+    >()
+  )
+  const bufferedAgentEventsRef = useRef(new Map<string, AgentTerminalEvent>())
+  const explicitlyClosedTerminalIdsRef = useRef(new Set<string>())
+  const [agentTabsRestored, setAgentTabsRestored] = useState(false)
   useEffect(() => {
     tabsRef.current = tabs
   }, [tabs])
@@ -94,6 +151,87 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     (shell?: string) => shell ?? defaultTerminalShell ?? undefined,
     [defaultTerminalShell]
   )
+
+  useEffect(() => {
+    let cancelled = false
+    let stored = [] as ReturnType<typeof parseStoredAgentTerminalTabs>
+    try {
+      stored = parseStoredAgentTerminalTabs(
+        typeof window === "undefined"
+          ? null
+          : window.sessionStorage.getItem(AGENT_TERMINAL_TABS_STORAGE_KEY)
+      )
+    } catch {
+      // Session storage can be unavailable in hardened/private contexts.
+    }
+    void Promise.all(
+      stored.map(async (tab) => {
+        const restorable = await waitForRestorableAgentTerminal(
+          tab,
+          async () => {
+            const [snapshot, state] = await Promise.all([
+              terminalSnapshot(tab.id).catch(() => null),
+              terminalAgentState(tab.id).catch(() => null),
+            ])
+            return { snapshot, state }
+          }
+        )
+        if (!restorable) return null
+        const { state } = restorable
+        return {
+          ...tab,
+          folderId: 0,
+          agentAttach: true,
+          agentRun: {
+            runId: state.run_id,
+            hookSupport: state.hook_support,
+            latestEvent: state.latest_event ?? undefined,
+            latestEventType: state.latest_event?.type,
+          },
+        } satisfies TerminalTab
+      })
+    ).then((restored) => {
+      if (cancelled) return
+      const live: TerminalTab[] = []
+      for (const tab of restored) {
+        if (tab != null) live.push(tab)
+      }
+      setTabs((current) => [...live, ...current])
+      if (live.length > 0) {
+        setIsOpen(true)
+        setActiveTabId((current) => current ?? live[0].id)
+      }
+      setAgentTabsRestored(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!agentTabsRestored || typeof window === "undefined") return
+    const stored = tabs.flatMap((tab) => {
+      const agentType = tab.agentLaunch?.agentType ?? tab.agentType
+      if (!agentType || (!tab.agentLaunch && !tab.agentAttach)) return []
+      return [
+        {
+          id: tab.id,
+          title: tab.title,
+          workingDir: tab.workingDir,
+          ...(tab.shell ? { shell: tab.shell } : {}),
+          agentType,
+        },
+      ]
+    })
+    try {
+      window.sessionStorage.setItem(
+        AGENT_TERMINAL_TABS_STORAGE_KEY,
+        serializeAgentTerminalTabs(stored)
+      )
+    } catch {
+      // Best effort only; the live tab remains usable without persistence.
+    }
+  }, [agentTabsRestored, tabs])
 
   useEffect(() => {
     let cancelled = false
@@ -131,6 +269,51 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    getTransport()
+      .subscribe<AgentTerminalEvent>("agent-terminal://event", (event) => {
+        const eventKey = `${event.terminal_id}:${event.run_id}`
+        const latestEvent = newerAgentTerminalEvent(
+          bufferedAgentEventsRef.current.get(eventKey),
+          event
+        )
+        if (latestEvent) {
+          bufferedAgentEventsRef.current.set(eventKey, latestEvent)
+        }
+        setTabs((current) =>
+          current.map((tab) =>
+            tab.id === event.terminal_id && tab.agentRun?.runId === event.run_id
+              ? (() => {
+                  const mergedEvent = newerAgentTerminalEvent(
+                    tab.agentRun.latestEvent,
+                    event
+                  )
+                  return {
+                    ...tab,
+                    agentRun: {
+                      ...tab.agentRun,
+                      latestEvent: mergedEvent,
+                      latestEventType: mergedEvent?.type,
+                    },
+                  }
+                })()
+              : tab
+          )
+        )
+      })
+      .then((dispose) => {
+        if (disposed) dispose()
+        else unlisten = dispose
+      })
+      .catch(() => {})
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [])
+
   const markTerminalExited = useCallback((id: string) => {
     setExitedTerminals((prev) => {
       if (prev.has(id)) return prev
@@ -139,6 +322,45 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       return next
     })
   }, [])
+
+  const markAgentLaunched = useCallback(
+    (
+      id: string,
+      runId: string,
+      hookSupport: TerminalAgentHookSupport,
+      snapshotEvent?: AgentTerminalEvent
+    ) => {
+      const eventKey = `${id}:${runId}`
+      const latestEvent = newerAgentTerminalEvent(
+        snapshotEvent,
+        bufferedAgentEventsRef.current.get(eventKey)
+      )
+      setTabs((current) =>
+        current.map((tab) =>
+          tab.id === id
+            ? markStoredAgentTerminalLaunched(tab, {
+                runId,
+                hookSupport,
+                latestEvent,
+              })
+            : tab
+        )
+      )
+      pendingAgentLaunchesRef.current.get(id)?.resolve(id)
+      pendingAgentLaunchesRef.current.delete(id)
+    },
+    []
+  )
+
+  const markAgentLaunchFailed = useCallback((id: string, error: unknown) => {
+    pendingAgentLaunchesRef.current.get(id)?.reject(error)
+    pendingAgentLaunchesRef.current.delete(id)
+  }, [])
+
+  const isTerminalExplicitlyClosed = useCallback(
+    (id: string) => explicitlyClosedTerminalIdsRef.current.has(id),
+    []
+  )
 
   const removeExitedTerminals = useCallback((ids: string[]) => {
     setExitedTerminals((prev) => {
@@ -157,6 +379,15 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       terminalKill(tab.id).catch(() => {})
     })
   }, [])
+
+  const rejectPendingAgentTabs = useCallback(
+    (targetTabs: TerminalTab[], reason: string) => {
+      targetTabs.forEach((tab) => {
+        markAgentLaunchFailed(tab.id, new Error(reason))
+      })
+    },
+    [markAgentLaunchFailed]
+  )
 
   const toggle = useCallback(() => {
     const autoId = randomUUID()
@@ -238,6 +469,38 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     [currentFolderId, resolveTerminalShell]
   )
 
+  const createAgentTerminal = useCallback(
+    async (
+      agentType: AgentType,
+      workingDir: string,
+      prompt: string,
+      title: string
+    ) => {
+      if (!workingDir || !prompt.trim()) return null
+      setIsOpen(true)
+      const id = randomUUID()
+      explicitlyClosedTerminalIdsRef.current.delete(id)
+      tabCounterRef.current += 1
+      setTabs((prev) => [
+        ...prev,
+        {
+          id,
+          folderId: currentFolderId,
+          title,
+          workingDir,
+          shell: resolveTerminalShell(),
+          agentLaunch: { agentType, prompt },
+          agentType,
+        },
+      ])
+      setActiveTabId(id)
+      return new Promise<string>((resolve, reject) => {
+        pendingAgentLaunchesRef.current.set(id, { resolve, reject })
+      })
+    },
+    [currentFolderId, resolveTerminalShell]
+  )
+
   const createTerminal = useCallback(async () => {
     if (!folderPath) return
     await createTerminalInDirectory(folderPath)
@@ -249,6 +512,11 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   const closeTerminal = useCallback(
     (id: string) => {
+      explicitlyClosedTerminalIdsRef.current.add(id)
+      markAgentLaunchFailed(
+        id,
+        new Error("Agent terminal closed before launch")
+      )
       markTerminalExited(id)
       removeExitedTerminals([id])
       terminalKill(id).catch(() => {})
@@ -266,24 +534,30 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         return next
       })
     },
-    [markTerminalExited, removeExitedTerminals]
+    [markAgentLaunchFailed, markTerminalExited, removeExitedTerminals]
   )
 
   const closeOtherTerminals = useCallback(
     (id: string) => {
       setTabs((prev) => {
         const closed = prev.filter((t) => t.id !== id)
+        closed.forEach((tab) =>
+          explicitlyClosedTerminalIdsRef.current.add(tab.id)
+        )
+        rejectPendingAgentTabs(closed, "Agent terminal closed before launch")
         killTerminalTabs(closed)
         removeExitedTerminals(closed.map((t) => t.id))
         return prev.filter((t) => t.id === id)
       })
       setActiveTabId(id)
     },
-    [killTerminalTabs, removeExitedTerminals]
+    [killTerminalTabs, rejectPendingAgentTabs, removeExitedTerminals]
   )
 
   const closeAllTerminals = useCallback(() => {
     setTabs((prev) => {
+      prev.forEach((tab) => explicitlyClosedTerminalIdsRef.current.add(tab.id))
+      rejectPendingAgentTabs(prev, "Agent terminal closed before launch")
       killTerminalTabs(prev)
       removeExitedTerminals(prev.map((t) => t.id))
       return []
@@ -291,7 +565,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     tabCounterRef.current = 0
     setActiveTabId(null)
     setIsOpen(false)
-  }, [killTerminalTabs, removeExitedTerminals])
+  }, [killTerminalTabs, rejectPendingAgentTabs, removeExitedTerminals])
 
   const renameTerminal = useCallback((id: string, title: string) => {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, title } : t)))
@@ -384,8 +658,14 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   // Cleanup all terminals on unmount — uses ref to get current tabs
   useEffect(() => {
+    const pendingAgentLaunches = pendingAgentLaunchesRef.current
     return () => {
+      pendingAgentLaunches.forEach(({ reject }) =>
+        reject(new Error("Terminal provider unmounted before agent launch"))
+      )
+      pendingAgentLaunches.clear()
       tabsRef.current.forEach((t) => {
+        if (t.agentLaunch || t.agentAttach) return
         terminalKill(t.id).catch(() => {})
       })
     }
@@ -403,9 +683,13 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       activeTabId,
       exitedTerminals,
       markTerminalExited,
+      markAgentLaunched,
+      markAgentLaunchFailed,
+      isTerminalExplicitlyClosed,
       createTerminal,
       createTerminalInDirectory,
       createTerminalWithCommand,
+      createAgentTerminal,
       closeTerminal,
       closeOtherTerminals,
       closeAllTerminals,
@@ -421,9 +705,13 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       activeTabId,
       exitedTerminals,
       markTerminalExited,
+      markAgentLaunched,
+      markAgentLaunchFailed,
+      isTerminalExplicitlyClosed,
       createTerminal,
       createTerminalInDirectory,
       createTerminalWithCommand,
+      createAgentTerminal,
       closeTerminal,
       closeOtherTerminals,
       closeAllTerminals,

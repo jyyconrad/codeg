@@ -675,7 +675,11 @@ pub fn describe_ports(ports: &[u16]) -> String {
     let contiguous = ports.windows(2).all(|w| w[1] == w[0] + 1);
     match (ports.first(), ports.last()) {
         (Some(first), Some(last)) if contiguous && ports.len() > 2 => format!("{first}-{last}"),
-        _ => ports.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "),
+        _ => ports
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
@@ -821,6 +825,10 @@ pub(crate) async fn do_start_web_server_tauri(
         },
         connection_manager: (*app.state::<crate::acp::manager::ConnectionManager>()).clone_ref(),
         terminal_manager: (*app.state::<crate::terminal::manager::TerminalManager>()).clone_ref(),
+        agent_hooks: app
+            .state::<Arc<crate::terminal::agent_hooks::AgentHookRegistry>>()
+            .inner()
+            .clone(),
         event_broadcaster: app
             .state::<Arc<crate::web::event_bridge::WebEventBroadcaster>>()
             .inner()

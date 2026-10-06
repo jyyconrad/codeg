@@ -514,6 +514,7 @@ mod tests {
             agent_type: Set(serde_json::to_string(&AgentType::Codex).unwrap()),
             registry_id: Set("codex".to_string()),
             enabled: Set(true),
+            launch_mode: Set("acp".to_string()),
             sort_order: Set(0),
             installed_version: Set(None),
             env_json: Set(Some("{}".to_string())),

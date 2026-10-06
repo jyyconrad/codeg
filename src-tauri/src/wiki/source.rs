@@ -486,6 +486,7 @@ mod tests {
             deleted_at: Set(None),
             pinned_at: Set(None),
             origin_cwd: Set(None),
+            launch_mode: Set("acp".to_string()),
         };
         let inserted = child.insert(&db.conn).await.unwrap();
         let out = persist_acp_turn(&db.conn, snap_for("run-del", inserted.id, folder))

@@ -106,9 +106,10 @@ pub fn page_requested_close(app: &AppHandle, tab_id: &str) {
             return;
         }
         tracing::info!("[browser] tab {tab_id}: closed by the page");
-        let close = crate::commands::browser::close_core_if(&app, &registry, &tab_id, None, |tab| {
-            tab.generation == generation
-        });
+        let close =
+            crate::commands::browser::close_core_if(&app, &registry, &tab_id, None, |tab| {
+                tab.generation == generation
+            });
         if let Err(err) = close {
             tracing::warn!("[browser] tab {tab_id}: close requested by the page failed: {err}");
         }
@@ -137,7 +138,10 @@ pub fn blank_substituted_for(provisional: Option<&str>, committed: &Url) -> bool
 }
 
 pub fn page_load(app: &AppHandle, tab_id: &str, url: &Url, started: bool) {
-    tracing::debug!("[browser] tab {tab_id} page load {}: {url}", if started { "started" } else { "finished" });
+    tracing::debug!(
+        "[browser] tab {tab_id} page load {}: {url}",
+        if started { "started" } else { "finished" }
+    );
     let Some(registry) = app.try_state::<BrowserRegistry>() else {
         return;
     };
@@ -147,19 +151,18 @@ pub fn page_load(app: &AppHandle, tab_id: &str, url: &Url, started: bool) {
     let history = if started {
         None
     } else {
-        registry
-            .surface(tab_id)
-            .map(|surface| {
-                (
-                    surface.can_go_back().unwrap_or(false),
-                    surface.can_go_forward().unwrap_or(false),
-                )
-            })
+        registry.surface(tab_id).map(|surface| {
+            (
+                surface.can_go_back().unwrap_or(false),
+                surface.can_go_forward().unwrap_or(false),
+            )
+        })
     };
     let state = registry.update(tab_id, |tab| {
-        let failed_address = (started && blank_substituted_for(tab.provisional_url.as_deref(), url))
-            .then(|| tab.provisional_url.clone())
-            .flatten();
+        let failed_address = (started
+            && blank_substituted_for(tab.provisional_url.as_deref(), url))
+        .then(|| tab.provisional_url.clone())
+        .flatten();
         let substituted = failed_address.is_some();
         if started {
             tab.provisional_url = None;
@@ -338,7 +341,11 @@ pub fn navigation_failed(app: &AppHandle, tab_id: &str, mut failure: LoadFailure
     // engine only that its proxy said no (see `browser::remote`).
     if failure.provisional && failure.kind == BrowserErrorKind::Failed {
         if let Some(state) = registry.state(tab_id) {
-            let url = failure.url.clone().filter(|u| !u.is_empty()).unwrap_or(state.requested_url);
+            let url = failure
+                .url
+                .clone()
+                .filter(|u| !u.is_empty())
+                .unwrap_or(state.requested_url);
             if let Some(kind) = state
                 .profile
                 .as_deref()

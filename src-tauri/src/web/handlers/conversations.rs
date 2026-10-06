@@ -272,6 +272,52 @@ pub async fn create_conversation(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EstablishTerminalSessionParams {
+    pub folder_id: i32,
+    pub agent_type: AgentType,
+    pub external_id: String,
+    pub preferred_conversation_id: Option<i32>,
+    pub title: Option<String>,
+    pub title_seed: Option<String>,
+    pub model: Option<String>,
+    pub working_dir: Option<String>,
+    /// Hook event name (`session_started`, `turn_started`, `turn_stopped`,
+    /// `session_ended`). Absent on older clients, which still establish the row.
+    #[serde(default)]
+    pub observation: Option<String>,
+    #[serde(default)]
+    pub terminal_id: Option<String>,
+    /// Prompt or last assistant text for the chat card. Older clients omit it.
+    #[serde(default)]
+    pub notice_body: Option<String>,
+}
+
+pub async fn establish_terminal_session(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<EstablishTerminalSessionParams>,
+) -> Result<Json<conv_commands::EstablishTerminalSessionResult>, AppCommandError> {
+    let result = conv_commands::establish_terminal_session_observed(
+        &state.emitter,
+        &state.db.conn,
+        &state.data_dir,
+        params.folder_id,
+        params.agent_type,
+        params.external_id,
+        params.preferred_conversation_id,
+        params.title,
+        params.title_seed,
+        params.model,
+        params.working_dir,
+        params.observation.as_deref(),
+        params.terminal_id.as_deref(),
+        params.notice_body.as_deref(),
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateChatConversationParams {
     pub agent_type: AgentType,
     pub title: Option<String>,

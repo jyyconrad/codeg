@@ -3,11 +3,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use agent_client_protocol::schema::v1::{
     KillTerminalRequest, ReleaseTerminalRequest, SessionId, TerminalId, TerminalOutputRequest,
     WaitForTerminalExitRequest,
 };
+use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::Deserialize;
 use serde_json::json;
 

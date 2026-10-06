@@ -3,7 +3,11 @@ import type { AcpAgentInfo, AgentType } from "@/lib/types"
 /** Fields the "usable in pickers / assignment UIs" gate actually reads. */
 export type AvailableAgentGate = Pick<
   AcpAgentInfo,
-  "enabled" | "available" | "installed_version"
+  | "enabled"
+  | "available"
+  | "installed_version"
+  | "launch_mode"
+  | "terminal_available"
 >
 
 /**
@@ -16,7 +20,15 @@ export type AvailableAgentGate = Pick<
  * installed or turned on.
  */
 export function isAvailableAgent(agent: AvailableAgentGate): boolean {
-  return agent.enabled && agent.available && agent.installed_version != null
+  const runtimeAvailable =
+    agent.launch_mode === "terminal"
+      ? agent.terminal_available === true
+      : agent.installed_version != null
+  return (
+    agent.enabled &&
+    runtimeAvailable &&
+    (agent.launch_mode === "terminal" || agent.available)
+  )
 }
 
 export function filterAvailableAgents<T extends AvailableAgentGate>(

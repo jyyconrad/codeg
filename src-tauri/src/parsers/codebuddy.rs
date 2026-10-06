@@ -1978,7 +1978,8 @@ mod tests {
         // model-facing guidance prose into the chat. CodeBuddy's own renderer
         // skips these records; codeg folds the payload onto the launch card
         // instead.
-        let root = std::env::temp_dir().join(format!("codeg-cb-meta-user-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("codeg-cb-meta-user-{}", uuid::Uuid::new_v4()));
         let sid = "sess-bg";
         let mut records = async_launch_records();
         records.push(task_notification_record(
@@ -2056,7 +2057,8 @@ mod tests {
         // No `<task-notification>` yet (the worker is still running, or the CLI
         // died): `status: null` renders as "launched, result pending" — never as
         // a zombie "running". Mirrors `claude.rs`.
-        let root = std::env::temp_dir().join(format!("codeg-cb-unsettled-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("codeg-cb-unsettled-{}", uuid::Uuid::new_v4()));
         let sid = "sess-bg";
         write_session(&root, "Users-demo-app", sid, &async_launch_records());
 

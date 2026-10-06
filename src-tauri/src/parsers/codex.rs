@@ -7396,17 +7396,13 @@ mod tests {
 
     use std::collections::HashMap;
 
+    use super::codex_line_ordinal;
     use super::codex_parent_thread_id;
     use super::completed_mcp_call;
     use super::extract_codex_title_candidate;
     use super::extract_context_window_used_tokens_from_token_count_info;
     use super::extract_response_item_user_image_blocks;
     use super::extract_turn_usage_from_codex_usage;
-    use super::codex_line_ordinal;
-    use super::serialize_preview;
-    use super::truncate_str;
-    use super::BudgetedSink;
-    use super::MCP_RESULT_FALLBACK_CAP;
     use super::is_encrypted_envelope;
     use super::is_promotable_user_text;
     use super::merge_codex_context_window_stats;
@@ -7415,10 +7411,13 @@ mod tests {
     use super::parse_codex_subagent_stats;
     use super::redact_encrypted_args;
     use super::resolve_codex_home_dir_from;
+    use super::serialize_preview;
     use super::should_skip_duplicate_user_message;
     use super::strip_blocked_resource_mentions;
     use super::trim_subagent_replay_prefix;
+    use super::truncate_str;
     use super::AgentParser;
+    use super::BudgetedSink;
     use super::CodexParser;
     use super::RolloutFileName;
     use super::CODEX_PLAN_APPROVAL_PROMPT;
@@ -7427,6 +7426,7 @@ mod tests {
     use super::CODEX_SUBAGENT_LAUNCH_KEY;
     use super::CODEX_SUBAGENT_STATE_KEY;
     use super::COLLAB_OP_KEY;
+    use super::MCP_RESULT_FALLBACK_CAP;
     use crate::models::{
         ContentBlock, MessageRole, MessageTurn, SessionStats, TurnRole, TurnUsage, UnifiedMessage,
     };
@@ -8516,7 +8516,12 @@ mod tests {
             )
         };
         let searched_report = |ts: &str| {
-            usage_count_line(ts, [522_480, 450_432, 7_798], [579_422, 501_952, 8_158], WINDOW)
+            usage_count_line(
+                ts,
+                [522_480, 450_432, 7_798],
+                [579_422, 501_952, 8_158],
+                WINDOW,
+            )
         };
         let first_turn = vec![
             rollout_line(
@@ -8552,14 +8557,22 @@ mod tests {
             ),
         ];
         let reading = |lines: &[String], tag: &str| {
-            let stats = parse_lines(lines, tag).session_stats.expect("session stats");
-            (stats.context_window_used_tokens, stats.context_window_usage_percent)
+            let stats = parse_lines(lines, tag)
+                .session_stats
+                .expect("session stats");
+            (
+                stats.context_window_used_tokens,
+                stats.context_window_usage_percent,
+            )
         };
 
         let (used, percent) = reading(&first_turn, "ws-846-searched");
         assert_eq!(used, Some(57_302), "the reading before the search stands");
         let percent = percent.expect("percent");
-        assert!((percent - 57_302.0 / WINDOW as f64 * 100.0).abs() < 1e-9, "{percent}");
+        assert!(
+            (percent - 57_302.0 / WINDOW as f64 * 100.0).abs() < 1e-9,
+            "{percent}"
+        );
 
         // Older codex restates the latest report as the next request opens; a
         // restatement of the report set aside is set aside with it.
@@ -10611,7 +10624,10 @@ mod tests {
         lines.extend(announced_reasoning(
             "2026-09-24T07:21:02Z",
             "rs_1",
-            &["**Checking directory usage**", "**Checking repository changes**"],
+            &[
+                "**Checking directory usage**",
+                "**Checking repository changes**",
+            ],
         ));
         lines.extend(announced_reasoning(
             "2026-09-24T07:21:12Z",
@@ -10623,7 +10639,10 @@ mod tests {
         lines.extend(announced_reasoning(
             "2026-09-24T07:21:20Z",
             "rs_4",
-            &["**Reviewing disk usage snapshot**", "**Measuring temporary storage usage**"],
+            &[
+                "**Reviewing disk usage snapshot**",
+                "**Measuring temporary storage usage**",
+            ],
         ));
         // A tool call is visible and ends the run; its own announcement follows.
         lines.extend([
@@ -10780,7 +10799,9 @@ mod tests {
 
         assert_eq!(
             thinking_texts(&detail),
-            vec!["**Assessing execution capabilities**\n\n**Determining the next step**".to_string()]
+            vec![
+                "**Assessing execution capabilities**\n\n**Determining the next step**".to_string()
+            ]
         );
 
         let _ = fs::remove_file(path);

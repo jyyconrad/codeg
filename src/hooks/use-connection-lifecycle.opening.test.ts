@@ -62,6 +62,7 @@ const conn = vi.hoisted(() => ({
   status: null as string | null,
   selectorsReady: false,
   hasCachedSelectors: false,
+  connect: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock("@/hooks/use-connection", () => ({
@@ -69,7 +70,7 @@ vi.mock("@/hooks/use-connection", () => ({
     status: conn.status,
     selectorsReady: conn.selectorsReady,
     hasCachedSelectors: conn.hasCachedSelectors,
-    connect: vi.fn().mockResolvedValue(undefined),
+    connect: conn.connect,
     disconnect: vi.fn().mockResolvedValue(undefined),
     sendPrompt: vi.fn().mockResolvedValue(undefined),
     setMode: vi.fn().mockResolvedValue(undefined),
@@ -105,6 +106,22 @@ describe("useConnectionLifecycle opening legs", () => {
     conn.status = null
     conn.selectorsReady = false
     conn.hasCachedSelectors = false
+    conn.connect.mockClear()
+  })
+
+  it("does not connect on focus while Terminal mode is selected", () => {
+    const { result } = renderHook(() =>
+      useConnectionLifecycle({
+        contextKey: "terminal-draft",
+        agentType: "claude_code",
+        isActive: true,
+        workingDir: "/repo",
+        launchMode: "terminal",
+      })
+    )
+
+    act(() => result.current.handleFocus())
+    expect(conn.connect).not.toHaveBeenCalled()
   })
 
   it("reports the historical-session wait as a status-bar task and as loading selectors", () => {

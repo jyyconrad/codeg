@@ -68,6 +68,8 @@ pub struct DbConversationSummary {
     /// path (set when a removed task worktree's conversations were re-parented).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_cwd: Option<String>,
+    /// `acp` opens the transcript. `terminal` reopens the native CLI session.
+    pub launch_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

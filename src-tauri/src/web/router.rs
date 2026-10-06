@@ -176,6 +176,10 @@ pub fn build_router(
             post(handlers::conversations::create_conversation),
         )
         .route(
+            "/establish_terminal_session",
+            post(handlers::conversations::establish_terminal_session),
+        )
+        .route(
             "/create_chat_conversation",
             post(handlers::conversations::create_chat_conversation),
         )
@@ -793,6 +797,14 @@ pub fn build_router(
             post(handlers::system_settings::probe_terminal_shell_path),
         )
         .route(
+            "/get_available_terminal_apps",
+            post(handlers::system_settings::get_available_terminal_apps),
+        )
+        .route(
+            "/probe_terminal_app_path",
+            post(handlers::system_settings::probe_terminal_app_path),
+        )
+        .route(
             "/update_system_proxy_settings",
             post(handlers::system_settings::update_system_proxy_settings),
         )
@@ -893,6 +905,10 @@ pub fn build_router(
         .route(
             "/acp_update_agent_preferences",
             post(handlers::acp::acp_update_agent_preferences),
+        )
+        .route(
+            "/acp_update_agent_launch_mode",
+            post(handlers::acp::acp_update_agent_launch_mode),
         )
         .route(
             "/acp_update_agent_env",
@@ -1862,6 +1878,14 @@ pub fn build_router(
         )
         // ─── Terminal ───
         .route("/terminal_spawn", post(handlers::terminal::terminal_spawn))
+        .route(
+            "/terminal_spawn_agent",
+            post(handlers::terminal::terminal_spawn_agent),
+        )
+        .route(
+            "/terminal_agent_state",
+            post(handlers::terminal::terminal_agent_state),
+        )
         .route("/terminal_write", post(handlers::terminal::terminal_write))
         .route(
             "/terminal_resize",

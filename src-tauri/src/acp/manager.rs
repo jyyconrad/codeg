@@ -3334,6 +3334,7 @@ impl ConnectionManager {
                     let folder_id = current.folder_id;
                     let agent_type_str = current.agent_type.clone();
                     let git_branch = current.git_branch.clone();
+                    let launch_mode = current.launch_mode.clone();
                     // The lock rides along with the title it protects: the
                     // sibling holds the pre-fork history of the very row the
                     // user renamed, so a hand-picked name has to stay locked
@@ -3429,6 +3430,7 @@ impl ConnectionManager {
                         deleted_at: Set(None),
                         pinned_at: Set(None),
                         origin_cwd: Set(None),
+                        launch_mode: Set(launch_mode),
                     };
                     let inserted = sibling.insert(txn).await?;
                     Ok(inserted.id)

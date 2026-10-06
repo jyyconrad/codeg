@@ -66,6 +66,16 @@ pub struct SystemTerminalSettings {
     /// path; `#[serde(default)]` on the struct means rows stored before this
     /// field existed parse as `false` with no migration.
     pub colorize_command_output: bool,
+    /// Terminal *application* used when the user asks codeg to open a directory
+    /// in a terminal, and when a desktop flow needs an external terminal
+    /// window. `None`, empty, or `"system"` keeps the built-in terminal for
+    /// directories and the OS default app for those external windows.
+    ///
+    /// This is not the PTY shell. A value such as `"ghostty"` must never be
+    /// spawned as `default_shell`. `#[serde(default)]` keeps rows stored
+    /// before this field existed readable.
+    #[serde(default)]
+    pub default_terminal_app: Option<String>,
 }
 
 /// One row in the "default shell" picker. Backend owns the option list so the
@@ -101,6 +111,30 @@ pub struct AvailableTerminalShells {
     /// [`crate::commands::system_settings::resolve_effective_shell`] for which
     /// promises it does and does not make.
     pub resolved_shell: String,
+}
+
+/// One row in the "terminal app" picker. Same shape as [`TerminalShellOption`],
+/// plus `label` for proper nouns (Ghostty, iTerm) that are not translated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalAppOption {
+    pub id: String,
+    /// i18n key under `GeneralSettings.*` when `label` is absent.
+    pub label_key: String,
+    /// Backend-owned display name. Present for scanned apps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Value persisted into `SystemTerminalSettings.default_terminal_app`.
+    /// `None` for system default and for the custom-path row.
+    pub value: Option<String>,
+    /// False when a previously saved app is no longer installed. The row stays
+    /// so the select still has a matching value.
+    pub exists: bool,
+    pub accepts_custom_path: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailableTerminalApps {
+    pub options: Vec<TerminalAppOption>,
 }
 
 /// What the main window's close button does.

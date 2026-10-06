@@ -66,7 +66,7 @@ interface ConversationShellProps {
   /** Awaiting-decision Grok `exit_plan_mode` approval. */
   pendingPlanApproval: PendingPlanApprovalState | null
   onFocus: () => void
-  onSend: (draft: PromptDraft, modeId?: string | null) => void
+  onSend: (draft: PromptDraft, modeId?: string | null) => void | Promise<void>
   onCancel: () => void
   onRespondPermission: (requestId: string, optionId: string) => void
   onAnswerQuestion: (answer: string) => void
@@ -219,14 +219,14 @@ export function ConversationShell({
       <div className="relative flex h-full min-h-0 flex-col">
         {topBanner}
 
-      {/* Above the transcript, not down in the composer dock: this is the state
+        {/* Above the transcript, not down in the composer dock: this is the state
           of work running RIGHT NOW, and pinning it here keeps it still while the
           messages scroll under it — the stop button doesn't move out from under
           the pointer. The dock below is for things that come and go with the
           turn or the connection (`ComposerStatusStrips`). */}
-      {asyncTasks && asyncTasks.length > 0 && (
-        <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
-      )}
+        {asyncTasks && asyncTasks.length > 0 && (
+          <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
+        )}
 
         <div className="flex-1 min-h-0">{children}</div>
 
@@ -327,7 +327,6 @@ export function ConversationShell({
             )}
           </div>
         </div>
-
       </div>
       <ComposerStatusStrips
         status={status}

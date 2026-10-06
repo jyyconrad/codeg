@@ -1811,7 +1811,8 @@ impl SessionState {
             | AcpEvent::TurnRetrying { .. }
             | AcpEvent::NativeSessionTitle { .. }
             | AcpEvent::TranscriptRolledOver { .. }
-            | AcpEvent::UserPromptSent { .. } => {
+            | AcpEvent::UserPromptSent { .. }
+            | AcpEvent::TerminalSessionCard { .. } => {
                 // 这些事件不直接修改 SessionState 的可见字段。
                 // UserPromptSent 是纯通知事件，仅供 chat-channel 推送消费。
                 // TurnRetrying 与 Claude 的 api_retry 一样是前端瞬态提示（重试横幅），
@@ -4392,7 +4393,10 @@ mod tests {
             parent_tool_use_id: None,
         });
         assert!(s.begin_agent_initiated_turn());
-        assert!(s.live_message.is_none(), "the turn starts from a clean slate");
+        assert!(
+            s.live_message.is_none(),
+            "the turn starts from a clean slate"
+        );
         s.apply_event(&AcpEvent::StatusChanged {
             status: ConnectionStatus::Prompting,
         });

@@ -2,6 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--agent-hook") {
+        codeg_lib::terminal::agent_hooks::run_agent_hook_helper();
+        return;
+    }
     // When called as a git credential helper, handle it immediately and exit.
     // This avoids starting the full Tauri GUI runtime.
     if std::env::args().any(|a| a == "--credential-helper") {

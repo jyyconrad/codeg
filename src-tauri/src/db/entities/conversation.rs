@@ -72,6 +72,10 @@ pub struct Model {
     /// Gemini/Cline/OpenClaw stale-external-id fallback matches on
     /// `origin_cwd ?? folder.path`. Always NULL for ordinary conversations.
     pub origin_cwd: Option<String>,
+    /// How this row is opened from the list. `acp` is the transcript
+    /// connection. `terminal` means the native CLI owns the screen, and
+    /// reopening resumes that CLI session.
+    pub launch_mode: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

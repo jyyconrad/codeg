@@ -63,6 +63,7 @@ import { useFeedbackEnabled } from "@/hooks/use-feedback-enabled"
 import { useSessionFeedback } from "@/hooks/use-session-feedback"
 import { AgentSelector } from "@/components/chat/agent-selector"
 import { ChatInput } from "@/components/chat/chat-input"
+import { SessionTerminalInput } from "@/components/terminal/session-terminal-input"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
@@ -104,6 +105,8 @@ import {
 import { TurnBusyError, isNoActiveTurnRejection } from "@/lib/turn-busy"
 import { toErrorMessage } from "@/lib/app-error"
 import { notify } from "@/lib/notify"
+import { newSessionLaunchRoute } from "@/lib/agent-launch-mode"
+import { releaseAndSettleSessionTerminal } from "@/lib/terminal-session-establish"
 import {
   claimRuntimeSession,
   getConversationIdByExternalIdFromStore,
@@ -194,6 +197,9 @@ interface ConversationTabViewProps {
    *  reparent (the tab moved to another group — remount, keep the connection)
    *  apart from a real teardown (pane switch / route change — disconnect). */
   groupId: string
+  /** This group's selected (or tiled) pane. Distinct from `isActive`, which
+   *  is the single focused tab in the workspace. */
+  paneVisible: boolean
 }
 
 function buildOptimisticUserTurnFromDraft(
@@ -271,6 +277,7 @@ const ConversationTabView = memo(function ConversationTabView({
   showActiveFlow,
   reloadSignal,
   groupId,
+  paneVisible,
 }: ConversationTabViewProps) {
   const t = useTranslations("Folder.conversation")
   // Composer-namespace copy for the queue row's click-to-insert outcomes
@@ -389,6 +396,20 @@ const ConversationTabView = memo(function ConversationTabView({
     useState<LastRoundEditTarget | null>(null)
 
   const hasPersistedConversation = dbConversationId != null
+  const listedConversation = useAppWorkspaceStore((s) =>
+    dbConversationId != null
+      ? (s.conversations.find((item) => item.id === dbConversationId) ?? null)
+      : null
+  )
+  const conversationsLoading = useAppWorkspaceStore(
+    (s) => s.conversationsLoading
+  )
+  // Locked on the render that first knows how this tab was opened. A later
+  // hook must not change it: TerminalView restarts the CLI when this id
+  // appears, and that restart kills the process it just spawned.
+  const [lockedResumeId, setLockedResumeId] = useState<
+    string | null | undefined
+  >(undefined)
 
   // A folderless chat draft before its first send (chat tab, not yet persisted).
   // Used to trigger the eager scratch-dir prepare below, which gives the draft a
@@ -582,13 +603,46 @@ const ConversationTabView = memo(function ConversationTabView({
   // connect. Rather than firing a doomed (and racy) auto-connect whose only
   // outcome is a transient "not installed" toast, we skip the connect and
   // surface a persistent install prompt instead (see composerBlockedMessage).
-  const { agents: acpAgents } = useAcpAgents()
+  const { agents: acpAgents, fresh: agentConfigLoaded } = useAcpAgents()
+  if (lockedResumeId === undefined) {
+    if (ownTab?.terminalSession === true) {
+      setLockedResumeId(null)
+    } else if (listedConversation?.launch_mode === "terminal") {
+      const id = listedConversation.external_id?.trim() ?? ""
+      setLockedResumeId(id.length > 0 ? id : null)
+    } else if (hasPersistedConversation && !conversationsLoading) {
+      setLockedResumeId(null)
+    }
+  }
+  const resumeSessionId =
+    lockedResumeId && lockedResumeId.length > 0 ? lockedResumeId : null
+  // A terminal-launched CLI keeps its surface after the hook binds a row.
+  // The row remembers that launch, so opening it from the list comes back
+  // to the CLI. Forcing ACP here would open a second connection and the
+  // kill effect below would tear the PTY down.
+  const terminalSession =
+    ownTab?.terminalSession === true ||
+    listedConversation?.launch_mode === "terminal"
+  const selectedLaunchMode = terminalSession
+    ? "terminal"
+    : hasPersistedConversation
+      ? listedConversation == null && conversationsLoading
+        ? null
+        : "acp"
+      : agentConfigLoaded
+        ? (acpAgents.find((a) => a.agent_type === selectedAgent)?.launch_mode ??
+          "acp")
+        : null
   const selectedAgentNotInstalled = useMemo(() => {
     const info = acpAgents.find((a) => a.agent_type === selectedAgent)
     return (
-      info != null && info.enabled && info.available && !info.installed_version
+      info != null &&
+      info.enabled &&
+      (selectedLaunchMode === "terminal"
+        ? info.terminal_available !== true
+        : !info.available || !info.installed_version)
     )
-  }, [acpAgents, selectedAgent])
+  }, [acpAgents, selectedAgent, selectedLaunchMode])
   // Claude Code / Codex install a separate ACP adapter package rather than the
   // vendor CLI, so the generic "not installed" banner reads as wrong to anyone
   // who has `claude`/`codex` in their terminal. Name the adapter instead.
@@ -643,6 +697,7 @@ const ConversationTabView = memo(function ConversationTabView({
   } = useConnectionLifecycle({
     contextKey: tabId,
     agentType: selectedAgent,
+    launchMode: selectedLaunchMode,
     isActive: isActive && canAutoConnect,
     workingDir: workingDirForConnection,
     sessionId:
@@ -656,7 +711,10 @@ const ConversationTabView = memo(function ConversationTabView({
     // composer and the status bar can show the conversation is opening instead
     // of an empty, connection-less composer. Scoped to the active tab — the
     // status bar is global.
-    preparing: isActive && awaitingHistoricalSessionId,
+    preparing:
+      isActive &&
+      awaitingHistoricalSessionId &&
+      selectedLaunchMode !== "terminal",
     // A cross-group move / unsplit reparents this view (React remounts it)
     // while the tab stays open — that unmount must not tear the connection
     // down. See `isReparentUnmount` for why "still open" alone is too broad.
@@ -733,13 +791,18 @@ const ConversationTabView = memo(function ConversationTabView({
   // selected agent's real state: "disconnected" when it isn't installed (the
   // install banner explains why), otherwise "connecting" (the switch is in
   // flight). Only ever differs from connStatus during those transient windows.
-  const composerConnStatus = connIsForOtherAgent
-    ? selectedAgentNotInstalled
-      ? "disconnected"
-      : "connecting"
-    : connStatus === "connected" && !connectionReady
-      ? "connecting"
-      : connStatus
+  const composerConnStatus =
+    selectedLaunchMode === "terminal"
+      ? selectedAgentNotInstalled
+        ? "disconnected"
+        : "connected"
+      : connIsForOtherAgent
+        ? selectedAgentNotInstalled
+          ? "disconnected"
+          : "connecting"
+        : connStatus === "connected" && !connectionReady
+          ? "connecting"
+          : connStatus
   const connectionModes = useMemo(
     () => effectiveModes?.available_modes ?? [],
     [effectiveModes]
@@ -779,6 +842,24 @@ const ConversationTabView = memo(function ConversationTabView({
         { agent: getAgentLabel(selectedAgent) }
       )
     : (autoConnectError ?? agentConnectError)
+
+  // Leaving terminal launch (or this view, except a split-group drag) ends
+  // the PTY with the session. The exit hook is dropped once the record is
+  // released, so the release itself cancels a turn that is still running.
+  // An idle row is left idle, and no new row is inserted. The embedded
+  // surface does not kill on its own unmount, so a reparent can reattach.
+  useEffect(() => {
+    if (selectedLaunchMode === "terminal" && !selectedAgentNotInstalled) {
+      return
+    }
+    releaseAndSettleSessionTerminal(tabId)
+  }, [selectedAgentNotInstalled, selectedLaunchMode, tabId])
+  useEffect(() => {
+    return () => {
+      if (isReparentUnmount(useTabStore.getState(), tabId, groupId)) return
+      releaseAndSettleSessionTerminal(tabId)
+    }
+  }, [groupId, tabId])
 
   useEffect(() => {
     if (connSessionId) {
@@ -1121,6 +1202,22 @@ const ConversationTabView = memo(function ConversationTabView({
       // is live and the prompt is delivered inline — never parked in the queue.
       const sendOwnTab = ownTab
 
+      if (
+        !hasPersistedConversation &&
+        newSessionLaunchRoute(selectedLaunchMode) === "wait"
+      ) {
+        return Promise.reject(
+          new Error("Agent launch configuration is loading")
+        )
+      }
+
+      // Terminal launch renders inside this session. Sending from the chat
+      // composer must not open an ACP turn, including after the hook has
+      // bound a conversation row.
+      if (selectedLaunchMode === "terminal") {
+        return Promise.resolve()
+      }
+
       if (!hasPersistedConversation && !canAutoConnect) {
         setAgentConnectError(tWelcome("enableAgentFirstPlaceholder"))
         return
@@ -1365,6 +1462,7 @@ const ConversationTabView = memo(function ConversationTabView({
       pinTab,
       refreshConversations,
       selectedAgent,
+      selectedLaunchMode,
       setDbConversationId,
       setExternalId,
       setPendingCleanup,
@@ -1807,6 +1905,8 @@ const ConversationTabView = memo(function ConversationTabView({
 
   const showDraftHeader = !hasPersistedConversation && !hasSentMessage
   const isWelcomeMode = showDraftHeader
+  const sessionTerminalMode =
+    selectedLaunchMode === "terminal" && (isWelcomeMode || terminalSession)
 
   const handleQuickAction = useCallback((payload: ComposerInjectContent) => {
     setComposerInject(payload)
@@ -2159,8 +2259,11 @@ const ConversationTabView = memo(function ConversationTabView({
   // The docked composer is the only place a quote can land, so the selection
   // bubble offers "quote" exactly when that composer is on screen (see
   // `hideInput` below). Without a composer the inject would never be consumed
-  // and the action would silently do nothing.
-  const composerAvailable = !isWelcomeMode && !acpLoadError
+  // and the action would silently do nothing. A terminal CLI owns the screen
+  // after its hook binds a row too — welcome mode is already over by then,
+  // and the quote would otherwise target the ACP composer sitting under it.
+  const composerAvailable =
+    !sessionTerminalMode && !isWelcomeMode && !acpLoadError
 
   // Arrow-key history source: read lazily when the user actually steps into
   // history, so streaming tokens neither recompute it nor re-render the panel.
@@ -2360,7 +2463,7 @@ const ConversationTabView = memo(function ConversationTabView({
       availableCommands={connectionCommands}
       attachmentTabId={tabId}
       draftStorageKey={draftStorageKey}
-      hideInput={isWelcomeMode || Boolean(acpLoadError)}
+      hideInput={sessionTerminalMode || isWelcomeMode || Boolean(acpLoadError)}
       injectContent={composerInject}
       onInjectConsumed={handleComposerInjectConsumed}
       composerBanner={
@@ -2430,7 +2533,48 @@ const ConversationTabView = memo(function ConversationTabView({
       }
       steerChannel={feedback.channel}
     >
-      {isWelcomeMode ? (
+      {sessionTerminalMode ? (
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="shrink-0 px-4 pt-4 pb-2">
+            <AgentSelector
+              align="center"
+              defaultAgentType={selectedAgent}
+              onSelect={handleAgentSelect}
+              onFallback={handleAgentFallback}
+              onAgentsLoaded={(agents) => {
+                setAgentsLoaded(true)
+                setUsableAgentCount(agents.filter(isAvailableAgent).length)
+              }}
+              onOpenAgentsSettings={handleOpenAgentsSettings}
+              disabled={isConnecting || dbConversationId != null}
+            />
+          </div>
+          <SessionTerminalInput
+            ownerKey={tabId}
+            agentType={selectedAgent}
+            agentName={getAgentLabel(selectedAgent)}
+            resumeSessionId={resumeSessionId}
+            workingDir={workingDirForConnection}
+            isActive={isActive}
+            isVisible={paneVisible}
+            notice={
+              composerBlockedMessage &&
+              (selectedAgentNotInstalled || !workingDirForConnection)
+                ? composerBlockedMessage
+                : null
+            }
+            showSettings={selectedAgentNotInstalled}
+            onOpenDiagnostics={
+              selectedAgentNotInstalled
+                ? () => setComposerDiagnosticsOpen(true)
+                : undefined
+            }
+            diagnosticsLabel={
+              selectedAgentNotInstalled ? tDiag("button") : undefined
+            }
+          />
+        </div>
+      ) : isWelcomeMode ? (
         // Same overlay scrollbar as the sidebar / file lists (os-theme-codeg)
         // instead of the platform's native bar. `min-h-full` on the inner column
         // keeps the original layout: content parked between two spacers, the
@@ -2499,9 +2643,17 @@ const ConversationTabView = memo(function ConversationTabView({
                 onCancel={handleCancel}
                 modes={connectionModes}
                 configOptions={connectionConfigOptions}
-                modeLoading={modeLoading}
-                configOptionsLoading={configOptionsLoading}
-                selectorsLoading={selectorsLoading}
+                modeLoading={
+                  selectedLaunchMode === "terminal" ? false : modeLoading
+                }
+                configOptionsLoading={
+                  selectedLaunchMode === "terminal"
+                    ? false
+                    : configOptionsLoading
+                }
+                selectorsLoading={
+                  selectedLaunchMode === "terminal" ? false : selectorsLoading
+                }
                 selectedModeId={selectedModeId}
                 onModeChange={handleModeChange}
                 onConfigOptionChange={handleSetConfigOption}
@@ -2989,6 +3141,7 @@ export function ConversationDetailPanel() {
         showActiveFlow={(isSplit || canTileG) && active}
         reloadSignal={reloadByTabId[tab.id] ?? 0}
         groupId={groupId}
+        paneVisible={visible}
       />
     )
     return (

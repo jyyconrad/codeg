@@ -96,13 +96,23 @@ pub fn set_remote_egress(profile_id: &str, socks: std::net::SocketAddr, host: &s
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_with(HashMap::new)
-        .insert(profile_id.to_string(), RemoteEgress { socks, host: host.to_string() });
+        .insert(
+            profile_id.to_string(),
+            RemoteEgress {
+                socks,
+                host: host.to_string(),
+            },
+        );
 }
 
 /// The remote profile's connection is gone: nothing may be built in the
 /// profile any more (`prepare` refuses a remote profile without an egress).
 pub fn forget_remote_egress(profile_id: &str) {
-    if let Some(map) = REMOTE_EGRESS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+    if let Some(map) = REMOTE_EGRESS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
         map.remove(profile_id);
     }
 }
@@ -155,7 +165,8 @@ pub fn data_store_identifier(profile_id: &str) -> [u8; 16] {
     use sha1::{Digest, Sha1};
     // RFC 4122 URL namespace, 6ba7b811-9dad-11d1-80b4-00c04fd430c8.
     const NAMESPACE_URL: [u8; 16] = [
-        0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
+        0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30,
+        0xc8,
     ];
     let mut hasher = Sha1::new();
     hasher.update(NAMESPACE_URL);
@@ -351,7 +362,9 @@ pub fn windows_args_for(profile_id: &str) -> Result<String, String> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        Ok(windows_browser_args(current_proxy().ok().flatten().as_ref()))
+        Ok(windows_browser_args(
+            current_proxy().ok().flatten().as_ref(),
+        ))
     }
 }
 
@@ -375,7 +388,9 @@ fn platform_proxy_status() -> BrowserProxyStatus {
 fn platform_proxy_status() -> BrowserProxyStatus {
     let frozen = frozen_proxy();
     let mut status = status_for(ProxyApplies::Restart, current_proxy());
-    if FROZEN_PROXY.get().is_some() && status.url != frozen.as_ref().map(BrowserProxy::to_url_string) {
+    if FROZEN_PROXY.get().is_some()
+        && status.url != frozen.as_ref().map(BrowserProxy::to_url_string)
+    {
         status.reason = Some("restart codeg for browser tabs to use the new proxy".to_string());
         status.url = frozen.map(|p| p.to_url_string());
     }
@@ -387,7 +402,10 @@ fn platform_proxy_status() -> BrowserProxyStatus {
     status_for(ProxyApplies::NextTab, current_proxy())
 }
 
-fn status_for(applies: ProxyApplies, proxy: Result<Option<BrowserProxy>, String>) -> BrowserProxyStatus {
+fn status_for(
+    applies: ProxyApplies,
+    proxy: Result<Option<BrowserProxy>, String>,
+) -> BrowserProxyStatus {
     match proxy {
         Ok(proxy) => BrowserProxyStatus {
             url: proxy.map(|p| p.to_url_string()),
@@ -445,14 +463,20 @@ pub fn prepare(app: &AppHandle, profile_id: &str) -> Result<(), String> {
             proxy_or_none(current_proxy())
         };
         let profile_id = profile_id.to_string();
-        run_on_main(app, move || crate::browser::shim::macos::ensure_profile(&profile_id, proxy))?
+        run_on_main(app, move || {
+            crate::browser::shim::macos::ensure_profile(&profile_id, proxy)
+        })?
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = app;
         let dir = directory(profile_id);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("cannot create browser profile directory {}: {e}", dir.display()))
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            format!(
+                "cannot create browser profile directory {}: {e}",
+                dir.display()
+            )
+        })
     }
 }
 
@@ -494,7 +518,9 @@ struct Occupancy {
 static OCCUPANCY: Mutex<Option<Occupancy>> = Mutex::new(None);
 
 fn occupancy() -> std::sync::MutexGuard<'static, Option<Occupancy>> {
-    OCCUPANCY.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    OCCUPANCY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Holds the profile in use for as long as the last clone lives. An
@@ -567,7 +593,9 @@ pub fn begin_removal(profile_id: &str) -> Result<RemovalGuard, String> {
     let mut guard = occupancy();
     let state = guard.get_or_insert_with(Occupancy::default);
     if !state.removing.insert(profile_id.to_string()) {
-        return Err(format!("browser profile {profile_id:?} is already being deleted"));
+        return Err(format!(
+            "browser profile {profile_id:?} is already being deleted"
+        ));
     }
     Ok(RemovalGuard(Arc::new(RemovalMark(profile_id.to_string()))))
 }
@@ -613,7 +641,10 @@ pub fn remove_directory(profile_id: &str) -> Result<(), String> {
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("cannot remove browser profile directory {}: {e}", dir.display())),
+        Err(e) => Err(format!(
+            "cannot remove browser profile directory {}: {e}",
+            dir.display()
+        )),
     }
 }
 
@@ -651,7 +682,10 @@ fn parse_host_list(raw: &str) -> Vec<String> {
 }
 
 fn host_matches(host: &str, known: &str) -> bool {
-    host == known || host.strip_suffix(known).is_some_and(|prefix| prefix.ends_with('.'))
+    host == known
+        || host
+            .strip_suffix(known)
+            .is_some_and(|prefix| prefix.ends_with('.'))
 }
 
 /// Whether `host` (or a parent domain of it) is one of the sign-in hosts:
@@ -662,7 +696,9 @@ pub fn is_google_sign_in_host(host: &str) -> bool {
 
 fn is_sign_in_host_among(host: &str, extra: &[String]) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    GOOGLE_SIGN_IN_HOSTS.iter().any(|known| host_matches(&host, known))
+    GOOGLE_SIGN_IN_HOSTS
+        .iter()
+        .any(|known| host_matches(&host, known))
         || extra.iter().any(|known| host_matches(&host, known))
 }
 
@@ -831,12 +867,17 @@ mod tests {
 
         assert_eq!(parse_proxy("http://proxy.corp").unwrap().port, 80);
         assert_eq!(parse_proxy("socks5://proxy.corp").unwrap().port, 1080);
-        assert_eq!(parse_proxy("http://[::1]:8080").unwrap().to_url_string(), "http://[::1]:8080");
+        assert_eq!(
+            parse_proxy("http://[::1]:8080").unwrap().to_url_string(),
+            "http://[::1]:8080"
+        );
     }
 
     #[test]
     fn refuses_what_the_engines_cannot_express() {
-        assert!(parse_proxy("https://proxy.corp:443").unwrap_err().contains("https"));
+        assert!(parse_proxy("https://proxy.corp:443")
+            .unwrap_err()
+            .contains("https"));
         assert!(parse_proxy("socks4://proxy.corp:1080").is_err());
         assert!(parse_proxy("http://:8080").is_err());
         assert!(parse_proxy("not a url").is_err());
@@ -855,7 +896,10 @@ mod tests {
         );
         // Same input, same string: WebView2 rejects a second environment on
         // the same user-data folder with different arguments.
-        assert_eq!(windows_browser_args(Some(&proxy)), windows_browser_args(Some(&proxy)));
+        assert_eq!(
+            windows_browser_args(Some(&proxy)),
+            windows_browser_args(Some(&proxy))
+        );
     }
 
     #[test]
@@ -890,7 +934,10 @@ mod tests {
     /// used since it shipped, and must tell profiles apart.
     #[test]
     fn identifiers_derive_from_the_profile_id() {
-        assert_eq!(data_store_identifier(DEFAULT_PROFILE_ID), DEFAULT_DATA_STORE_IDENTIFIER);
+        assert_eq!(
+            data_store_identifier(DEFAULT_PROFILE_ID),
+            DEFAULT_DATA_STORE_IDENTIFIER
+        );
         let work = data_store_identifier("work");
         assert_ne!(work, DEFAULT_DATA_STORE_IDENTIFIER);
         assert_eq!(work, data_store_identifier("work"));
@@ -899,7 +946,10 @@ mod tests {
         // Reference value from an independent uuid5 implementation.
         assert_eq!(
             data_store_identifier("work"),
-            [0x76, 0x78, 0x5b, 0x58, 0x04, 0x9d, 0x56, 0xd9, 0x96, 0x83, 0x8e, 0xd6, 0xa1, 0x2f, 0xee, 0x3a]
+            [
+                0x76, 0x78, 0x5b, 0x58, 0x04, 0x9d, 0x56, 0xd9, 0x96, 0x83, 0x8e, 0xd6, 0xa1, 0x2f,
+                0xee, 0x3a
+            ]
         );
     }
 
@@ -967,7 +1017,8 @@ mod tests {
     #[test]
     fn sign_in_user_agent_is_for_google_sign_in_hosts_only() {
         set_sign_in_user_agent(true);
-        let sign_in = Url::parse("https://accounts.google.com/v3/signin/identifier?flowName=x").unwrap();
+        let sign_in =
+            Url::parse("https://accounts.google.com/v3/signin/identifier?flowName=x").unwrap();
         assert_eq!(user_agent_for(&sign_in), Some(SIGN_IN_USER_AGENT));
         let sub = Url::parse("https://oauth.accounts.google.com/").unwrap();
         assert_eq!(user_agent_for(&sub), Some(SIGN_IN_USER_AGENT));
@@ -989,7 +1040,10 @@ mod tests {
                 default_user_agent(),
                 "{native}"
             );
-            assert_ne!(user_agent_for(&Url::parse(native).unwrap()), Some(SIGN_IN_USER_AGENT));
+            assert_ne!(
+                user_agent_for(&Url::parse(native).unwrap()),
+                Some(SIGN_IN_USER_AGENT)
+            );
         }
         assert!(SIGN_IN_USER_AGENT.contains("Firefox/"));
         assert!(is_google_sign_in_host("ACCOUNTS.GOOGLE.COM."));
@@ -1035,7 +1089,10 @@ mod tests {
     #[test]
     fn extra_sign_in_hosts_come_from_the_environment_list() {
         let extra = parse_host_list(" Login.Corp.Example. ,, 127.0.0.1 ");
-        assert_eq!(extra, vec!["login.corp.example".to_string(), "127.0.0.1".to_string()]);
+        assert_eq!(
+            extra,
+            vec!["login.corp.example".to_string(), "127.0.0.1".to_string()]
+        );
         assert!(is_sign_in_host_among("login.corp.example", &extra));
         assert!(is_sign_in_host_among("sso.login.corp.example", &extra));
         assert!(is_sign_in_host_among("127.0.0.1", &extra));
@@ -1062,17 +1119,26 @@ mod tests {
         assert!(windows_args_for(&id).is_err());
         assert_eq!(remote_host(&id), None);
 
-        set_remote_egress(&id, "127.0.0.1:45678".parse().unwrap(), "box.example.com:8443");
+        set_remote_egress(
+            &id,
+            "127.0.0.1:45678".parse().unwrap(),
+            "box.example.com:8443",
+        );
         let proxy = proxy_for(&id).unwrap().unwrap();
         assert_eq!(proxy.to_url_string(), "socks5://127.0.0.1:45678");
         let args = windows_args_for(&id).unwrap();
-        assert!(args.contains(" --proxy-server=socks5://127.0.0.1:45678"), "{args}");
+        assert!(
+            args.contains(" --proxy-server=socks5://127.0.0.1:45678"),
+            "{args}"
+        );
         assert!(args.ends_with(" --proxy-bypass-list=<-loopback>"), "{args}");
         assert_eq!(remote_host(&id).as_deref(), Some("box.example.com:8443"));
         // Only a remote profile has a remote host.
         set_remote_egress("p-abc", "127.0.0.1:1".parse().unwrap(), "elsewhere");
         assert_eq!(remote_host("p-abc"), None);
-        assert!(!windows_args_for(DEFAULT_PROFILE_ID).unwrap().contains("<-loopback>"));
+        assert!(!windows_args_for(DEFAULT_PROFILE_ID)
+            .unwrap()
+            .contains("<-loopback>"));
     }
 
     #[test]

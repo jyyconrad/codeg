@@ -60,6 +60,44 @@ describe("OfficeJsPreview", () => {
     expect(mockDestroy).toHaveBeenCalled()
   })
 
+  it("passes the container width to the PPTX renderer", async () => {
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientWidth"
+    )
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      value: 640,
+    })
+
+    try {
+      render(
+        <OfficeJsPreview
+          kind="pptx"
+          path="/repo/a.pptx"
+          rootPath="/repo"
+          relPath="a.pptx"
+        />
+      )
+
+      await waitFor(() => expect(mockInit).toHaveBeenCalled())
+      expect(mockInit).toHaveBeenCalledWith(expect.any(HTMLElement), {
+        mode: "list",
+        width: 640,
+      })
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "clientWidth",
+          originalDescriptor
+        )
+      } else {
+        delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth
+      }
+    }
+  })
+
   it("shows a retryable error when the file cannot be read", async () => {
     mockRead.mockRejectedValue(new Error("too large"))
     render(
@@ -70,9 +108,9 @@ describe("OfficeJsPreview", () => {
         relPath="a.pdf"
       />
     )
-    expect(await screen.findAllByText("officeJsPreviewFailed")).not.toHaveLength(
-      0
-    )
+    expect(
+      await screen.findAllByText("officeJsPreviewFailed")
+    ).not.toHaveLength(0)
     expect(screen.getByText("officeJsPreviewRetry")).toBeTruthy()
   })
 })

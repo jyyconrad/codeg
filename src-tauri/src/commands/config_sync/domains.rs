@@ -46,10 +46,8 @@ pub const DOMAIN_PREFERENCES: &str = "preferences";
 
 type CollectFn =
     for<'a> fn(&'a DatabaseConnection) -> BoxFuture<'a, Result<Value, AppCommandError>>;
-type ApplyFn = for<'a> fn(
-    &'a DatabaseTransaction,
-    &'a Value,
-) -> BoxFuture<'a, Result<usize, AppCommandError>>;
+type ApplyFn =
+    for<'a> fn(&'a DatabaseTransaction, &'a Value) -> BoxFuture<'a, Result<usize, AppCommandError>>;
 type ValidateFn = fn(&Value) -> Result<(), AppCommandError>;
 type CountFn = fn(&Value) -> usize;
 
@@ -199,7 +197,10 @@ fn encode<T: Serialize>(rows: Vec<T>) -> Result<Value, AppCommandError> {
     })
 }
 
-fn decode_rows<T: DeserializeOwned>(domain: &str, value: &Value) -> Result<Vec<T>, AppCommandError> {
+fn decode_rows<T: DeserializeOwned>(
+    domain: &str,
+    value: &Value,
+) -> Result<Vec<T>, AppCommandError> {
     // A domain missing from an older snapshot is not an error; it simply
     // carries nothing.
     if value.is_null() {
@@ -330,6 +331,8 @@ pub struct AgentSettingDto {
     pub registry_id: String,
     pub enabled: bool,
     #[serde(default)]
+    pub launch_mode: Option<crate::acp::types::AgentLaunchMode>,
+    #[serde(default)]
     pub sort_order: i32,
     #[serde(default)]
     pub env_json: Option<String>,
@@ -367,6 +370,9 @@ fn collect_agent_settings(
                 agent_type: row.agent_type,
                 registry_id: row.registry_id,
                 enabled: row.enabled,
+                launch_mode: Some(crate::acp::types::AgentLaunchMode::from_storage(
+                    &row.launch_mode,
+                )),
                 sort_order: row.sort_order,
                 env_json: row.env_json,
                 provider,
@@ -408,6 +414,9 @@ fn apply_agent_settings<'a>(
                         active.registry_id = Set(dto.registry_id);
                     }
                     active.enabled = Set(dto.enabled);
+                    if let Some(launch_mode) = dto.launch_mode {
+                        active.launch_mode = Set(launch_mode.as_str().to_string());
+                    }
                     active.sort_order = Set(dto.sort_order);
                     active.env_json = Set(dto.env_json);
                     active.model_provider_id = Set(provider_id);
@@ -425,6 +434,11 @@ fn apply_agent_settings<'a>(
                         agent_type: Set(dto.agent_type),
                         registry_id: Set(registry_id),
                         enabled: Set(dto.enabled),
+                        launch_mode: Set(dto
+                            .launch_mode
+                            .unwrap_or(crate::acp::types::AgentLaunchMode::Acp)
+                            .as_str()
+                            .to_string()),
                         sort_order: Set(dto.sort_order),
                         // Device-local: what this machine actually has
                         // installed, discovered by the version probe.
@@ -765,6 +779,8 @@ fn apply_preferences<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::types::AgentLaunchMode;
+    use crate::db::service::agent_setting_service;
 
     #[test]
     fn domain_ids_are_unique_and_non_empty() {
@@ -788,6 +804,53 @@ mod tests {
             .position(|d| d.id == DOMAIN_AGENT_SETTINGS)
             .expect("agentSettings domain");
         assert!(providers < settings);
+    }
+
+    #[tokio::test]
+    async fn legacy_agent_snapshot_preserves_existing_launch_mode() {
+        use sea_orm::TransactionTrait;
+
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        agent_setting_service::ensure_defaults(
+            &db.conn,
+            &[agent_setting_service::AgentDefaultInput {
+                agent_type: crate::models::agent::AgentType::Codex,
+                registry_id: "codex-acp".to_string(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .expect("ensure default");
+        agent_setting_service::update_launch_mode(
+            &db.conn,
+            crate::models::agent::AgentType::Codex,
+            AgentLaunchMode::Terminal,
+        )
+        .await
+        .expect("select terminal mode");
+
+        let tx = db.conn.begin().await.expect("begin");
+        apply_agent_settings(
+            &tx,
+            &serde_json::json!([{
+                "agentType": "codex",
+                "registryId": "codex-acp",
+                "enabled": true,
+                "sortOrder": 3
+            }]),
+        )
+        .await
+        .expect("apply legacy snapshot");
+        tx.commit().await.expect("commit");
+
+        let setting = agent_setting_service::get_by_agent_type(
+            &db.conn,
+            crate::models::agent::AgentType::Codex,
+        )
+        .await
+        .expect("query setting")
+        .expect("setting exists");
+        assert_eq!(setting.launch_mode, AgentLaunchMode::Terminal.as_str());
     }
 
     #[test]
@@ -878,7 +941,10 @@ mod tests {
         mixed.insert(portable.to_string(), Value::from("kept"));
         // Not on the allowlist: refused on the way in, so it must not be
         // counted on the way out.
-        mixed.insert("definitely_not_portable".to_string(), Value::from("dropped"));
+        mixed.insert(
+            "definitely_not_portable".to_string(),
+            Value::from("dropped"),
+        );
         // On the allowlist but not a string — preferences are stored as text,
         // and the applier skips anything else rather than stringifying it.
         mixed.insert("appearance_zoom_level".to_string(), Value::from(7));

@@ -781,6 +781,14 @@
     "selectLeftMcp": "Selecciona un MCP a la izquierda."
   },
   "AcpAgentSettings": {
+    "launchMode": {
+      "label": "Modo de inicio",
+      "newSessions": "Se aplica a sesiones nuevas.",
+      "grokUnsupported": "Los eventos de estado nativos no están disponibles para Grok.",
+      "saveFailed": "No se pudo guardar el modo",
+      "acp": "ACP",
+      "terminal": "Terminal"
+    },
     "title": "Gestión del SDK de agentes",
     "description": "Gestiona en un solo lugar la conexión del SDK de agentes, estado habilitado, variables de entorno, gestión de configuración e información de preflight de versión.",
     "loadingAgents": "Cargando lista de agentes...",
@@ -1877,6 +1885,13 @@
     "terminalShellNotInstalled": "no instalado",
     "terminalShellNotFoundWarning": "Esta ruta no existe en este host.",
     "terminalCurrentShell": "En uso actualmente: {path}",
+    "terminalAppTitle": "Aplicación de terminal",
+    "terminalAppName": "Terminal",
+    "terminalAppDescription": "Elige qué aplicación de terminal instalada abre un directorio. El valor predeterminado del sistema sigue usando la terminal integrada. El shell de arriba es el intérprete de esa terminal. Las CLI de agentes iniciadas en modo terminal permanecen en esa vista.",
+    "terminalAppCustomPath": "Ruta de la aplicación",
+    "terminalAppCustomPlaceholder": "/Applications/Ghostty.app",
+    "terminalAppCustomHint": "Un paquete .app o un ejecutable. Una aplicación personalizada solo abre el directorio.",
+    "terminalCurrentApp": "Abre directorios con: {name}",
     "colorizeCommandOutput": "Colorear la salida de los comandos",
     "colorizeCommandOutputDescription": "Fuerza el color ANSI en los comandos que ejecutan los agentes, para que su salida se muestre en color en la transcripción en lugar de como texto plano. Se aplica a las sesiones nuevas.",
     "renderingDescription": "Desactiva la aceleración por hardware si la aplicación muestra pantalla negra o fallos de renderizado (común en algunas GPU AMD o Intel integradas en Windows, y con el controlador propietario de NVIDIA en Linux). Solo afecta a las versiones de escritorio de Windows y Linux.",
@@ -2446,6 +2461,13 @@
       "more": "Más"
     },
     "terminal": {
+      "agentStatus": {
+        "unsupported": "Estado nativo no disponible",
+        "started": "Turno iniciado",
+        "stopped": "Evento de parada recibido",
+        "waiting": "Esperando evento de estado nativo",
+        "exited": "El proceso del terminal terminó"
+      },
       "rename": "Renombrar",
       "close": "Cerrar",
       "closeOthers": "Cerrar otros",
@@ -3023,6 +3045,7 @@
       "toasts": {
         "openDirectoryFailed": "No se pudo abrir el directorio",
         "openBuiltinTerminalFailed": "No se pudo abrir la terminal integrada",
+        "openExternalTerminalFailed": "No se pudo abrir la aplicación de terminal seleccionada",
         "openInCodeFailed": "No se pudo abrir en Code",
         "openCommitWindowFailed": "No se pudo abrir la ventana de commit",
         "noAddableFilesInDir": "No hay archivos modificados en este directorio que se puedan añadir a VCS",
@@ -3274,6 +3297,7 @@
         }
       },
       "shared": {
+        "terminalAttachmentsUnsupported": "El inicio en terminal solo admite texto. Elimina imágenes y recursos adjuntos.",
         "attachedResources": "Recursos adjuntos",
         "toolCallFailed": "Falló la llamada de herramienta"
       },
@@ -3359,6 +3383,11 @@
         "deleteItem": "Eliminar",
         "steerItemNow": "Insertar en el turno actual",
         "steerItemAsNote": "Enviar como nota para la próxima comprobación"
+      },
+      "sessionTerminal": {
+        "preparing": "Preparando el directorio de trabajo…",
+        "openSettings": "Abrir ajustes de Agents",
+        "region": "Terminal de {agent}"
       },
       "welcomeInputPanel": {
         "agentsSettingsPath": "Ajustes > Agentes",

@@ -646,9 +646,7 @@ async fn start_claimed(
         StartSignal::Url(url) => url,
         StartSignal::Authenticated => {
             reap_and_release(child, stdin, scratch).await;
-            tracing::info!(
-                "[ACP][Antigravity] {method_id} was already signed in; no link needed"
-            );
+            tracing::info!("[ACP][Antigravity] {method_id} was already signed in; no link needed");
             return Ok(AntigravityLoginStart {
                 already_signed_in: true,
                 handle: None,

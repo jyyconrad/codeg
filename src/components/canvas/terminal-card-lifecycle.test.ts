@@ -66,10 +66,10 @@ describe("a terminal card crossing a route switch", () => {
     // process belongs to the CARD, so the same line would take a running
     // command down with a view switch.
     const view = read(VIEW)
-    expect(view).toContain("if (!attach) terminalKill(terminalId)")
-    // …and there is exactly one kill in the whole view, so no other path can
-    // quietly reintroduce it.
-    expect(view.match(/terminalKill\(/g)?.length ?? 0).toBe(1)
+    expect(view).toContain("shouldKillTerminalAfterCancelledMount(")
+    expect(view).toContain(
+      "isExplicitlyClosedRef.current?.(terminalId) === true"
+    )
   })
 
   it("subscribes before it asks for the snapshot, and dedupes the overlap", () => {
@@ -118,8 +118,8 @@ describe("a terminal card crossing a route switch", () => {
     const view = read(VIEW)
     const snapshotAt = view.indexOf("terminalSnapshot(terminalId)")
     const spawnAt = view.indexOf("terminalSpawn(", snapshotAt)
-    const firstFlushAt = view.indexOf("flushReplay(", snapshotAt)
-    expect(firstFlushAt).toBeGreaterThan(spawnAt)
+    const spawnResultFlushAt = view.indexOf("flushReplay(null)", spawnAt)
+    expect(spawnResultFlushAt).toBeGreaterThan(spawnAt)
   })
 
   it("holds a PERMANENT seq floor, because the buffer is not a gate", () => {

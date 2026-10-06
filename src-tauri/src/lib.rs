@@ -47,7 +47,7 @@ pub mod preferences;
 pub mod process;
 pub mod spreadsheet_preview;
 pub mod supervise;
-mod terminal;
+pub mod terminal;
 pub mod turn_timings;
 pub mod update;
 pub mod web;
@@ -650,6 +650,11 @@ mod tauri_app {
                 ))
                 .map_err(|e| e.to_string())?;
                 app.manage(database);
+                app.manage(std::sync::Arc::new(
+                    crate::terminal::agent_hooks::AgentHookRegistry::new(
+                        web::event_bridge::EventEmitter::Tauri(app.handle().clone()),
+                    ),
+                ));
 
                 // Restore and apply saved system proxy settings before any network operation.
                 let db = app.state::<db::AppDatabase>();
@@ -1524,6 +1529,7 @@ mod tauri_app {
                 conversations::get_stats,
                 conversations::get_sidebar_data,
                 conversations::create_conversation,
+                conversations::establish_terminal_session,
                 conversations::create_chat_conversation,
                 conversations::create_chat_dir,
                 conversations::update_conversation_status,
@@ -1720,6 +1726,9 @@ mod tauri_app {
                 system_settings::update_system_terminal_settings,
                 system_settings::get_available_terminal_shells,
                 system_settings::probe_terminal_shell_path,
+                system_settings::get_available_terminal_apps,
+                system_settings::probe_terminal_app_path,
+                system_settings::open_directory_in_terminal_app,
                 system_settings::get_system_rendering_settings,
                 system_settings::update_system_rendering_settings,
                 system_settings::get_system_autostart_settings,
@@ -1798,6 +1807,7 @@ mod tauri_app {
                 acp_commands::acp_prepare_npx_agent,
                 acp_commands::acp_uninstall_agent,
                 acp_commands::acp_update_agent_preferences,
+                acp_commands::acp_update_agent_launch_mode,
                 acp_commands::acp_update_agent_env,
                 acp_commands::acp_update_agent_config,
                 acp_commands::acp_update_hermes_config,
@@ -1981,6 +1991,8 @@ mod tauri_app {
                 wiki_engine_commands::wiki_retry_job,
                 wiki_engine_commands::wiki_cancel_job,
                 terminal_commands::terminal_spawn,
+                terminal_commands::terminal_spawn_agent,
+                terminal_commands::terminal_agent_state,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,
                 terminal_commands::terminal_snapshot,

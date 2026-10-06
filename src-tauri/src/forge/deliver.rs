@@ -1481,20 +1481,30 @@ mod tests {
             12,
             gh,
             issue,
-            &TaskOutcome::Accepted { nothing_to_land: true },
+            &TaskOutcome::Accepted {
+                nothing_to_land: true,
+            },
             None,
         );
-        assert!(empty.contains("work task `12`") && empty.contains("it made no changes"), "{empty}");
+        assert!(
+            empty.contains("work task `12`") && empty.contains("it made no changes"),
+            "{empty}"
+        );
         // …and an acceptance whose worktree was gone must NOT claim the task
         // made no changes while printing the counters that say otherwise.
         let gone = writeback_comment_body(
             12,
             gh,
             issue,
-            &TaskOutcome::Accepted { nothing_to_land: false },
+            &TaskOutcome::Accepted {
+                nothing_to_land: false,
+            },
             Some((3, 42, 7)),
         );
-        assert!(gone.contains("its work was not merged (3 files, +42/-7)"), "{gone}");
+        assert!(
+            gone.contains("its work was not merged (3 files, +42/-7)"),
+            "{gone}"
+        );
         assert!(!gone.contains("no changes"), "{gone}");
     }
 
@@ -1510,7 +1520,11 @@ mod tests {
     /// beside counters that say otherwise.
     #[test]
     fn a_finish_that_landed_nothing_is_never_a_verdict_on_the_item() {
-        for provider in [ForgeProvider::GitHub, ForgeProvider::GitLab, ForgeProvider::Gitea] {
+        for provider in [
+            ForgeProvider::GitHub,
+            ForgeProvider::GitLab,
+            ForgeProvider::Gitea,
+        ] {
             let noun = provider.change_noun();
             for item in [ForgeItemKind::Issue, ForgeItemKind::Change] {
                 for nothing_to_land in [true, false] {
@@ -1522,7 +1536,10 @@ mod tests {
                         Some((3, 42, 7)),
                     );
                     let at = format!("{provider:?} {item:?} nothing_to_land={nothing_to_land}");
-                    assert!(body.starts_with("codeg work task `12` is done — "), "{at}: {body}");
+                    assert!(
+                        body.starts_with("codeg work task `12` is done — "),
+                        "{at}: {body}"
+                    );
                     let lower = body.to_lowercase();
                     for verdict in ["accept", "approv", "reject", "closed", "lgtm"] {
                         assert!(!lower.contains(verdict), "{at} reads as a verdict: {body}");

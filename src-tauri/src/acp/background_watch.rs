@@ -67,11 +67,10 @@ use crate::models::agent::AgentType;
 use crate::models::message::MessageTurn;
 use crate::parsers::claude::{
     capture_tag, capture_title_record, find_clear_rollover_successor, find_session_file,
-    group_into_turns, is_meta_message, slash_command_display,
-    task_notification_result_regex, task_notification_status_regex,
-    task_notification_summary_regex, task_notification_task_id_regex,
-    task_notification_tool_use_id_regex, ClaudeRecordAccumulator, BACKGROUND_RESULT_MAX_CHARS,
-    CONTEXT_CONTINUATION_PREFIX,
+    group_into_turns, is_meta_message, slash_command_display, task_notification_result_regex,
+    task_notification_status_regex, task_notification_summary_regex,
+    task_notification_task_id_regex, task_notification_tool_use_id_regex, ClaudeRecordAccumulator,
+    BACKGROUND_RESULT_MAX_CHARS, CONTEXT_CONTINUATION_PREFIX,
 };
 use crate::parsers::truncate_str;
 use crate::web::event_bridge::{emit_with_state, EventEmitter};
@@ -160,14 +159,10 @@ fn first_transcript_text(blocks: &[crate::acp::types::PromptInputBlock]) -> Opti
         let text = match block {
             PromptInputBlock::Text { text } => text.trim().to_string(),
             PromptInputBlock::Resource {
-                uri,
-                text: Some(_),
-                ..
+                uri, text: Some(_), ..
             }
             | PromptInputBlock::ResourceLink { uri, .. } => claude_uri_link(uri),
-            PromptInputBlock::Resource { .. } | PromptInputBlock::Image { .. } => {
-                return None
-            }
+            PromptInputBlock::Resource { .. } | PromptInputBlock::Image { .. } => return None,
         };
         (!text.is_empty()).then_some(text)
     })
@@ -178,7 +173,11 @@ fn first_transcript_text(blocks: &[crate::acp::types::PromptInputBlock]) -> Opti
 /// anything else (a web page, a pasted file's `clipboard://` uri).
 fn claude_uri_link(uri: &str) -> String {
     let named = |rest: &str| {
-        let name = rest.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(rest);
+        let name = rest
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(rest);
         format!("[@{name}]({uri})")
     };
     if let Some(path) = uri.strip_prefix("file://") {
@@ -943,7 +942,10 @@ impl WatchState {
         // session id names the ABANDONED file, so the lookup asks for the id
         // this watch rolled onto instead.
         if self.file.is_none() {
-            let lookup_id = self.rolled_over_id.clone().unwrap_or_else(|| session_id.clone());
+            let lookup_id = self
+                .rolled_over_id
+                .clone()
+                .unwrap_or_else(|| session_id.clone());
             if let Some(f) = find_session_file(&lookup_id) {
                 self.adopt_file(f);
             }
@@ -2230,7 +2232,10 @@ mod tests {
             Some(&old),
             "a rollover this connection never asked for is not ours to adopt"
         );
-        assert!(ws.pending_transcript_id.is_none(), "no re-point may be emitted");
+        assert!(
+            ws.pending_transcript_id.is_none(),
+            "no re-point may be emitted"
+        );
         assert!(
             event.is_none(),
             "and none of the stranger's records may surface as our activity"
@@ -3437,7 +3442,10 @@ mod tests {
             "[@a b.ts](file:///repo/a b.ts)"
         );
         // A trailing slash leaves no last segment; the whole path names it.
-        assert_eq!(claude_uri_link("file:///repo/dir/"), "[@/repo/dir/](file:///repo/dir/)");
+        assert_eq!(
+            claude_uri_link("file:///repo/dir/"),
+            "[@/repo/dir/](file:///repo/dir/)"
+        );
         assert_eq!(
             claude_uri_link("zed://agent/thread/42"),
             "[@42](zed://agent/thread/42)"

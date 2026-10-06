@@ -33,8 +33,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, TimeZone, Utc};
 use agent_client_protocol::schema::v1::{SessionUpdate, ToolCallContent};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize as _;
 
 use crate::acp::connection::{
@@ -323,8 +323,12 @@ fn prompt_blocks(payload: &serde_json::Value) -> Vec<ContentBlock> {
 /// chunk arrives already deserialized, so it is converted straight across
 /// rather than being serialized back to JSON only to be re-read. Consumes the
 /// block, so an embedded image's base64 moves instead of being copied twice.
-fn prompt_block_from_content(content: agent_client_protocol::schema::v1::ContentBlock) -> Option<PromptInputBlock> {
-    use agent_client_protocol::schema::v1::{ContentBlock as Wire, EmbeddedResourceResource as Res};
+fn prompt_block_from_content(
+    content: agent_client_protocol::schema::v1::ContentBlock,
+) -> Option<PromptInputBlock> {
+    use agent_client_protocol::schema::v1::{
+        ContentBlock as Wire, EmbeddedResourceResource as Res,
+    };
     let non_empty = |s: String| (!s.is_empty()).then_some(s);
     match content {
         Wire::Text(t) => Some(PromptInputBlock::Text {
@@ -352,7 +356,9 @@ fn prompt_block_from_content(content: agent_client_protocol::schema::v1::Content
                 // no bytes this can render.
                 _ => return None,
             };
-            let is_image = mime_type.as_deref().is_some_and(|m| m.starts_with("image/"));
+            let is_image = mime_type
+                .as_deref()
+                .is_some_and(|m| m.starts_with("image/"));
             if uri.is_empty() && !(is_image && blob.is_some()) {
                 return None;
             }
@@ -783,7 +789,9 @@ fn content_block_text(block: &agent_client_protocol::schema::v1::ContentBlock) -
         agent_client_protocol::schema::v1::ContentBlock::Text(t) => t.text.clone(),
         agent_client_protocol::schema::v1::ContentBlock::ResourceLink(link) => link.uri.clone(),
         agent_client_protocol::schema::v1::ContentBlock::Resource(res) => match &res.resource {
-            agent_client_protocol::schema::v1::EmbeddedResourceResource::TextResourceContents(t) => t.text.clone(),
+            agent_client_protocol::schema::v1::EmbeddedResourceResource::TextResourceContents(
+                t,
+            ) => t.text.clone(),
             _ => String::new(),
         },
         _ => String::new(),

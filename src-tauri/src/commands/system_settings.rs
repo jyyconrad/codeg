@@ -10,8 +10,8 @@ use crate::db::service::app_metadata_service;
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
 use crate::models::{
-    AvailableTerminalShells, SystemLanguageSettings, SystemProxySettings, SystemTerminalSettings,
-    TerminalShellOption,
+    AvailableTerminalApps, AvailableTerminalShells, SystemLanguageSettings, SystemProxySettings,
+    SystemTerminalSettings, TerminalShellOption,
 };
 #[cfg(feature = "tauri-runtime")]
 use crate::models::{
@@ -201,7 +201,10 @@ fn shell_exists(value: &str) -> bool {
 /// with launches that predate this setting). So the "system default" row is the
 /// one case where this line can name a shell an agent's command would not use.
 pub(crate) fn resolve_effective_shell(default_shell: Option<&str>) -> String {
-    match default_shell.map(str::trim).filter(|value| !value.is_empty()) {
+    match default_shell
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         None => resolve_shell(),
         Some(selected) => resolve_shell_path(selected).unwrap_or_else(|| selected.to_string()),
     }
@@ -224,7 +227,16 @@ pub(crate) fn normalize_terminal_settings(
         // Nothing to canonicalize on a bool; carried explicitly so adding a
         // field here can never silently drop it back to the default.
         colorize_command_output: settings.colorize_command_output,
+        default_terminal_app: normalize_terminal_app(settings.default_terminal_app),
     }
+}
+
+fn normalize_terminal_app(value: Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "system")
+        .map(str::to_string)
 }
 
 /// Build the per-platform option list shown in the "default shell" picker.
@@ -322,6 +334,9 @@ pub async fn apply_persisted_terminal_settings(
         Ok(settings) => {
             crate::acp::connection::set_force_command_color(settings.colorize_command_output);
             config.set(settings.default_shell).await;
+            crate::terminal::external_apps::set_preferred_terminal_app(
+                settings.default_terminal_app,
+            );
         }
         // Both live values stay on their process defaults — system shell, and
         // color off. Naming only the shell here would send whoever reads this
@@ -357,6 +372,9 @@ pub(crate) async fn set_system_terminal_settings_core(
     // connection rather than the running one.
     crate::acp::connection::set_force_command_color(normalized.colorize_command_output);
     config.set(normalized.default_shell.clone()).await;
+    crate::terminal::external_apps::set_preferred_terminal_app(
+        normalized.default_terminal_app.clone(),
+    );
     crate::web::event_bridge::emit_event(
         emitter,
         TERMINAL_SETTINGS_UPDATED_EVENT,
@@ -386,8 +404,7 @@ static CLOSE_BEHAVIOR_CACHE: std::sync::atomic::AtomicU8 =
 /// while the dialog is up, and every click re-enters `CloseRequested` — without
 /// this the user stacks a dialog per click and has to dismiss all of them.
 #[cfg(feature = "tauri-runtime")]
-static CLOSE_PROMPT_OPEN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static CLOSE_PROMPT_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// When the outstanding claim was taken, so an unanswered one can expire.
 #[cfg(feature = "tauri-runtime")]
@@ -461,7 +478,8 @@ pub(crate) fn store_close_behavior_cache(behavior: CloseWindowBehavior) {
 pub(crate) async fn load_system_close_behavior_settings(
     conn: &DatabaseConnection,
 ) -> SystemCloseBehaviorSettings {
-    let raw = match app_metadata_service::get_value(conn, SYSTEM_CLOSE_BEHAVIOR_SETTINGS_KEY).await {
+    let raw = match app_metadata_service::get_value(conn, SYSTEM_CLOSE_BEHAVIOR_SETTINGS_KEY).await
+    {
         Ok(Some(raw)) => raw,
         Ok(None) => return SystemCloseBehaviorSettings::default(),
         Err(err) => {
@@ -747,6 +765,52 @@ pub async fn get_available_terminal_shells(
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub async fn probe_terminal_shell_path(path: String) -> Result<bool, AppCommandError> {
     Ok(probe_terminal_shell_path_core(&path))
+}
+
+pub(crate) fn available_terminal_apps_core(stored: Option<&str>) -> AvailableTerminalApps {
+    crate::terminal::external_apps::available_terminal_apps(stored)
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn get_available_terminal_apps(
+    db: State<'_, AppDatabase>,
+) -> Result<AvailableTerminalApps, AppCommandError> {
+    let settings = load_system_terminal_settings(&db.conn).await?;
+    Ok(available_terminal_apps_core(
+        settings.default_terminal_app.as_deref(),
+    ))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn probe_terminal_app_path(path: String) -> Result<bool, AppCommandError> {
+    Ok(crate::terminal::external_apps::probe_terminal_app_path(
+        &path,
+    ))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenDirectoryInTerminalResult {
+    pub launched_external: bool,
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn open_directory_in_terminal_app(
+    path: String,
+) -> Result<OpenDirectoryInTerminalResult, AppCommandError> {
+    let preference = crate::terminal::external_apps::preferred_terminal_app();
+    match crate::terminal::external_apps::launch_directory(preference.as_deref(), &path) {
+        Ok(launched_external) => Ok(OpenDirectoryInTerminalResult { launched_external }),
+        Err(crate::terminal::external_apps::LaunchError::InvalidInput(message)) => {
+            Err(AppCommandError::invalid_input(message))
+        }
+        Err(crate::terminal::external_apps::LaunchError::Failed(message)) => {
+            Err(AppCommandError::io_error(message))
+        }
+    }
 }
 
 #[cfg(feature = "tauri-runtime")]
@@ -1292,7 +1356,10 @@ mod tests {
         for blank in ["", " , ;\n", "，、 "] {
             let normalized =
                 normalize_proxy_settings(enabled_proxy_bypassing(blank)).expect("blank is valid");
-            assert_eq!(normalized.no_proxy, None, "{blank:?} leaves nothing to store");
+            assert_eq!(
+                normalized.no_proxy, None,
+                "{blank:?} leaves nothing to store"
+            );
         }
     }
 
@@ -1478,6 +1545,7 @@ mod tests {
             SystemTerminalSettings {
                 default_shell: Some("  pwsh.exe  ".to_string()),
                 colorize_command_output: false,
+                default_terminal_app: None,
             },
         )
         .await
@@ -1519,6 +1587,7 @@ mod tests {
             SystemTerminalSettings {
                 default_shell: None,
                 colorize_command_output: true,
+                default_terminal_app: None,
             },
         )
         .await
@@ -1652,6 +1721,63 @@ mod tests {
 
         assert_eq!(loaded.default_shell.as_deref(), Some("pwsh.exe"));
         assert!(!loaded.colorize_command_output);
+        assert!(loaded.default_terminal_app.is_none());
+    }
+
+    /// The app id shares the shell row. A later color save has to send it
+    /// back, and startup has to restore the launcher cache from that row.
+    #[tokio::test]
+    async fn terminal_app_preference_survives_a_color_save_and_restart() {
+        let _serial = TERMINAL_SETTINGS_SERIAL.lock().await;
+        struct ResetPreferred;
+        impl Drop for ResetPreferred {
+            fn drop(&mut self) {
+                crate::terminal::external_apps::set_preferred_terminal_app(None);
+            }
+        }
+        let _reset = ResetPreferred;
+        let _restore = RestoreCommandColor::capture();
+        let db = fresh_in_memory_db().await;
+        let config = TerminalShellRuntimeConfig::new();
+
+        set_system_terminal_settings_core(
+            &db.conn,
+            &config,
+            &EventEmitter::Noop,
+            SystemTerminalSettings {
+                default_shell: Some("pwsh.exe".to_string()),
+                colorize_command_output: false,
+                default_terminal_app: Some("  ghostty  ".to_string()),
+            },
+        )
+        .await
+        .expect("save terminal app");
+        assert_eq!(
+            crate::terminal::external_apps::preferred_terminal_app().as_deref(),
+            Some("ghostty")
+        );
+
+        let saved = set_system_terminal_settings_core(
+            &db.conn,
+            &config,
+            &EventEmitter::Noop,
+            SystemTerminalSettings {
+                default_shell: Some("pwsh.exe".to_string()),
+                colorize_command_output: true,
+                default_terminal_app: Some("ghostty".to_string()),
+            },
+        )
+        .await
+        .expect("save color without dropping the app");
+        assert_eq!(saved.default_terminal_app.as_deref(), Some("ghostty"));
+        assert!(saved.colorize_command_output);
+
+        crate::terminal::external_apps::set_preferred_terminal_app(None);
+        apply_persisted_terminal_settings(&db.conn, &config).await;
+        assert_eq!(
+            crate::terminal::external_apps::preferred_terminal_app().as_deref(),
+            Some("ghostty")
+        );
     }
 }
 

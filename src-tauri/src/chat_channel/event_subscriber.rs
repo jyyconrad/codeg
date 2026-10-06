@@ -549,6 +549,12 @@ async fn parse_acp_event(
     lang: Lang,
 ) -> Option<(String, RichMessage)> {
     match &envelope.payload {
+        // A terminal hook has no live ACP connection, so this TurnComplete
+        // would render as "完成 {agent}" with an empty body. The card below
+        // carries the title and the assistant text. Pet still sees this event.
+        AcpEvent::TurnComplete { .. } if envelope.connection_id.starts_with("terminal-hook:") => {
+            None
+        }
         AcpEvent::TurnComplete {
             stop_reason,
             agent_type,
@@ -646,6 +652,49 @@ async fn parse_acp_event(
                 );
             }
             Some(("question_request".to_string(), msg))
+        }
+        AcpEvent::TerminalSessionCard {
+            conversation_id,
+            agent_type,
+            kind,
+            body,
+        } => {
+            let row = conversation_service::get_by_id(db, *conversation_id)
+                .await
+                .ok()?;
+            if row.kind == ConversationKind::Delegate {
+                return None;
+            }
+            let title = row.title.clone();
+            match kind.as_str() {
+                "turn_started" => {
+                    let text = body
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())?;
+                    Some((
+                        "user_prompt_sent".to_string(),
+                        message_formatter::format_user_prompt_sent(
+                            text,
+                            title.as_deref(),
+                            nonempty_agent(agent_type),
+                            lang,
+                        ),
+                    ))
+                }
+                "turn_stopped" => Some((
+                    "turn_complete".to_string(),
+                    message_formatter::format_turn_complete(
+                        agent_type,
+                        title.as_deref(),
+                        body.as_deref(),
+                        &[],
+                        None,
+                        lang,
+                    ),
+                )),
+                _ => None,
+            }
         }
         _ => None,
     }
@@ -1385,6 +1434,170 @@ mod permission_push_tests {
             msgs[0].contains("你好"),
             "body must be the prompt, got {:?}",
             msgs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_hook_turn_complete_does_not_send_an_empty_card() {
+        let db = test_helpers::fresh_in_memory_db().await;
+        let (chat, rec) = manager_with_recorder(7).await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut config = config_all_on(7);
+        config.lang = Lang::ZhCn;
+        let mut last_push = HashMap::new();
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "terminal-hook:t1".into(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "s".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "grok".into(),
+                    run_id: None,
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+        assert!(
+            sent(&rec).await.is_empty(),
+            "a connection-less terminal TurnComplete must not become 完成 Grok"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_session_card_uses_the_row_title_and_hook_body() {
+        use crate::db::service::conversation_service;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/terminal-card").await;
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("Fix the pane".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        let (chat, rec) = manager_with_recorder(7).await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut config = config_all_on(7);
+        config.lang = Lang::ZhCn;
+        let mut last_push = HashMap::new();
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "terminal-hook:t1".into(),
+                payload: AcpEvent::TerminalSessionCard {
+                    conversation_id: conv.id,
+                    agent_type: "grok".into(),
+                    kind: "turn_stopped".into(),
+                    body: Some("the pane stays visible".into()),
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+        let msgs = sent(&rec).await;
+        assert_eq!(msgs.len(), 1, "got {msgs:?}");
+        assert!(
+            msgs[0].contains("完成 Fix the pane Grok"),
+            "title must be status + session + agent, got {:?}",
+            msgs[0]
+        );
+        assert!(
+            msgs[0].contains("the pane stays visible"),
+            "body must be the assistant text, got {:?}",
+            msgs[0]
+        );
+
+        config.global_filter = Some(vec!["user_prompt_sent".to_string()]);
+        process_envelope(
+            &EventEnvelope {
+                seq: 2,
+                connection_id: "terminal-hook:t1".into(),
+                payload: AcpEvent::TerminalSessionCard {
+                    conversation_id: conv.id,
+                    agent_type: "grok".into(),
+                    kind: "turn_started".into(),
+                    body: Some("fix the pane".into()),
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+        let started = sent(&rec).await;
+        assert!(
+            started
+                .iter()
+                .any(|msg| msg.contains("开始任务 Fix the pane Grok")
+                    && msg.contains("fix the pane")),
+            "start card must carry the prompt, got {started:?}"
+        );
+
+        let before_empty = started.len();
+        process_envelope(
+            &EventEnvelope {
+                seq: 3,
+                connection_id: "terminal-hook:t1".into(),
+                payload: AcpEvent::TerminalSessionCard {
+                    conversation_id: conv.id,
+                    agent_type: "grok".into(),
+                    kind: "turn_started".into(),
+                    body: None,
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+        assert_eq!(sent(&rec).await.len(), before_empty);
+
+        config.global_filter = None;
+        let before_default = sent(&rec).await.len();
+        process_envelope(
+            &EventEnvelope {
+                seq: 4,
+                connection_id: "terminal-hook:t1".into(),
+                payload: AcpEvent::TerminalSessionCard {
+                    conversation_id: conv.id,
+                    agent_type: "grok".into(),
+                    kind: "turn_started".into(),
+                    body: Some("still private".into()),
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+        assert_eq!(
+            sent(&rec).await.len(),
+            before_default,
+            "a default filter must not forward the prompt card"
         );
     }
 

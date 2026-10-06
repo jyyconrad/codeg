@@ -18,7 +18,16 @@ const KEYBAR_COLLAPSED_STORAGE_KEY = "codeg:term-keybar"
  *     后展开/折叠不一致。
  */
 export function TerminalPanel() {
-  const { isOpen, tabs, activeTabId, markTerminalExited } = useTerminalContext()
+  const {
+    isOpen,
+    tabs,
+    activeTabId,
+    markTerminalExited,
+    markAgentLaunched,
+    markAgentLaunchFailed,
+    isTerminalExplicitlyClosed,
+    closeTerminal,
+  } = useTerminalContext()
   const isMobile = useIsMobile()
 
   const [keybarCollapsed, setKeybarCollapsed] = useState(() => {
@@ -49,6 +58,18 @@ export function TerminalPanel() {
     setKeybarCollapsed((prev) => !prev)
   }, [])
 
+  const handleProcessExited = useCallback(
+    (terminalId: string) => {
+      const tab = tabs.find((candidate) => candidate.id === terminalId)
+      if (tab?.agentAttach) {
+        closeTerminal(terminalId)
+      } else {
+        markTerminalExited(terminalId)
+      }
+    },
+    [closeTerminal, markTerminalExited, tabs]
+  )
+
   const keybarVisible = isMobile && !keybarCollapsed
 
   return (
@@ -69,10 +90,16 @@ export function TerminalPanel() {
             workingDir={tab.workingDir}
             shell={tab.shell}
             initialCommand={tab.initialCommand}
+            agentLaunch={tab.agentLaunch}
+            agentAttachOnly={tab.agentAttach === true}
+            attach={tab.agentLaunch != null || tab.agentAttach === true}
+            onAgentLaunched={markAgentLaunched}
+            onAgentLaunchFailed={markAgentLaunchFailed}
+            isExplicitlyClosed={isTerminalExplicitlyClosed}
             isActive={tab.id === activeTabId}
             isVisible={isOpen}
             keybarVisible={keybarVisible}
-            onProcessExited={markTerminalExited}
+            onProcessExited={handleProcessExited}
           />
         ))}
       </div>

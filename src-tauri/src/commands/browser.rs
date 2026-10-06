@@ -6,25 +6,23 @@
 use std::time::Duration;
 
 use base64::Engine as _;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri::Url;
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 use crate::app_error::AppCommandError;
 use crate::browser::agent::{self, GrantLevel};
 use crate::browser::blank_page;
 use crate::browser::capture::{self, CaptureOutcome, CaptureRegion, CaptureRequest};
+use crate::browser::confirm::{AskRefused, EvalConsent, EvalRequestPayload, EVAL_CONFIRM_TIMEOUT};
 use crate::browser::console::{ConsoleEntry, ConsoleLevel, ConsoleQuery, ConsoleReadout};
-use crate::browser::confirm::{
-    AskRefused, EvalConsent, EvalRequestPayload, EVAL_CONFIRM_TIMEOUT,
-};
 use crate::browser::doc_guest::{self, DocGuestState, DocGuests, DocMode};
+use crate::browser::downloads::{BrowserDownload, BrowserDownloads};
 use crate::browser::eval::{self, EvalAnswer, EvalOutcome, EvalRequest};
 use crate::browser::handoff::{self, PageHandoff};
-use crate::browser::downloads::{BrowserDownload, BrowserDownloads};
+use crate::browser::open_request;
 use crate::browser::policy::{BrowserPolicy, HostRule};
 use crate::browser::registry::{self, BrowserRegistry, BrowserTab};
 use crate::browser::surface::{BrowserSurface, PointerFailure, PointerGesture};
-use crate::browser::open_request;
 use crate::browser::types::{
     Bounds, BrowserCapabilities, BrowserErrorInfo, BrowserErrorKind, BrowserOpenRequestPayload,
     BrowserTabState, ChannelKind, DetectedService, FrozenFrame, SurfaceChoice, SurfaceKind,
@@ -311,9 +309,9 @@ pub fn open_tab_core(
                     "[browser] tab {}: page channel unavailable ({err}); continuing degraded",
                     params.tab_id
                 );
-                if let Some(next) = registry.update_state(&params.tab_id, |s| {
-                    s.channel_error = Some(err.to_string())
-                }) {
+                if let Some(next) = registry
+                    .update_state(&params.tab_id, |s| s.channel_error = Some(err.to_string()))
+                {
                     state = next;
                 }
             }
@@ -495,8 +493,8 @@ pub fn doc_open_core(
                 "[browser] document {}: page channel unavailable ({err}); continuing degraded",
                 params.tab_id
             );
-            if let Some(next) = registry
-                .update_state(&params.tab_id, |s| s.channel_error = Some(err.to_string()))
+            if let Some(next) =
+                registry.update_state(&params.tab_id, |s| s.channel_error = Some(err.to_string()))
             {
                 state = next;
             }
@@ -671,8 +669,9 @@ pub async fn remove_profile_core(
     // Detach only tabs that are STILL in the profile when each is taken: a
     // tab id can be reused by a later incarnation in another profile.
     for tab_id in registry.tabs_in_profile(profile_id) {
-        let Some(tab) = registry.remove_if(&tab_id, |tab| tab.state.profile.as_deref() == Some(profile_id))
-        else {
+        let Some(tab) = registry.remove_if(&tab_id, |tab| {
+            tab.state.profile.as_deref() == Some(profile_id)
+        }) else {
             continue;
         };
         let _ = tab.surface.close();
@@ -989,7 +988,10 @@ pub fn navigate_core(
     let surface = surface_of(registry, tab_id)?;
     let current = registry.state(tab_id);
     // A document guest shows one file; it is not an address bar.
-    if current.as_ref().is_some_and(|state| state.kind == TabKind::Document) {
+    if current
+        .as_ref()
+        .is_some_and(|state| state.kind == TabKind::Document)
+    {
         return Err(AppCommandError::invalid_input(
             "a document view cannot be navigated to another address",
         ));
@@ -1114,8 +1116,14 @@ pub async fn find_core(
     // An error leaves the bar showing nothing at all.
     match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
         Ok(Ok(found)) => Ok(found),
-        Ok(Err(_)) => Err(window_err("Failed to search the page", "the search was dropped")),
-        Err(_) => Err(window_err("Failed to search the page", "WebKit did not answer")),
+        Ok(Err(_)) => Err(window_err(
+            "Failed to search the page",
+            "the search was dropped",
+        )),
+        Err(_) => Err(window_err(
+            "Failed to search the page",
+            "WebKit did not answer",
+        )),
     }
 }
 
@@ -1131,7 +1139,11 @@ pub fn go_forward_core(registry: &BrowserRegistry, tab_id: &str) -> Result<(), A
         .map_err(|e| window_err("Failed to go forward", e))
 }
 
-pub fn stop_core(app: &AppHandle, registry: &BrowserRegistry, tab_id: &str) -> Result<(), AppCommandError> {
+pub fn stop_core(
+    app: &AppHandle,
+    registry: &BrowserRegistry,
+    tab_id: &str,
+) -> Result<(), AppCommandError> {
     surface_of(registry, tab_id)?
         .stop()
         .map_err(|e| window_err("Failed to stop loading", e))?;
@@ -1160,9 +1172,14 @@ fn devtools_refusal(built_with: Option<bool>, tab_id: &str) -> Option<AppCommand
                  browser settings and open the page again"
                     .to_string(),
             )
-            .with_i18n(BROWSER_I18N_KEY_INSPECTOR_OFF, std::collections::BTreeMap::new()),
+            .with_i18n(
+                BROWSER_I18N_KEY_INSPECTOR_OFF,
+                std::collections::BTreeMap::new(),
+            ),
         ),
-        None => Some(AppCommandError::not_found(format!("browser tab {tab_id} not found"))),
+        None => Some(AppCommandError::not_found(format!(
+            "browser tab {tab_id} not found"
+        ))),
     }
 }
 
@@ -1235,7 +1252,10 @@ fn watch_devtools(app: AppHandle, surface: BrowserSurface, tab_id: String) {
     });
 }
 
-pub fn state_core(registry: &BrowserRegistry, tab_id: &str) -> Result<BrowserTabState, AppCommandError> {
+pub fn state_core(
+    registry: &BrowserRegistry,
+    tab_id: &str,
+) -> Result<BrowserTabState, AppCommandError> {
     registry
         .state(tab_id)
         .ok_or_else(|| AppCommandError::not_found(format!("browser tab {tab_id} not found")))
@@ -1255,7 +1275,10 @@ fn grant_required(tab_id: &str) -> AppCommandError {
     AppCommandError::permission_denied(format!(
         "browser tab {tab_id} has not been shared with agents"
     ))
-    .with_i18n(BROWSER_I18N_KEY_GRANT_REQUIRED, std::collections::BTreeMap::new())
+    .with_i18n(
+        BROWSER_I18N_KEY_GRANT_REQUIRED,
+        std::collections::BTreeMap::new(),
+    )
 }
 
 /// Emitted whenever an agent is refused a page. The frontend turns it into
@@ -1293,8 +1316,14 @@ pub const BROWSER_I18N_KEY_OPEN_FAILED: &str = "browser.agent.error.openFailed";
 pub const BROWSER_I18N_KEY_INSPECTOR_OFF: &str = "browser.inspector.error.switchedOff";
 
 fn open_failed(detail: &str) -> AppCommandError {
-    AppCommandError::window("Failed to open a browser tab".to_string(), detail.to_string())
-        .with_i18n(BROWSER_I18N_KEY_OPEN_FAILED, std::collections::BTreeMap::new())
+    AppCommandError::window(
+        "Failed to open a browser tab".to_string(),
+        detail.to_string(),
+    )
+    .with_i18n(
+        BROWSER_I18N_KEY_OPEN_FAILED,
+        std::collections::BTreeMap::new(),
+    )
 }
 
 fn control_required(tab_id: &str) -> AppCommandError {
@@ -1302,7 +1331,10 @@ fn control_required(tab_id: &str) -> AppCommandError {
         "browser tab {tab_id} is shared for reading only; acting on it needs the person to \
          allow actions"
     ))
-    .with_i18n(BROWSER_I18N_KEY_CONTROL_REQUIRED, std::collections::BTreeMap::new())
+    .with_i18n(
+        BROWSER_I18N_KEY_CONTROL_REQUIRED,
+        std::collections::BTreeMap::new(),
+    )
 }
 
 /// The tab was closed — or closed and reopened under the same id — while a
@@ -1337,13 +1369,18 @@ fn still_readable(
 }
 
 fn stale_ref(detail: &str) -> AppCommandError {
-    AppCommandError::invalid_input(detail)
-        .with_i18n(BROWSER_I18N_KEY_STALE_REF, std::collections::BTreeMap::new())
+    AppCommandError::invalid_input(detail).with_i18n(
+        BROWSER_I18N_KEY_STALE_REF,
+        std::collections::BTreeMap::new(),
+    )
 }
 
 fn action_failed(error: agent::ActionError, detail: &str) -> AppCommandError {
     let mut params = std::collections::BTreeMap::new();
-    if let Some(slug) = serde_json::to_value(error).ok().and_then(|v| v.as_str().map(str::to_string)) {
+    if let Some(slug) = serde_json::to_value(error)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+    {
         params.insert("error".to_string(), slug);
     }
     AppCommandError::invalid_input(detail).with_i18n(BROWSER_I18N_KEY_ACTION_FAILED, params)
@@ -1365,7 +1402,11 @@ fn now_millis() -> i64 {
 /// one set of tabs; what any given agent may *read* of them is the grant, and
 /// that is decided per tab by the person, not by which chat is asking.
 pub fn agent_list_tabs_core(registry: &BrowserRegistry) -> Vec<agent::AgentTabSummary> {
-    registry.list().iter().filter_map(agent::summarize_tab).collect()
+    registry
+        .list()
+        .iter()
+        .filter_map(agent::summarize_tab)
+        .collect()
 }
 
 /// Share a tab with agents, change the level, or take it back.
@@ -1583,8 +1624,12 @@ async fn read_shared_page(
     } else {
         answer
     };
-    let snapshot: agent::PageSnapshot = serde_json::from_str(&answer)
-        .map_err(|e| failed(window_err("Failed to read the page", format!("unreadable snapshot: {e}"))))?;
+    let snapshot: agent::PageSnapshot = serde_json::from_str(&answer).map_err(|e| {
+        failed(window_err(
+            "Failed to read the page",
+            format!("unreadable snapshot: {e}"),
+        ))
+    })?;
 
     let walked = Url::parse(&snapshot.url).ok();
     let walked_origin = walked.as_ref().and_then(hooks::origin_of);
@@ -1620,10 +1665,9 @@ pub async fn agent_act_core(
     revoke_if_listener_replaced(app, registry, tab_id).await;
     let action = agent::AgentAction::from(&request.action);
     let (outcome, answer) = match act_on_shared_page(registry, tab_id, request).await {
-        Ok(Settled { outcome, record }) => (
-            record.then_some(agent::AgentOutcome::Done),
-            Ok(outcome),
-        ),
+        Ok(Settled { outcome, record }) => {
+            (record.then_some(agent::AgentOutcome::Done), Ok(outcome))
+        }
         Err((outcome, err)) => (outcome, Err(err)),
     };
     if let Some(outcome) = outcome {
@@ -1745,7 +1789,10 @@ async fn act_on_shared_page(
         )));
     }
     let answer: agent::WorldAnswer = serde_json::from_str(&raw).map_err(|e| {
-        failed(window_err("Failed to act on the page", format!("unreadable answer: {e}")))
+        failed(window_err(
+            "Failed to act on the page",
+            format!("unreadable answer: {e}"),
+        ))
     })?;
     let outcome = accept(answer, agent::Fidelity::Synthetic).map_err(failed)?;
     settle(registry, tab_id, generation, outcome)
@@ -1778,7 +1825,10 @@ async fn deliver_trusted_pointer(
         )));
     }
     let answer: agent::WorldAnswer = serde_json::from_str(&raw).map_err(|e| {
-        failed(window_err("Failed to act on the page", format!("unreadable answer: {e}")))
+        failed(window_err(
+            "Failed to act on the page",
+            format!("unreadable answer: {e}"),
+        ))
     })?;
     let (Some(x), Some(y)) = (answer.x, answer.y) else {
         // Not ok, or ok with no point — the first is a refusal, the second a
@@ -1893,7 +1943,10 @@ fn settle(
     generation: u64,
     outcome: agent::ActionOutcome,
 ) -> Result<Settled, ReadFailure> {
-    let walked_origin = Url::parse(&outcome.url).ok().as_ref().and_then(hooks::origin_of);
+    let walked_origin = Url::parse(&outcome.url)
+        .ok()
+        .as_ref()
+        .and_then(hooks::origin_of);
     let (same_tab, elsewhere) = registry
         .read(tab_id, |tab| {
             (
@@ -1938,7 +1991,13 @@ pub async fn agent_console_core(
         Err((outcome, err)) => (outcome, Err(err)),
     };
     if let Some(outcome) = outcome {
-        events::emit_agent_activity(app, tab_id, agent::AgentAction::Console, outcome, now_millis());
+        events::emit_agent_activity(
+            app,
+            tab_id,
+            agent::AgentAction::Console,
+            outcome,
+            now_millis(),
+        );
     }
     answer
 }
@@ -1995,7 +2054,13 @@ pub async fn agent_capture_core(
         Err((outcome, err)) => (outcome, Err(err)),
     };
     if let Some(outcome) = outcome {
-        events::emit_agent_activity(app, tab_id, agent::AgentAction::Capture, outcome, now_millis());
+        events::emit_agent_activity(
+            app,
+            tab_id,
+            agent::AgentAction::Capture,
+            outcome,
+            now_millis(),
+        );
     }
     answer
 }
@@ -2062,15 +2127,26 @@ async fn capture_shared_page(
                     Some(error) => action_failed(error, &detail),
                 }));
             }
-            let (Some(x), Some(y), Some(width), Some(height), Some(viewport)) =
-                (answer.x, answer.y, answer.width, answer.height, answer.viewport)
-            else {
-                return Err(failed(capture_err("the page answered with no box".to_string())));
+            let (Some(x), Some(y), Some(width), Some(height), Some(viewport)) = (
+                answer.x,
+                answer.y,
+                answer.width,
+                answer.height,
+                answer.viewport,
+            ) else {
+                return Err(failed(capture_err(
+                    "the page answered with no box".to_string(),
+                )));
             };
             (
                 answer.url,
                 viewport,
-                CaptureRegion { x, y, width, height },
+                CaptureRegion {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
                 true,
                 answer.scrolled,
             )
@@ -2171,7 +2247,10 @@ async fn capture_viewport(surface: &BrowserSurface) -> Result<Vec<u8>, AppComman
     match tokio::time::timeout(CAPTURE_TIMEOUT, rx).await {
         Ok(Ok(Ok(bytes))) => Ok(bytes),
         Ok(Ok(Err(err))) => Err(window_err("Failed to capture the page", err)),
-        Ok(Err(_)) => Err(window_err("Failed to capture the page", "the request was dropped")),
+        Ok(Err(_)) => Err(window_err(
+            "Failed to capture the page",
+            "the request was dropped",
+        )),
         Err(_) => Err(window_err(
             "Failed to capture the page",
             "the engine did not draw the page in time",
@@ -2232,7 +2311,9 @@ pub async fn agent_eval_core(
     revoke_if_listener_replaced(app, registry, tab_id).await;
     let (outcome, answer) = match eval_on_shared_page(app, registry, consent, tab_id, request).await
     {
-        Ok(Evaluated { outcome, record }) => (record.then_some(agent::AgentOutcome::Done), Ok(outcome)),
+        Ok(Evaluated { outcome, record }) => {
+            (record.then_some(agent::AgentOutcome::Done), Ok(outcome))
+        }
         Err((outcome, err)) => (outcome, Err(err)),
     };
     if let Some(outcome) = outcome {
@@ -2252,7 +2333,10 @@ fn eval_declined(tab_id: &str) -> AppCommandError {
     AppCommandError::permission_denied(format!(
         "the user did not approve running that code on browser tab {tab_id}"
     ))
-    .with_i18n(BROWSER_I18N_KEY_EVAL_DECLINED, std::collections::BTreeMap::new())
+    .with_i18n(
+        BROWSER_I18N_KEY_EVAL_DECLINED,
+        std::collections::BTreeMap::new(),
+    )
 }
 
 fn eval_busy(tab_id: &str, refused: AskRefused) -> AppCommandError {
@@ -2266,8 +2350,10 @@ fn eval_busy(tab_id: &str, refused: AskRefused) -> AppCommandError {
              asking again just yet"
         ),
     };
-    AppCommandError::permission_denied(detail)
-        .with_i18n(BROWSER_I18N_KEY_EVAL_BUSY, std::collections::BTreeMap::new())
+    AppCommandError::permission_denied(detail).with_i18n(
+        BROWSER_I18N_KEY_EVAL_BUSY,
+        std::collections::BTreeMap::new(),
+    )
 }
 
 /// Where the page is, as codeg's own world reports it, held against the tab's
@@ -2309,7 +2395,10 @@ async fn eval_page_address(
             format!("unreadable answer: {e}"),
         ))
     })?;
-    let walked_origin = Url::parse(&answer.url).ok().as_ref().and_then(hooks::origin_of);
+    let walked_origin = Url::parse(&answer.url)
+        .ok()
+        .as_ref()
+        .and_then(hooks::origin_of);
     // One lock acquisition for all of it — incarnation, level and origin — and
     // it is the last thing that happens before the caller acts. Nothing may be
     // awaited between here and the page.
@@ -2380,9 +2469,12 @@ async fn eval_on_shared_page(
         eval_page_address(registry, &surface, tab_id, generation, GrantLevel::Control).await?;
 
     let request_id = uuid::Uuid::new_v4().to_string();
-    let rx = consent
-        .arm(tab_id, request_id.clone())
-        .map_err(|refused| (Some(agent::AgentOutcome::Refused), eval_busy(tab_id, refused)))?;
+    let rx = consent.arm(tab_id, request_id.clone()).map_err(|refused| {
+        (
+            Some(agent::AgentOutcome::Refused),
+            eval_busy(tab_id, refused),
+        )
+    })?;
     events::emit_eval_request(
         app,
         &EvalRequestPayload {
@@ -2435,18 +2527,17 @@ async fn eval_on_shared_page(
     // whether its answer — page content — may be handed over. A person who
     // pulled the tab back to read-only while it ran has not said the page
     // became unreadable.
-    let url = match eval_page_address(registry, &surface, tab_id, generation, GrantLevel::Read)
-        .await
-    {
-        Ok((url, _)) => url,
-        Err((outcome, err)) => {
-            tracing::warn!(
-                "[browser] tab {tab_id}: a snippet ran and its result was withheld: {}",
-                err.message
-            );
-            return Err((outcome, err));
-        }
-    };
+    let url =
+        match eval_page_address(registry, &surface, tab_id, generation, GrantLevel::Read).await {
+            Ok((url, _)) => url,
+            Err((outcome, err)) => {
+                tracing::warn!(
+                    "[browser] tab {tab_id}: a snippet ran and its result was withheld: {}",
+                    err.message
+                );
+                return Err((outcome, err));
+            }
+        };
     let record = registry
         .read(tab_id, |tab| tab.generation == generation)
         .unwrap_or(false);
@@ -2509,7 +2600,10 @@ async fn run_in_page(surface: &BrowserSurface, js: &str) -> Result<String, AppCo
         .map_err(|e| window_err("Failed to run the code", e.to_string()))?;
     match tokio::time::timeout(EVAL_TIMEOUT, rx).await {
         Ok(Ok(value)) => Ok(value),
-        Ok(Err(_)) => Err(window_err("Failed to run the code", "the request was dropped")),
+        Ok(Err(_)) => Err(window_err(
+            "Failed to run the code",
+            "the request was dropped",
+        )),
         Err(_) => Err(window_err(
             "Failed to run the code",
             "the page did not answer in time. It may still be running: code that loops holds the \
@@ -2689,14 +2783,16 @@ async fn wait_for_settled_tab(
 /// tab it cannot use is litter on someone else's screen.
 fn address_refusal(app: &AppHandle, raw: &str) -> Result<Url, AppCommandError> {
     let url = parse_web_url(raw).map_err(|e| {
-        AppCommandError::invalid_input(e.message)
-            .with_i18n(BROWSER_I18N_KEY_BAD_ADDRESS, std::collections::BTreeMap::new())
+        AppCommandError::invalid_input(e.message).with_i18n(
+            BROWSER_I18N_KEY_BAD_ADDRESS,
+            std::collections::BTreeMap::new(),
+        )
     })?;
     if blocked_by_policy(app, &url) {
-        return Err(AppCommandError::permission_denied(format!(
-            "{url} is refused by a site rule"
-        ))
-        .with_i18n(BROWSER_I18N_KEY_BLOCKED, std::collections::BTreeMap::new()));
+        return Err(
+            AppCommandError::permission_denied(format!("{url} is refused by a site rule"))
+                .with_i18n(BROWSER_I18N_KEY_BLOCKED, std::collections::BTreeMap::new()),
+        );
     }
     Ok(url)
 }
@@ -2871,7 +2967,11 @@ pub async fn pick_element_core(
     tab_id: &str,
 ) -> Result<handoff::PageHandoff, AppCommandError> {
     let Some((surface, generation, profile)) = registry.read(tab_id, |tab| {
-        (tab.surface.clone(), tab.generation, tab.state.profile.clone())
+        (
+            tab.surface.clone(),
+            tab.generation,
+            tab.state.profile.clone(),
+        )
     }) else {
         return Err(AppCommandError::not_found(format!(
             "browser tab {tab_id} not found"
@@ -2913,7 +3013,8 @@ pub async fn pick_element_core(
     };
     // Everything below says where the page is — the block, the link, the
     // picture — and says it as the agent's host knows it (a remote tab).
-    picked.href = crate::browser::remote::host_address(profile.as_deref(), &picked.href).into_owned();
+    picked.href =
+        crate::browser::remote::host_address(profile.as_deref(), &picked.href).into_owned();
     let text = handoff::render_element(&picked);
     let (url, _) = handoff::redact_url(&picked.href);
     // A picture of the element, when it has a box on screen and the page said
@@ -3017,15 +3118,23 @@ pub async fn capture_page_core(
     tab_id: &str,
 ) -> Result<handoff::PageHandoff, AppCommandError> {
     let Some((surface, title, profile)) = registry.read(tab_id, |tab| {
-        (tab.surface.clone(), tab.state.title.clone(), tab.state.profile.clone())
+        (
+            tab.surface.clone(),
+            tab.state.title.clone(),
+            tab.state.profile.clone(),
+        )
     }) else {
         return Err(AppCommandError::not_found(format!(
             "browser tab {tab_id} not found"
         )));
     };
     let raw = eval_in_world_string(&surface, agent::viewport_call()).await?;
-    let answer: agent::ViewportAnswer = serde_json::from_str(&raw)
-        .map_err(|e| window_err("Failed to capture the page", format!("unreadable answer: {e}")))?;
+    let answer: agent::ViewportAnswer = serde_json::from_str(&raw).map_err(|e| {
+        window_err(
+            "Failed to capture the page",
+            format!("unreadable answer: {e}"),
+        )
+    })?;
     let region = CaptureRegion {
         x: 0.0,
         y: 0.0,
@@ -3073,14 +3182,25 @@ pub fn page_console_core(
             limit: Some(crate::browser::console::CONSOLE_RING_CAPACITY),
         };
         let readout = tab.console.read(&query, &tab.state.url, |_| true);
-        (tab.state.url.clone(), readout.entries, readout.dropped, tab.state.profile.clone())
+        (
+            tab.state.url.clone(),
+            readout.entries,
+            readout.dropped,
+            tab.state.profile.clone(),
+        )
     });
     let Some((url, entries, dropped, profile)) = answer else {
         return Err(AppCommandError::not_found(format!(
             "browser tab {tab_id} not found"
         )));
     };
-    Ok(console_handoff(profile.as_deref(), &url, entries, dropped, errors_only))
+    Ok(console_handoff(
+        profile.as_deref(),
+        &url,
+        entries,
+        dropped,
+        errors_only,
+    ))
 }
 
 /// The console lines a tab of `profile` read out, as the block that goes to
@@ -3137,7 +3257,10 @@ pub struct McpBrowserTools {
 }
 
 impl McpBrowserTools {
-    pub fn new(app: AppHandle, config: crate::acp::browser_tools::BrowserToolsRuntimeConfig) -> Self {
+    pub fn new(
+        app: AppHandle,
+        config: crate::acp::browser_tools::BrowserToolsRuntimeConfig,
+    ) -> Self {
         Self { app, config }
     }
 
@@ -3188,14 +3311,10 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
             // The refusal is recognized by the key the error was tagged with,
             // not by its code: `PermissionDenied` is a wide category, and only
             // this one means "the user can fix it with one click".
-            Err(err)
-                if err.i18n_key.as_deref() == Some(BROWSER_I18N_KEY_GRANT_REQUIRED) =>
-            {
+            Err(err) if err.i18n_key.as_deref() == Some(BROWSER_I18N_KEY_GRANT_REQUIRED) => {
                 BrowserSnapshotOutcome::grant_required(tab_id)
             }
-            Err(err)
-                if matches!(err.code, crate::app_error::AppErrorCode::NotFound) =>
-            {
+            Err(err) if matches!(err.code, crate::app_error::AppErrorCode::NotFound) => {
                 BrowserSnapshotOutcome::refused(
                     tab_id,
                     ERROR_NO_SUCH_TAB,
@@ -3228,7 +3347,9 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
                 Some(BROWSER_I18N_KEY_CONTROL_REQUIRED) => {
                     BrowserActOutcome::control_required(tab_id)
                 }
-                Some(BROWSER_I18N_KEY_STALE_REF) => BrowserActOutcome::stale_ref(tab_id, &err.message),
+                Some(BROWSER_I18N_KEY_STALE_REF) => {
+                    BrowserActOutcome::stale_ref(tab_id, &err.message)
+                }
                 _ if matches!(err.code, crate::app_error::AppErrorCode::NotFound) => {
                     BrowserActOutcome::refused(
                         tab_id,
@@ -3447,7 +3568,10 @@ impl crate::acp::browser_tools::BrowserToolAccess for McpBrowserTools {
 /// Evaluate an expression in a tab's isolated world and unwrap the shim's
 /// `{ok, value}` envelope. The value is always a string here: every caller in
 /// this module asks for `JSON.stringify(…)` or for a literal.
-async fn eval_in_world_string(surface: &BrowserSurface, js: &str) -> Result<String, AppCommandError> {
+async fn eval_in_world_string(
+    surface: &BrowserSurface,
+    js: &str,
+) -> Result<String, AppCommandError> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<String, String>>();
     let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
     surface
@@ -3464,9 +3588,17 @@ async fn eval_in_world_string(surface: &BrowserSurface, js: &str) -> Result<Stri
         Ok(Ok(Ok(raw))) => raw,
         Ok(Ok(Err(err))) => return Err(window_err("Failed to read the page", err)),
         Ok(Err(_)) => {
-            return Err(window_err("Failed to read the page", "the request was dropped"))
+            return Err(window_err(
+                "Failed to read the page",
+                "the request was dropped",
+            ))
         }
-        Err(_) => return Err(window_err("Failed to read the page", "the page did not answer")),
+        Err(_) => {
+            return Err(window_err(
+                "Failed to read the page",
+                "the page did not answer",
+            ))
+        }
     };
     let envelope: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|e| window_err("Failed to read the page", format!("unreadable answer: {e}")))?;
@@ -3534,7 +3666,10 @@ pub fn set_sign_in_user_agent_core(registry: &BrowserRegistry, enabled: bool) {
         }
         if let Some(surface) = registry.surface(&state.tab_id) {
             if let Err(err) = surface.refresh_user_agent() {
-                tracing::debug!("[browser] tab {}: identity not re-applied: {err}", state.tab_id);
+                tracing::debug!(
+                    "[browser] tab {}: identity not re-applied: {err}",
+                    state.tab_id
+                );
             }
         }
     }
@@ -3884,7 +4019,13 @@ pub async fn browser_agent_snapshot(
     tab_id: String,
     max_chars: Option<usize>,
 ) -> Result<agent::PageSnapshot, AppCommandError> {
-    agent_snapshot_core(&app, &registry, &tab_id, &agent::SnapshotRequest { max_chars }).await
+    agent_snapshot_core(
+        &app,
+        &registry,
+        &tab_id,
+        &agent::SnapshotRequest { max_chars },
+    )
+    .await
 }
 
 /// Act on a shared page by ref. The check for `control` is inside
@@ -4073,18 +4214,26 @@ mod tests {
     #[test]
     fn a_tab_goes_into_the_profile_asked_for_or_its_connection_s() {
         let ok = || Ok(());
-        assert_eq!(open_tab_profile(None, None, ok).unwrap(), TabProfile::Named("default".into()));
+        assert_eq!(
+            open_tab_profile(None, None, ok).unwrap(),
+            TabProfile::Named("default".into())
+        );
         assert_eq!(
             open_tab_profile(Some("p-abc".into()), None, ok).unwrap(),
             TabProfile::Named("p-abc".into())
         );
         // The connection decides, whatever profile came along with it.
-        assert_eq!(open_tab_profile(Some("p-abc".into()), Some(4), ok).unwrap(), TabProfile::Remote(4));
+        assert_eq!(
+            open_tab_profile(Some("p-abc".into()), Some(4), ok).unwrap(),
+            TabProfile::Remote(4)
+        );
         // A remote profile is never named from outside: only its connection
         // opens it, after its egress is in place.
         assert!(open_tab_profile(Some("remote-4".into()), None, ok).is_err());
         // An open refused anyway is refused before anything is started.
-        let refused = open_tab_profile(None, Some(4), || Err(AppCommandError::invalid_input("bad url")));
+        let refused = open_tab_profile(None, Some(4), || {
+            Err(AppCommandError::invalid_input("bad url"))
+        });
         assert_eq!(refused.unwrap_err().message, "bad url");
     }
 
@@ -4104,7 +4253,10 @@ mod tests {
     #[test]
     fn the_refusal_carries_the_key_the_frontend_branches_on() {
         let err = grant_required("t1");
-        assert!(matches!(err.code, crate::app_error::AppErrorCode::PermissionDenied));
+        assert!(matches!(
+            err.code,
+            crate::app_error::AppErrorCode::PermissionDenied
+        ));
         assert_eq!(
             err.i18n_key.as_deref(),
             Some("browser.agent.error.grantRequired")
@@ -4112,8 +4264,8 @@ mod tests {
         // …and that key has a message. A stamped key with nothing behind it
         // silently degrades to the English `message`, which is the kind of
         // thing nobody notices until a user reports it in their own language.
-        let messages = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../src/i18n/messages/en.json");
+        let messages =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/i18n/messages/en.json");
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&messages).expect("en.json")).unwrap();
         let mut node = &json;
@@ -4212,11 +4364,20 @@ mod tests {
         let off = devtools_refusal(Some(false), "t1").expect("refused");
         // Invalid input, not not-found: the tab is right there, and the person
         // has something to do about it — which the key carries to the toast.
-        assert!(matches!(off.code, crate::app_error::AppErrorCode::InvalidInput));
-        assert_eq!(off.i18n_key.as_deref(), Some(BROWSER_I18N_KEY_INSPECTOR_OFF));
+        assert!(matches!(
+            off.code,
+            crate::app_error::AppErrorCode::InvalidInput
+        ));
+        assert_eq!(
+            off.i18n_key.as_deref(),
+            Some(BROWSER_I18N_KEY_INSPECTOR_OFF)
+        );
 
         let gone = devtools_refusal(None, "t1").expect("no such tab");
-        assert!(matches!(gone.code, crate::app_error::AppErrorCode::NotFound));
+        assert!(matches!(
+            gone.code,
+            crate::app_error::AppErrorCode::NotFound
+        ));
         // …and nothing for a person to act on, so no key.
         assert!(gone.i18n_key.is_none());
     }
@@ -4233,7 +4394,9 @@ mod tests {
     #[test]
     fn opening_the_inspector_on_a_tab_that_is_not_there_says_so() {
         let registry = BrowserRegistry::default();
-        let err = devtools_target(&registry, "ghost").err().expect("no such tab");
+        let err = devtools_target(&registry, "ghost")
+            .err()
+            .expect("no such tab");
         assert!(matches!(err.code, crate::app_error::AppErrorCode::NotFound));
     }
 
@@ -4255,9 +4418,10 @@ mod tests {
     #[tokio::test]
     async fn a_read_of_a_tab_that_is_not_there_reports_to_nobody() {
         let registry = BrowserRegistry::default();
-        let (outcome, err) = read_shared_page(&registry, "ghost", &agent::SnapshotRequest::default())
-            .await
-            .expect_err("no such tab");
+        let (outcome, err) =
+            read_shared_page(&registry, "ghost", &agent::SnapshotRequest::default())
+                .await
+                .expect_err("no such tab");
         assert!(outcome.is_none());
         assert!(matches!(err.code, crate::app_error::AppErrorCode::NotFound));
     }
@@ -4269,13 +4433,20 @@ mod tests {
     #[tokio::test]
     async fn handing_over_a_tab_that_is_not_there_says_so_at_once() {
         let registry = BrowserRegistry::default();
-        let not_found = |err: AppCommandError| {
-            matches!(err.code, crate::app_error::AppErrorCode::NotFound)
-        };
-        assert!(not_found(pick_element_core(&registry, "ghost").await.unwrap_err()));
-        assert!(not_found(cancel_pick_core(&registry, "ghost").await.unwrap_err()));
-        assert!(not_found(capture_page_core(&registry, "ghost").await.unwrap_err()));
-        assert!(not_found(page_console_core(&registry, "ghost", true).unwrap_err()));
+        let not_found =
+            |err: AppCommandError| matches!(err.code, crate::app_error::AppErrorCode::NotFound);
+        assert!(not_found(
+            pick_element_core(&registry, "ghost").await.unwrap_err()
+        ));
+        assert!(not_found(
+            cancel_pick_core(&registry, "ghost").await.unwrap_err()
+        ));
+        assert!(not_found(
+            capture_page_core(&registry, "ghost").await.unwrap_err()
+        ));
+        assert!(not_found(
+            page_console_core(&registry, "ghost", true).unwrap_err()
+        ));
     }
 
     /// A remote tab's console goes to an agent on the remote host, so the page
@@ -4304,15 +4475,23 @@ mod tests {
 
         let remote = console_handoff(Some("remote-7"), page, entries.clone(), 0, true);
         assert_eq!(remote.url, "http://localhost:3000/app?token=REDACTED");
-        assert!(remote.text.contains("- page: http://localhost:3000/app?token=REDACTED\n"));
-        assert!(remote.text.contains("(http://localhost:3000/src/main.js:12:5)"));
-        assert!(remote.text.contains("(https://cdn.example.com/lib.js:12:5)"));
+        assert!(remote
+            .text
+            .contains("- page: http://localhost:3000/app?token=REDACTED\n"));
+        assert!(remote
+            .text
+            .contains("(http://localhost:3000/src/main.js:12:5)"));
+        assert!(remote
+            .text
+            .contains("(https://cdn.example.com/lib.js:12:5)"));
         assert!(!remote.text.contains("remote.localhost"), "{}", remote.text);
         assert_eq!(remote.count, 2);
 
         let local = console_handoff(Some("default"), page, entries, 0, true);
         assert_eq!(local.url, "http://remote.localhost:3000/app?token=REDACTED");
-        assert!(local.text.contains("(http://remote.localhost:3000/src/main.js:12:5)"));
+        assert!(local
+            .text
+            .contains("(http://remote.localhost:3000/src/main.js:12:5)"));
     }
 
     #[test]

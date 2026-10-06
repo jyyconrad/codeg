@@ -1,7 +1,7 @@
 //! File tools wrapping `FileSystemRuntime`.
 
-use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use agent_client_protocol::schema::v1::{ReadTextFileRequest, WriteTextFileRequest};
+use rig::tool::{Tool, ToolContext, ToolExecutionError};
 use serde::Deserialize;
 use serde_json::json;
 

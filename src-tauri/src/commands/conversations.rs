@@ -2278,6 +2278,323 @@ pub async fn create_conversation(
     Ok(id)
 }
 
+/// A terminal CLI's hook reported a native session. Adopt or create the
+/// conversation row and tell the sidebar, without opening an ACP connection.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EstablishTerminalSessionResult {
+    pub conversation_id: i32,
+    pub folder_id: i32,
+    pub title: Option<String>,
+    /// Present when this call created the hidden chat folder the row lives in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<FolderDetail>,
+    /// Sidebar broadcast is the wrapper's job. Not part of the command payload.
+    #[serde(skip)]
+    pub changed: bool,
+    #[serde(skip)]
+    pub preserved_id: Option<i32>,
+    /// The event's session id is the one stored on the row, so its status
+    /// write belongs to this conversation. A reused row with a different id
+    /// leaves this false.
+    #[serde(skip)]
+    pub applies_status: bool,
+    /// Process exit found no row. The caller must not bind a conversation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absent: bool,
+}
+
+pub(crate) async fn emit_established_terminal_session(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    result: &EstablishTerminalSessionResult,
+) {
+    if result.changed {
+        emit_conversation_upsert(emitter, conn, result.conversation_id).await;
+    }
+    emit_preserved_conversation(emitter, conn, result.preserved_id).await;
+}
+
+/// Status first, then the sidebar upsert, so a new row already carries the
+/// status this observation just wrote. `observation` is the hook's snake_case
+/// event (`session_started`, `turn_started`, `turn_stopped`, `session_ended`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn finish_established_terminal_session(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    agent_type: AgentType,
+    external_id: &str,
+    terminal_id: Option<&str>,
+    observation: Option<&str>,
+    notice_body: Option<&str>,
+    result: &EstablishTerminalSessionResult,
+) {
+    // A child or later session id reuses the sidebar row without taking its
+    // status. Process death is the exception: the PTY is gone, so a turn that
+    // was still marked running becomes cancelled even when the last hook
+    // reported a different id. Closing the tab drops the hook event, and this
+    // same observation is what the view sends on the way out.
+    let exit = observation.map(str::trim) == Some("process_exit");
+    if result.applies_status || exit {
+        crate::terminal::session_broadcast::publish_terminal_observation(
+            emitter,
+            conn,
+            crate::terminal::session_broadcast::TerminalObservationPublish {
+                conversation_id: result.conversation_id,
+                agent_type,
+                external_id,
+                title: result.title.as_deref(),
+                terminal_id,
+                observation,
+                notice_body,
+            },
+        )
+        .await;
+    }
+    emit_established_terminal_session(emitter, conn, result).await;
+}
+
+fn absent_terminal_session() -> EstablishTerminalSessionResult {
+    EstablishTerminalSessionResult {
+        conversation_id: 0,
+        folder_id: 0,
+        title: None,
+        folder: None,
+        changed: false,
+        preserved_id: None,
+        applies_status: false,
+        absent: true,
+    }
+}
+
+/// PTY exit. Cancel a still-running turn on the conversation this terminal
+/// already bound. Never inserts a row: an exit that arrives before any
+/// session id, or after the row is gone, must not leave a cancelled untitled
+/// conversation behind.
+pub(crate) async fn settle_terminal_process_exit(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    conversation_id: Option<i32>,
+    terminal_id: Option<&str>,
+) -> Result<EstablishTerminalSessionResult, AppCommandError> {
+    let Some(conversation_id) = conversation_id else {
+        return Ok(absent_terminal_session());
+    };
+    let summary = match conversation_service::get_by_id(conn, conversation_id).await {
+        Ok(summary) => summary,
+        Err(crate::db::error::DbError::Migration(text))
+            if text.starts_with("Conversation not found") =>
+        {
+            return Ok(absent_terminal_session());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let external_id = summary.external_id.clone().unwrap_or_default();
+    let result = EstablishTerminalSessionResult {
+        conversation_id: summary.id,
+        folder_id: summary.folder_id,
+        title: summary.title.clone(),
+        folder: None,
+        changed: false,
+        preserved_id: None,
+        applies_status: true,
+        absent: false,
+    };
+    finish_established_terminal_session(
+        emitter,
+        conn,
+        summary.agent_type,
+        &external_id,
+        terminal_id,
+        Some("process_exit"),
+        None,
+        &result,
+    )
+    .await;
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn establish_terminal_session_observed(
+    emitter: &EventEmitter,
+    conn: &sea_orm::DatabaseConnection,
+    data_dir: &std::path::Path,
+    folder_id: i32,
+    agent_type: AgentType,
+    external_id: String,
+    preferred_conversation_id: Option<i32>,
+    title: Option<String>,
+    title_seed: Option<String>,
+    model: Option<String>,
+    working_dir: Option<String>,
+    observation: Option<&str>,
+    terminal_id: Option<&str>,
+    notice_body: Option<&str>,
+) -> Result<EstablishTerminalSessionResult, AppCommandError> {
+    if observation.map(str::trim) == Some("process_exit") {
+        return settle_terminal_process_exit(emitter, conn, preferred_conversation_id, terminal_id)
+            .await;
+    }
+    let result = establish_terminal_session_core(
+        conn,
+        data_dir,
+        folder_id,
+        agent_type,
+        external_id.clone(),
+        preferred_conversation_id,
+        title,
+        title_seed,
+        model,
+        working_dir,
+    )
+    .await?;
+    finish_established_terminal_session(
+        emitter,
+        conn,
+        agent_type,
+        &external_id,
+        terminal_id,
+        observation,
+        notice_body,
+        &result,
+    )
+    .await;
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn establish_terminal_session_core(
+    conn: &sea_orm::DatabaseConnection,
+    data_dir: &std::path::Path,
+    folder_id: i32,
+    agent_type: AgentType,
+    external_id: String,
+    preferred_conversation_id: Option<i32>,
+    title: Option<String>,
+    title_seed: Option<String>,
+    model: Option<String>,
+    working_dir: Option<String>,
+) -> Result<EstablishTerminalSessionResult, AppCommandError> {
+    let request = conversation_service::EstablishTerminalSessionRequest {
+        agent_type,
+        external_id,
+        preferred_conversation_id,
+        folder_id: (folder_id > 0).then_some(folder_id),
+        title,
+        title_seed,
+        model,
+    };
+    let outcome = conversation_service::establish_terminal_session(conn, request.clone())
+        .await
+        .map_err(AppCommandError::from)?;
+    let (established, folder) = match outcome {
+        conversation_service::EstablishTerminalSessionOutcome::Established(row) => (row, None),
+        conversation_service::EstablishTerminalSessionOutcome::NeedsFolder => {
+            let created = create_chat_conversation_core(
+                conn,
+                data_dir,
+                agent_type,
+                request.title.clone().or_else(|| request.title_seed.clone()),
+                working_dir.as_deref(),
+            )
+            .await?;
+            let mut rebound = request;
+            rebound.preferred_conversation_id = Some(created.conversation_id);
+            rebound.folder_id = Some(created.folder_id);
+            match conversation_service::establish_terminal_session(conn, rebound)
+                .await
+                .map_err(AppCommandError::from)?
+            {
+                conversation_service::EstablishTerminalSessionOutcome::NeedsFolder => {
+                    return Err(AppCommandError::invalid_input(
+                        "terminal session still has no folder",
+                    ));
+                }
+                conversation_service::EstablishTerminalSessionOutcome::Established(row)
+                    if row.conversation_id != created.conversation_id =>
+                {
+                    if let Err(error) = conversation_service::delete_unbound_conversation(
+                        conn,
+                        created.conversation_id,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "[conversations] failed to drop the unused terminal chat row {}: {error}",
+                            created.conversation_id
+                        );
+                    }
+                    if let Err(error) =
+                        folder_service::soft_delete_folder(conn, created.folder_id).await
+                    {
+                        tracing::warn!(
+                            "[conversations] failed to drop the unused terminal chat folder {}: {error}",
+                            created.folder_id
+                        );
+                    }
+                    (row, None)
+                }
+                conversation_service::EstablishTerminalSessionOutcome::Established(row) => {
+                    (row, Some(created.folder))
+                }
+            }
+        }
+    };
+    Ok(EstablishTerminalSessionResult {
+        conversation_id: established.conversation_id,
+        folder_id: established.folder_id,
+        title: established.title,
+        folder,
+        changed: established.changed,
+        preserved_id: established.preserved_id,
+        applies_status: established.applies_status,
+        absent: false,
+    })
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+#[allow(clippy::too_many_arguments)]
+pub async fn establish_terminal_session(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, AppDatabase>,
+    folder_id: i32,
+    agent_type: AgentType,
+    external_id: String,
+    preferred_conversation_id: Option<i32>,
+    title: Option<String>,
+    title_seed: Option<String>,
+    model: Option<String>,
+    working_dir: Option<String>,
+    observation: Option<String>,
+    terminal_id: Option<String>,
+    notice_body: Option<String>,
+) -> Result<EstablishTerminalSessionResult, AppCommandError> {
+    use tauri::Manager;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    establish_terminal_session_observed(
+        &EventEmitter::Tauri(app),
+        &db.conn,
+        &data_dir,
+        folder_id,
+        agent_type,
+        external_id,
+        preferred_conversation_id,
+        title,
+        title_seed,
+        model,
+        working_dir,
+        observation.as_deref(),
+        terminal_id.as_deref(),
+        notice_body.as_deref(),
+    )
+    .await
+}
+
 /// Result of [`create_chat_conversation_core`]: the new conversation id plus the
 /// hidden chat folder backing it, so the frontend can drop the folder straight
 /// into `allFolders` (resolving cwd / active-folder) without a refetch.
@@ -2869,6 +3186,7 @@ mod tests {
             parent_tool_use_id: Some(parent_tool_use_id.into()),
             delegation_call_id: Some("call-1".into()),
             origin_cwd: None,
+            launch_mode: "acp".into(),
         }
     }
 
@@ -3150,15 +3468,13 @@ mod tests {
             user_text_turn("turn-0", "hello", at(1)),
         ];
         for i in 0..400 {
-            turns.push(assistant_text_turn(
-                &format!("a-{i}"),
-                "step",
-                at(2),
-                false,
-            ));
+            turns.push(assistant_text_turn(&format!("a-{i}"), "step", at(2), false));
         }
-        let stamped =
-            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "hello"),
+            Some(turn_started()),
+        );
         assert_eq!(stamped.as_deref(), Some("msg-live"));
         assert_eq!(turns[2].id, "msg-live");
     }
@@ -3175,16 +3491,22 @@ mod tests {
         for i in 0..MAX_IN_FLIGHT_WALK_USER_TURNS {
             turns.push(user_text_turn(&format!("u-{i}"), "filler", parsed_at));
         }
-        let stamped =
-            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "hello"),
+            Some(turn_started()),
+        );
         assert_eq!(stamped, None, "past the cost bound, stamp nothing");
         assert_eq!(turns[0].id, "wanted", "untouched");
 
         // One fewer and the same transcript is inside the bound, so it is the
         // bound that refused above and not some other gate.
         turns.pop();
-        let stamped =
-            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "hello"),
+            Some(turn_started()),
+        );
         assert_eq!(stamped.as_deref(), Some("msg-live"));
     }
 
@@ -3225,8 +3547,11 @@ mod tests {
             assistant_text_turn("turn-1", "first half", at(2), false),
             user_text_turn("turn-2", "also check the tests", at(3)),
         ];
-        let stamped =
-            apply_in_flight_message_id(&mut turns, &pending_text("msg-live", "hello"), Some(turn_started()));
+        let stamped = apply_in_flight_message_id(
+            &mut turns,
+            &pending_text("msg-live", "hello"),
+            Some(turn_started()),
+        );
         assert_eq!(stamped.as_deref(), Some("msg-live"));
         assert_eq!(turns[0].id, "msg-live", "the prompt keeps the stamp");
         assert_eq!(turns[2].id, "turn-2", "the mid-turn message is untouched");
@@ -6757,6 +7082,7 @@ mod tests {
                 parent_tool_use_id: None,
                 delegation_call_id: None,
                 origin_cwd: None,
+                launch_mode: "acp".into(),
             },
             turns,
             session_stats: None,
@@ -6897,5 +7223,164 @@ mod tests {
             seam.prefix_hash,
             crate::commands::turn_window::prefix_fingerprint(&turns[..2])
         );
+    }
+
+    fn test_emitter() -> EventEmitter {
+        EventEmitter::test_web_only(std::sync::Arc::new(
+            crate::web::event_bridge::WebEventBroadcaster::new(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn process_exit_cancels_only_a_running_row_and_never_inserts() {
+        let db = fresh_in_memory_db().await;
+        let folder = seed_folder(&db, "/tmp/codeg-terminal-process-exit").await;
+        let emitter = test_emitter();
+        let data_dir = std::env::temp_dir();
+
+        let running =
+            conversation_service::create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+                .await
+                .expect("running row");
+        conversation_service::bind_external_id(&db.conn, running.id, "sid-first", &[])
+            .await
+            .expect("bind first session");
+
+        // A later id reuses the empty row but must not cancel the stored turn.
+        let reused = establish_terminal_session_observed(
+            &emitter,
+            &db.conn,
+            &data_dir,
+            folder,
+            AgentType::ClaudeCode,
+            "sid-next".into(),
+            Some(running.id),
+            None,
+            None,
+            None,
+            None,
+            Some("session_ended"),
+            Some("term-1"),
+            None,
+        )
+        .await
+        .expect("reuse");
+        assert_eq!(reused.conversation_id, running.id);
+        assert!(!reused.applies_status);
+        let still_running = conversation_service::get_by_id(&db.conn, running.id)
+            .await
+            .expect("running row remains");
+        assert_eq!(still_running.status, "in_progress");
+        assert_eq!(still_running.external_id.as_deref(), Some("sid-first"));
+
+        let exited = establish_terminal_session_observed(
+            &emitter,
+            &db.conn,
+            &data_dir,
+            0,
+            AgentType::Grok,
+            "process-exit".into(),
+            Some(running.id),
+            None,
+            None,
+            None,
+            None,
+            Some("process_exit"),
+            Some("term-1"),
+            None,
+        )
+        .await
+        .expect("process exit");
+        assert!(!exited.absent);
+        assert_eq!(exited.conversation_id, running.id);
+        let cancelled = conversation_service::get_by_id(&db.conn, running.id)
+            .await
+            .expect("cancelled row");
+        assert_eq!(cancelled.status, "cancelled");
+
+        let idle =
+            conversation_service::create(&db.conn, folder, AgentType::ClaudeCode, None, None)
+                .await
+                .expect("idle row");
+        conversation_service::update_status(
+            &db.conn,
+            idle.id,
+            conversation::ConversationStatus::PendingReview,
+        )
+        .await
+        .expect("mark idle");
+        let idle_exit = establish_terminal_session_observed(
+            &emitter,
+            &db.conn,
+            &data_dir,
+            0,
+            AgentType::ClaudeCode,
+            "process-exit".into(),
+            Some(idle.id),
+            None,
+            None,
+            None,
+            None,
+            Some("process_exit"),
+            None,
+            None,
+        )
+        .await
+        .expect("idle exit");
+        assert_eq!(idle_exit.conversation_id, idle.id);
+        let idle_row = conversation_service::get_by_id(&db.conn, idle.id)
+            .await
+            .expect("idle row remains");
+        assert_eq!(idle_row.status, "pending_review");
+
+        let missing = establish_terminal_session_observed(
+            &emitter,
+            &db.conn,
+            &data_dir,
+            0,
+            AgentType::ClaudeCode,
+            "process-exit".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("process_exit"),
+            Some("term-missing"),
+            None,
+        )
+        .await
+        .expect("exit before a row exists");
+        assert!(missing.absent);
+        assert_eq!(missing.conversation_id, 0);
+
+        let gone = establish_terminal_session_observed(
+            &emitter,
+            &db.conn,
+            &data_dir,
+            0,
+            AgentType::ClaudeCode,
+            "process-exit".into(),
+            Some(999_999),
+            None,
+            None,
+            None,
+            None,
+            Some("process_exit"),
+            Some("term-gone"),
+            None,
+        )
+        .await
+        .expect("exit of a deleted row");
+        assert!(gone.absent);
+
+        let rows = {
+            use sea_orm::EntityTrait;
+            conversation::Entity::find()
+                .all(&db.conn)
+                .await
+                .expect("rows")
+        };
+        assert_eq!(rows.len(), 2, "process exit must not insert a row");
     }
 }

@@ -47,6 +47,7 @@ export function TerminalTabBar({
   const {
     tabs,
     activeTabId,
+    exitedTerminals,
     switchTerminal,
     closeTerminal,
     closeOtherTerminals,
@@ -116,7 +117,35 @@ export function TerminalTabBar({
                   }}
                 />
               ) : (
-                <span className="truncate max-w-[7.5rem]">{tab.title}</span>
+                <>
+                  {(tab.agentRun || tab.agentLaunch || tab.agentAttach) && (
+                    <span
+                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                        exitedTerminals.has(tab.id)
+                          ? "bg-muted-foreground"
+                          : tab.agentRun?.hookSupport === "unsupported"
+                            ? "bg-muted-foreground"
+                            : tab.agentRun?.latestEventType === "turn_started"
+                              ? "bg-amber-500"
+                              : tab.agentRun?.latestEventType === "turn_stopped"
+                                ? "bg-muted-foreground"
+                                : "bg-sky-500"
+                      }`}
+                      title={
+                        exitedTerminals.has(tab.id)
+                          ? t("agentStatus.exited")
+                          : tab.agentRun?.hookSupport === "unsupported"
+                            ? t("agentStatus.unsupported")
+                            : tab.agentRun?.latestEventType === "turn_started"
+                              ? t("agentStatus.started")
+                              : tab.agentRun?.latestEventType === "turn_stopped"
+                                ? t("agentStatus.stopped")
+                                : t("agentStatus.waiting")
+                      }
+                    />
+                  )}
+                  <span className="truncate max-w-[7.5rem]">{tab.title}</span>
+                </>
               )}
               <button
                 className="ml-1 rounded-sm hover:bg-muted-foreground/20 p-0.5"
