@@ -38,7 +38,10 @@ vi.mock("@/lib/api", async (importOriginal) => {
 })
 vi.mock("next/navigation", () => {
   const params = new URLSearchParams()
-  return { useSearchParams: () => params }
+  return {
+    useSearchParams: () => params,
+    useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  }
 })
 
 function claudeAgent(overrides: Partial<AcpAgentInfo> = {}): AcpAgentInfo {

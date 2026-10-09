@@ -1100,6 +1100,7 @@ mod tests {
             sessions: crate::acp::session_info::SessionInfoRuntimeConfig::new(),
             authoring: crate::acp::chat_authoring::ChatAuthoringRuntimeConfig::new(),
             browser: crate::acp::browser_tools::BrowserToolsRuntimeConfig::new(),
+            computer: crate::acp::computer_tools::ComputerToolsRuntimeConfig::new(),
             questions: questions as Arc<dyn SessionQuestionAccess>,
             plan_approvals: Arc::new(NoPlan) as Arc<dyn SessionPlanApprovalAccess>,
             tasks: tasks as Arc<dyn WorkTaskToolAccess>,
@@ -1166,6 +1167,9 @@ mod tests {
             browser: true,
             browser_eval: true,
             timer: true,
+            computer: true,
+            computer_launch: true,
+            computer_clipboard: true,
         };
         let defs = load_companion_defs(features, &[], &[]).unwrap();
         let json_names: Vec<&str> = all
@@ -1198,6 +1202,9 @@ mod tests {
             browser: false,
             browser_eval: false,
             timer: false,
+            computer: false,
+            computer_launch: false,
+            computer_clipboard: false,
         };
         assert!(load_companion_defs(none, &[], &[]).unwrap().is_empty());
 
@@ -1243,6 +1250,9 @@ mod tests {
             browser: false,
             browser_eval: false,
             timer: false,
+            computer: false,
+            computer_launch: false,
+            computer_clipboard: false,
         };
         let names: Vec<_> = load_companion_defs(delegation_off, &[], &[])
             .unwrap()

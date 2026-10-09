@@ -358,7 +358,7 @@ describe("Sidebar — Navigation item visibility", () => {
     expect(navRow("Automations")).toBeTruthy()
     expect(navRow("To-dos")).toBeTruthy()
     expect(navRow(FORGE_ROW)).toBeTruthy()
-    expect(navRow("Infinite Conversations")).toBeTruthy()
+    expect(navRow("Infinite Canvas")).toBeTruthy()
     expect(navRow("Toolbox")).toBeTruthy()
   })
 

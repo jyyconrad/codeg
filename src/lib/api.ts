@@ -72,6 +72,7 @@ import type {
   PlanApprovalAnswer,
   AcpAgentInfo,
   AcpAgentStatus,
+  AgentLatestRelease,
   AgentDiagnosticsReport,
   GrokStructuredConfig,
   CodexSandboxStructuredConfig,
@@ -96,10 +97,14 @@ import type {
   FolderHistoryEntry,
   FolderDetail,
   FolderGroupDetail,
+  ConversationBranchTag,
+  ConversationTagDetail,
   SidebarLayoutEntry,
   FolderLinkDetail,
   FolderLinkPlan,
   FolderLinkRequestItem,
+  CanvasBoard,
+  CanvasBoardSummary,
   CanvasMutation,
   CanvasNode,
   CanvasNodeKind,
@@ -560,6 +565,17 @@ export async function acpDetectAgentLocalVersion(
   agentType: AgentType
 ): Promise<string | null> {
   return getTransport().call("acp_detect_agent_local_version", { agentType })
+}
+
+/**
+ * The newest upstream release of an agent that is newer than codeg's pinned
+ * version and that Custom install can fetch; `null` when there is none. Hits
+ * npm or the ACP registry, so callers ask once per visit, not per render.
+ */
+export async function acpFetchAgentLatestRelease(
+  agentType: AgentType
+): Promise<AgentLatestRelease | null> {
+  return getTransport().call("acp_fetch_agent_latest_release", { agentType })
 }
 
 export async function acpPrepareNpxAgent(
@@ -2295,6 +2311,71 @@ export async function setFolderGroup(
   return getTransport().call("set_folder_group", { folderId, groupId })
 }
 
+export async function listConversationTags(): Promise<ConversationTagDetail[]> {
+  return getTransport().call("list_conversation_tags", {})
+}
+
+/** Create a tag. `folderId: null` makes it global; a folder id scopes it to
+ *  that folder's family (a worktree child resolves to its root). */
+export async function createConversationTag(args: {
+  folderId: number | null
+  name: string
+  color: string
+}): Promise<ConversationTagDetail> {
+  return getTransport().call("create_conversation_tag", args)
+}
+
+/** Rename and/or recolour a tag. An omitted field is left alone. */
+export async function updateConversationTag(
+  tagId: number,
+  patch: { name?: string; color?: string }
+): Promise<ConversationTagDetail> {
+  return getTransport().call("update_conversation_tag", { tagId, ...patch })
+}
+
+/** Delete a tag; it comes off every conversation that carried it. */
+export async function deleteConversationTag(tagId: number): Promise<void> {
+  return getTransport().call("delete_conversation_tag", { tagId })
+}
+
+/** Persist one scope's order after a drag: its complete list, first to last. */
+export async function reorderConversationTags(tagIds: number[]): Promise<void> {
+  return getTransport().call("reorder_conversation_tags", { tagIds })
+}
+
+/** The branch tag setting: off, in its default colour, until first saved. */
+export async function getConversationBranchTag(): Promise<ConversationBranchTag> {
+  return getTransport().call("get_conversation_branch_tag", {})
+}
+
+/** Save the branch tag setting whole; resolves to it as stored (the colour
+ *  normalized). */
+export async function updateConversationBranchTag(
+  setting: ConversationBranchTag
+): Promise<ConversationBranchTag> {
+  return getTransport().call("update_conversation_branch_tag", {
+    enabled: setting.enabled,
+    color: setting.color,
+  })
+}
+
+/**
+ * Put tags on / take tags off one conversation — a delta, so two windows
+ * toggling different tags at once both land. Resolves to the conversation's
+ * fresh summary (the same one broadcast on `conversation://changed`).
+ */
+export async function updateConversationTags(args: {
+  conversationId: number
+  add?: number[]
+  remove?: number[]
+}): Promise<DbConversationSummary> {
+  return getTransport().call("update_conversation_tags", {
+    conversationId: args.conversationId,
+    add: args.add ?? [],
+    remove: args.remove ?? [],
+  })
+}
+
 export async function updateFolderColor(
   folderId: number,
   color: FolderThemeColor
@@ -3103,15 +3184,67 @@ export interface GroupIntoRegionResult {
   deletedIds: number[]
 }
 
-/** The full canvas node set plus the revision it was read at. */
-export async function canvasListNodes(): Promise<CanvasSnapshot> {
-  return getTransport().call("canvas_list_nodes", {})
+/** Input for `canvasCreateBoard`. Every field optional — an unnamed board is
+ *  a real board, titled "Untitled canvas" by the client. */
+export interface CreateCanvasBoardInput {
+  name?: string
+  description?: string
+  color?: string
 }
 
+/** Field-by-field board patch: absent = untouched, empty string clears. */
+export interface CanvasBoardPatchInput {
+  name?: string
+  description?: string
+  color?: string
+}
+
+/** Every canvas, most recently edited first, each with its node count and a
+ *  thumbnail's worth of node footprints. */
+export async function canvasListBoards(): Promise<CanvasBoardSummary[]> {
+  return getTransport().call("canvas_list_boards", {})
+}
+
+export async function canvasCreateBoard(
+  input: CreateCanvasBoardInput
+): Promise<CanvasBoard> {
+  return getTransport().call("canvas_create_board", { input })
+}
+
+export async function canvasUpdateBoard(
+  boardId: number,
+  patch: CanvasBoardPatchInput
+): Promise<CanvasBoard> {
+  return getTransport().call("canvas_update_board", { boardId, patch })
+}
+
+/** Delete a board and everything on it (terminal cards' shells included). The
+ *  value is the ids of the nodes removed. Idempotent: a board already gone is a
+ *  success with an empty list. */
+export async function canvasDeleteBoard(
+  boardId: number
+): Promise<CanvasMutation<number[]>> {
+  return getTransport().call("canvas_delete_board", { boardId })
+}
+
+/** One board's node set plus the (global) revision it was read at. A board
+ *  that no longer exists rejects with `not_found`. */
+export async function canvasListNodes(
+  boardId: number
+): Promise<CanvasSnapshot> {
+  return getTransport().call("canvas_list_nodes", { boardId })
+}
+
+/** Place a node on a board. The board is its own argument rather than a field
+ *  of `input`: the node menus build the input without knowing which board
+ *  they are on, and the board view is what supplies it. */
 export async function canvasCreateNode(
+  boardId: number,
   input: CreateCanvasNodeInput
 ): Promise<CanvasMutation<CanvasNode>> {
-  return getTransport().call("canvas_create_node", { input })
+  return getTransport().call("canvas_create_node", {
+    input: { ...input, boardId },
+  })
 }
 
 /** "Collect these conversations into a region": the region write, its member
@@ -3119,9 +3252,12 @@ export async function canvasCreateNode(
  *  ONE revision. Doing it as create + N × memberAdd + M × delete would spray a
  *  dozen events for one gesture and make every intermediate state observable. */
 export async function canvasGroupIntoRegion(
+  boardId: number,
   input: GroupIntoRegionInput
 ): Promise<CanvasMutation<GroupIntoRegionResult>> {
-  return getTransport().call("canvas_group_into_region", { input })
+  return getTransport().call("canvas_group_into_region", {
+    input: { ...input, boardId },
+  })
 }
 
 export async function canvasUpdateNode(
@@ -3236,6 +3372,7 @@ export type SettingsSection =
   | "office-tools"
   | "collaboration"
   | "browser"
+  | "computer-use"
   | "version-control"
   | "shortcuts"
   | "system"

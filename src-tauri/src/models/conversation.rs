@@ -70,6 +70,33 @@ pub struct DbConversationSummary {
     pub origin_cwd: Option<String>,
     /// `acp` opens the transcript. `terminal` reopens the native CLI session.
     pub launch_mode: String,
+    /// Ids of the tags on this conversation, ascending. Not stored on the row —
+    /// backfilled from `conversation_tag_link` by one query over the returned
+    /// set (`fill_summary_extras`), the same way `child_count` is. Omitted from
+    /// the wire when empty, so the frontend reads an absent field as "no tags".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tag_ids: Vec<i32>,
+}
+
+/// A conversation tag as the UI sees it. `folder_id` is the scope: `None` for
+/// a global tag, otherwise the root folder whose conversations it is offered
+/// on. `color` is always a normalized `#rrggbb`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversationTagDetail {
+    pub id: i32,
+    pub folder_id: Option<i32>,
+    pub name: String,
+    pub color: String,
+    pub sort_order: i32,
+}
+
+/// The branch tag: every conversation's git branch (the one it started on)
+/// drawn as a chip beside its tags — whether at all, and in which colour. One
+/// setting for the whole app; `color` is a normalized `#rrggbb`, like a tag's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationBranchTag {
+    pub enabled: bool,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

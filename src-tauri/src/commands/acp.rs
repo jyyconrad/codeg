@@ -10,6 +10,7 @@ use tauri::{Manager, State};
 use crate::acp::binary_cache;
 use crate::acp::custom_registry;
 use crate::acp::error::AcpError;
+use crate::acp::latest_release;
 use crate::acp::manager::ConnectionManager;
 use crate::acp::opencode_plugins::{self, PluginCheckSummary};
 use crate::acp::preflight::{self, PreflightResult};
@@ -110,7 +111,7 @@ fn version_from_package_spec(package: &str) -> Option<String> {
     normalize_version_candidate(version)
 }
 
-fn package_name_from_spec(package: &str) -> String {
+pub(crate) fn package_name_from_spec(package: &str) -> String {
     let normalized = package.trim();
     if normalized.is_empty() {
         return String::new();
@@ -137,7 +138,7 @@ fn package_name_from_spec(package: &str) -> String {
 /// anything containing whitespace, `@`, or path separators, so the result is
 /// safe to interpolate into an npm package spec (`name@<v>`) and to substitute
 /// into a binary download URL. Returns the version without the leading `v`.
-fn sanitize_custom_version(input: &str) -> Option<String> {
+pub(crate) fn sanitize_custom_version(input: &str) -> Option<String> {
     let trimmed = input.trim();
     let normalized = trimmed
         .strip_prefix('v')
@@ -186,59 +187,12 @@ fn build_npm_install_spec(
 /// embedded in the GitHub release URL (the path tag, and for some agents the
 /// asset filename), so a plain replace yields the URL for the requested version
 /// — assuming the upstream release reuses the same asset-naming convention.
-fn apply_custom_version_to_url(url: &str, registry_version: &str, custom_version: &str) -> String {
+pub(crate) fn apply_custom_version_to_url(
+    url: &str,
+    registry_version: &str,
+    custom_version: &str,
+) -> String {
     url.replace(registry_version, custom_version)
-}
-
-/// Per-agent `env_json` key that opts an npx agent into installing the
-/// package's `latest` npm dist-tag instead of the reviewed registry pin.
-/// Owned by the "Adapter version" control in Agent Settings, riding the same
-/// per-agent env store as pi's `PI_ACP_PI_COMMAND` runtime override and the
-/// host-tools knob. Consulted at install/upgrade time ONLY: a launch always
-/// runs whatever is installed, and nothing polls npm in the background.
-///
-/// Exactly the value `latest` opts in; absence or any other value stays on the
-/// pin. Unlike `CODEG_ACP_HOST_TOOLS` there is no process-env second layer to
-/// make "absent" ambiguous, so the settings control may delete the key for the
-/// pinned default — both readers (this one and `adapterChannelFromEnvText` in
-/// acp-agent-settings.tsx) treat absent as pinned.
-pub(crate) const ADAPTER_CHANNEL_ENV: &str = "CODEG_ADAPTER_CHANNEL";
-const ADAPTER_CHANNEL_LATEST: &str = "latest";
-
-/// Whether a resolved per-agent env opts into the `latest` adapter channel.
-/// Takes the MERGED env (`build_runtime_env_from_setting`) rather than raw
-/// `env_json`, so it reads the same layers the launch path and the settings
-/// page display — a value set through the agent's local config file counts too.
-fn adapter_channel_is_latest(env: &BTreeMap<String, String>) -> bool {
-    env.get(ADAPTER_CHANNEL_ENV)
-        .is_some_and(|value| value.trim() == ADAPTER_CHANNEL_LATEST)
-}
-
-/// The npm install spec(s) one prepare call will attempt, in order: the spec to
-/// try first, plus the fallback to retry on failure (at most one).
-///
-/// An explicit `version_override` (the Custom install dialog) always wins and
-/// never falls back — the user asked for that exact version, and quietly
-/// installing a different one would relabel their choice. With no override, a
-/// latest-channel agent tries the `latest` dist-tag first and keeps the pinned
-/// registry spec as the fallback, so npm being unreachable (or a mirror not
-/// yet carrying the tag's target) degrades to the reviewed pin instead of a
-/// failed install. The default stays byte-identical to `build_npm_install_spec`.
-fn npm_install_attempts(
-    package: &str,
-    version_override: Option<&str>,
-    latest_channel: bool,
-) -> Result<(String, Option<String>), AcpError> {
-    let pinned = build_npm_install_spec(package, version_override)?;
-    let overridden = version_override.is_some_and(|raw| !raw.trim().is_empty());
-    if latest_channel && !overridden {
-        let latest = format!(
-            "{}@{ADAPTER_CHANNEL_LATEST}",
-            package_name_from_spec(package)
-        );
-        return Ok((latest, Some(pinned)));
-    }
-    Ok((pinned, None))
 }
 
 /// Check whether an NPX agent command is spawnable.
@@ -2254,7 +2208,7 @@ async fn probe_binary_version(bin: &std::path::Path) -> Option<String> {
 
 /// Official npm registry URL – used to bypass local mirror configurations that
 /// may not have synced niche packages like `@agentclientprotocol/*`.
-const NPM_OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
+pub(crate) const NPM_OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
 
 /// Force npm to install platform-specific `optionalDependencies`. Several agents
 /// ship their native CLI as a per-platform optional package — e.g.
@@ -4118,6 +4072,108 @@ fn drop_codex_catalog_reference() -> Result<(), AcpError> {
         persist_codex_native_config_files(None, Some(&next))?;
     }
     Ok(())
+}
+
+/// What [`resync_codex_generated_catalog_at`] did.
+#[derive(Debug, PartialEq)]
+enum CodexCatalogResync {
+    /// No catalog codeg can regenerate: config.toml references none, references
+    /// the user's own, or codeg's intent sidecar is missing.
+    NotOwned,
+    /// The generated catalog was re-expanded against the new official list.
+    Rewritten,
+    /// Nothing deviates from codex's own list any more, so the reference and
+    /// the generated files were removed and codex's catalog applies untouched.
+    Released,
+}
+
+/// Re-expand codeg's generated codex catalog (`model_catalog_json`) against
+/// `snapshot`, the official catalog of the codex that is now installed.
+///
+/// The key is a whole-table replace that codeg only rewrites when the model
+/// settings are saved, so a codex upgrade that ships new official models left
+/// every user with custom models or removed officials on the OLD table: codex
+/// 0.159.1 (codex-acp 2.0.1) made GPT-6.1 Sol its default and they would not
+/// see it until they happened to re-save. Expanding the stored intent (the
+/// source sidecar) against the new catalog is exactly what that re-save writes.
+///
+/// Only a catalog codeg owns is touched — config.toml must reference codeg's
+/// own file, and the sidecar must exist. A catalog without a sidecar is NOT
+/// re-imported: read against the new list, every newly shipped official would
+/// look like one the user removed. The root `model` is left alone; the user's
+/// explicit default is part of the sidecar and survives the rewrite as-is.
+fn resync_codex_generated_catalog_at(
+    codex_home: &Path,
+    snapshot: &[serde_json::Value],
+) -> Result<CodexCatalogResync, AcpError> {
+    let config_path = codex_home.join("config.toml");
+    let config_toml = match fs::read_to_string(&config_path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CodexCatalogResync::NotOwned)
+        }
+        Err(e) => {
+            return Err(AcpError::protocol(format!(
+                "read codex config.toml failed: {e}"
+            )))
+        }
+    };
+    let owned = config_toml
+        .parse::<toml::Value>()
+        .ok()
+        .as_ref()
+        .and_then(|doc| doc.get("model_catalog_json"))
+        .and_then(toml::Value::as_str)
+        .is_some_and(|value| is_codeg_owned_catalog_ref(value, codex_home));
+    if !owned {
+        return Ok(CodexCatalogResync::NotOwned);
+    }
+    let raw = match fs::read_to_string(codex_home.join(crate::acp::codex_model_catalog::SOURCE_REL))
+    {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CodexCatalogResync::NotOwned)
+        }
+        Err(e) => {
+            return Err(AcpError::protocol(format!(
+                "read codex catalog source failed: {e}"
+            )))
+        }
+    };
+    let config = crate::acp::codex_model_catalog::parse_model_config(Some(&raw));
+    let released = crate::acp::codex_model_catalog::is_effectively_empty(&config, snapshot);
+    if released {
+        // Reference first, files second: codex refuses to start on a
+        // `model_catalog_json` that points at a missing file, so a failure in
+        // between must leave a stale-but-valid table, never a dangling key.
+        if let Some(next) = remove_codex_catalog_key(&config_toml, codex_home)? {
+            fs::write(&config_path, next)
+                .map_err(|e| AcpError::protocol(format!("write codex config.toml failed: {e}")))?;
+        }
+    }
+    crate::acp::codex_model_catalog::write_catalog_files(&raw, codex_home, snapshot)
+        .map_err(|e| AcpError::protocol(e.to_string()))?;
+    Ok(if released {
+        CodexCatalogResync::Released
+    } else {
+        CodexCatalogResync::Rewritten
+    })
+}
+
+/// After codex-acp is (re)installed: refresh the cached official catalog from
+/// the codex it now drives, then bring codeg's generated catalog in line (see
+/// [`resync_codex_generated_catalog_at`]). Only a LIVE catalog is used — the
+/// stale cache or the compiled-in snapshot would just rewrite the old table.
+/// Best-effort: an install never fails over this.
+async fn resync_codex_generated_catalog() {
+    let Some(snapshot) = crate::acp::codex_catalog_source::refresh_live_catalog().await else {
+        tracing::warn!("[acp] codex installed, but its model catalog could not be read");
+        return;
+    };
+    match resync_codex_generated_catalog_at(&codex_home_dir(), &snapshot) {
+        Ok(outcome) => tracing::info!("[acp] codex model catalog after install: {outcome:?}"),
+        Err(e) => tracing::warn!("[acp] codex model catalog resync failed: {e}"),
+    }
 }
 
 /// Apply the Codex panel's sandbox / approval PATCH to the raw config.toml text,
@@ -13490,6 +13546,25 @@ pub async fn acp_detect_agent_local_version(
     acp_detect_agent_local_version_core(agent_type, &db.conn, &emitter).await
 }
 
+/// The newest upstream release of an agent that is newer than codeg's pin and
+/// that Custom install can fetch, for Version Status' "Upgrade to unreviewed
+/// latest". The settings page asks once each time the user opens the agent.
+pub(crate) async fn acp_fetch_agent_latest_release_core(
+    agent_type: AgentType,
+) -> Result<Option<latest_release::AgentLatestRelease>, AcpError> {
+    latest_release::resolve(agent_type)
+        .await
+        .map_err(|e| AcpError::protocol(e.to_string()))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_fetch_agent_latest_release(
+    agent_type: AgentType,
+) -> Result<Option<latest_release::AgentLatestRelease>, AcpError> {
+    acp_fetch_agent_latest_release_core(agent_type).await
+}
+
 pub(crate) async fn acp_prepare_npx_agent_core(
     agent_type: AgentType,
     registry_version: Option<String>,
@@ -13504,6 +13579,10 @@ pub(crate) async fn acp_prepare_npx_agent_core(
     let meta = registry::get_agent_meta(agent_type);
     let result = match meta.distribution {
         registry::AgentDistribution::Npx { package, cmd, .. } => {
+            // `version_override` of None/empty keeps the registry-pinned spec;
+            // a custom version installs `<name>@<version>` instead.
+            let install_spec = build_npm_install_spec(package, version_override.as_deref())?;
+
             let default = agent_setting_service::AgentDefaultInput {
                 agent_type,
                 registry_id: registry::registry_id_for(agent_type).to_string(),
@@ -13513,25 +13592,11 @@ pub(crate) async fn acp_prepare_npx_agent_core(
                 .await
                 .map_err(|e| AcpError::protocol(e.to_string()))?;
 
-            let setting = agent_setting_service::get_by_agent_type(&db.conn, agent_type)
+            let existing = agent_setting_service::get_by_agent_type(&db.conn, agent_type)
                 .await
                 .ok()
-                .flatten();
-            let existing = setting.as_ref().and_then(|m| m.installed_version.clone());
-            // The latest-channel opt-in reads the same merged env layers the
-            // launch and the settings page resolve, so the control can never
-            // show one channel while the install applies another.
-            let latest_channel = adapter_channel_is_latest(&build_runtime_env_from_setting(
-                agent_type,
-                setting.as_ref(),
-                load_agent_local_config_json(agent_type).as_deref(),
-            ));
-            // `version_override` of None/empty keeps the channel's spec (the
-            // registry pin, or `<name>@latest` for a latest-channel agent); a
-            // custom version installs `<name>@<version>` instead, on either
-            // channel.
-            let (first_spec, fallback_spec) =
-                npm_install_attempts(package, version_override.as_deref(), latest_channel)?;
+                .flatten()
+                .and_then(|m| m.installed_version);
 
             // Best-effort uninstall before reinstall. Forces npm to re-resolve
             // the dependency graph from scratch, which is required for
@@ -13561,51 +13626,11 @@ pub(crate) async fn acp_prepare_npx_agent_core(
                 emitter,
                 &task_id,
                 AgentInstallEventKind::Log,
-                format!("Installing {} ({first_spec})", meta.name),
+                format!("Installing {} ({install_spec})", meta.name),
             );
-            let install_spec =
-                match install_npm_global_package_streaming(&first_spec, &task_id, emitter).await {
-                    Ok(()) => first_spec,
-                    Err(err) => {
-                        // FAIL SAFE TO THE PIN. A latest-channel install can die on
-                        // things the pin does not (npm unreachable, a mirror not yet
-                        // carrying the tag's target, a yanked release), and the user
-                        // asked for "newest when possible", not "nothing unless
-                        // newest". Retry the reviewed pinned spec, saying so in the
-                        // same install log — and let the recorded installed version
-                        // report what actually landed.
-                        let Some(pinned_spec) = fallback_spec else {
-                            return Err(annotate_npm_bootstrap_failure(&first_spec, err));
-                        };
-                        let err = annotate_npm_bootstrap_failure(&first_spec, err);
-                        tracing::warn!(
-                            "[acp] latest install {first_spec} failed ({err}); \
-                         falling back to pinned {pinned_spec}"
-                        );
-                        emit_agent_install_event(
-                            emitter,
-                            &task_id,
-                            AgentInstallEventKind::Log,
-                            format!("ERROR: installing {first_spec} failed: {err}"),
-                        );
-                        emit_agent_install_event(
-                            emitter,
-                            &task_id,
-                            AgentInstallEventKind::Log,
-                            format!("Falling back to the pinned version ({pinned_spec})..."),
-                        );
-                        emit_agent_install_event(
-                            emitter,
-                            &task_id,
-                            AgentInstallEventKind::Log,
-                            format!("Installing {} ({pinned_spec})", meta.name),
-                        );
-                        install_npm_global_package_streaming(&pinned_spec, &task_id, emitter)
-                            .await
-                            .map_err(|e| annotate_npm_bootstrap_failure(&pinned_spec, e))?;
-                        pinned_spec
-                    }
-                };
+            install_npm_global_package_streaming(&install_spec, &task_id, emitter)
+                .await
+                .map_err(|e| annotate_npm_bootstrap_failure(&install_spec, e))?;
 
             // For a bootstrap-wrapper package (hermes-agent), npm metadata
             // existing does NOT mean the agent can run: a skipped or broken
@@ -13668,6 +13693,18 @@ pub(crate) async fn acp_prepare_npx_agent_core(
             )
             .await
             .map_err(|e| AcpError::protocol(e.to_string()))?;
+
+            // A new codex-acp can drive a codex with a different official
+            // model list; codeg's generated catalog must follow it.
+            if agent_type == AgentType::Codex {
+                emit_agent_install_event(
+                    emitter,
+                    &task_id,
+                    AgentInstallEventKind::Log,
+                    "Refreshing the Codex model catalog...",
+                );
+                resync_codex_generated_catalog().await;
+            }
             emit_acp_agents_updated(emitter, "npx_prepared", Some(agent_type));
             Ok(resolved)
         }
@@ -15200,6 +15237,191 @@ base_url = \"https://example.test/v1\"
         assert!(!is_codeg_owned_catalog_ref("manual.json", home));
     }
 
+    fn catalog_slugs(home: &Path) -> Vec<String> {
+        let text = fs::read_to_string(home.join(crate::acp::codex_model_catalog::CATALOG_REL))
+            .expect("generated catalog");
+        serde_json::from_str::<serde_json::Value>(&text).expect("catalog json")["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .filter_map(|m| m["slug"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// The official list before codex 0.159.1: today's minus GPT-6.1 Sol.
+    fn catalog_without_gpt_6_1_sol() -> Vec<serde_json::Value> {
+        crate::acp::codex_model_catalog::bundled_snapshot_models()
+            .into_iter()
+            .filter(|m| m["slug"] != "gpt-6.1-sol")
+            .collect()
+    }
+
+    /// A catalog codeg generated before an upgrade is re-expanded from its
+    /// stored intent, so the new official model shows up — in codex's own
+    /// rank, behind the custom — without the user re-saving anything.
+    #[test]
+    fn resync_rewrites_codegs_catalog_against_the_new_official_list() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        let config = config_with_catalog_ref(crate::acp::codex_model_catalog::CATALOG_REL);
+        fs::write(home.join("config.toml"), &config).unwrap();
+        let intent = r#"{"customs":[{"slug":"gw/x","base":"gpt-5.6-sol"}],"default":"gw/x"}"#;
+        crate::acp::codex_model_catalog::write_catalog_files(
+            intent,
+            home,
+            &catalog_without_gpt_6_1_sol(),
+        )
+        .unwrap()
+        .expect("customs → generated catalog");
+        assert!(!catalog_slugs(home).iter().any(|s| s == "gpt-6.1-sol"));
+
+        // Today's list plus one model no compiled-in snapshot has, so only
+        // the list passed in can put it in the table.
+        let mut new = crate::acp::codex_model_catalog::bundled_snapshot_models();
+        let mut unshipped = new
+            .iter()
+            .find(|m| m["slug"] == "gpt-5.5")
+            .cloned()
+            .expect("gpt-5.5 in snapshot");
+        unshipped["slug"] = serde_json::Value::String("gpt-test-unshipped".into());
+        new.push(unshipped);
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::Rewritten
+        );
+        let slugs = catalog_slugs(home);
+        assert_eq!(slugs[..3], ["gw/x", "gpt-6.1-sol", "gpt-6-astra"]);
+        assert!(slugs.iter().any(|s| s == "gpt-test-unshipped"));
+        assert_eq!(slugs.len(), new.len() + 1);
+        // The intent and config.toml are untouched: same bytes as before.
+        assert_eq!(
+            fs::read_to_string(home.join(crate::acp::codex_model_catalog::SOURCE_REL)).unwrap(),
+            intent
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            config
+        );
+    }
+
+    /// Nothing that codeg cannot regenerate is touched: the user's own catalog,
+    /// a config with no catalog at all, and a codeg catalog whose intent sidecar
+    /// is gone (re-importing it against the NEW list would read every newly
+    /// shipped official as one the user removed).
+    #[test]
+    fn resync_leaves_catalogs_codeg_cannot_regenerate_alone() {
+        let new = crate::acp::codex_model_catalog::bundled_snapshot_models();
+        let intent = r#"{"customs":[{"slug":"gw/x","base":"gpt-5.6-sol"}]}"#;
+        let catalog_path = |home: &Path| home.join(crate::acp::codex_model_catalog::CATALOG_REL);
+
+        // No config.toml at all.
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(
+            resync_codex_generated_catalog_at(dir.path(), &new).unwrap(),
+            CodexCatalogResync::NotOwned
+        );
+
+        // The user's own catalog, even with a codeg sidecar lying around.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        fs::write(
+            home.join("config.toml"),
+            config_with_catalog_ref("manual.json"),
+        )
+        .unwrap();
+        fs::write(
+            home.join(crate::acp::codex_model_catalog::SOURCE_REL),
+            intent,
+        )
+        .unwrap();
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::NotOwned
+        );
+        assert!(!catalog_path(home).exists(), "no catalog was generated");
+        assert_eq!(
+            fs::read_to_string(home.join("config.toml")).unwrap(),
+            config_with_catalog_ref("manual.json"),
+            "the user's reference is left byte-identical"
+        );
+
+        // No `model_catalog_json` key.
+        fs::write(home.join("config.toml"), "model = \"gpt-5.5\"\n").unwrap();
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::NotOwned
+        );
+        assert!(!catalog_path(home).exists(), "no catalog was generated");
+
+        // codeg's reference, but no sidecar: the old table stays as it is.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        fs::write(
+            home.join("config.toml"),
+            config_with_catalog_ref(crate::acp::codex_model_catalog::CATALOG_REL),
+        )
+        .unwrap();
+        crate::acp::codex_model_catalog::write_catalog_files(
+            intent,
+            home,
+            &catalog_without_gpt_6_1_sol(),
+        )
+        .unwrap()
+        .expect("seeded");
+        fs::remove_file(home.join(crate::acp::codex_model_catalog::SOURCE_REL)).unwrap();
+        let before = fs::read_to_string(catalog_path(home)).unwrap();
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::NotOwned
+        );
+        assert_eq!(fs::read_to_string(catalog_path(home)).unwrap(), before);
+    }
+
+    /// When the new list makes the takeover moot (the only removal names a model
+    /// codex has since retired), control goes back to codex: the reference is
+    /// dropped — format-preservingly — and the generated files with it, so
+    /// config.toml never points at a file that is gone.
+    #[test]
+    fn resync_releases_a_takeover_the_new_list_makes_moot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        fs::write(
+            home.join("config.toml"),
+            config_with_catalog_ref(crate::acp::codex_model_catalog::CATALOG_REL),
+        )
+        .unwrap();
+        // The old list still LISTED a model the user removed; the new one no
+        // longer ships it at all.
+        let mut old = crate::acp::codex_model_catalog::bundled_snapshot_models();
+        let mut retired = old
+            .iter()
+            .find(|m| m["slug"] == "gpt-5.5")
+            .cloned()
+            .expect("gpt-5.5 in snapshot");
+        retired["slug"] = serde_json::Value::String("gpt-5.4-retired".into());
+        old.push(retired);
+        let intent = r#"{"customs":[],"excludedOfficials":["gpt-5.4-retired"]}"#;
+        crate::acp::codex_model_catalog::write_catalog_files(intent, home, &old)
+            .unwrap()
+            .expect("a live removal → generated catalog");
+
+        let new = crate::acp::codex_model_catalog::bundled_snapshot_models();
+        assert_eq!(
+            resync_codex_generated_catalog_at(home, &new).unwrap(),
+            CodexCatalogResync::Released
+        );
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(!config.contains("model_catalog_json"), "{config}");
+        assert!(config.contains("# my codex config"));
+        assert!(config.contains("model = \"gw/x\"           # the model"));
+        assert!(!home
+            .join(crate::acp::codex_model_catalog::CATALOG_REL)
+            .exists());
+        assert!(!home
+            .join(crate::acp::codex_model_catalog::SOURCE_REL)
+            .exists());
+    }
+
     #[test]
     fn apply_codex_sandbox_config_removes_keys_and_empty_section() {
         let base = "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n\
@@ -16319,19 +16541,23 @@ base_url = \"https://example.test/v1\"
 
     #[test]
     fn pi_agent_dir_expands_tilde_override_like_the_pi_runtime() {
-        let mut env = BTreeMap::new();
-        env.insert("PI_CODING_AGENT_DIR".to_string(), "~/custom-pi".to_string());
-        assert_eq!(
-            pi_agent_dir_for_env(&env),
-            pi_child_home(&env).join("custom-pi")
-        );
-        // pi's `normalizePath` takes the value verbatim: a padded value is a
-        // different (here: relative) directory, not the trimmed one.
-        env.insert(
-            "PI_CODING_AGENT_DIR".to_string(),
-            " ~/custom-pi".to_string(),
-        );
-        assert_eq!(pi_agent_dir_for_env(&env), PathBuf::from(" ~/custom-pi"));
+        // `~` is the child's home, which `pi_child_home` reads off codeg's own
+        // home variable, and other tests point `HOME` at temp dirs through
+        // `temp_env`. Pin it, so this test serializes against them on
+        // temp_env's lock and the expansion has one home to land in.
+        let home = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var(CHILD_HOME_KEY, Some(home.path()), || {
+            let mut env = BTreeMap::new();
+            env.insert("PI_CODING_AGENT_DIR".to_string(), "~/custom-pi".to_string());
+            assert_eq!(pi_agent_dir_for_env(&env), home.path().join("custom-pi"));
+            // pi's `normalizePath` takes the value verbatim: a padded value is a
+            // different (here: relative) directory, not the trimmed one.
+            env.insert(
+                "PI_CODING_AGENT_DIR".to_string(),
+                " ~/custom-pi".to_string(),
+            );
+            assert_eq!(pi_agent_dir_for_env(&env), PathBuf::from(" ~/custom-pi"));
+        });
     }
 
     /// `~` is the CHILD's home — a launch that relocates `HOME` relocates pi's
@@ -18371,89 +18597,18 @@ wire_api = "chat"
         assert!(build_npm_install_spec("cline@3.0.9", Some("latest")).is_err());
     }
 
-    // The pinned default is byte-identical to what `build_npm_install_spec`
-    // produced before the channel existed, with no fallback attempt.
+    // hermes-agent's postinstall bootstraps its runtime, and it is the only
+    // package codeg force-enables lifecycle scripts for. The spec, not the
+    // agent type, is what `npm_package_requires_scripts` keys off, so a custom
+    // version spec must still name the package, or the install leaves a shim
+    // that only fails later, at connect, with "runtime is not ready". The spec's
+    // own version is also the recorded fallback when detection comes up empty.
     #[test]
-    fn npm_install_attempts_defaults_to_the_pinned_spec() {
-        assert_eq!(
-            npm_install_attempts("@google/gemini-cli@0.44.1", None, false).unwrap(),
-            ("@google/gemini-cli@0.44.1".to_string(), None)
-        );
-        assert_eq!(
-            npm_install_attempts("@google/gemini-cli@0.44.1", Some("  "), false).unwrap(),
-            ("@google/gemini-cli@0.44.1".to_string(), None)
-        );
-    }
-
-    // The latest channel tries the `latest` dist-tag first and keeps the
-    // registry pin as the fallback, so a failed latest install degrades to the
-    // reviewed version instead of no install at all.
-    #[test]
-    fn npm_install_attempts_maps_latest_channel_onto_the_dist_tag() {
-        assert_eq!(
-            npm_install_attempts("@google/gemini-cli@0.44.1", None, true).unwrap(),
-            (
-                "@google/gemini-cli@latest".to_string(),
-                Some("@google/gemini-cli@0.44.1".to_string())
-            )
-        );
-        // A blank override is the same as none.
-        assert_eq!(
-            npm_install_attempts("cline@3.0.9", Some(" "), true).unwrap(),
-            ("cline@latest".to_string(), Some("cline@3.0.9".to_string()))
-        );
-    }
-
-    // An explicit custom version wins on either channel and never falls back:
-    // the user asked for that exact version, and quietly installing another
-    // would relabel their choice.
-    #[test]
-    fn npm_install_attempts_lets_an_explicit_override_win() {
-        assert_eq!(
-            npm_install_attempts("cline@3.0.9", Some("2.0.0"), true).unwrap(),
-            ("cline@2.0.0".to_string(), None)
-        );
-        assert!(npm_install_attempts("cline@3.0.9", Some("nightly"), true).is_err());
-    }
-
-    // The latest channel introduces a NEW SPEC SHAPE (`<name>@latest`), and the
-    // spec — not the agent type — is what every downstream step keys off.
-    // `npm_package_requires_scripts` is the one that bites: hermes-agent's
-    // postinstall bootstraps its runtime, and it is the only package codeg
-    // force-enables lifecycle scripts for. A spec shape that hid the package
-    // name from it would install a shim that only fails later, at connect,
-    // with "runtime is not ready". Both attempts must be recognized, since
-    // either one can be the spec that actually lands.
-    #[test]
-    fn the_latest_spec_still_names_the_package_downstream_readers_key_off() {
-        let (latest, pinned) = npm_install_attempts("hermes-agent@0.21.5", None, true).unwrap();
-        assert_eq!(latest, "hermes-agent@latest");
-        assert!(npm_package_requires_scripts(&latest));
-        assert!(npm_package_requires_scripts(&pinned.unwrap()));
-        // And the `@latest` tag is never mistaken for a version number, so a
-        // successful latest install falls through to the real post-install
-        // probe instead of recording "latest" as the installed version.
-        assert_eq!(version_from_package_spec(&latest), None);
-    }
-
-    // Only the exact (trimmed) sentinel opts into the latest channel; absence
-    // and every other value stay on the pin, matching the frontend reader.
-    #[test]
-    fn adapter_channel_reads_only_the_exact_latest_sentinel() {
-        let env = |value: Option<&str>| {
-            let mut map = BTreeMap::new();
-            map.insert("XAI_API_KEY".to_string(), "abc".to_string());
-            if let Some(value) = value {
-                map.insert(ADAPTER_CHANNEL_ENV.to_string(), value.to_string());
-            }
-            map
-        };
-        assert!(!adapter_channel_is_latest(&env(None)));
-        assert!(adapter_channel_is_latest(&env(Some("latest"))));
-        assert!(adapter_channel_is_latest(&env(Some(" latest "))));
-        assert!(!adapter_channel_is_latest(&env(Some("pinned"))));
-        assert!(!adapter_channel_is_latest(&env(Some("Latest"))));
-        assert!(!adapter_channel_is_latest(&env(Some(""))));
+    fn hermes_custom_version_spec_keeps_lifecycle_scripts_and_records_its_version() {
+        let spec = build_npm_install_spec("hermes-agent@0.21.5", Some("0.22.0")).unwrap();
+        assert_eq!(spec, "hermes-agent@0.22.0");
+        assert!(npm_package_requires_scripts(&spec));
+        assert_eq!(version_from_package_spec(&spec).as_deref(), Some("0.22.0"));
     }
 
     #[test]
@@ -19521,17 +19676,27 @@ wire_api = "chat"
             PathBuf::from("~/alt-hermes")
         );
 
-        // A blank override REPLACES the parent value in the child, and Hermes then
-        // falls back to the default `~/.hermes` — not the parent's HERMES_HOME.
-        let mut blank = BTreeMap::new();
-        blank.insert("HERMES_HOME".to_string(), "  ".to_string());
-        assert_eq!(
-            hermes_home_for_launch(&blank),
-            home_dir_or_default().join(".hermes")
-        );
+        // Both sides of the two checks below resolve `~` off codeg's own `HOME`,
+        // and other tests point `HOME` at temp dirs through `temp_env`. Pin it,
+        // so this test serializes against them on temp_env's lock. The expected
+        // paths still come from codeg's resolver, which on Windows ignores
+        // `HOME` (`dirs::home_dir()` asks for the profile folder).
+        let home = tempfile::tempdir().expect("tempdir");
+        temp_env::with_var("HOME", Some(home.path()), || {
+            // A blank override REPLACES the parent value in the child, and
+            // Hermes then falls back to the default `~/.hermes` — not the
+            // parent's HERMES_HOME.
+            let mut blank = BTreeMap::new();
+            blank.insert("HERMES_HOME".to_string(), "  ".to_string());
+            assert_eq!(
+                hermes_home_for_launch(&blank),
+                home_dir_or_default().join(".hermes")
+            );
 
-        // No override → the child inherits the parent env (codeg's resolution).
-        assert_eq!(hermes_home_for_launch(&BTreeMap::new()), hermes_home_dir());
+            // No override → the child inherits the parent env (codeg's
+            // resolution).
+            assert_eq!(hermes_home_for_launch(&BTreeMap::new()), hermes_home_dir());
+        });
     }
 
     #[test]

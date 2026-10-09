@@ -1361,6 +1361,7 @@ mod tests {
                 delegation_call_id: None,
                 origin_cwd: None,
                 launch_mode: "acp".into(),
+                tag_ids: Vec::new(),
             },
             turns,
             session_stats: stats,

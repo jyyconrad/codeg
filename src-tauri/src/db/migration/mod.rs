@@ -53,9 +53,12 @@ mod m20260914_000002_wiki_pipeline;
 mod m20260914_000003_wiki_attempts;
 mod m20260915_000001_folder_chat_channel_chat_id;
 mod m20260915_000002_chat_channel_message_map;
+mod m20260929_000001_canvas_board;
 mod m20260929_000001_workflow_follow_up;
+mod m20260930_000001_agent_setting_drop_adapter_channel;
 mod m20260930_000001_agent_setting_launch_mode;
 mod m20261003_000001_conversation_launch_mode;
+mod m20261006_000001_conversation_tag;
 mod m20261008_000001_chat_channel_default_agent;
 pub struct Migrator;
 
@@ -116,9 +119,12 @@ impl MigratorTrait for Migrator {
             Box::new(m20260914_000003_wiki_attempts::Migration),
             Box::new(m20260915_000001_folder_chat_channel_chat_id::Migration),
             Box::new(m20260915_000002_chat_channel_message_map::Migration),
+            Box::new(m20260929_000001_canvas_board::Migration),
             Box::new(m20260929_000001_workflow_follow_up::Migration),
+            Box::new(m20260930_000001_agent_setting_drop_adapter_channel::Migration),
             Box::new(m20260930_000001_agent_setting_launch_mode::Migration),
             Box::new(m20261003_000001_conversation_launch_mode::Migration),
+            Box::new(m20261006_000001_conversation_tag::Migration),
             Box::new(m20261008_000001_chat_channel_default_agent::Migration),
         ]
     }

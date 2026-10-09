@@ -3187,6 +3187,7 @@ mod tests {
             delegation_call_id: Some("call-1".into()),
             origin_cwd: None,
             launch_mode: "acp".into(),
+            tag_ids: Vec::new(),
         }
     }
 
@@ -7083,6 +7084,7 @@ mod tests {
                 delegation_call_id: None,
                 origin_cwd: None,
                 launch_mode: "acp".into(),
+                tag_ids: Vec::new(),
             },
             turns,
             session_stats: None,

@@ -20,6 +20,7 @@ import {
   Keyboard,
   Menu,
   MessageSquareText,
+  MonitorCog,
   SendHorizontal,
   Palette,
   PlugZap,
@@ -59,6 +60,7 @@ interface SettingsNavItem {
     | "wiki"
     | "collaboration"
     | "browser"
+    | "computer_use"
     | "quick_messages"
     | "shortcuts"
     | "version_control"
@@ -83,6 +85,11 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     href: "/settings/general",
     labelKey: "general",
     icon: SlidersHorizontal,
+  },
+  {
+    href: "/settings/collaboration",
+    labelKey: "collaboration",
+    icon: Bubbles,
   },
   {
     href: "/settings/mcp",
@@ -110,11 +117,6 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     icon: BookMarked,
   },
   {
-    href: "/settings/collaboration",
-    labelKey: "collaboration",
-    icon: Bubbles,
-  },
-  {
     href: "/settings/agents",
     labelKey: "agents",
     icon: Bot,
@@ -130,14 +132,19 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     icon: Server,
   },
   {
+    href: "/settings/quick-messages",
+    labelKey: "quick_messages",
+    icon: MessageSquareText,
+  },
+  {
     href: "/settings/browser",
     labelKey: "browser",
     icon: Compass,
   },
   {
-    href: "/settings/quick-messages",
-    labelKey: "quick_messages",
-    icon: MessageSquareText,
+    href: "/settings/computer-use",
+    labelKey: "computer_use",
+    icon: MonitorCog,
   },
   {
     href: "/settings/shortcuts",
