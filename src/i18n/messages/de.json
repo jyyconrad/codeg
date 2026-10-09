@@ -2040,7 +2040,7 @@
       "notifyChannels": "Benachrichtigungskanäle…",
       "notifyChannelsDialog": {
         "title": "Benachrichtigungskanäle",
-        "description": "Wenn ein Lauf in diesem Ordner endet, wird die Abschlussnachricht an alle ausgewählten Kanäle gesendet. Pro Kanal kann eine Session-ID gesetzt werden; leer lassen für die Kanalvorgabe.",
+        "description": "Bind this folder to one channel session. A quoted message appends an instruction to that conversation. A message with no quote starts a new conversation using the channel's default agent. Final messages are sent back to the same session.",
         "empty": "Noch keine Chat-Kanäle. Fügen Sie einen in den Einstellungen hinzu.",
         "loadFailed": "Kanäle konnten nicht geladen werden: {message}",
         "saveFailed": "Kanäle konnten nicht gespeichert werden: {message}",
@@ -2048,7 +2048,8 @@
         "sessionIdForChannel": "Session-ID für {name}",
         "sessionIdHint": "Leer lassen, um den Standard-Chat dieses Kanals zu verwenden.",
         "sessionIdPlaceholder": "Standard",
-        "sessionIdPlaceholderWithDefault": "Standard: {chatId}"
+        "sessionIdPlaceholderWithDefault": "Standard: {chatId}",
+        "none": "Don't bind"
       },
       "error": "Fehler: {message}",
       "completeAllSessions": "Alle Sitzungen abschließen",
@@ -4492,14 +4493,18 @@
       "ar": "Arabisch"
     },
     "folderInbound": {
-      "title": "Ordner-Sitzung wiederverwenden",
-      "description": "Sendet ein ordnergebundener Chat eine Nachricht ohne Zitat, wird die neueste Unterhaltung fortgesetzt, wenn sie innerhalb dieser Minuten aktiv war. Sonst wird eine neue gestartet. 0 startet immer neu.",
+      "title": "Inbound messages",
+      "description": "A quoted message appends an instruction to that conversation. A terminal conversation receives it in the running CLI, or by resuming that session. A message with no quote starts a new conversation using the channel's default agent.",
       "minutesLabel": "Minuten",
       "saved": "Wiederverwendungsfenster gespeichert.",
       "saveFailed": "Wiederverwendungsfenster konnte nicht gespeichert werden.",
       "invalid": "Ganze Zahl von 0 bis 10080 eingeben.",
       "save": "Speichern"
-    }
+    },
+    "defaultAgent": "Default agent",
+    "defaultAgentHint": "Enabled agent that handles messages when they do not quote an existing conversation.",
+    "defaultAgentNone": "Not set",
+    "defaultAgentEmpty": "No enabled agents. Enable one in Agents settings."
   },
   "ModelProviderSettings": {
     "sectionTitle": "Modellanbieter",

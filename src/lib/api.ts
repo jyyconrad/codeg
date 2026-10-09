@@ -4855,6 +4855,16 @@ export async function terminalSpawnAgent(params: {
   })
 }
 
+export async function terminalIdForConversation(params: {
+  conversationId?: number | null
+  nativeSessionId?: string | null
+}): Promise<string | null> {
+  return getTransport().call("terminal_id_for_conversation", {
+    conversationId: params.conversationId ?? null,
+    nativeSessionId: params.nativeSessionId ?? null,
+  })
+}
+
 export async function terminalAgentState(
   terminalId: string
 ): Promise<TerminalAgentState | null> {
@@ -5007,6 +5017,8 @@ export async function updateChatChannel(params: {
   eventFilterJson?: string | null
   dailyReportEnabled?: boolean | null
   dailyReportTime?: string | null
+  /** Omit to leave the stored agent unchanged. `null` clears it. */
+  defaultAgentType?: string | null
 }): Promise<ChatChannelInfo> {
   return getTransport().call("update_chat_channel", {
     id: params.id,
@@ -5016,6 +5028,9 @@ export async function updateChatChannel(params: {
     eventFilterJson: params.eventFilterJson ?? null,
     dailyReportEnabled: params.dailyReportEnabled ?? null,
     dailyReportTime: params.dailyReportTime ?? null,
+    ...(params.defaultAgentType !== undefined
+      ? { defaultAgentType: params.defaultAgentType }
+      : {}),
   })
 }
 

@@ -155,8 +155,41 @@ pub async fn terminal_spawn_agent(
         window.label().to_string(),
         &data_dir,
         runtime_env,
+        false,
     )
     .await
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn terminal_id_for_conversation(
+    conversation_id: Option<i32>,
+    native_session_id: Option<String>,
+    manager: State<'_, TerminalManager>,
+    hooks: State<'_, std::sync::Arc<AgentHookRegistry>>,
+    db: State<'_, AppDatabase>,
+) -> Result<Option<String>, String> {
+    let mut session_id = native_session_id;
+    if session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .is_none()
+    {
+        if let Some(conversation_id) = conversation_id.filter(|id| *id > 0) {
+            if let Ok(conv) =
+                crate::db::service::conversation_service::get_by_id(&db.conn, conversation_id).await
+            {
+                session_id = conv.external_id;
+            }
+        }
+    }
+    Ok(crate::chat_channel::terminal_followup::live_terminal_id(
+        &manager,
+        hooks.inner(),
+        session_id.as_deref(),
+        conversation_id,
+    ))
 }
 
 #[cfg(feature = "tauri-runtime")]

@@ -2040,7 +2040,7 @@
       "notifyChannels": "Canais de notificação…",
       "notifyChannelsDialog": {
         "title": "Canais de notificação",
-        "description": "Quando uma execução nesta pasta terminar, envie a mensagem final para cada canal selecionado. Você pode definir um ID de sessão por canal; deixe vazio para usar o padrão.",
+        "description": "Bind this folder to one channel session. A quoted message appends an instruction to that conversation. A message with no quote starts a new conversation using the channel's default agent. Final messages are sent back to the same session.",
         "empty": "Ainda não há canais de chat. Adicione um nas Configurações.",
         "loadFailed": "Falha ao carregar canais: {message}",
         "saveFailed": "Falha ao salvar os canais: {message}",
@@ -2048,7 +2048,8 @@
         "sessionIdForChannel": "ID da sessão de {name}",
         "sessionIdHint": "Deixe vazio para usar o chat padrão deste canal.",
         "sessionIdPlaceholder": "Padrão",
-        "sessionIdPlaceholderWithDefault": "Padrão: {chatId}"
+        "sessionIdPlaceholderWithDefault": "Padrão: {chatId}",
+        "none": "Don't bind"
       },
       "error": "Erro: {message}",
       "completeAllSessions": "Concluir todas as sessões",
@@ -4492,14 +4493,18 @@
       "ar": "Árabe"
     },
     "folderInbound": {
-      "title": "Reutilizar sessão da pasta",
-      "description": "Quando um chat vinculado a uma pasta envia uma mensagem sem citar outra, a conversa mais recente da pasta é reutilizada se esteve ativa nestes minutos. Caso contrário, uma nova é iniciada. 0 sempre inicia uma nova.",
+      "title": "Inbound messages",
+      "description": "A quoted message appends an instruction to that conversation. A terminal conversation receives it in the running CLI, or by resuming that session. A message with no quote starts a new conversation using the channel's default agent.",
       "minutesLabel": "minutos",
       "saved": "Janela de reutilização salva.",
       "saveFailed": "Falha ao salvar a janela de reutilização.",
       "invalid": "Informe um inteiro de 0 a 10080.",
       "save": "Salvar"
-    }
+    },
+    "defaultAgent": "Default agent",
+    "defaultAgentHint": "Enabled agent that handles messages when they do not quote an existing conversation.",
+    "defaultAgentNone": "Not set",
+    "defaultAgentEmpty": "No enabled agents. Enable one in Agents settings."
   },
   "ModelProviderSettings": {
     "sectionTitle": "Provedores de Modelos",

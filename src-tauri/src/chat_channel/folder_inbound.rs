@@ -46,22 +46,13 @@ pub struct FolderInboundPlan {
     pub action: FolderInboundAction,
 }
 
-pub fn decide_folder_inbound(
-    quoted_conversation_id: Option<i32>,
-    latest: Option<(i32, DateTime<Utc>)>,
-    message_at: DateTime<Utc>,
-    idle: Duration,
-) -> FolderInboundAction {
-    if let Some(conversation_id) = quoted_conversation_id {
-        return FolderInboundAction::Continue { conversation_id };
-    }
-    match latest {
-        Some((conversation_id, updated_at))
-            if message_at.signed_duration_since(updated_at) <= idle =>
-        {
-            FolderInboundAction::Continue { conversation_id }
-        }
-        _ => FolderInboundAction::StartNew,
+/// A quote that maps to a conversation in the bound folder continues that
+/// conversation. Anything else, including an unquoted follow-up, starts a new
+/// one. The channel's default agent is chosen by the caller.
+pub fn decide_folder_inbound(quoted_conversation_id: Option<i32>) -> FolderInboundAction {
+    match quoted_conversation_id {
+        Some(conversation_id) => FolderInboundAction::Continue { conversation_id },
+        None => FolderInboundAction::StartNew,
     }
 }
 
@@ -160,54 +151,28 @@ pub async fn route_folder_inbound(
             chat_channel_message_map_service::conversation_id_for(db, cmd.channel_id, &quoted_id)
                 .await?;
         if let Some(conversation_id) = mapped {
-            quoted_conversation_id = conversation_exists(db, conversation_id).await?;
+            quoted_conversation_id = conversation_in_folder(db, conversation_id, folder_id).await?;
             if quoted_conversation_id.is_some() {
                 break;
             }
         }
     }
 
-    let mapped_latest = match chat_channel_message_map_service::latest_conversation_in_folder(
-        db,
-        cmd.channel_id,
-        folder_id,
-    )
-    .await?
-    {
-        Some(conversation_id) => match conversation_service::get_by_id(db, conversation_id).await {
-            Ok(conv) => Some((conv.id, conv.updated_at)),
-            Err(DbError::NotFound(_)) | Err(DbError::Migration(_)) => None,
-            Err(e) => return Err(e),
-        },
-        None => None,
-    };
-    let latest = match mapped_latest {
-        Some(latest) => Some(latest),
-        None => match conversation_service::latest_top_level_in_folder(db, folder_id).await? {
-            Some(conv) => Some((conv.id, conv.updated_at)),
-            None => None,
-        },
-    };
-
-    let action = decide_folder_inbound(
-        quoted_conversation_id,
-        latest,
-        inbound_message_time(cmd),
-        load_folder_inbound_idle(db).await,
-    );
+    let action = decide_folder_inbound(quoted_conversation_id);
     Ok(Some(FolderInboundPlan {
         bound_folder_id: folder_id,
         action,
     }))
 }
 
-async fn conversation_exists(
+async fn conversation_in_folder(
     db: &DatabaseConnection,
     conversation_id: i32,
+    folder_id: i32,
 ) -> Result<Option<i32>, DbError> {
     match conversation_service::get_by_id(db, conversation_id).await {
-        Ok(_) => Ok(Some(conversation_id)),
-        Err(DbError::NotFound(_)) | Err(DbError::Migration(_)) => Ok(None),
+        Ok(conv) if conv.folder_id == folder_id => Ok(Some(conversation_id)),
+        Ok(_) | Err(DbError::NotFound(_)) | Err(DbError::Migration(_)) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -299,10 +264,6 @@ mod tests {
     use crate::models::AgentType;
     use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
 
-    fn idle_mins(minutes: i64) -> Duration {
-        Duration::minutes(minutes)
-    }
-
     fn lark_cmd(channel_id: i32, event: serde_json::Value) -> IncomingCommand {
         let chat_id = event
             .pointer("/event/message/chat_id")
@@ -366,78 +327,16 @@ mod tests {
     }
 
     #[test]
-    fn quote_wins_over_idle_window() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 15, 12, 0, 0).unwrap();
-        let stale = now - Duration::hours(3);
+    fn quote_continues_that_conversation() {
         assert_eq!(
-            decide_folder_inbound(Some(9), Some((3, stale)), now, idle_mins(30)),
+            decide_folder_inbound(Some(9)),
             FolderInboundAction::Continue { conversation_id: 9 }
         );
     }
 
     #[test]
-    fn within_thirty_minutes_reuses_latest() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 15, 12, 0, 0).unwrap();
-        assert_eq!(
-            decide_folder_inbound(
-                None,
-                Some((4, now - Duration::minutes(30))),
-                now,
-                idle_mins(30)
-            ),
-            FolderInboundAction::Continue { conversation_id: 4 }
-        );
-    }
-
-    #[test]
-    fn past_thirty_minutes_starts_new() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 15, 12, 0, 0).unwrap();
-        assert_eq!(
-            decide_folder_inbound(
-                None,
-                Some((4, now - Duration::minutes(30) - Duration::seconds(1))),
-                now,
-                idle_mins(30)
-            ),
-            FolderInboundAction::StartNew
-        );
-    }
-
-    #[test]
-    fn configured_idle_window_uses_custom_minutes() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 15, 12, 0, 0).unwrap();
-        assert_eq!(
-            decide_folder_inbound(
-                None,
-                Some((4, now - Duration::minutes(5))),
-                now,
-                idle_mins(5)
-            ),
-            FolderInboundAction::Continue { conversation_id: 4 }
-        );
-        assert_eq!(
-            decide_folder_inbound(
-                None,
-                Some((4, now - Duration::minutes(5) - Duration::seconds(1))),
-                now,
-                idle_mins(5)
-            ),
-            FolderInboundAction::StartNew
-        );
-    }
-
-    #[test]
-    fn zero_idle_starts_new_after_any_gap() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 15, 12, 0, 0).unwrap();
-        assert_eq!(
-            decide_folder_inbound(
-                None,
-                Some((4, now - Duration::seconds(1))),
-                now,
-                idle_mins(0)
-            ),
-            FolderInboundAction::StartNew
-        );
+    fn no_quote_starts_new() {
+        assert_eq!(decide_folder_inbound(None), FolderInboundAction::StartNew);
     }
 
     #[test]
@@ -449,15 +348,6 @@ mod tests {
         assert_eq!(parse_folder_inbound_idle_minutes(Some("abc")), 30);
         assert_eq!(parse_folder_inbound_idle_minutes(Some("10081")), 30);
         assert_eq!(parse_folder_inbound_idle_minutes(Some("10080")), 10080);
-    }
-
-    #[test]
-    fn no_latest_conversation_starts_new() {
-        let now = Utc.with_ymd_and_hms(2026, 9, 15, 12, 0, 0).unwrap();
-        assert_eq!(
-            decide_folder_inbound(None, None, now, idle_mins(30)),
-            FolderInboundAction::StartNew
-        );
     }
 
     #[test]
@@ -646,7 +536,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_quote_reuses_latest_within_idle_window() {
+    async fn no_quote_starts_a_new_conversation_even_when_recent() {
         let db = fresh_in_memory_db().await;
         let folder_id = seed_folder(&db, "/tmp/folder-inbound-recent").await;
         let latest = seed_conversation(&db, folder_id, AgentType::Codex).await;
@@ -671,12 +561,7 @@ mod tests {
             .await
             .unwrap()
             .expect("bound");
-        assert_eq!(
-            plan.action,
-            FolderInboundAction::Continue {
-                conversation_id: latest
-            }
-        );
+        assert_eq!(plan.action, FolderInboundAction::StartNew);
     }
 
     #[tokio::test]
@@ -768,12 +653,7 @@ mod tests {
             .await
             .unwrap()
             .expect("bound");
-        assert_eq!(
-            plan.action,
-            FolderInboundAction::Continue {
-                conversation_id: older
-            }
-        );
+        assert_eq!(plan.action, FolderInboundAction::StartNew);
     }
 
     #[tokio::test]
@@ -802,12 +682,7 @@ mod tests {
             .await
             .unwrap()
             .expect("bound");
-        assert_eq!(
-            plan.action,
-            FolderInboundAction::Continue {
-                conversation_id: latest
-            }
-        );
+        assert_eq!(plan.action, FolderInboundAction::StartNew);
     }
 
     #[tokio::test]
@@ -841,13 +716,7 @@ mod tests {
             .await
             .unwrap()
             .expect("bound");
-        assert_eq!(
-            plan.action,
-            FolderInboundAction::Continue {
-                conversation_id: spoken
-            },
-            "Feishu follow-up must stay on the conversation this chat last spoke with, not a newer desktop session in the same folder"
-        );
+        assert_eq!(plan.action, FolderInboundAction::StartNew);
     }
 
     #[tokio::test]
@@ -887,5 +756,37 @@ mod tests {
                 conversation_id: quoted
             }
         );
+    }
+
+    #[tokio::test]
+    async fn quote_outside_the_bound_folder_starts_new() {
+        let db = fresh_in_memory_db().await;
+        let bound = seed_folder(&db, "/tmp/folder-inbound-bound").await;
+        let other = seed_folder(&db, "/tmp/folder-inbound-other").await;
+        let elsewhere = seed_conversation(&db, other, AgentType::Codex).await;
+        let channel_id = seed_lark_channel(&db).await;
+        bind_folder(&db, bound, channel_id, Some("oc_bound")).await;
+        chat_channel_message_map_service::upsert(&db.conn, channel_id, "om_other", elsewhere)
+            .await
+            .unwrap();
+
+        let cmd = lark_cmd(
+            channel_id,
+            serde_json::json!({
+                "event": {
+                    "message": {
+                        "message_id": "om_child",
+                        "parent_id": "om_other",
+                        "chat_id": "oc_bound"
+                    }
+                }
+            }),
+        );
+        let plan = route_folder_inbound(&db.conn, &cmd)
+            .await
+            .unwrap()
+            .expect("bound");
+        assert_eq!(plan.bound_folder_id, bound);
+        assert_eq!(plan.action, FolderInboundAction::StartNew);
     }
 }

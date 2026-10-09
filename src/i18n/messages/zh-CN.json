@@ -2040,7 +2040,8 @@
       "notifyChannels": "通知渠道…",
       "notifyChannelsDialog": {
         "title": "通知渠道",
-        "description": "该文件夹中的对话结束时，将最终消息发送到所选渠道。可为每个渠道填写会话 ID；留空则使用渠道默认会话。",
+        "description": "这个文件夹只绑定一个渠道会话。引用了已有对话时，在那条对话里追加指令；没有引用则用渠道的默认智能体新建对话。对话结束时的最终消息也会发回这个会话。",
+        "none": "不绑定",
         "empty": "还没有聊天渠道。请先在设置中添加。",
         "loadFailed": "加载渠道失败：{message}",
         "saveFailed": "保存渠道绑定失败：{message}",
@@ -4409,6 +4410,10 @@
     "channelListDescription": "已启用的渠道在服务启动时会自动连接。",
     "editChannel": "编辑渠道",
     "editSuccess": "渠道已更新。",
+    "defaultAgent": "默认智能体",
+    "defaultAgentHint": "渠道收到未引用已有对话的消息时，用这个已启用的智能体处理。",
+    "defaultAgentNone": "未设置",
+    "defaultAgentEmpty": "没有已启用的智能体。请先在智能体设置里启用。",
     "tokenPlaceholderKeep": "留空保持不变",
     "weixinScanTitle": "扫码登录",
     "weixinScanDescription": "打开微信扫描二维码以连接。",
@@ -4504,8 +4509,8 @@
       "ar": "阿拉伯语"
     },
     "folderInbound": {
-      "title": "文件夹会话复用",
-      "description": "绑定了文件夹的渠道收到未引用的消息时：若该文件夹最新对话的活动时间在此分钟数内，则继续该对话；否则自动新开对话。设为 0 则总是新开。",
+      "title": "入站消息",
+      "description": "引用了某条已发出的消息时，在对应的对话里追加一条指令。终端模式会写入正在运行的会话；会话没在运行时，用 resume 重新打开并提交。没有引用则用该渠道的默认智能体新建对话。",
       "minutesLabel": "分钟",
       "saved": "复用窗口已保存。",
       "saveFailed": "保存复用窗口失败。",

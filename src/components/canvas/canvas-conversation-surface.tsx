@@ -864,6 +864,7 @@ export function CanvasConversationSurface({
                 ownerKey={sessionTerminalOwner}
                 agentType={agentType}
                 agentName={getAgentLabel(agentType)}
+                conversationId={dbConversationId}
                 workingDir={workingDir}
                 isActive={isActive}
                 notice={

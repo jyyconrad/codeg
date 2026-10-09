@@ -241,9 +241,8 @@ async fn dispatch_command(
         Some(rest) => rest,
         None => {
             // Forum topics stay 1:1 with their bound session. Folder-bound
-            // chats (matched by inbound chat_id) quote → that session, else
-            // reuse the folder's latest conversation within 30 minutes or
-            // start a new one.
+            // chats (matched by inbound chat_id) quote → that conversation,
+            // otherwise start a new one with the channel's default agent.
             if target.is_telegram_forum_topic() {
                 return DispatchResponse::current(
                     session_commands::handle_followup(session_commands::FollowupRequest {
@@ -382,7 +381,7 @@ async fn dispatch_command(
         "task" | "do" => {
             let result = session_commands::handle_task(
                 db, args, channel_id, sender_id, target, manager, conn_mgr, emitter, bridge, lang,
-                prefix, data_dir,
+                prefix, data_dir, None,
             )
             .await;
             DispatchResponse::from_command_result(result)
@@ -613,7 +612,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn folder_bound_plain_text_continues_latest_conversation() {
+    async fn folder_bound_plain_text_starts_new_instead_of_latest() {
         let db = fresh_in_memory_db().await;
         let channel_id = seed_chat_channel(&db).await;
         let folder_id = seed_folder(&db, "/tmp/codeg-dispatch-folder-bound").await;
@@ -664,20 +663,13 @@ mod tests {
         let Some(DispatchMessage::Rich(message)) = response.message else {
             panic!("expected rich response");
         };
-        assert_eq!(
-            message.body,
-            crate::chat_channel::i18n::message_sent(Lang::En)
+        assert!(
+            message.body.contains("no default agent"),
+            "an unquoted message starts a new conversation with the channel default agent, got {}",
+            message.body
         );
-        assert_eq!(response.conversation_id, Some(conv_id));
-
-        let command = rx.recv().await.expect("prompt command");
-        let ConnectionCommand::Prompt { blocks, .. } = command else {
-            panic!("expected prompt command");
-        };
-        assert!(matches!(
-            &blocks[0],
-            PromptInputBlock::Text { text } if text == "keep going"
-        ));
+        assert_ne!(response.conversation_id, Some(conv_id));
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -794,9 +786,8 @@ mod tests {
             panic!("expected rich response");
         };
         assert!(
-            message.body.contains("No agent selected")
-                || message.body.contains("No folder selected"),
-            "stale idle window should start a folder task, not help: {}",
+            message.body.contains("no default agent"),
+            "an unquoted message should ask for the channel default agent, not help: {}",
             message.body
         );
         let ctx = sender_context_service::get_or_create(&db.conn, channel_id, "sender-1")
@@ -861,14 +852,8 @@ mod tests {
             message.body
         );
         assert!(
-            message.body.contains("No agent selected")
-                || message.body.contains("No folder selected")
-                || message.title.as_deref() == Some("开始任务")
-                || message
-                    .title
-                    .as_deref()
-                    .is_some_and(|t| t.contains("Task") || t.contains("Started")),
-            "busy desktop session should start a new folder task, got title={:?} body={}",
+            message.body.contains("no default agent"),
+            "an unquoted message must not enter the busy desktop session, got title={:?} body={}",
             message.title,
             message.body
         );
@@ -939,19 +924,10 @@ mod tests {
             "quoting a busy desktop session must not return retry-later: {}",
             message.body
         );
-        assert!(
-            message.body.contains("No agent selected")
-                || message.body.contains("No folder selected")
-                || message.title.as_deref().is_some_and(|t| t.contains("Task")
-                    || t.contains("Started")
-                    || t == "开始任务"),
-            "quoted busy desktop session should start a new folder task, got title={:?} body={}",
-            message.title,
-            message.body
-        );
-        assert!(
-            bridge.lock().await.find_by_conversation(conv_id).is_none(),
-            "must not attach the desktop connection to the chat bridge"
+        assert_eq!(response.conversation_id, Some(conv_id));
+        assert_eq!(
+            message.body,
+            crate::chat_channel::i18n::task_deferred_busy(Lang::En)
         );
     }
 
@@ -1021,12 +997,8 @@ mod tests {
             message.body
         );
         assert!(
-            message.body.contains("No agent selected")
-                || message.body.contains("No folder selected")
-                || message.title.as_deref().is_some_and(|t| t.contains("Task")
-                    || t.contains("Started")
-                    || t == "开始任务"),
-            "busy bridged session should start a new folder task, got title={:?} body={}",
+            message.body.contains("no default agent"),
+            "an unquoted message must not queue onto the busy bridged session, got title={:?} body={}",
             message.title,
             message.body
         );

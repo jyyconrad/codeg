@@ -149,6 +149,33 @@ fn binary_fingerprint(binary: &Path) -> Option<BinaryFingerprint> {
     })
 }
 
+/// Run a vendor CLI from the desktop process.
+///
+/// npm's `codex` is `#!/usr/bin/env node`. A GUI app's PATH is only
+/// `/usr/bin:/bin:/usr/sbin:/sbin`, so the probe exits 127 and hook support
+/// stays off. The login shell that later runs the command does have node, and
+/// Codex then starts with no observation hooks — the tab keeps its draft name.
+/// The shim's own directory contains the sibling `node` that `env` needs.
+fn agent_cli_command(binary: &Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(binary);
+    if let Some(path) = path_with_binary_dir(binary, std::env::var_os("PATH")) {
+        command.env("PATH", path);
+    }
+    command
+}
+
+fn path_with_binary_dir(
+    binary: &Path,
+    current: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    let dir = binary.parent().filter(|dir| !dir.as_os_str().is_empty())?;
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Some(current) = current {
+        dirs.extend(std::env::split_paths(&current));
+    }
+    std::env::join_paths(dirs).ok()
+}
+
 async fn probe_codex_hooks(binary: &Path) -> bool {
     let fingerprint = binary_fingerprint(binary);
     let cache = CODEX_HOOK_PROBES.get_or_init(|| Mutex::new(HashSet::new()));
@@ -160,7 +187,20 @@ async fn probe_codex_hooks(binary: &Path) -> bool {
     }) {
         return true;
     }
-    let mut command = tokio::process::Command::new(binary);
+    // `--help` returns immediately and the trust-bypass flag only exists on
+    // builds that already have UserPromptSubmit and Stop. `codex doctor`
+    // loads config plus the app-server and takes ~15s here; the old 5s budget
+    // always expired, so hook support stayed off and the tab kept its draft name.
+    if codex_supports_hook_trust_bypass(binary).await {
+        if let Some(fingerprint) = fingerprint {
+            cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(fingerprint);
+        }
+        return true;
+    }
+    let mut command = agent_cli_command(binary);
     command.args(["--enable", "hooks"]);
     // SessionStart and SessionEnd are not probed. An event this Codex build
     // does not know disables every hook, including the turn events below.
@@ -169,7 +209,7 @@ async fn probe_codex_hooks(binary: &Path) -> bool {
     }
     command.args(["doctor", "--json"]);
     command.kill_on_drop(true);
-    let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(5), command.output()).await
+    let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(30), command.output()).await
     else {
         return false;
     };
@@ -226,7 +266,7 @@ async fn codex_supports_hook_trust_bypass(binary: &Path) -> bool {
 }
 
 async fn probe_codex_hook_trust_bypass(binary: &Path) -> Option<bool> {
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = agent_cli_command(binary);
     command.arg("--help").kill_on_drop(true);
     // `--help` exits 0 on current builds and nonzero on some clap versions.
     // The text is the answer either way.
@@ -267,7 +307,7 @@ async fn probe_grok_hooks(binary: &Path) -> bool {
     if write_grok_probe_hook(home.path(), &command).is_err() {
         return false;
     }
-    let mut child = tokio::process::Command::new(binary);
+    let mut child = agent_cli_command(binary);
     child.args(["inspect", "--json"]);
     child.env("GROK_HOME", home.path());
     child.stdin(std::process::Stdio::null());
@@ -341,7 +381,7 @@ fn codex_doctor_loaded_config(output: &[u8]) -> bool {
 }
 
 async fn probe_claude_hooks(binary: &Path) -> bool {
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = agent_cli_command(binary);
     command.arg("--version").kill_on_drop(true);
     let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(2), command.output()).await
     else {
@@ -389,6 +429,7 @@ fn build_arguments(
     helper_binary: &Path,
     temp_files: &mut Vec<PathBuf>,
     resume_session_id: Option<&str>,
+    submit_prompt_on_resume: bool,
 ) -> Result<Vec<String>, TerminalError> {
     let resume = resume_session_argument(resume_session_id)?;
     let mut args = Vec::new();
@@ -438,8 +479,10 @@ fn build_arguments(
             ));
         }
     }
-    // Resume reopens the stored session. A prompt here would submit a new turn.
-    if resume.is_none() && !prompt.is_empty() {
+    // Opening a saved session from the list must not submit a turn. A channel
+    // follow-up sets `submit_prompt_on_resume` so the resumed CLI receives the
+    // new user message.
+    if !prompt.is_empty() && (resume.is_none() || submit_prompt_on_resume) {
         args.push(prompt.to_string());
     }
     Ok(args)
@@ -637,6 +680,7 @@ pub async fn spawn_agent(
     owner_window_label: String,
     data_dir: &Path,
     runtime_env: BTreeMap<String, String>,
+    submit_prompt_on_resume: bool,
 ) -> Result<SpawnAgentResponse, TerminalError> {
     if terminal_id.is_empty() || terminal_id.len() > 256 || terminal_id.contains('\0') {
         return Err(TerminalError::SpawnFailed(
@@ -698,6 +742,7 @@ pub async fn spawn_agent(
             &helper_binary,
             &mut temp_files,
             resume_session_id.as_deref(),
+            submit_prompt_on_resume,
         )?;
         let initial_command = shell_command(&shell, &binary, &args)?;
         let credential_env =
@@ -765,6 +810,9 @@ pub async fn spawn_agent(
         return Err(TerminalError::SpawnFailed(
             "native agent exited during startup".to_string(),
         ));
+    }
+    if let Some(session_id) = resume_session_id.as_deref() {
+        registry.remember_native_session(&terminal_id, session_id);
     }
     Ok(SpawnAgentResponse {
         terminal_id,
@@ -894,6 +942,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut temps,
             None,
+            false,
         )
         .unwrap();
         let joined = args.join(" ");
@@ -919,6 +968,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut temps,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(args[0], "--dangerously-bypass-hook-trust");
@@ -937,9 +987,26 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut without_hooks,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(plain, vec!["ping".to_string()]);
+    }
+
+    #[test]
+    fn npm_shim_probe_path_puts_the_binary_directory_first() {
+        let current = std::env::join_paths([Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+        let path = path_with_binary_dir(Path::new("/opt/node/bin/codex"), Some(current)).unwrap();
+        let dirs: Vec<_> = std::env::split_paths(&path).collect();
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/opt/node/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ]
+        );
+        assert!(path_with_binary_dir(Path::new("codex"), None).is_none());
     }
 
     #[test]
@@ -987,6 +1054,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut temps,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1002,6 +1070,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut temps,
             None,
+            false,
         )
         .unwrap();
         assert_eq!(no_prompt, vec!["--no-auto-update".to_string()]);
@@ -1019,6 +1088,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut temps,
             Some("sid-1"),
+            false,
         )
         .unwrap();
         assert_eq!(codex[0], "resume");
@@ -1041,9 +1111,29 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut plain_temps,
             Some("sid-1"),
+            false,
         )
         .unwrap();
         assert_eq!(plain, vec!["resume".to_string(), "sid-1".to_string()]);
+        let submitted = build_arguments(
+            AgentType::Codex,
+            "ping",
+            false,
+            true,
+            Path::new("/tmp/codeg"),
+            &mut plain_temps,
+            Some("sid-1"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            submitted,
+            vec![
+                "resume".to_string(),
+                "sid-1".to_string(),
+                "ping".to_string()
+            ]
+        );
 
         let grok = build_arguments(
             AgentType::Grok,
@@ -1053,6 +1143,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut plain_temps,
             Some("title with space"),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1072,6 +1163,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut plain_temps,
             Some("sid-claude"),
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1089,6 +1181,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut hooked,
             Some("sid-claude"),
+            false,
         )
         .unwrap();
         assert_eq!(claude_hooks[0], "--settings");
@@ -1108,6 +1201,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut plain_temps,
             Some("-rf"),
+            false
         )
         .is_err());
         assert!(build_arguments(
@@ -1118,6 +1212,7 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut plain_temps,
             Some("id\nnext"),
+            false
         )
         .is_err());
     }

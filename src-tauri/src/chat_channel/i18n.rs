@@ -1050,6 +1050,21 @@ pub fn task_usage(lang: Lang, prefix: &str) -> String {
     }
 }
 
+pub fn channel_default_agent_missing(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhCn => "这个渠道还没有默认智能体。请在设置的消息渠道里选择一个已启用的智能体。",
+        Lang::ZhTw => "這個渠道還沒有預設智慧體。請在設定的訊息渠道裡選擇一個已啟用的智慧體。",
+        Lang::Ja => "このチャネルにはデフォルトのエージェントがありません。設定のメッセージチャネルで有効なエージェントを選んでください。",
+        Lang::Ko => "이 채널에 기본 에이전트가 없습니다. 설정의 메시지 채널에서 사용 중인 에이전트를 선택하세요.",
+        Lang::Es => "Este canal no tiene un agente predeterminado. Elige un agente habilitado en los canales de mensajes.",
+        Lang::De => "Für diesen Kanal ist kein Standard-Agent festgelegt. Wähle in den Nachrichtenkanälen einen aktivierten Agenten.",
+        Lang::Fr => "Ce canal n'a pas d'agent par défaut. Choisissez un agent activé dans les canaux de messages.",
+        Lang::Pt => "Este canal não tem um agente padrão. Escolha um agente ativado nos canais de mensagens.",
+        Lang::Ar => "لا توجد وكيل افتراضي لهذه القناة. اختر وكيلاً مفعّلاً في قنوات الرسائل.",
+        Lang::En => "This channel has no default agent. Choose an enabled agent in chat channel settings.",
+    }
+}
+
 pub fn no_agent_selected(lang: Lang, prefix: &str) -> String {
     match lang {
         Lang::ZhCn => format!("未选择 Agent，请先使用 {prefix}agent 选择，或在工作目录上设置默认 Agent。"),

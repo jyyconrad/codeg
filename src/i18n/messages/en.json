@@ -2040,7 +2040,8 @@
       "notifyChannels": "Notify channels…",
       "notifyChannelsDialog": {
         "title": "Notify channels",
-        "description": "Send this folder's final messages to the selected chat channels. You can set a Session ID per channel; leave it empty to use the channel default.",
+        "description": "Bind this folder to one channel session. A quoted message appends an instruction to that conversation. A message with no quote starts a new conversation using the channel's default agent. Final messages are sent back to the same session.",
+        "none": "Don't bind",
         "empty": "No chat channels yet. Add one in Settings.",
         "loadFailed": "Failed to load channels: {message}",
         "saveFailed": "Failed to save channel bindings: {message}",
@@ -4409,6 +4410,10 @@
     "channelListDescription": "Enabled channels will auto-connect when the service starts.",
     "editChannel": "Edit Channel",
     "editSuccess": "Channel updated.",
+    "defaultAgent": "Default agent",
+    "defaultAgentHint": "Enabled agent that handles messages when they do not quote an existing conversation.",
+    "defaultAgentNone": "Not set",
+    "defaultAgentEmpty": "No enabled agents. Enable one in Agents settings.",
     "tokenPlaceholderKeep": "Leave blank to keep current",
     "weixinScanTitle": "Scan QR Code",
     "weixinScanDescription": "Open WeChat and scan the QR code to connect.",
@@ -4504,8 +4509,8 @@
       "ar": "Arabic"
     },
     "folderInbound": {
-      "title": "Folder session reuse",
-      "description": "When a folder-bound chat sends a message without quoting another, reuse the folder's latest conversation if it was active within this many minutes. Otherwise start a new conversation. Set 0 to always start a new conversation.",
+      "title": "Inbound messages",
+      "description": "A quoted message appends an instruction to that conversation. A terminal conversation receives it in the running CLI, or by resuming that session. A message with no quote starts a new conversation using the channel's default agent.",
       "minutesLabel": "minutes",
       "saved": "Reuse window saved.",
       "saveFailed": "Failed to save reuse window.",

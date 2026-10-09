@@ -4872,6 +4872,7 @@ export interface ChatChannelInfo {
   event_filter_json: string | null
   daily_report_enabled: boolean
   daily_report_time: string | null
+  default_agent_type: string | null
   created_at: string
   updated_at: string
 }

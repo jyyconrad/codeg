@@ -461,6 +461,8 @@ async fn async_main() -> ExitCode {
     });
 
     // Start chat channel background tasks (event subscriber, command dispatcher, scheduler, auto-connect)
+    let terminal_manager = state.terminal_manager.clone_ref();
+    let agent_hooks = state.agent_hooks.clone();
     state
         .chat_channel_manager
         .start_background(
@@ -470,6 +472,8 @@ async fn async_main() -> ExitCode {
             state.data_dir.clone(),
             state.connection_manager.clone_ref(),
             state.emitter.clone(),
+            terminal_manager,
+            agent_hooks,
         )
         .await;
 

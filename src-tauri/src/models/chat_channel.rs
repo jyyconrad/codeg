@@ -18,6 +18,7 @@ pub struct ChatChannelInfo {
     pub event_filter_json: Option<String>,
     pub daily_report_enabled: bool,
     pub daily_report_time: Option<String>,
+    pub default_agent_type: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -53,6 +54,7 @@ impl From<crate::db::entities::chat_channel::Model> for ChatChannelInfo {
             event_filter_json: m.event_filter_json,
             daily_report_enabled: m.daily_report_enabled,
             daily_report_time: m.daily_report_time,
+            default_agent_type: m.default_agent_type,
             created_at: m.created_at.to_rfc3339(),
             updated_at: m.updated_at.to_rfc3339(),
         }

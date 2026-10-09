@@ -2040,7 +2040,7 @@
       "notifyChannels": "قنوات الإشعار…",
       "notifyChannelsDialog": {
         "title": "قنوات الإشعار",
-        "description": "عند انتهاء تشغيل في هذا المجلد، أرسل الرسالة النهائية إلى كل قناة محددة. يمكنك تعيين معرّف جلسة لكل قناة؛ اتركه فارغًا لاستخدام الافتراضي.",
+        "description": "Bind this folder to one channel session. A quoted message appends an instruction to that conversation. A message with no quote starts a new conversation using the channel's default agent. Final messages are sent back to the same session.",
         "empty": "لا توجد قنوات دردشة بعد. أضف واحدة من الإعدادات.",
         "loadFailed": "تعذر تحميل القنوات: {message}",
         "saveFailed": "تعذر حفظ ربط القنوات: {message}",
@@ -2048,7 +2048,8 @@
         "sessionIdForChannel": "معرّف جلسة {name}",
         "sessionIdHint": "اتركه فارغًا لاستخدام محادثة القناة الافتراضية.",
         "sessionIdPlaceholder": "الافتراضي",
-        "sessionIdPlaceholderWithDefault": "الافتراضي: {chatId}"
+        "sessionIdPlaceholderWithDefault": "الافتراضي: {chatId}",
+        "none": "Don't bind"
       },
       "error": "خطأ: {message}",
       "completeAllSessions": "إكمال جميع الجلسات",
@@ -4492,14 +4493,18 @@
       "ar": "العربية"
     },
     "folderInbound": {
-      "title": "إعادة استخدام جلسة المجلد",
-      "description": "عندما يرسل محادثة مرتبطة بمجلد رسالة دون اقتباس، تُستأنف أحدث محادثة في المجلد إذا كانت نشطة خلال هذه الدقائق. وإلا تُبدأ محادثة جديدة. 0 يبدأ دائماً محادثة جديدة.",
+      "title": "Inbound messages",
+      "description": "A quoted message appends an instruction to that conversation. A terminal conversation receives it in the running CLI, or by resuming that session. A message with no quote starts a new conversation using the channel's default agent.",
       "minutesLabel": "دقائق",
       "saved": "تم حفظ نافذة إعادة الاستخدام.",
       "saveFailed": "فشل حفظ نافذة إعادة الاستخدام.",
       "invalid": "أدخل عدداً صحيحاً من 0 إلى 10080.",
       "save": "حفظ"
-    }
+    },
+    "defaultAgent": "Default agent",
+    "defaultAgentHint": "Enabled agent that handles messages when they do not quote an existing conversation.",
+    "defaultAgentNone": "Not set",
+    "defaultAgentEmpty": "No enabled agents. Enable one in Agents settings."
   },
   "ModelProviderSettings": {
     "sectionTitle": "مزودو النماذج",

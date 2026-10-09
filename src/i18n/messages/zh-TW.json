@@ -2040,7 +2040,7 @@
       "notifyChannels": "通知渠道…",
       "notifyChannelsDialog": {
         "title": "通知渠道",
-        "description": "此資料夾中的對話結束時，將最終訊息發送到所選渠道。可為每個渠道填寫會話 ID；留空則使用渠道預設會話。",
+        "description": "這個資料夾只綁定一個渠道會話。引用了已有對話時，在那條對話裡追加指令；沒有引用則用渠道的預設智慧體新建對話。對話結束時的最終訊息也會發回這個會話。",
         "empty": "尚無聊天渠道。請先在設定中新增。",
         "loadFailed": "載入渠道失敗：{message}",
         "saveFailed": "儲存渠道綁定失敗：{message}",
@@ -2048,7 +2048,8 @@
         "sessionIdForChannel": "{name} 的會話 ID",
         "sessionIdHint": "留空則使用該渠道的預設會話。",
         "sessionIdPlaceholder": "預設",
-        "sessionIdPlaceholderWithDefault": "預設：{chatId}"
+        "sessionIdPlaceholderWithDefault": "預設：{chatId}",
+        "none": "不綁定"
       },
       "error": "錯誤：{message}",
       "completeAllSessions": "完成全部會話",
@@ -4492,14 +4493,18 @@
       "ar": "阿拉伯語"
     },
     "folderInbound": {
-      "title": "資料夾會話復用",
-      "description": "綁定了資料夾的渠道收到未引用的訊息時：若該資料夾最新對話的活動時間在此分鐘數內，則繼續該對話；否則自動新開對話。設為 0 則總是新開。",
+      "title": "入站訊息",
+      "description": "引用了某條已發出的訊息時，在對應的對話裡追加一條指令。終端模式會寫入正在執行的會話；會話沒在執行時，用 resume 重新開啟並提交。沒有引用則用該渠道的預設智慧體新建對話。",
       "minutesLabel": "分鐘",
       "saved": "復用窗口已儲存。",
       "saveFailed": "儲存復用窗口失敗。",
       "invalid": "請輸入 0 到 10080 的整數。",
       "save": "儲存"
-    }
+    },
+    "defaultAgent": "預設智慧體",
+    "defaultAgentHint": "渠道收到未引用已有對話的訊息時，用這個已啟用的智慧體處理。",
+    "defaultAgentNone": "未設定",
+    "defaultAgentEmpty": "沒有已啟用的智慧體。請先在智慧體設定裡啟用。"
   },
   "ModelProviderSettings": {
     "sectionTitle": "模型供應商",

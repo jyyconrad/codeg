@@ -11,6 +11,8 @@ use super::traits::ChatChannelBackend;
 use super::types::*;
 use crate::acp::manager::ConnectionManager;
 use crate::db::service::thread_binding_service;
+use crate::terminal::agent_hooks::AgentHookRegistry;
+use crate::terminal::manager::TerminalManager;
 use crate::web::event_bridge::{EventEmitter, WebEventBroadcaster};
 
 struct ActiveChannel {
@@ -28,6 +30,8 @@ struct Inner {
     broadcaster: Mutex<Option<Arc<WebEventBroadcaster>>>,
     bridge: Arc<Mutex<SessionBridge>>,
     conn_mgr: Mutex<Option<ConnectionManager>>,
+    terminal_manager: Mutex<Option<TerminalManager>>,
+    agent_hooks: Mutex<Option<Arc<AgentHookRegistry>>>,
 }
 
 pub struct ChatChannelManager {
@@ -51,8 +55,27 @@ impl ChatChannelManager {
                 broadcaster: Mutex::new(None),
                 bridge: Arc::new(Mutex::new(SessionBridge::new())),
                 conn_mgr: Mutex::new(None),
+                terminal_manager: Mutex::new(None),
+                agent_hooks: Mutex::new(None),
             }),
         }
+    }
+
+    pub async fn set_terminal_host(&self, manager: TerminalManager, hooks: Arc<AgentHookRegistry>) {
+        *self.inner.terminal_manager.lock().await = Some(manager);
+        *self.inner.agent_hooks.lock().await = Some(hooks);
+    }
+
+    pub async fn terminal_host(&self) -> Option<super::terminal_followup::TerminalHost> {
+        let manager = self
+            .inner
+            .terminal_manager
+            .lock()
+            .await
+            .as_ref()
+            .map(TerminalManager::clone_ref)?;
+        let hooks = self.inner.agent_hooks.lock().await.clone()?;
+        Some(super::terminal_followup::TerminalHost { manager, hooks })
     }
 
     /// Shallow clone sharing the same state (like ConnectionManager::clone_ref).
@@ -372,7 +395,11 @@ impl ChatChannelManager {
         data_dir: PathBuf,
         conn_mgr: ConnectionManager,
         emitter: EventEmitter,
+        terminal_manager: TerminalManager,
+        agent_hooks: Arc<AgentHookRegistry>,
     ) {
+        agent_hooks.set_database(db_conn.clone());
+        self.set_terminal_host(terminal_manager, agent_hooks).await;
         // Store broadcaster for status event emission
         *self.inner.broadcaster.lock().await = Some(broadcaster.clone());
 

@@ -2040,7 +2040,7 @@
       "notifyChannels": "Canaux de notification…",
       "notifyChannelsDialog": {
         "title": "Canaux de notification",
-        "description": "Quand une exécution se termine dans ce dossier, le message final est envoyé à chaque canal sélectionné. Vous pouvez indiquer un ID de session par canal ; laissez vide pour le défaut du canal.",
+        "description": "Bind this folder to one channel session. A quoted message appends an instruction to that conversation. A message with no quote starts a new conversation using the channel's default agent. Final messages are sent back to the same session.",
         "empty": "Aucun canal de discussion. Ajoutez-en un dans les paramètres.",
         "loadFailed": "Échec du chargement des canaux : {message}",
         "saveFailed": "Échec de l'enregistrement des canaux : {message}",
@@ -2048,7 +2048,8 @@
         "sessionIdForChannel": "ID de session pour {name}",
         "sessionIdHint": "Laissez vide pour utiliser le chat par défaut de ce canal.",
         "sessionIdPlaceholder": "Par défaut",
-        "sessionIdPlaceholderWithDefault": "Par défaut : {chatId}"
+        "sessionIdPlaceholderWithDefault": "Par défaut : {chatId}",
+        "none": "Don't bind"
       },
       "error": "Erreur : {message}",
       "completeAllSessions": "Terminer toutes les sessions",
@@ -4492,14 +4493,18 @@
       "ar": "Arabe"
     },
     "folderInbound": {
-      "title": "Réutilisation de session du dossier",
-      "description": "Lorsqu’un chat lié à un dossier envoie un message sans citation, la dernière conversation du dossier est reprise si elle a été active dans ce délai (minutes). Sinon une nouvelle conversation est créée. 0 démarre toujours une nouvelle conversation.",
+      "title": "Inbound messages",
+      "description": "A quoted message appends an instruction to that conversation. A terminal conversation receives it in the running CLI, or by resuming that session. A message with no quote starts a new conversation using the channel's default agent.",
       "minutesLabel": "minutes",
       "saved": "Fenêtre de réutilisation enregistrée.",
       "saveFailed": "Échec de l’enregistrement de la fenêtre de réutilisation.",
       "invalid": "Saisissez un entier entre 0 et 10080.",
       "save": "Enregistrer"
-    }
+    },
+    "defaultAgent": "Default agent",
+    "defaultAgentHint": "Enabled agent that handles messages when they do not quote an existing conversation.",
+    "defaultAgentNone": "Not set",
+    "defaultAgentEmpty": "No enabled agents. Enable one in Agents settings."
   },
   "ModelProviderSettings": {
     "sectionTitle": "Fournisseurs de Modèles",

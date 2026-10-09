@@ -2554,6 +2554,7 @@ const ConversationTabView = memo(function ConversationTabView({
             agentType={selectedAgent}
             agentName={getAgentLabel(selectedAgent)}
             resumeSessionId={resumeSessionId}
+            conversationId={dbConversationId}
             workingDir={workingDirForConnection}
             isActive={isActive}
             isVisible={paneVisible}

@@ -46,6 +46,13 @@ pub struct TerminalIdParams {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TerminalConversationLookupParams {
+    pub conversation_id: Option<i32>,
+    pub native_session_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalWriteParams {
     pub terminal_id: String,
     pub data: String,
@@ -119,10 +126,41 @@ pub async fn terminal_spawn_agent(
         "web".to_string(),
         &state.data_dir,
         runtime_env,
+        false,
     )
     .await
     .map_err(|error| AppCommandError::task_execution_failed(error.to_string()))?;
     Ok(Json(response))
+}
+
+pub async fn terminal_id_for_conversation(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(params): Json<TerminalConversationLookupParams>,
+) -> Result<Json<Option<String>>, AppCommandError> {
+    let mut session_id = params.native_session_id;
+    if session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .is_none()
+    {
+        if let Some(conversation_id) = params.conversation_id.filter(|id| *id > 0) {
+            if let Ok(conv) =
+                crate::db::service::conversation_service::get_by_id(&state.db.conn, conversation_id)
+                    .await
+            {
+                session_id = conv.external_id;
+            }
+        }
+    }
+    Ok(Json(
+        crate::chat_channel::terminal_followup::live_terminal_id(
+            &state.terminal_manager,
+            &state.agent_hooks,
+            session_id.as_deref(),
+            params.conversation_id,
+        ),
+    ))
 }
 
 pub async fn terminal_agent_state(

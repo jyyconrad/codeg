@@ -1,10 +1,20 @@
 "use client"
 
-import { useCallback, useLayoutEffect, useMemo } from "react"
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react"
 import { useTranslations } from "next-intl"
 import { TerminalView } from "@/components/terminal/terminal-view"
 import { Button } from "@/components/ui/button"
-import { openSettingsWindow, terminalKill } from "@/lib/api"
+import {
+  openSettingsWindow,
+  terminalIdForConversation,
+  terminalKill,
+} from "@/lib/api"
 import { claimSessionTerminal } from "@/lib/session-terminal-session"
 import { settleTerminalProcessExit } from "@/lib/terminal-session-establish"
 import { useTabStore } from "@/stores/tab-store"
@@ -17,6 +27,8 @@ interface SessionTerminalInputProps {
   agentName: string
   /** Native session to reopen. Stable for the life of this mount. */
   resumeSessionId?: string | null
+  /** Row a channel may already be driving in a background PTY. */
+  conversationId?: number | null
   workingDir?: string | null
   isActive: boolean
   /**
@@ -45,6 +57,7 @@ export function SessionTerminalInput({
   agentType,
   agentName,
   resumeSessionId,
+  conversationId,
   workingDir,
   isActive,
   isVisible = true,
@@ -63,10 +76,40 @@ export function SessionTerminalInput({
     [agentType, resumeSessionId]
   )
   const directory = workingDir?.trim() ? workingDir : null
+  const needsLiveTerminal = conversationId != null || Boolean(resumeSessionId)
+  const lookupKey = needsLiveTerminal
+    ? `${conversationId ?? ""}|${resumeSessionId ?? ""}`
+    : null
+  const [lookup, setLookup] = useState<{
+    key: string
+    id: string | null
+  } | null>(null)
+  useEffect(() => {
+    if (!lookupKey) return
+    let cancelled = false
+    terminalIdForConversation({
+      conversationId: conversationId ?? null,
+      nativeSessionId: resumeSessionId ?? null,
+    })
+      .then((id) => {
+        if (!cancelled) setLookup({ key: lookupKey, id })
+      })
+      .catch(() => {
+        if (!cancelled) setLookup({ key: lookupKey, id: null })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [lookupKey, conversationId, resumeSessionId])
+  const adoptedTerminalId = !lookupKey
+    ? null
+    : lookup?.key === lookupKey
+      ? lookup.id
+      : undefined
   const claimed =
-    notice || !directory
+    notice || !directory || adoptedTerminalId === undefined
       ? null
-      : claimSessionTerminal(ownerKey, agentType, directory)
+      : claimSessionTerminal(ownerKey, agentType, directory, adoptedTerminalId)
   if (claimed?.replacedId) {
     // Agent or directory changed. A repeat render claims the new id and
     // has no replacedId, so the previous process is retired once. Settle

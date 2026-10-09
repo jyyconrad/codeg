@@ -56,6 +56,7 @@ mod m20260915_000002_chat_channel_message_map;
 mod m20260929_000001_workflow_follow_up;
 mod m20260930_000001_agent_setting_launch_mode;
 mod m20261003_000001_conversation_launch_mode;
+mod m20261008_000001_chat_channel_default_agent;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -118,6 +119,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260929_000001_workflow_follow_up::Migration),
             Box::new(m20260930_000001_agent_setting_launch_mode::Migration),
             Box::new(m20261003_000001_conversation_launch_mode::Migration),
+            Box::new(m20261008_000001_chat_channel_default_agent::Migration),
         ]
     }
 }

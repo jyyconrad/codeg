@@ -12,6 +12,7 @@ use super::folder_inbound::{
 use super::i18n::{self, Lang};
 use super::manager::ChatChannelManager;
 use super::session_bridge::{ActiveSession, SessionBridge};
+use super::terminal_followup;
 use super::types::{
     ButtonStyle, ChannelMessageTarget, IncomingCommand, InteractiveMessage, MessageButton,
     MessageLevel, RichMessage,
@@ -21,7 +22,8 @@ use crate::acp::registry::all_acp_agents;
 use crate::acp::types::PromptInputBlock;
 use crate::db::entities::{chat_channel_thread_binding, conversation};
 use crate::db::service::{
-    conversation_service, folder_service, sender_context_service, thread_binding_service,
+    chat_channel_service, conversation_service, folder_service, sender_context_service,
+    thread_binding_service,
 };
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
@@ -459,6 +461,7 @@ pub async fn handle_task(
     lang: Lang,
     prefix: &str,
     data_dir: &Path,
+    preferred_agent: Option<AgentType>,
 ) -> CommandMessageResult {
     if task_description.is_empty() {
         return CommandMessageResult::current_target(
@@ -506,14 +509,19 @@ pub async fn handle_task(
         }
     };
 
-    // 3. Resolve agent type
-    let agent_type = match resolve_agent_type(&ctx.current_agent_type, &folder.default_agent_type) {
-        Some(at) => at,
-        None => {
-            return CommandMessageResult::current_target(
-                RichMessage::info(i18n::no_agent_selected(lang, prefix)),
-                target,
-            );
+    // 3. Resolve agent type. A folder-bound inbound message passes the channel's
+    // default agent and does not fall through to the sender or folder default.
+    let agent_type = if let Some(agent) = preferred_agent {
+        agent
+    } else {
+        match resolve_agent_type(&ctx.current_agent_type, &folder.default_agent_type) {
+            Some(at) => at,
+            None => {
+                return CommandMessageResult::current_target(
+                    RichMessage::info(i18n::no_agent_selected(lang, prefix)),
+                    target,
+                );
+            }
         }
     };
 
@@ -1276,6 +1284,26 @@ pub async fn handle_folder_bound_inbound(
             result
         }
         FolderInboundAction::StartNew => {
+            let Some(agent_type) = channel_default_agent(db, cmd.channel_id).await else {
+                return CommandMessageResult::current_target(
+                    RichMessage::info(i18n::channel_default_agent_missing(lang)),
+                    &cmd.target,
+                );
+            };
+            if terminal_followup::agent_uses_terminal(db, agent_type).await {
+                return start_terminal_folder_conversation(
+                    db,
+                    cmd,
+                    plan.bound_folder_id,
+                    agent_type,
+                    manager,
+                    emitter,
+                    lang,
+                    prefix,
+                    data_dir,
+                )
+                .await;
+            }
             let mut result = handle_task(
                 db,
                 cmd.command_text.trim(),
@@ -1289,6 +1317,7 @@ pub async fn handle_folder_bound_inbound(
                 lang,
                 prefix,
                 data_dir,
+                Some(agent_type),
             )
             .await;
             if let Some(CommandPostAction::SendLinkedPrompt { extra_blocks, .. }) =
@@ -1313,6 +1342,200 @@ pub async fn handle_folder_bound_inbound(
     }
 }
 
+async fn channel_default_agent(db: &DatabaseConnection, channel_id: i32) -> Option<AgentType> {
+    let channel = chat_channel_service::get_by_id(db, channel_id)
+        .await
+        .ok()
+        .flatten()?;
+    let raw = channel.default_agent_type.as_deref()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    AgentType::from_wire(raw)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_terminal_folder_conversation(
+    db: &DatabaseConnection,
+    cmd: &IncomingCommand,
+    folder_id: i32,
+    agent_type: AgentType,
+    manager: &ChatChannelManager,
+    emitter: &EventEmitter,
+    lang: Lang,
+    prefix: &str,
+    data_dir: &Path,
+) -> CommandMessageResult {
+    let text = cmd.command_text.trim();
+    if text.is_empty() {
+        return CommandMessageResult::current_target(
+            RichMessage::info(i18n::task_usage(lang, prefix)),
+            &cmd.target,
+        );
+    }
+    let Some(host) = manager.terminal_host().await else {
+        return CommandMessageResult::current_target(
+            RichMessage::error(format!(
+                "{}terminal host is not available",
+                i18n::failed_to_start_agent_label(lang)
+            )),
+            &cmd.target,
+        );
+    };
+    let folder = match folder_service::get_folder_by_id(db, folder_id).await {
+        Ok(Some(folder)) => folder,
+        _ => {
+            return CommandMessageResult::current_target(
+                RichMessage::info(i18n::folder_not_found(lang)),
+                &cmd.target,
+            );
+        }
+    };
+    let conv = match conversation_service::create(
+        db,
+        folder_id,
+        agent_type,
+        Some(truncate_title(text)),
+        folder.git_branch.clone(),
+    )
+    .await
+    {
+        Ok(conv) => conv,
+        Err(error) => {
+            return CommandMessageResult::current_target(
+                RichMessage::error(format!(
+                    "{}{error}",
+                    i18n::failed_to_create_conversation_label(lang)
+                )),
+                &cmd.target,
+            );
+        }
+    };
+    if let Err(error) = terminal_followup::stamp_terminal_launch(db, conv.id).await {
+        let _ = conversation_service::update_status(
+            db,
+            conv.id,
+            conversation::ConversationStatus::Cancelled,
+        )
+        .await;
+        announce_channel_conversation(emitter, db, conv.id).await;
+        return CommandMessageResult::current_target(
+            RichMessage::error(format!(
+                "{}{error}",
+                i18n::failed_to_start_agent_label(lang)
+            )),
+            &cmd.target,
+        );
+    }
+    announce_channel_conversation(emitter, db, conv.id).await;
+    let summary = match conversation_service::get_by_id(db, conv.id).await {
+        Ok(summary) => summary,
+        Err(error) => {
+            return CommandMessageResult::current_target(
+                RichMessage::error(format!(
+                    "{}{error}",
+                    i18n::failed_to_start_agent_label(lang)
+                )),
+                &cmd.target,
+            );
+        }
+    };
+    if let Err(error) = terminal_followup::deliver_terminal_user_message(
+        &host,
+        db,
+        &summary,
+        &folder.path,
+        text,
+        data_dir,
+        emitter.clone(),
+    )
+    .await
+    {
+        let _ = conversation_service::update_status(
+            db,
+            conv.id,
+            conversation::ConversationStatus::Cancelled,
+        )
+        .await;
+        announce_channel_conversation(emitter, db, conv.id).await;
+        return CommandMessageResult::current_target(
+            RichMessage::error(format!(
+                "{}{error}",
+                i18n::failed_to_start_agent_label(lang)
+            )),
+            &cmd.target,
+        )
+        .with_conversation(conv.id);
+    }
+    remember_provider_message(
+        db,
+        cmd.channel_id,
+        inbound_provider_message_id(cmd).as_deref(),
+        conv.id,
+    )
+    .await;
+    CommandMessageResult::current_target(
+        RichMessage::info(format!("[{agent_type}] #{} @ {}", conv.id, folder.name))
+            .with_title(i18n::task_started_title(lang)),
+        &cmd.target,
+    )
+    .with_conversation(conv.id)
+}
+
+async fn continue_terminal_conversation(
+    db: &DatabaseConnection,
+    cmd: &IncomingCommand,
+    conv: &DbConversationSummary,
+    manager: &ChatChannelManager,
+    emitter: &EventEmitter,
+    lang: Lang,
+    data_dir: &Path,
+) -> CommandMessageResult {
+    let Some(host) = manager.terminal_host().await else {
+        return CommandMessageResult::current_target(
+            RichMessage::error(format!(
+                "{}terminal host is not available",
+                i18n::failed_to_start_agent_label(lang)
+            )),
+            &cmd.target,
+        );
+    };
+    let folder = match folder_service::get_folder_by_id(db, conv.folder_id).await {
+        Ok(Some(folder)) => folder,
+        _ => {
+            return CommandMessageResult::current_target(
+                RichMessage::info(i18n::folder_not_found(lang)),
+                &cmd.target,
+            );
+        }
+    };
+    match terminal_followup::deliver_terminal_user_message(
+        &host,
+        db,
+        conv,
+        &folder.path,
+        cmd.command_text.trim(),
+        data_dir,
+        emitter.clone(),
+    )
+    .await
+    {
+        Ok(()) => CommandMessageResult::current_target(
+            RichMessage::info(i18n::message_sent(lang)),
+            &cmd.target,
+        )
+        .with_conversation(conv.id),
+        Err(error) => CommandMessageResult::current_target(
+            RichMessage::error(format!(
+                "{}{error}",
+                i18n::failed_to_send_message_label(lang)
+            )),
+            &cmd.target,
+        )
+        .with_conversation(conv.id),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn continue_folder_conversation(
     db: &DatabaseConnection,
@@ -1326,6 +1549,20 @@ async fn continue_folder_conversation(
     prefix: &str,
     data_dir: &Path,
 ) -> CommandMessageResult {
+    let conv = match conversation_service::get_by_id(db, conversation_id).await {
+        Ok(conv) => conv,
+        Err(_) => {
+            return CommandMessageResult::current_target(
+                RichMessage::info(i18n::conversation_not_found(lang)),
+                &cmd.target,
+            );
+        }
+    };
+    if conv.launch_mode == "terminal" {
+        return continue_terminal_conversation(db, cmd, &conv, manager, emitter, lang, data_dir)
+            .await;
+    }
+
     let live = {
         let guard = bridge.lock().await;
         guard
@@ -1355,16 +1592,6 @@ async fn continue_folder_conversation(
         return CommandMessageResult::current_target(message, &cmd.target)
             .with_conversation(conversation_id);
     }
-
-    let conv = match conversation_service::get_by_id(db, conversation_id).await {
-        Ok(conv) => conv,
-        Err(_) => {
-            return CommandMessageResult::current_target(
-                RichMessage::info(i18n::conversation_not_found(lang)),
-                &cmd.target,
-            );
-        }
-    };
 
     let (connection_id, folder) = match spawn_chat_connection_for_conversation(
         db,
@@ -2358,6 +2585,7 @@ mod tests {
             Lang::En,
             "/",
             std::path::Path::new("/tmp/codeg-topic-disabled-agent-data"),
+            None,
         )
         .await;
 

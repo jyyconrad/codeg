@@ -2040,7 +2040,7 @@
       "notifyChannels": "Canales de notificación…",
       "notifyChannelsDialog": {
         "title": "Canales de notificación",
-        "description": "Cuando termine una ejecución en esta carpeta, envía el mensaje final a cada canal seleccionado. Puedes definir un ID de sesión por canal; déjalo vacío para usar el predeterminado.",
+        "description": "Bind this folder to one channel session. A quoted message appends an instruction to that conversation. A message with no quote starts a new conversation using the channel's default agent. Final messages are sent back to the same session.",
         "empty": "Aún no hay canales de chat. Añade uno en Ajustes.",
         "loadFailed": "No se pudieron cargar los canales: {message}",
         "saveFailed": "No se pudieron guardar los canales: {message}",
@@ -2048,7 +2048,8 @@
         "sessionIdForChannel": "ID de sesión de {name}",
         "sessionIdHint": "Déjalo vacío para usar el chat predeterminado de este canal.",
         "sessionIdPlaceholder": "Predeterminado",
-        "sessionIdPlaceholderWithDefault": "Predeterminado: {chatId}"
+        "sessionIdPlaceholderWithDefault": "Predeterminado: {chatId}",
+        "none": "Don't bind"
       },
       "error": "Error del sistema: {message}",
       "completeAllSessions": "Completar todas las sesiones",
@@ -4492,14 +4493,18 @@
       "ar": "Árabe"
     },
     "folderInbound": {
-      "title": "Reutilizar sesión de carpeta",
-      "description": "Si un chat vinculado a una carpeta envía un mensaje sin citar otro, se reutiliza la conversación más reciente de la carpeta si estuvo activa en estos minutos. Si no, se inicia una nueva. 0 siempre inicia una nueva.",
+      "title": "Inbound messages",
+      "description": "A quoted message appends an instruction to that conversation. A terminal conversation receives it in the running CLI, or by resuming that session. A message with no quote starts a new conversation using the channel's default agent.",
       "minutesLabel": "minutos",
       "saved": "Ventana de reutilización guardada.",
       "saveFailed": "No se pudo guardar la ventana de reutilización.",
       "invalid": "Introduce un entero entre 0 y 10080.",
       "save": "Guardar"
-    }
+    },
+    "defaultAgent": "Default agent",
+    "defaultAgentHint": "Enabled agent that handles messages when they do not quote an existing conversation.",
+    "defaultAgentNone": "Not set",
+    "defaultAgentEmpty": "No enabled agents. Enable one in Agents settings."
   },
   "ModelProviderSettings": {
     "sectionTitle": "Proveedores de Modelos",

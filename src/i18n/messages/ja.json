@@ -2040,7 +2040,7 @@
       "notifyChannels": "通知チャネル…",
       "notifyChannelsDialog": {
         "title": "通知チャネル",
-        "description": "このフォルダーの実行が終了したとき、最終メッセージを選択したチャネルへ送ります。チャネルごとにセッション ID を指定でき、空欄ならチャネルのデフォルトを使います。",
+        "description": "Bind this folder to one channel session. A quoted message appends an instruction to that conversation. A message with no quote starts a new conversation using the channel's default agent. Final messages are sent back to the same session.",
         "empty": "チャットチャネルはまだありません。設定で追加してください。",
         "loadFailed": "チャネルの読み込みに失敗しました: {message}",
         "saveFailed": "チャネルの保存に失敗しました: {message}",
@@ -2048,7 +2048,8 @@
         "sessionIdForChannel": "{name} のセッション ID",
         "sessionIdHint": "空欄の場合、このチャネルのデフォルトチャットを使います。",
         "sessionIdPlaceholder": "デフォルト",
-        "sessionIdPlaceholderWithDefault": "デフォルト: {chatId}"
+        "sessionIdPlaceholderWithDefault": "デフォルト: {chatId}",
+        "none": "Don't bind"
       },
       "error": "エラー: {message}",
       "completeAllSessions": "すべてのセッションを完了",
@@ -4492,14 +4493,18 @@
       "ar": "アラビア語"
     },
     "folderInbound": {
-      "title": "フォルダセッションの再利用",
-      "description": "フォルダに紐づいたチャネルで引用なしのメッセージを受け取ったとき、最新の会話がこの分数以内に更新されていればその会話を続け、超えていれば新しい会話を開始します。0 にすると常に新規開始します。",
+      "title": "Inbound messages",
+      "description": "A quoted message appends an instruction to that conversation. A terminal conversation receives it in the running CLI, or by resuming that session. A message with no quote starts a new conversation using the channel's default agent.",
       "minutesLabel": "分",
       "saved": "再利用ウィンドウを保存しました。",
       "saveFailed": "再利用ウィンドウの保存に失敗しました。",
       "invalid": "0 から 10080 の整数を入力してください。",
       "save": "保存"
-    }
+    },
+    "defaultAgent": "Default agent",
+    "defaultAgentHint": "Enabled agent that handles messages when they do not quote an existing conversation.",
+    "defaultAgentNone": "Not set",
+    "defaultAgentEmpty": "No enabled agents. Enable one in Agents settings."
   },
   "ModelProviderSettings": {
     "sectionTitle": "モデルプロバイダー",

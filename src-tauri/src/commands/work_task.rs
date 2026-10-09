@@ -1435,6 +1435,7 @@ mod tests {
                 event_filter_json: Set(None),
                 daily_report_enabled: Set(false),
                 daily_report_time: Set(None),
+                default_agent_type: Set(None),
                 created_at: Set(now),
                 updated_at: Set(now),
             }

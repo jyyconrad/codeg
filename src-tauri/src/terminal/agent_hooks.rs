@@ -117,12 +117,19 @@ struct RunRecord {
     state: AgentTerminalState,
     token: Option<String>,
     seen: HashSet<String>,
+    /// Conversation a channel-started CLI should bind when its session id arrives.
+    preferred_conversation: Option<(i32, i32)>,
+    session_bound: bool,
 }
 
 #[derive(Default)]
 struct RunStore {
     by_terminal: HashMap<String, RunRecord>,
     by_token: HashMap<String, String>,
+    /// Native session id → terminal id, including resumes that have not hooked yet.
+    by_session: HashMap<String, String>,
+    /// Claimed before `register` so the first hook already knows the conversation.
+    reserved_conversation: HashMap<String, (i32, i32)>,
     inactive: VecDeque<(String, String)>,
 }
 
@@ -145,6 +152,7 @@ impl RunStore {
         if let Some(token) = &token {
             self.by_token.insert(token.clone(), terminal_id.to_string());
         }
+        let preferred_conversation = self.reserved_conversation.remove(terminal_id);
         self.by_terminal.insert(
             terminal_id.to_string(),
             RunRecord {
@@ -158,9 +166,24 @@ impl RunStore {
                 },
                 token,
                 seen: HashSet::new(),
+                preferred_conversation,
+                session_bound: false,
             },
         );
         Some(run_id)
+    }
+
+    fn remember_session(&mut self, terminal_id: &str, session_id: &str) {
+        let session_id = session_id.trim();
+        if session_id.is_empty() {
+            return;
+        }
+        self.by_session
+            .insert(session_id.to_string(), terminal_id.to_string());
+    }
+
+    fn forget_session(&mut self, terminal_id: &str) {
+        self.by_session.retain(|_, id| id != terminal_id);
     }
 
     fn record(&mut self, token: &str, run_id: &str, event_id: &str) -> bool {
@@ -183,6 +206,7 @@ impl RunStore {
                 if let Some(token) = record.token.take() {
                     self.by_token.remove(&token);
                 }
+                self.forget_session(terminal_id);
                 self.inactive
                     .push_back((terminal_id.to_string(), run_id.to_string()));
                 while self.inactive.len() > INACTIVE_RUNS_MAX {
@@ -205,6 +229,7 @@ pub struct AgentHookRegistry {
     store: Mutex<RunStore>,
     listener_url: tokio::sync::Mutex<Option<String>>,
     emitter: EventEmitter,
+    db: Mutex<Option<sea_orm::DatabaseConnection>>,
 }
 
 impl AgentHookRegistry {
@@ -213,7 +238,49 @@ impl AgentHookRegistry {
             store: Mutex::new(RunStore::default()),
             listener_url: tokio::sync::Mutex::new(None),
             emitter,
+            db: Mutex::new(None),
         }
+    }
+
+    pub fn set_database(&self, conn: sea_orm::DatabaseConnection) {
+        *self.db.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(conn);
+    }
+
+    /// Remember which conversation a terminal id belongs to before the process starts.
+    pub fn reserve_conversation(&self, terminal_id: &str, conversation_id: i32, folder_id: i32) {
+        self.store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .reserved_conversation
+            .insert(terminal_id.to_string(), (conversation_id, folder_id));
+    }
+
+    pub fn clear_reservation(&self, terminal_id: &str) {
+        self.store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .reserved_conversation
+            .remove(terminal_id);
+    }
+
+    pub fn remember_native_session(&self, terminal_id: &str, session_id: &str) {
+        self.store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remember_session(terminal_id, session_id);
+    }
+
+    pub fn active_terminal_for_session(&self, session_id: &str) -> Option<String> {
+        let store = self
+            .store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let terminal_id = store.by_session.get(session_id.trim())?.clone();
+        store
+            .by_terminal
+            .get(&terminal_id)
+            .is_some_and(|record| record.state.active)
+            .then_some(terminal_id)
     }
 
     pub async fn ensure_listener(self: &Arc<Self>) -> std::io::Result<String> {
@@ -308,35 +375,101 @@ impl AgentHookRegistry {
         if report.native_event != report.kind.native_name() || report.event_id.is_empty() {
             return false;
         }
-        let event = {
+        let (event, bind) = {
             let mut store = self.store.lock().unwrap_or_else(|p| p.into_inner());
             if !store.record(token, &report.run_id, &report.event_id) {
                 return false;
             }
             let terminal_id = store.by_token.get(token).cloned().unwrap_or_default();
-            let Some(record) = store.by_terminal.get_mut(&terminal_id) else {
-                return false;
+            let prepared = {
+                let Some(record) = store.by_terminal.get_mut(&terminal_id) else {
+                    return false;
+                };
+                let event = AgentTerminalEvent {
+                    run_id: report.run_id,
+                    terminal_id: terminal_id.clone(),
+                    agent_type: record.state.agent_type.clone(),
+                    event_id: report.event_id,
+                    kind: report.kind,
+                    native_event: report.native_event,
+                    native_session_id: report.native_session_id,
+                    native_turn_id: report.native_turn_id,
+                    title: report.title,
+                    title_seed: report.title_seed,
+                    model: report.model,
+                    notice_body: report.notice_body,
+                    received_at: chrono::Utc::now().to_rfc3339(),
+                };
+                record.state.latest_event = Some(event.clone());
+                let session_id = event.native_session_id.clone();
+                let bind = session_id.as_ref().and_then(|_| {
+                    let preferred = record.preferred_conversation?;
+                    if record.session_bound {
+                        return None;
+                    }
+                    record.session_bound = true;
+                    Some(preferred)
+                });
+                (event, bind, session_id)
             };
-            let event = AgentTerminalEvent {
-                run_id: report.run_id,
-                terminal_id,
-                agent_type: record.state.agent_type.clone(),
-                event_id: report.event_id,
-                kind: report.kind,
-                native_event: report.native_event,
-                native_session_id: report.native_session_id,
-                native_turn_id: report.native_turn_id,
-                title: report.title,
-                title_seed: report.title_seed,
-                model: report.model,
-                notice_body: report.notice_body,
-                received_at: chrono::Utc::now().to_rfc3339(),
-            };
-            record.state.latest_event = Some(event.clone());
-            event
+            if let Some(session_id) = prepared.2.as_deref() {
+                store.remember_session(&terminal_id, session_id);
+            }
+            (prepared.0, prepared.1)
         };
-        emit_event(&self.emitter, HOOK_EVENT_NAME, event);
+        emit_event(&self.emitter, HOOK_EVENT_NAME, event.clone());
+        if let Some((conversation_id, folder_id)) = bind {
+            self.bind_preferred_session(&event, conversation_id, folder_id);
+        }
         true
+    }
+
+    fn bind_preferred_session(
+        &self,
+        event: &AgentTerminalEvent,
+        conversation_id: i32,
+        folder_id: i32,
+    ) {
+        let Some(external_id) = event.native_session_id.clone() else {
+            return;
+        };
+        let Some(db) = self
+            .db
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+        else {
+            return;
+        };
+        let agent_type = event.agent_type.clone();
+        let title = event.title.clone();
+        let title_seed = event.title_seed.clone();
+        let model = event.model.clone();
+        tokio::spawn(async move {
+            let Some(agent_type) = crate::models::agent::AgentType::from_wire(&agent_type) else {
+                return;
+            };
+            let request =
+                crate::db::service::conversation_service::EstablishTerminalSessionRequest {
+                    agent_type,
+                    external_id,
+                    preferred_conversation_id: Some(conversation_id),
+                    folder_id: Some(folder_id),
+                    title,
+                    title_seed,
+                    model,
+                };
+            if let Err(error) =
+                crate::db::service::conversation_service::establish_terminal_session(&db, request)
+                    .await
+            {
+                tracing::warn!(
+                    conversation_id,
+                    error = %error,
+                    "[agent-hook] failed to bind channel terminal session"
+                );
+            }
+        });
     }
 }
 

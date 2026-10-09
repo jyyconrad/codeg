@@ -890,9 +890,25 @@ mod tauri_app {
                         .clone();
                     let cm = app.state::<ConnectionManager>().clone_ref();
                     let emitter = web::event_bridge::EventEmitter::Tauri(app.handle().clone());
+                    let terminal_manager = app
+                        .state::<crate::terminal::manager::TerminalManager>()
+                        .clone_ref();
+                    let agent_hooks = (*app
+                        .state::<std::sync::Arc<crate::terminal::agent_hooks::AgentHookRegistry>>(
+                    ))
+                    .clone();
                     tauri::async_runtime::spawn(async move {
                         ccm_ref
-                            .start_background(br, bus, db_conn, data_dir, cm, emitter)
+                            .start_background(
+                                br,
+                                bus,
+                                db_conn,
+                                data_dir,
+                                cm,
+                                emitter,
+                                terminal_manager,
+                                agent_hooks,
+                            )
                             .await;
                     });
                 }
@@ -1993,6 +2009,7 @@ mod tauri_app {
                 terminal_commands::terminal_spawn,
                 terminal_commands::terminal_spawn_agent,
                 terminal_commands::terminal_agent_state,
+                terminal_commands::terminal_id_for_conversation,
                 terminal_commands::terminal_write,
                 terminal_commands::terminal_resize,
                 terminal_commands::terminal_snapshot,

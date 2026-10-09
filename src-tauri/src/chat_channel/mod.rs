@@ -12,6 +12,7 @@ pub mod scheduler;
 pub mod session_bridge;
 pub mod session_commands;
 pub mod session_event_subscriber;
+pub mod terminal_followup;
 pub mod terminal_message;
 pub mod tool_detail;
 pub mod traits;

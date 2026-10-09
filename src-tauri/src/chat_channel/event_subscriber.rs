@@ -367,12 +367,15 @@ async fn process_envelope(
         "permission_request" | "user_prompt_sent" | "question_request"
     );
 
-    let folder_chat_ids =
-        folder_chat_overrides(db_conn, &envelope.connection_id, conn_mgr.as_ref()).await;
     let conversation_id =
         envelope_conversation_id(&envelope.connection_id, conn_mgr.as_ref()).await;
+    // A folder that names a channel session gets that session only. Other
+    // enabled channels keep their own default chats, and would otherwise
+    // deliver the same card into a second Feishu conversation.
+    let folder_bindings = folder_bindings_for_conversation(db_conn, conversation_id).await;
+    let deliveries = deliveries_for_folder(&config.enabled_channels, &folder_bindings);
 
-    for ch in &config.enabled_channels {
+    for (ch, chat_id) in &deliveries {
         // Per-channel event filter
         if let Some(filter_json) = &ch.event_filter_json {
             if let Ok(filter) = serde_json::from_str::<Vec<String>>(filter_json) {
@@ -395,9 +398,9 @@ async fn process_envelope(
         }
 
         // Folder notify-channel session id overrides the channel default chat.
-        let (send_result, target) = match folder_chat_ids.get(&ch.id) {
+        let (send_result, target) = match nonempty_trimmed(chat_id.as_deref()) {
             Some(chat_id) => {
-                let target = ChannelMessageTarget::with_chat_id(ch.id, chat_id.clone());
+                let target = ChannelMessageTarget::with_chat_id(ch.id, chat_id);
                 (manager.send_to_target(&target, &msg).await, target)
             }
             None => (
@@ -442,32 +445,18 @@ async fn envelope_conversation_id(
     conversation_id
 }
 
-/// Per-channel chat/session id from the conversation's folder notify bindings.
-/// Empty `chat_id` on a binding is omitted so the channel default is used.
-async fn folder_chat_overrides(
+async fn folder_bindings_for_conversation(
     db: &DatabaseConnection,
-    connection_id: &str,
-    conn_mgr: Option<&ConnectionManager>,
-) -> HashMap<i32, String> {
-    let Some(mgr) = conn_mgr else {
-        return HashMap::new();
-    };
-    let Some(state) = mgr.get_state(connection_id).await else {
-        return HashMap::new();
-    };
-    let conversation_id = state.read().await.conversation_id;
+    conversation_id: Option<i32>,
+) -> Vec<folder_chat_channel_service::FolderChannelBinding> {
     let Some(conversation_id) = conversation_id else {
-        return HashMap::new();
+        return Vec::new();
     };
-    drop(state);
     let Ok(row) = conversation_service::get_by_id(db, conversation_id).await else {
-        return HashMap::new();
+        return Vec::new();
     };
     match folder_chat_channel_service::list_bindings(db, row.folder_id).await {
-        Ok(bindings) => bindings
-            .into_iter()
-            .filter_map(|binding| binding.chat_id.map(|chat_id| (binding.channel_id, chat_id)))
-            .collect(),
+        Ok(bindings) => bindings,
         Err(e) => {
             tracing::warn!(
                 conversation_id,
@@ -475,9 +464,36 @@ async fn folder_chat_overrides(
                 error = %e,
                 "[ChatChannel] failed to list folder chat ids for event push"
             );
-            HashMap::new()
+            Vec::new()
         }
     }
+}
+
+/// No folder binding: every enabled channel, using that channel's default chat.
+/// A binding restricts delivery to those channels, even when another enabled
+/// channel would otherwise receive the same card at its own default chat.
+fn deliveries_for_folder<'a>(
+    enabled: &'a [CachedChannel],
+    bindings: &[folder_chat_channel_service::FolderChannelBinding],
+) -> Vec<(&'a CachedChannel, Option<String>)> {
+    if bindings.is_empty() {
+        return enabled.iter().map(|channel| (channel, None)).collect();
+    }
+    let by_id: HashMap<i32, &CachedChannel> = enabled
+        .iter()
+        .map(|channel| (channel.id, channel))
+        .collect();
+    bindings
+        .iter()
+        .filter_map(|binding| {
+            let channel = *by_id.get(&binding.channel_id)?;
+            Some((channel, binding.chat_id.clone()))
+        })
+        .collect()
+}
+
+fn nonempty_trimmed(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|text| !text.is_empty())
 }
 
 fn nonempty_agent(value: &str) -> Option<&str> {
@@ -1283,6 +1299,112 @@ mod permission_push_tests {
                 .await
                 .unwrap(),
             Some(conv.id)
+        );
+    }
+
+    /// Two enabled Feishu apps (a private chat and a group) must not both
+    /// receive a folder's cards once that folder names one session.
+    #[tokio::test]
+    async fn folder_binding_does_not_fan_out_to_other_enabled_channels() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::db::service::{
+            chat_channel_service, conversation_service, folder_chat_channel_service,
+        };
+        use crate::web::event_bridge::EventEmitter;
+        use std::path::PathBuf;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-one-session").await;
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("Fix Codex".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "private".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_default_private" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            folder_id,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_private".into()),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let (chat, bound) = manager_with_recorder(channel.id).await;
+        let other = Recorder::default();
+        chat.add_channel(
+            channel.id + 1,
+            "group".into(),
+            ChannelType::Telegram,
+            Box::new(RecordingBackend { rec: other.clone() }),
+        )
+        .await
+        .unwrap();
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live(
+                "c-bound",
+                AgentType::Grok,
+                Some(PathBuf::from("/tmp/event-one-session")),
+                EventEmitter::Noop,
+            )
+            .await;
+        {
+            let state = conn_mgr.get_state("c-bound").await.unwrap();
+            let mut snap = state.write().await;
+            snap.conversation_id = Some(conv.id);
+        }
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let mut config = config_all_on(channel.id);
+        config.enabled_channels.push(CachedChannel {
+            id: channel.id + 1,
+            event_filter_json: None,
+        });
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut last_push = HashMap::new();
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "c-bound".into(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "s".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "Grok".into(),
+                    run_id: None,
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        let bound_ids = bound.chat_ids.lock().await.clone();
+        let other_ids = other.chat_ids.lock().await.clone();
+        assert_eq!(bound_ids, vec![Some("oc_private".to_string())]);
+        assert!(
+            other_ids.is_empty(),
+            "the other enabled channel must not receive the folder card, got {other_ids:?}"
         );
     }
 

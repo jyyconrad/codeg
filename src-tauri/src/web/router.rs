@@ -1886,6 +1886,10 @@ pub fn build_router(
             "/terminal_agent_state",
             post(handlers::terminal::terminal_agent_state),
         )
+        .route(
+            "/terminal_id_for_conversation",
+            post(handlers::terminal::terminal_id_for_conversation),
+        )
         .route("/terminal_write", post(handlers::terminal::terminal_write))
         .route(
             "/terminal_resize",

@@ -63,7 +63,9 @@ pub async fn update_chat_channel_core(
     event_filter_json: Option<Option<String>>,
     daily_report_enabled: Option<bool>,
     daily_report_time: Option<Option<String>>,
+    default_agent_type: Option<Option<String>>,
 ) -> Result<ChatChannelInfo, AppCommandError> {
+    let default_agent_type = normalize_default_agent(default_agent_type)?;
     let model = chat_channel_service::update(
         &db.conn,
         id,
@@ -73,10 +75,34 @@ pub async fn update_chat_channel_core(
         event_filter_json,
         daily_report_enabled,
         daily_report_time,
+        default_agent_type,
     )
     .await
     .map_err(AppCommandError::from)?;
     Ok(ChatChannelInfo::from(model))
+}
+
+/// `None` leaves the stored agent alone. `Some(None)` clears it. A non-empty
+/// value must be an agent wire id.
+fn normalize_default_agent(
+    value: Option<Option<String>>,
+) -> Result<Option<Option<String>>, AppCommandError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(raw) = value else {
+        return Ok(Some(None));
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Some(None));
+    }
+    let Some(agent) = crate::models::agent::AgentType::from_wire(trimmed) else {
+        return Err(AppCommandError::invalid_input(format!(
+            "Unknown agent type: {trimmed}"
+        )));
+    };
+    Ok(Some(Some(agent.as_wire().into_owned())))
 }
 
 pub async fn delete_chat_channel_core(
@@ -484,6 +510,7 @@ pub async fn weixin_check_qrcode_core(
                 None,
                 None,
                 None,
+                None,
             )
             .await?;
             tracing::info!("[Weixin] Config updated with base_url for channel {channel_id}");
@@ -582,6 +609,7 @@ pub async fn update_chat_channel(
     event_filter_json: Option<Option<String>>,
     daily_report_enabled: Option<bool>,
     daily_report_time: Option<Option<String>>,
+    default_agent_type: Option<Option<String>>,
 ) -> Result<ChatChannelInfo, AppCommandError> {
     update_chat_channel_core(
         &db,
@@ -592,6 +620,7 @@ pub async fn update_chat_channel(
         event_filter_json,
         daily_report_enabled,
         daily_report_time,
+        default_agent_type,
     )
     .await
 }

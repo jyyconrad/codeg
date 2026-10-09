@@ -1,7 +1,10 @@
 use sea_orm::entity::prelude::*;
 
-/// Binding of a workspace folder to a chat channel. One folder may notify many
-/// channels; worktree folders bind their own rows (no parent walk).
+/// Binding of one workspace folder to one channel session.
+///
+/// A folder has at most one row. A `(channel_id, chat_id)` pair belongs to at
+/// most one folder. `chat_id` `None` (or blank) uses the channel's configured
+/// default chat. Worktree folders bind their own row (no parent walk).
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "folder_chat_channel")]
 pub struct Model {

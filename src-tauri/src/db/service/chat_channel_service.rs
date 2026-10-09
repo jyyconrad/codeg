@@ -26,6 +26,7 @@ pub async fn create(
         event_filter_json: Set(None),
         daily_report_enabled: Set(daily_report_enabled),
         daily_report_time: Set(daily_report_time),
+        default_agent_type: Set(None),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -42,6 +43,7 @@ pub async fn update(
     event_filter_json: Option<Option<String>>,
     daily_report_enabled: Option<bool>,
     daily_report_time: Option<Option<String>>,
+    default_agent_type: Option<Option<String>>,
 ) -> Result<chat_channel::Model, DbError> {
     let model = chat_channel::Entity::find_by_id(id)
         .one(conn)
@@ -66,6 +68,9 @@ pub async fn update(
     }
     if let Some(v) = daily_report_time {
         active.daily_report_time = Set(v);
+    }
+    if let Some(v) = default_agent_type {
+        active.default_agent_type = Set(v);
     }
     active.updated_at = Set(Utc::now());
     Ok(active.update(conn).await?)

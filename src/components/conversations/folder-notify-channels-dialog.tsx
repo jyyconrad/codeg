@@ -12,7 +12,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import type { ChatChannelInfo } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Dialog,
   DialogContent,
@@ -59,7 +59,7 @@ export function FolderNotifyChannelsDialog({
   const t = useTranslations("Folder.sidebar.notifyChannelsDialog")
   const tCommon = useTranslations("Folder.common")
   const [channels, setChannels] = useState<ChatChannelInfo[]>([])
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [selectedId, setSelectedId] = useState<number | null>(null)
   const [sessionIds, setSessionIds] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -78,18 +78,18 @@ export function FolderNotifyChannelsDialog({
       .then(([listed, bound]) => {
         if (cancelled) return
         const enabled = listed.filter((channel) => channel.enabled)
-        const nextSelected = new Set<number>()
+        let nextSelected: number | null = null
         const nextSessionIds: Record<number, string> = {}
         for (const binding of bound) {
           if (!enabled.some((channel) => channel.id === binding.channel_id)) {
             continue
           }
-          nextSelected.add(binding.channel_id)
+          if (nextSelected == null) nextSelected = binding.channel_id
           const chatId = binding.chat_id?.trim()
           if (chatId) nextSessionIds[binding.channel_id] = chatId
         }
         setChannels(enabled)
-        setSelected(nextSelected)
+        setSelectedId(nextSelected)
         setSessionIds(nextSessionIds)
         setLoaded(true)
       })
@@ -110,15 +110,6 @@ export function FolderNotifyChannelsDialog({
     }
   }, [open, folderId, t])
 
-  const toggleChannel = useCallback((id: number, checked: boolean) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (checked) next.add(id)
-      else next.delete(id)
-      return next
-    })
-  }, [])
-
   const handleSessionIdChange = useCallback((id: number, value: string) => {
     setSessionIds((prev) => ({ ...prev, [id]: value }))
   }, [])
@@ -126,14 +117,17 @@ export function FolderNotifyChannelsDialog({
   const handleSave = async () => {
     if (!loaded || saving) return
     setSaving(true)
-    const channelsToSave = channels
-      .filter((channel) => selected.has(channel.id))
-      .map((channel) => ({
-        channel_id: channel.id,
-        chat_id: channelSupportsSessionId(channel)
-          ? normalizeSessionId(sessionIds[channel.id])
-          : null,
-      }))
+    const selected = channels.find((channel) => channel.id === selectedId)
+    const channelsToSave = selected
+      ? [
+          {
+            channel_id: selected.id,
+            chat_id: channelSupportsSessionId(selected)
+              ? normalizeSessionId(sessionIds[selected.id])
+              : null,
+          },
+        ]
+      : []
     try {
       await setFolderChatChannels(folderId, channelsToSave)
       onOpenChange(false)
@@ -160,11 +154,24 @@ export function FolderNotifyChannelsDialog({
           <p className="text-sm text-muted-foreground">{t("empty")}</p>
         ) : (
           <ScrollArea className="max-h-80">
-            <div className="flex flex-col gap-2 py-1 pr-3">
+            <RadioGroup
+              value={selectedId == null ? "none" : String(selectedId)}
+              onValueChange={(value) =>
+                setSelectedId(value === "none" ? null : Number(value))
+              }
+              className="flex flex-col gap-2 py-1 pr-3"
+            >
+              <Label
+                htmlFor="folder-notify-channel-none"
+                className="font-normal"
+              >
+                <RadioGroupItem value="none" id="folder-notify-channel-none" />
+                <span>{t("none")}</span>
+              </Label>
               {channels.map((channel) => {
-                const checkboxId = `folder-notify-channel-${channel.id}`
+                const radioId = `folder-notify-channel-${channel.id}`
                 const sessionInputId = `folder-notify-session-${channel.id}`
-                const checked = selected.has(channel.id)
+                const checked = selectedId === channel.id
                 const defaultChatId = channelDefaultChatId(channel)
                 return (
                   <div
@@ -174,14 +181,8 @@ export function FolderNotifyChannelsDialog({
                       checked && "bg-muted/30"
                     )}
                   >
-                    <Label htmlFor={checkboxId} className="font-normal">
-                      <Checkbox
-                        id={checkboxId}
-                        checked={checked}
-                        onCheckedChange={(value) =>
-                          toggleChannel(channel.id, value === true)
-                        }
-                      />
+                    <Label htmlFor={radioId} className="font-normal">
+                      <RadioGroupItem value={String(channel.id)} id={radioId} />
                       <span className="min-w-0 truncate">{channel.name}</span>
                     </Label>
                     {checked && channelSupportsSessionId(channel) ? (
@@ -222,7 +223,7 @@ export function FolderNotifyChannelsDialog({
                   </div>
                 )
               })}
-            </div>
+            </RadioGroup>
           </ScrollArea>
         )}
         <DialogFooter>

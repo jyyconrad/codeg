@@ -106,6 +106,27 @@ pub async fn list_channel_ids(
         .collect())
 }
 
+async fn ensure_session_available<C: ConnectionTrait>(
+    conn: &C,
+    folder_id: i32,
+    binding: &FolderChannelBinding,
+) -> Result<(), DbError> {
+    let rows = folder_chat_channel::Entity::find()
+        .filter(folder_chat_channel::Column::ChannelId.eq(binding.channel_id))
+        .all(conn)
+        .await?;
+    let wanted = normalize_chat_id(binding.chat_id.clone());
+    if rows
+        .iter()
+        .any(|row| row.folder_id != folder_id && normalize_chat_id(row.chat_id.clone()) == wanted)
+    {
+        return Err(DbError::Validation(
+            "this channel session is already bound to another folder".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn channel_config_chat_id(config_json: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(config_json).ok()?;
     normalize_chat_id(
@@ -172,9 +193,17 @@ pub async fn set_bindings(
     bindings: &[FolderChannelBinding],
 ) -> Result<Vec<FolderChannelBinding>, DbError> {
     let unique = dedup_bindings(bindings);
+    if unique.len() > 1 {
+        return Err(DbError::Validation(
+            "a folder can bind only one channel session".to_string(),
+        ));
+    }
     let channel_ids: Vec<i32> = unique.iter().map(|row| row.channel_id).collect();
     let txn = conn.begin().await?;
     require_channels_exist(&txn, &channel_ids).await?;
+    if let Some(binding) = unique.first() {
+        ensure_session_available(&txn, folder_id, binding).await?;
+    }
 
     folder_chat_channel::Entity::delete_many()
         .filter(folder_chat_channel::Column::FolderId.eq(folder_id))
@@ -248,10 +277,15 @@ mod tests {
         let folder_id = crate::db::test_helpers::seed_folder(&db, "/tmp/fcc").await;
         let a = seed_channel(&db, "tg").await;
         let b = seed_channel(&db, "lark").await;
-        set_channel_ids(&db.conn, folder_id, &[a, b]).await.unwrap();
-        let mut ids = list_channel_ids(&db.conn, folder_id).await.unwrap();
-        ids.sort();
-        assert_eq!(ids, [a.min(b), a.max(b)].into_iter().collect::<Vec<_>>());
+        let err = set_channel_ids(&db.conn, folder_id, &[a, b])
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("only one"));
+        set_channel_ids(&db.conn, folder_id, &[a]).await.unwrap();
+        assert_eq!(
+            list_channel_ids(&db.conn, folder_id).await.unwrap(),
+            vec![a]
+        );
         set_channel_ids(&db.conn, folder_id, &[b]).await.unwrap();
         assert_eq!(
             list_channel_ids(&db.conn, folder_id).await.unwrap(),
@@ -313,31 +347,67 @@ mod tests {
         let db = crate::db::test_helpers::fresh_in_memory_db().await;
         let folder_id = crate::db::test_helpers::seed_folder(&db, "/tmp/fcc-chat-id").await;
         let a = seed_channel(&db, "tg").await;
-        let b = seed_channel(&db, "lark").await;
         set_bindings(
             &db.conn,
             folder_id,
-            &[
-                FolderChannelBinding {
-                    channel_id: a,
-                    chat_id: Some("-100999".into()),
-                },
-                FolderChannelBinding {
-                    channel_id: b,
-                    chat_id: Some("  ".into()),
-                },
-            ],
+            &[FolderChannelBinding {
+                channel_id: a,
+                chat_id: Some("-100999".into()),
+            }],
         )
         .await
         .unwrap();
-
         let rows = list_bindings(&db.conn, folder_id).await.unwrap();
-        let by_id: std::collections::HashMap<_, _> = rows
-            .into_iter()
-            .map(|row| (row.channel_id, row.chat_id))
-            .collect();
-        assert_eq!(by_id.get(&a).cloned().flatten().as_deref(), Some("-100999"));
-        assert_eq!(by_id.get(&b).cloned().flatten(), None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].chat_id.as_deref(), Some("-100999"));
+
+        set_bindings(
+            &db.conn,
+            folder_id,
+            &[FolderChannelBinding {
+                channel_id: a,
+                chat_id: Some("  ".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        let rows = list_bindings(&db.conn, folder_id).await.unwrap();
+        assert_eq!(rows[0].chat_id, None);
+    }
+
+    #[tokio::test]
+    async fn set_rejects_a_session_already_bound_to_another_folder() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let first = crate::db::test_helpers::seed_folder(&db, "/tmp/fcc-owner").await;
+        let second = crate::db::test_helpers::seed_folder(&db, "/tmp/fcc-other").await;
+        let channel = seed_channel(&db, "lark").await;
+        set_bindings(
+            &db.conn,
+            first,
+            &[FolderChannelBinding {
+                channel_id: channel,
+                chat_id: Some("oc_one".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        let err = set_bindings(
+            &db.conn,
+            second,
+            &[FolderChannelBinding {
+                channel_id: channel,
+                chat_id: Some("oc_one".into()),
+            }],
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("already bound"));
+        assert_eq!(
+            find_folder_id_for_inbound(&db.conn, channel, Some("oc_one"))
+                .await
+                .unwrap(),
+            Some(first)
+        );
     }
 
     #[tokio::test]

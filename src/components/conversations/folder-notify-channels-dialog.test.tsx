@@ -41,6 +41,7 @@ function channel(
     event_filter_json: null,
     daily_report_enabled: false,
     daily_report_time: null,
+    default_agent_type: null,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
   }
@@ -71,14 +72,12 @@ describe("FolderNotifyChannelsDialog", () => {
     const user = userEvent.setup()
     renderDialog()
 
-    await user.click(await screen.findByRole("checkbox", { name: "Telegram" }))
-    await user.click(screen.getByRole("checkbox", { name: "Lark" }))
+    await user.click(await screen.findByRole("radio", { name: "Telegram" }))
     await user.click(screen.getByRole("button", { name: /save/i }))
 
     await waitFor(() =>
       expect(api.setFolderChatChannels).toHaveBeenCalledWith(1, [
         { channel_id: 2, chat_id: null },
-        { channel_id: 3, chat_id: null },
       ])
     )
   })
@@ -87,7 +86,7 @@ describe("FolderNotifyChannelsDialog", () => {
     const user = userEvent.setup()
     renderDialog()
 
-    await user.click(await screen.findByRole("checkbox", { name: "Telegram" }))
+    await user.click(await screen.findByRole("radio", { name: "Telegram" }))
     await user.type(
       screen.getByRole("textbox", { name: /session id for telegram/i }),
       "-100999"
@@ -107,8 +106,8 @@ describe("FolderNotifyChannelsDialog", () => {
     ])
     renderDialog()
 
-    const checkbox = await screen.findByRole("checkbox", { name: "Telegram" })
-    expect(checkbox).toBeChecked()
+    const radio = await screen.findByRole("radio", { name: "Telegram" })
+    expect(radio).toBeChecked()
     expect(
       screen.getByRole("textbox", { name: /session id for telegram/i })
     ).toHaveValue("-100888")
@@ -117,7 +116,7 @@ describe("FolderNotifyChannelsDialog", () => {
   it("hides the session id field until a channel is selected", async () => {
     renderDialog()
 
-    await screen.findByRole("checkbox", { name: "Telegram" })
+    await screen.findByRole("radio", { name: "Telegram" })
     expect(
       screen.queryByRole("textbox", { name: /session id/i })
     ).not.toBeInTheDocument()
@@ -130,7 +129,7 @@ describe("FolderNotifyChannelsDialog", () => {
     const user = userEvent.setup()
     renderDialog()
 
-    await user.click(await screen.findByRole("checkbox", { name: "Weixin" }))
+    await user.click(await screen.findByRole("radio", { name: "Weixin" }))
     expect(
       screen.queryByRole("textbox", { name: /session id/i })
     ).not.toBeInTheDocument()
@@ -144,10 +143,10 @@ describe("FolderNotifyChannelsDialog", () => {
     renderDialog()
 
     expect(
-      await screen.findByRole("checkbox", { name: "Telegram" })
+      await screen.findByRole("radio", { name: "Telegram" })
     ).toBeInTheDocument()
     expect(
-      screen.queryByRole("checkbox", { name: "Lark" })
+      screen.queryByRole("radio", { name: "Lark" })
     ).not.toBeInTheDocument()
   })
 

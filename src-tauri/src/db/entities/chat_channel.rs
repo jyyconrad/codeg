@@ -12,6 +12,8 @@ pub struct Model {
     pub event_filter_json: Option<String>,
     pub daily_report_enabled: bool,
     pub daily_report_time: Option<String>,
+    /// Agent that starts a new conversation for an unquoted inbound message.
+    pub default_agent_type: Option<String>,
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
 }

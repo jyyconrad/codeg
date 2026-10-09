@@ -14,12 +14,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { useAcpAgents } from "@/hooks/use-acp-agents"
 import {
   updateChatChannel,
   saveChatChannelToken,
   getChatChannelHasToken,
 } from "@/lib/api"
+import { filterAvailableAgents } from "@/lib/available-agents"
 import type { ChatChannelInfo } from "@/lib/types"
 import { toErrorMessage } from "@/lib/app-error"
 
@@ -55,6 +64,23 @@ export function EditChatChannelDialog({
   )
   const [hasToken, setHasToken] = useState(false)
   const topicModeId = useId()
+  const noneAgent = "__none__"
+  const { agents } = useAcpAgents()
+  const availableAgents = filterAvailableAgents(agents)
+  const [defaultAgent, setDefaultAgent] = useState(
+    channel.default_agent_type?.trim() || noneAgent
+  )
+  const agentChoices =
+    defaultAgent !== noneAgent &&
+    !availableAgents.some((agent) => agent.agent_type === defaultAgent)
+      ? [
+          ...availableAgents,
+          {
+            agent_type: defaultAgent,
+            name: defaultAgent,
+          },
+        ]
+      : availableAgents
 
   useEffect(() => {
     if (open) {
@@ -90,6 +116,7 @@ export function EditChatChannelDialog({
         configJson,
         dailyReportEnabled,
         dailyReportTime: dailyReportEnabled ? dailyReportTime : null,
+        defaultAgentType: defaultAgent === noneAgent ? null : defaultAgent,
       })
 
       if (token.trim()) {
@@ -115,6 +142,8 @@ export function EditChatChannelDialog({
     topicMode,
     dailyReportEnabled,
     dailyReportTime,
+    defaultAgent,
+    noneAgent,
     onOpenChange,
     onChannelUpdated,
     t,
@@ -207,6 +236,30 @@ export function EditChatChannelDialog({
               <Input value={baseUrl} disabled />
             </div>
           )}
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium">{t("defaultAgent")}</label>
+            <Select value={defaultAgent} onValueChange={setDefaultAgent}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={noneAgent}>
+                  {t("defaultAgentNone")}
+                </SelectItem>
+                {agentChoices.map((agent) => (
+                  <SelectItem key={agent.agent_type} value={agent.agent_type}>
+                    {agent.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {availableAgents.length === 0
+                ? t("defaultAgentEmpty")
+                : t("defaultAgentHint")}
+            </p>
+          </div>
 
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium">{t("dailyReport")}</label>

@@ -2040,7 +2040,7 @@
       "notifyChannels": "알림 채널…",
       "notifyChannelsDialog": {
         "title": "알림 채널",
-        "description": "이 폴더의 실행이 끝나면 최종 메시지를 선택한 채널로 보냅니다. 채널마다 세션 ID를 지정할 수 있으며, 비워 두면 채널 기본값을 사용합니다.",
+        "description": "Bind this folder to one channel session. A quoted message appends an instruction to that conversation. A message with no quote starts a new conversation using the channel's default agent. Final messages are sent back to the same session.",
         "empty": "채팅 채널이 없습니다. 설정에서 추가하세요.",
         "loadFailed": "채널을 불러오지 못했습니다: {message}",
         "saveFailed": "채널 바인딩을 저장하지 못했습니다: {message}",
@@ -2048,7 +2048,8 @@
         "sessionIdForChannel": "{name}의 세션 ID",
         "sessionIdHint": "비워 두면 이 채널의 기본 대화를 사용합니다.",
         "sessionIdPlaceholder": "기본값",
-        "sessionIdPlaceholderWithDefault": "기본값: {chatId}"
+        "sessionIdPlaceholderWithDefault": "기본값: {chatId}",
+        "none": "Don't bind"
       },
       "error": "오류: {message}",
       "completeAllSessions": "모든 세션 완료 처리",
@@ -4492,14 +4493,18 @@
       "ar": "아랍어"
     },
     "folderInbound": {
-      "title": "폴더 세션 재사용",
-      "description": "폴더에 바인딩된 채널에서 인용 없는 메시지를 받으면, 최신 대화가 이 분 이내에 활동했으면 이어서 진행하고, 초과하면 새 대화를 시작합니다. 0이면 항상 새로 시작합니다.",
+      "title": "Inbound messages",
+      "description": "A quoted message appends an instruction to that conversation. A terminal conversation receives it in the running CLI, or by resuming that session. A message with no quote starts a new conversation using the channel's default agent.",
       "minutesLabel": "분",
       "saved": "재사용 구간이 저장되었습니다.",
       "saveFailed": "재사용 구간 저장에 실패했습니다.",
       "invalid": "0에서 10080 사이의 정수를 입력하세요.",
       "save": "저장"
-    }
+    },
+    "defaultAgent": "Default agent",
+    "defaultAgentHint": "Enabled agent that handles messages when they do not quote an existing conversation.",
+    "defaultAgentNone": "Not set",
+    "defaultAgentEmpty": "No enabled agents. Enable one in Agents settings."
   },
   "ModelProviderSettings": {
     "sectionTitle": "모델 제공업체",

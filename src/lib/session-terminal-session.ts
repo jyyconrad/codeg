@@ -21,7 +21,8 @@ const sessions = new Map<string, SessionTerminalRecord>()
 export function claimSessionTerminal(
   ownerKey: string,
   agentType: AgentType,
-  workingDir: string
+  workingDir: string,
+  preferredTerminalId?: string | null
 ): {
   terminalId: string
   replacedId: string | null
@@ -39,7 +40,8 @@ export function claimSessionTerminal(
       replacedConversationId: null,
     }
   }
-  const terminalId = randomUUID()
+  const preferred = preferredTerminalId?.trim()
+  const terminalId = preferred ? preferred : randomUUID()
   sessions.set(ownerKey, {
     terminalId,
     agentType,

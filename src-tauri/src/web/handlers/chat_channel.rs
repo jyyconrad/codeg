@@ -37,6 +37,8 @@ pub struct UpdateChatChannelParams {
     pub event_filter_json: Option<Option<String>>,
     pub daily_report_enabled: Option<bool>,
     pub daily_report_time: Option<Option<String>>,
+    #[serde(default)]
+    pub default_agent_type: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +109,7 @@ pub async fn update_chat_channel(
         params.event_filter_json,
         params.daily_report_enabled,
         params.daily_report_time,
+        params.default_agent_type,
     )
     .await?;
     Ok(Json(result))
