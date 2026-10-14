@@ -101,6 +101,25 @@ export function FileWorkspaceTabBar() {
     el?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [activeFileTabId])
 
+  // The strip is only h-10, so it hides its scrollbar (see `.file-tab-strip`).
+  // A vertical wheel over the row still moves it sideways; a trackpad's
+  // horizontal gesture is left to the browser. No-op until the tabs actually
+  // overflow their minimum width.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+      if (event.deltaY === 0) return
+      if (el.scrollWidth <= el.clientWidth + 1) return
+      event.preventDefault()
+      const rtl = getComputedStyle(el).direction === "rtl"
+      el.scrollBy({ left: rtl ? -event.deltaY : event.deltaY })
+    }
+    el.addEventListener("wheel", onWheel, { passive: false })
+    return () => el.removeEventListener("wheel", onWheel)
+  }, [fileTabs.length])
+
   const handleReorder = useCallback(
     (nextTabs: FileWorkspaceTab[]) => {
       if (isCoarsePointer && !touchSortingTabId) return
@@ -123,96 +142,107 @@ export function FileWorkspaceTabBar() {
   if (fileTabs.length === 0) return null
 
   return (
-    <Reorder.Group
-      as="div"
-      ref={scrollRef}
-      role="tablist"
-      axis="x"
-      values={fileTabs}
-      onReorder={handleReorder}
-      // Tabs shrink browser-style and sit flush (`gap-0`) so their hairline
-      // separators read as dividers (see FileWorkspaceTabItem); no scrollbar
-      // (`overflow-hidden` still scrolls programmatically) and no bottom padding
-      // so they reach the strip's bottom and the active (white) tab merges into
-      // the file detail header below. Like the conversation strip (tab-bar.tsx)
-      // it hosts the trailing drag spacer + maximize button as its own last
-      // children, so tabs and trailing area size in ONE flex line.
-      //
-      // `flex-1` + `pl-2` (NOT an auto width, NOT `px-2`) are load-bearing: an
-      // auto-width flex container is sized from its max-content, and WebKit
-      // derives a fixed-basis item's max-content contribution from the item's
-      // CONTENT rather than its `basis-48`. A long tab title (diff tabs, e.g.
-      // "差异 · some-long-name.tsx") therefore stretched the group tens of px
-      // wider than its tabs, and that leftover strip — owned by the group, which
-      // carries no `ws-strip-line` — punched a hole in the strip's bottom
-      // hairline right of the tab. Sizing by flex instead of by content, with the
-      // trailing wrapper owning every leftover pixel, keeps the line unbroken in
-      // both engines. `pl-2` keeps the first tab's left gutter (for the
-      // first-child seam patch) while leaving NO right padding, so the wrapper's
-      // `ws-strip-line` reaches the group's right edge.
-      className="pt-1.5 pl-2 flex h-full min-w-0 flex-1 items-stretch gap-0 overflow-hidden"
-    >
-      {fileTabs.map((tab, index) => (
-        <FileWorkspaceTabItem
-          key={tab.id}
-          tab={tab}
-          active={tab.id === activeFileTabId}
-          adjacentActive={
-            activeFileIndex < 0
-              ? undefined
-              : index === activeFileIndex - 1
-                ? "before"
-                : index === activeFileIndex + 1
-                  ? "after"
-                  : undefined
-          }
-          embedded
-          previewing={previewFileTabIds.has(tab.id)}
-          closeLabel={t("closeFileTab")}
-          closeText={t("close")}
-          closeOthersText={t("closeOthers")}
-          closeAllText={t("closeAll")}
-          isCoarsePointer={isCoarsePointer}
-          isTouchSorting={touchSortingTabId === tab.id}
-          onSwitch={switchFileTab}
-          onClose={closeFileTab}
-          onCloseOthers={closeOtherFileTabs}
-          onCloseAll={closeAllFileTabs}
-          onTouchSortingStart={setTouchSortingTabId}
-          onTouchSortingEnd={handleTouchSortingEnd}
-        />
-      ))}
-      {/* Trailing area: a drag spacer fills the leftover row (window-drag region)
-          and, in fusion, a maximize/restore button sits flush right (it used to
-          live in the file detail header). They are the group's own trailing
-          children but NOT Reorder.Items, so dragging a tab only ever permutes the
-          tabs. Wrapped in one `flex-1` box so the workspace-bg bottom hairline
-          (ws-strip-line) runs unbroken under both. NO `min-w-0`: the wrapper's
-          min-content (the spacer's `min-w-10` + the shrink-0 button) is its floor,
-          so under many-tab overflow the tabs shrink to reserve them instead of the
-          wrapper collapsing to 0. `relative` + `data-adjacent-active` anchor the
-          inset baseline (globals.css `.ws-strip-line::after`) used when the LAST
-          tab is active: its transparent reverse-corner foot flares 0.5rem over
-          this wrapper, and a full-width border-bottom would show through under
-          that foot. */}
-      <div
-        data-adjacent-active={lastTabActive ? "after" : undefined}
-        className="relative flex h-full flex-1 items-stretch ws-strip-line"
+    <div className="flex h-full min-w-0 flex-1 items-stretch">
+      <Reorder.Group
+        as="div"
+        ref={scrollRef}
+        role="tablist"
+        axis="x"
+        values={fileTabs}
+        onReorder={handleReorder}
+        // Tabs shrink browser-style and sit flush (`gap-0`) so their hairline
+        // separators read as dividers (see FileWorkspaceTabItem). They stop at
+        // `min-w-32`; past that `.file-tab-strip` scrolls sideways instead of
+        // squeezing labels down to nothing. No bottom padding, so tabs reach the
+        // strip's bottom and the active (white) tab merges into the file detail
+        // header below. The trailing "+" + drag spacer stay in this flex line so
+        // the button hugs the last tab and scrolls with it. The maximize button
+        // is a sibling OUTSIDE the scrollport (below) so it stays put on the
+        // right while the row scrolls.
+        //
+        // `flex-1` + `min-w-0` + `pl-2` (NOT an auto width, NOT `w-max`, NOT
+        // `px-2`) are load-bearing: an auto-width flex container is sized from
+        // its max-content, and WebKit derives a fixed-basis item's max-content
+        // contribution from the item's CONTENT rather than its `basis-48`. A
+        // long tab title (diff tabs, e.g. "差异 · some-long-name.tsx") therefore
+        // stretched the group tens of px wider than its tabs, and that leftover
+        // strip — owned by the group, which carries no `ws-strip-line` — punched
+        // a hole in the strip's bottom hairline right of the tab. Sizing by flex
+        // instead of by content, with the trailing wrapper owning every leftover
+        // pixel, keeps the line unbroken in both engines. `pl-2` keeps the first
+        // tab's left gutter (for the first-child seam patch) while leaving NO
+        // right padding, so the wrapper's `ws-strip-line` reaches the group's
+        // right edge.
+        className="file-tab-strip pt-1.5 pl-2 flex h-full min-w-0 flex-1 items-stretch gap-0"
       >
-        {/* "+" sits flush against the last tab (before the drag spacer), the
+        {fileTabs.map((tab, index) => (
+          <FileWorkspaceTabItem
+            key={tab.id}
+            tab={tab}
+            active={tab.id === activeFileTabId}
+            adjacentActive={
+              activeFileIndex < 0
+                ? undefined
+                : index === activeFileIndex - 1
+                  ? "before"
+                  : index === activeFileIndex + 1
+                    ? "after"
+                    : undefined
+            }
+            embedded
+            previewing={previewFileTabIds.has(tab.id)}
+            closeLabel={t("closeFileTab")}
+            closeText={t("close")}
+            closeOthersText={t("closeOthers")}
+            closeAllText={t("closeAll")}
+            isCoarsePointer={isCoarsePointer}
+            isTouchSorting={touchSortingTabId === tab.id}
+            onSwitch={switchFileTab}
+            onClose={closeFileTab}
+            onCloseOthers={closeOtherFileTabs}
+            onCloseAll={closeAllFileTabs}
+            onTouchSortingStart={setTouchSortingTabId}
+            onTouchSortingEnd={handleTouchSortingEnd}
+          />
+        ))}
+        {/* Trailing area inside the scrollport: "+" hugs the last tab, then a
+          drag spacer fills whatever width the tabs have not claimed. NOT a
+          Reorder.Item, so dragging a tab only ever permutes the tabs. One
+          `flex-1` box so the workspace-bg bottom hairline (ws-strip-line) runs
+          unbroken under both. NO `min-w-0`: the wrapper's min-content (the
+          shrink-0 button + the spacer's `min-w-10`) is its floor, so tabs
+          shrink toward their own `min-w-32` before this region gives up the
+          drag gap. Once the tabs are at that floor the row scrolls (the "+"
+          rides along at the end) instead of collapsing further. `relative` +
+          `data-adjacent-active` anchor the inset baseline (globals.css
+          `.ws-strip-line::after`) used when the LAST tab is active: its
+          transparent reverse-corner foot flares 0.5rem over this wrapper, and
+          a full-width border-bottom would show through under that foot. */}
+        <div
+          data-adjacent-active={lastTabActive ? "after" : undefined}
+          className="relative flex h-full flex-1 items-stretch ws-strip-line"
+        >
+          {/* "+" sits flush against the last tab (before the drag spacer), the
             way the conversation strip's new-tab button follows its tabs. */}
-        <FileTabAddMenu />
-        {/* Drag spacer, floored at `min-w-10` (40px): even when many tabs overflow
-            and squeeze this region, a grabbable window-drag gap always remains
-            between the last tab and the maximize button. */}
-        <div data-tauri-drag-region className="h-full min-w-10 flex-1" />
-        {mode === "fusion" && (
+          <FileTabAddMenu />
+          {/* Drag spacer, floored at `min-w-10` (40px): a grabbable window-drag
+            gap always remains to the right of "+", including when the row is
+            scrolled to the end. */}
+          <div data-tauri-drag-region className="h-full min-w-10 flex-1" />
+        </div>
+      </Reorder.Group>
+      {mode === "fusion" && (
+        // Outside the scrollport, so maximizing stays reachable while the tabs
+        // scroll. `pt-1.5` matches the strip: `self-start` on an h-7 button then
+        // lands on the same midline as the tab labels. `ws-strip-line` continues
+        // the bottom hairline under the button.
+        <div className="flex h-full shrink-0 items-stretch pt-1.5 ws-strip-line">
           <button
             type="button"
             onClick={toggleFilesMaximized}
             className={cn(
               STRIP_ICON_BTN,
-              "mr-1.5",
+              "mx-1.5",
               filesMaximized && "text-primary"
             )}
             aria-label={filesMaximized ? t("restore") : t("maximize")}
@@ -225,9 +255,9 @@ export function FileWorkspaceTabBar() {
               <Maximize2 className="h-3.5 w-3.5" />
             )}
           </button>
-        )}
-      </div>
-    </Reorder.Group>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -306,8 +336,8 @@ function FileTabAddMenu() {
           // 6px gutter from the last tab's edge so the round hover fill never
           // touches it. `shrink-0` (in STRIP_ICON_BTN) keeps this button, with
           // the drag spacer's `min-w-10`, part of the trailing wrapper's
-          // min-content floor, so overflowing tabs shrink to reserve it
-          // instead of it being squeezed away.
+          // min-content floor, so tabs shrink only down to their own minimum
+          // before the row scrolls — the button is never squeezed away.
           className={cn(STRIP_ICON_BTN, "ml-1.5 mr-0.5")}
           aria-label={t("newTab")}
           title={t("newTab")}
@@ -506,16 +536,18 @@ const FileWorkspaceTabItem = memo(function FileWorkspaceTabItem({
         // Embedded (browser-style): every tab is EQUAL width (`basis-48` = 12rem,
         // `grow-0` so they don't stretch to fill) — a long filename and a short one
         // read uniform instead of one wide / one narrow. They still `shrink`
-        // together (down to `min-w-0`, the label fades) once the row fills; above
-        // that the fixed basis keeps them equal. Leftover row stays a window-drag
-        // region. `browser-tab-item` draws the left-edge hairline separator
-        // (globals.css) as a 1px divider at each shared edge — tabs sit flush (no
-        // gutter) so the line is the only separation, and the inner row owns its
-        // own `overflow-hidden`. The active tab is raised (`z-10`) so its
-        // reverse-corner seat is never covered by a hovered neighbour's flare.
-        // Standalone: rounded pill, intrinsic width (scroll).
+        // together once the row fills, but only down to `min-w-32` (8rem): icon
+        // plus a few characters stay readable, and the strip scrolls past that
+        // (`.file-tab-strip`). Above the floor the fixed basis keeps them equal.
+        // Leftover row stays a window-drag region. `browser-tab-item` draws the
+        // left-edge hairline separator (globals.css) as a 1px divider at each
+        // shared edge — tabs sit flush (no gutter) so the line is the only
+        // separation, and the inner row owns its own `overflow-hidden`. The
+        // active tab is raised (`z-10`) so its reverse-corner seat is never
+        // covered by a hovered neighbour's flare. Standalone: rounded pill,
+        // intrinsic width (scroll).
         embedded
-          ? "browser-tab-item min-w-0 grow-0 shrink basis-48 data-[active=true]:z-10"
+          ? "browser-tab-item min-w-32 grow-0 shrink basis-48 data-[active=true]:z-10"
           : "rounded-full shrink-0",
         isTouchSorting && "z-50 opacity-90 shadow-md ring-1 ring-primary/25"
       )}

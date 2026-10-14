@@ -1182,14 +1182,17 @@ pub async fn list_boards(conn: &DatabaseConnection) -> Result<Vec<BoardSummary>,
 
     let mut by_board: HashMap<i32, Vec<BoardPreviewRect>> = HashMap::new();
     for f in footprints {
-        by_board.entry(f.board_id).or_default().push(BoardPreviewRect {
-            kind: f.kind,
-            x: f.x,
-            y: f.y,
-            width: f.width,
-            height: f.height,
-            color: f.color,
-        });
+        by_board
+            .entry(f.board_id)
+            .or_default()
+            .push(BoardPreviewRect {
+                kind: f.kind,
+                x: f.x,
+                y: f.y,
+                width: f.width,
+                height: f.height,
+                color: f.color,
+            });
     }
 
     Ok(boards

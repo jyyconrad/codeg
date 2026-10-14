@@ -103,6 +103,29 @@ describe("applyTerminalSessionEvent", () => {
     })
   })
 
+  it("files the directory the terminal was started in, not a stale tab path", async () => {
+    useTabStore.setState({
+      rawTabs: [{ ...tab, workingDir: "/repo/old" }],
+      activeTabId: "tab-1",
+      tabs: [{ ...tab, workingDir: "/repo/old" }],
+    })
+    const claimed = claimSessionTerminal("tab-1", "claude_code", "/repo/codeg")
+    vi.mocked(establishTerminalSession).mockResolvedValue({
+      conversationId: 9,
+      folderId: 4,
+      title: "Plan the release",
+      folder: null,
+    })
+
+    applyTerminalSessionEvent(hook({ terminal_id: claimed.terminalId }))
+
+    await vi.waitFor(() => {
+      expect(establishTerminalSession).toHaveBeenCalledWith(
+        expect.objectContaining({ workingDir: "/repo/codeg", folderId: 4 })
+      )
+    })
+  })
+
   it("ignores a canvas terminal and an event with no session id", async () => {
     const canvas = claimSessionTerminal("canvas:card", "grok", "/repo")
     applyTerminalSessionEvent(hook({ terminal_id: canvas.terminalId }))

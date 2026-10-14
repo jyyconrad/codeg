@@ -44,6 +44,18 @@ export interface WikiSettingsView extends WikiSettings {
   session_rollup_builtin_task?: string
   synthesize_builtin_task?: string
   resolved_vault_path?: string | null
+  layout?: WikiLayoutStatus | null
+}
+
+export interface WikiLayoutStatus {
+  version: number
+  applied: boolean
+  language: string
+  config_revision: number
+  scaffolds: Record<string, string>
+  write_paths: Record<string, string>
+  summary: string
+  warning?: string | null
 }
 
 /** Current Wiki settings. Retired settings are intentionally not migrated. */
@@ -342,6 +354,7 @@ export function normalizeWikiSettings(
     session_rollup_builtin_task: raw?.session_rollup_builtin_task ?? "",
     synthesize_builtin_task: raw?.synthesize_builtin_task ?? "",
     resolved_vault_path: emptyToNull(raw?.resolved_vault_path) ?? "",
+    layout: raw?.layout ?? null,
   }
 }
 

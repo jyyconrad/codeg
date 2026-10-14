@@ -23,12 +23,25 @@ vi.mock("@/components/ai-elements/markdown-link", () => ({
 }))
 afterEach(cleanup)
 
-it("loads an internal directory, switches documents and refreshes external changes without changing the main route", async () => {
-  window.history.replaceState({}, "", "/?wikiView=library")
+it("opens a legacy file URL, then records the next file on wikiPath", async () => {
+  window.history.replaceState(
+    {},
+    "",
+    "/?wikiView=capabilities&wikiPath=raw%2Fa.md"
+  )
   let secondContent = "## Second original"
   const files = [
     { path: "raw/a.md", name: "a.md", is_dir: false },
     { path: "raw/b.md", name: "b.md", is_dir: false },
+  ]
+  const kept = [
+    { path: "journal", name: "journal", is_dir: true },
+    { path: "sources", name: "sources", is_dir: true },
+    { path: "capabilities", name: "capabilities", is_dir: true },
+    { path: "knowledge", name: "knowledge", is_dir: true },
+    { path: "work", name: "work", is_dir: true },
+    { path: "AGENTS.md", name: "AGENTS.md", is_dir: false },
+    { path: "log.md", name: "log.md", is_dir: false },
   ]
   backend.call.mockImplementation(
     async (command: string, args?: { path?: string }) => {
@@ -36,7 +49,7 @@ it("loads an internal directory, switches documents and refreshes external chang
       if (command === "wiki_vault_tree") {
         return args?.path === "raw"
           ? [...files]
-          : [{ path: "raw", name: "raw", is_dir: true }]
+          : [{ path: "raw", name: "raw", is_dir: true }, ...kept]
       }
       if (command === "wiki_vault_read") {
         return {
@@ -59,27 +72,42 @@ it("loads an internal directory, switches documents and refreshes external chang
       </WikiDataProvider>
     </NextIntlClientProvider>
   )
-  fireEvent.click(await screen.findByRole("button", { name: "raw" }))
+  expect(
+    await screen.findByRole("heading", { name: "First original" })
+  ).toBeVisible()
+  for (const name of [
+    "journal",
+    "sources",
+    "capabilities",
+    "knowledge",
+    "work",
+    "AGENTS.md",
+    "log.md",
+  ])
+    expect(screen.getByRole("button", { name })).toBeVisible()
+  fireEvent.click(screen.getByRole("button", { name: "raw" }))
   expect(screen.getByRole("button", { name: "raw" })).toHaveAttribute(
     "aria-expanded",
     "true"
   )
-  fireEvent.click(await screen.findByRole("button", { name: "a.md" }))
-  expect(
-    await screen.findByRole("heading", { name: "First original" })
-  ).toBeVisible()
   expect(backend.call).toHaveBeenCalledWith("wiki_vault_tree", {
     path: "raw",
     recursive: true,
     include_raw: true,
   })
-  fireEvent.click(screen.getByRole("button", { name: "b.md" }))
+  expect(backend.call).toHaveBeenCalledWith("wiki_vault_read", {
+    path: "raw/a.md",
+  })
+  fireEvent.click(await screen.findByRole("button", { name: "b.md" }))
   expect(
     await screen.findByRole("heading", { name: "Second original" })
   ).toBeVisible()
   expect(
     screen.queryByRole("heading", { name: "First original" })
   ).not.toBeInTheDocument()
+  expect(window.location.search).toContain("wikiView=files")
+  expect(window.location.search).toContain("wikiPath=raw%2Fb.md")
+  expect(window.location.search).not.toContain("wikiView=capabilities")
   secondContent = "## Externally updated original"
   files.push({ path: "raw/c.md", name: "c.md", is_dir: false })
   fireEvent.click(screen.getByRole("button", { name: messages.Wiki.refresh }))
@@ -91,5 +119,4 @@ it("loads an internal directory, switches documents and refreshes external chang
     "page"
   )
   expect(await screen.findByRole("button", { name: "c.md" })).toBeVisible()
-  expect(window.location.search).toBe("?wikiView=library")
 })

@@ -45,15 +45,18 @@ impl From<TagError> for AppCommandError {
             TagError::EmptyName => {
                 AppCommandError::invalid_input(message).with_i18n(I18N_EMPTY_NAME, no_params())
             }
-            TagError::DuplicateName(name) => AppCommandError::already_exists(message)
-                .with_i18n(I18N_DUPLICATE_NAME, BTreeMap::from([("name".to_string(), name)])),
+            TagError::DuplicateName(name) => AppCommandError::already_exists(message).with_i18n(
+                I18N_DUPLICATE_NAME,
+                BTreeMap::from([("name".to_string(), name)]),
+            ),
             TagError::InvalidColor(_) => {
                 AppCommandError::invalid_input(message).with_i18n(I18N_INVALID_COLOR, no_params())
             }
             TagError::FolderNotTaggable(_) => AppCommandError::invalid_input(message)
                 .with_i18n(I18N_FOLDER_NOT_TAGGABLE, no_params()),
-            TagError::NotApplicable { .. } => AppCommandError::invalid_input(message)
-                .with_i18n(I18N_NOT_APPLICABLE, no_params()),
+            TagError::NotApplicable { .. } => {
+                AppCommandError::invalid_input(message).with_i18n(I18N_NOT_APPLICABLE, no_params())
+            }
             TagError::TagNotFound(_) => {
                 AppCommandError::not_found(message).with_i18n(I18N_TAG_NOT_FOUND, no_params())
             }
@@ -97,13 +100,9 @@ pub async fn update_conversation_tag_core(
     name: Option<String>,
     color: Option<String>,
 ) -> Result<ConversationTagDetail, AppCommandError> {
-    let tag = conversation_tag_service::update_tag(
-        &db.conn,
-        tag_id,
-        name.as_deref(),
-        color.as_deref(),
-    )
-    .await?;
+    let tag =
+        conversation_tag_service::update_tag(&db.conn, tag_id, name.as_deref(), color.as_deref())
+            .await?;
     emit_tag_change(emitter, ConversationTagChange::Upsert { tag: tag.clone() });
     Ok(tag)
 }

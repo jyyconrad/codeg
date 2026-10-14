@@ -225,6 +225,20 @@ impl WikiEngine {
         let active = wiki_service::ensure_active_vault(conn, &vault.to_string_lossy())
             .await
             .map_err(|e| e.to_string())?;
+        let loaded = crate::wiki::contract::load(&vault);
+        if loaded.version == 3 && loaded.applied {
+            let _ = wiki_service::bump_config_revision_for_contract(
+                conn,
+                &active.id,
+                &loaded.hash,
+                &state_root,
+            )
+            .await;
+            if let Ok(decisions) = crate::wiki::contract::converge(&vault, &loaded) {
+                let _ =
+                    crate::wiki::contract::write_converge_report(&vault, &active.id, &decisions);
+            }
+        }
         expire_overdue_jobs(conn, &self.emitter).await;
         let mut job = wiki_service::claim_next_queued_job(conn, &active.id, "turn_summary")
             .await
@@ -339,8 +353,14 @@ async fn recover_on_start(
                 let mut required = Vec::new();
                 let mut outputs = Vec::new();
                 for file in &manifest.files {
-                    let actual = fs::read_to_string(Path::new(&manifest.vault).join(&file.rel))
-                        .map_err(|e| e.to_string())?;
+                    let vault_path = Path::new(&manifest.vault);
+                    let note_path = crate::wiki::contract::resolve_existing(
+                        vault_path,
+                        &file.rel,
+                        &crate::wiki::contract::load(vault_path),
+                    )
+                    .ok_or_else(|| format!("missing recovered note {}", file.rel))?;
+                    let actual = fs::read_to_string(&note_path).map_err(|e| e.to_string())?;
                     if crate::wiki::raw::content_hash(&actual) != file.after_hash {
                         return Err("recovered output hash mismatch".into());
                     }
@@ -649,7 +669,10 @@ async fn handle_compile(
     let model_id = bound.model_id.clone();
     let protocol = bound.protocol.as_str().to_string();
     let _ = wiki_service::set_job_model_meta(conn, &job.id, Some(&model_id), Some(&protocol)).await;
-    let skill = include_str!("../../agent-skills/wiki-synthesize/SKILL.md").to_string();
+    let mut skill = include_str!("../../agent-skills/wiki-synthesize/SKILL.md").to_string();
+    skill.push_str(&crate::wiki::contract::layout_prompt(
+        &crate::wiki::contract::load(vault),
+    ));
     let extra = settings
         .synthesize
         .prompt
@@ -731,6 +754,11 @@ async fn finish_attempt(
         return;
     }
     if retry {
+        tracing::warn!(
+            job_id = %job.id,
+            error_code = code.unwrap_or("unknown"),
+            "[wiki] retryable failure; backoff before the next attempt"
+        );
         if let Err(error) = wiki_service::requeue_after_failure(conn, &job.id, job.attempt).await {
             tracing::error!(job_id=%job.id, %error, "[wiki] cannot schedule retry");
         }
@@ -793,7 +821,9 @@ async fn maybe_enqueue_scheduled_compile(
         }
         return;
     }
-    let Ok(manifest) = compile::list_pending_inputs(conn, &vault_row.id, vault).await else {
+    let Ok(manifest) =
+        compile::list_pending_inputs(conn, &vault_row.id, vault, &resolve_state_root()).await
+    else {
         return;
     };
     // Empty memory notes still enqueue one succeeded catch-up job per date.

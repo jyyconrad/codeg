@@ -659,6 +659,10 @@ export function TerminalView({
         if (!isActiveRef.current && !keepVisibleRef.current) return
         if (el.clientWidth <= 0 || el.clientHeight <= 0) return
         fitAddon.fit()
+        // A fit that does not change the row count still has to repaint.
+        // The canvas stays blank after the pane was visibility:hidden, and
+        // after opening while the box had no size.
+        if (term.rows > 0) term.refresh(0, term.rows - 1)
       }
 
       // Only fit when terminal is actually visible/active.
@@ -722,10 +726,12 @@ export function TerminalView({
     if (!painted) return
     requestAnimationFrame(() => {
       const el = containerRef.current
+      const term = termRef.current
       if (el && el.clientWidth > 0 && el.clientHeight > 0) {
         fitAddonRef.current?.fit()
       }
-      if (isActive) termRef.current?.focus()
+      if (term && term.rows > 0) term.refresh(0, term.rows - 1)
+      if (isActive) term?.focus()
     })
   }, [painted, isActive])
 

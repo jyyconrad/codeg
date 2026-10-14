@@ -13,7 +13,9 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject, Sel};
-use objc2::{define_class, msg_send, sel, DeclaredClass, MainThreadMarker, MainThreadOnly, Message};
+use objc2::{
+    define_class, msg_send, sel, DeclaredClass, MainThreadMarker, MainThreadOnly, Message,
+};
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSImageCompressionFactor, NSView, NSWindow,
 };

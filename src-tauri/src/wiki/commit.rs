@@ -1,7 +1,6 @@
-//! 安全提交Wiki生成页面，并恢复被中断的文件写入。
-//! 轮次/对话/综合整理传入完整页面；本模块校验输出路径与身份、保留人工区域，
-//! 将最终字节写入提交日志后原子替换文件；数据库登记完成后标记finalized。
-//! 输出哈希保护并发编辑及崩溃恢复，不用于限制Agent读取哪个输入版本。
+//! 安全提交 Wiki 生成页面，并恢复被中断的文件写入。
+//! 轮次、对话和综合整理传入完整页面；正文写入 wiki-state，不进入用户库。
+//! 已有库内文件不删除、不改写。数据库登记完成后标记 finalized。
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -240,7 +239,7 @@ fn prepare_and_commit(
                 "duplicate target within batch".into(),
             ));
         }
-        let dest = policy.check_commit_rel(&p.rel)?;
+        let dest = generated_destination(state_root, &p.rel)?;
         let current = if dest.exists() {
             Some(fs::read_to_string(&dest)?)
         } else {
@@ -256,7 +255,7 @@ fn prepare_and_commit(
                 applied: false,
                 page_type: p.page_type.clone(),
             };
-            save_conflict(state_root, job_id, &file, vault, &p.after)?;
+            save_conflict(state_root, job_id, &file, &p.after)?;
             return Err(CommitError::Conflict(format!(
                 "{} changed after input was frozen",
                 p.rel
@@ -423,7 +422,7 @@ fn apply_manifest_locked(
     // Check the entire batch before touching any file, including previously
     // applied entries. An applied flag alone cannot prove the bytes survived.
     for file in &manifest.files {
-        let dest = policy.check_commit_rel(&file.rel)?;
+        let dest = generated_destination(state_root, &file.rel)?;
         policy.check_page_type_path(&file.page_type, &file.rel)?;
         let after = manifest
             .after_contents
@@ -436,7 +435,7 @@ fn apply_manifest_locked(
         }
         let current = file_hash(&dest)?;
         if current != file.after_hash && (current != file.before_hash || file.applied) {
-            save_conflict(state_root, &manifest.job_id, file, vault, after)?;
+            save_conflict(state_root, &manifest.job_id, file, after)?;
             return Err(CommitError::Conflict(format!(
                 "{} changed before commit recovery",
                 file.rel
@@ -455,13 +454,13 @@ fn apply_manifest_locked(
 
 fn apply_one(
     policy: &WikiFsPolicy,
-    vault: &Path,
-    _state_root: &Path,
+    _vault: &Path,
+    state_root: &Path,
     job_id: &str,
     file: &CommitFile,
     after: &str,
 ) -> Result<(), CommitError> {
-    let dest = policy.check_commit_rel(&file.rel)?;
+    let dest = generated_destination(state_root, &file.rel)?;
     policy.check_page_type_path(&file.page_type, &file.rel)?;
     let current = if dest.exists() {
         Some(fs::read_to_string(&dest)?)
@@ -484,9 +483,7 @@ fn apply_one(
     let final_text = after;
 
     if file.op == "create" {
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        ensure_state_parent(state_root, &dest)?;
         let tmp = dest.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
         let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         f.write_all(final_text.as_bytes())?;
@@ -510,7 +507,58 @@ fn apply_one(
         }
     }
 
-    atomic_replace(vault, &dest, final_text, job_id)?;
+    atomic_replace(state_root, &dest, final_text, job_id)?;
+    Ok(())
+}
+
+/// Resolve a generated body under wiki-state. Does not create taxonomy directories.
+fn generated_destination(state_root: &Path, rel: &str) -> Result<PathBuf, CommitError> {
+    fs::create_dir_all(state_root)?;
+    let dest = crate::wiki::paths::join_generated_body(state_root, rel)
+        .map_err(CommitError::Validation)?;
+    let state_canon = fs::canonicalize(state_root).map_err(|e| CommitError::Io(e.to_string()))?;
+    let mut probe = dest.clone();
+    loop {
+        if probe.exists() {
+            let canon = fs::canonicalize(&probe).map_err(|e| CommitError::Io(e.to_string()))?;
+            if !canon.starts_with(&state_canon) {
+                return Err(CommitError::Validation(format!(
+                    "commit path escapes wiki-state: {rel}"
+                )));
+            }
+            break;
+        }
+        match probe.parent() {
+            Some(parent) if parent != probe.as_path() => probe = parent.to_path_buf(),
+            _ => {
+                return Err(CommitError::Validation(format!(
+                    "wiki-state parent missing: {rel}"
+                )));
+            }
+        }
+    }
+    Ok(dest)
+}
+
+fn ensure_state_parent(state_root: &Path, dest: &Path) -> Result<(), CommitError> {
+    let Some(parent) = dest.parent() else {
+        return Err(CommitError::Validation(
+            "generated body is missing a parent directory".into(),
+        ));
+    };
+    if !parent.starts_with(state_root) {
+        return Err(CommitError::Validation(
+            "parent mkdir is only allowed under wiki-state".into(),
+        ));
+    }
+    fs::create_dir_all(parent)?;
+    let state_canon = fs::canonicalize(state_root).map_err(|e| CommitError::Io(e.to_string()))?;
+    let parent_canon = fs::canonicalize(parent).map_err(|e| CommitError::Io(e.to_string()))?;
+    if !parent_canon.starts_with(&state_canon) {
+        return Err(CommitError::Validation(
+            "parent mkdir escaped wiki-state".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -519,29 +567,27 @@ fn save_conflict(
     state_root: &Path,
     job_id: &str,
     file: &CommitFile,
-    vault: &Path,
     after: &str,
 ) -> Result<(), CommitError> {
     let dir = conflicts_dir(state_root, job_id);
     fs::create_dir_all(&dir)?;
     let stem = file.rel.replace('/', "__");
-    let dest = vault.join(file.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
-    if dest.exists() {
-        fs::copy(&dest, dir.join(format!("{stem}.before.md")))?;
+    if let Ok(dest) = generated_destination(state_root, &file.rel) {
+        if dest.is_file() {
+            fs::copy(&dest, dir.join(format!("{stem}.before.md")))?;
+        }
     }
     fs::write(dir.join(format!("{stem}.after.md")), after)?;
     Ok(())
 }
 
 fn atomic_replace(
-    vault: &Path,
+    state_root: &Path,
     dest: &Path,
     contents: &str,
     job_id: &str,
 ) -> Result<(), CommitError> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    ensure_state_parent(state_root, dest)?;
     let tmp_name = format!(
         ".codeg-tmp-{}-{}",
         job_id,
@@ -549,8 +595,8 @@ fn atomic_replace(
             .and_then(|s| s.to_str())
             .unwrap_or("page.md")
     );
-    // Temp file on the vault filesystem so rename is atomic (not a cross-device copy).
-    let tmp = dest.parent().unwrap_or(vault).join(&tmp_name);
+    // Temp file stays under wiki-state so rename is atomic.
+    let tmp = dest.parent().unwrap_or(state_root).join(&tmp_name);
     {
         let mut f = OpenOptions::new()
             .write(true)
@@ -590,7 +636,6 @@ pub(crate) fn acquire_vault_lock(vault: &Path) -> Result<File, CommitError> {
 }
 
 pub fn validate_proposal(policy: &WikiFsPolicy, p: &StagedProposal) -> Result<(), CommitError> {
-    policy.check_commit_rel(&p.rel)?;
     policy.check_page_type_path(&p.page_type, &p.rel)?;
     validate_markdown(&p.after, &p.page_type)?;
     Ok(())
@@ -807,9 +852,13 @@ Design request/response contracts.\n\n\
         let vault = dir.path().join("vault");
         let state = dir.path().join("state");
         initialize_vault(&vault).unwrap();
-        let rel = "capabilities/human.md";
+        let rel = "generated/note/human.md";
         let original = format!("{}\nHuman annotation stays.\n", capability_page("n", "s"));
-        fs::write(vault.join(rel), &original).unwrap();
+        fs::create_dir_all(state.join("generated/note")).unwrap();
+        fs::write(state.join(rel), &original).unwrap();
+        let kept = vault.join("日记/今天.md");
+        fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        fs::write(&kept, "keep").unwrap();
         let manifest = commit_proposals(
             &vault,
             &state,
@@ -826,11 +875,14 @@ Design request/response contracts.\n\n\
             }],
         )
         .unwrap();
-        let actual = fs::read_to_string(vault.join(rel)).unwrap();
+        let actual = fs::read_to_string(state.join(rel)).unwrap();
         assert!(actual.contains("Human annotation stays."));
         assert!(actual.contains("Check cursor edge cases."));
         assert_eq!(manifest.files[0].after_hash, content_hash(&actual));
         assert_eq!(manifest.after_contents[rel], actual);
+        assert_eq!(fs::read_to_string(&kept).unwrap(), "keep");
+        assert!(!vault.join("capabilities").exists());
+        assert!(!vault.join("work").exists());
     }
 
     #[test]
@@ -839,21 +891,19 @@ Design request/response contracts.\n\n\
         let vault = dir.path().join("vault");
         let state = dir.path().join("state");
         initialize_vault(&vault).unwrap();
-        fs::write(
-            vault.join("capabilities/changed.md"),
-            capability_page("old", "s"),
-        )
-        .unwrap();
+        let changed = "generated/note/changed.md";
+        fs::create_dir_all(state.join("generated/note")).unwrap();
+        fs::write(state.join(changed), capability_page("old", "s")).unwrap();
         let proposals = vec![
             StagedProposal {
-                rel: "capabilities/new.md".into(),
+                rel: "generated/note/new.md".into(),
                 page_type: "capability".into(),
                 before_hash: String::new(),
                 after: capability_page("new", "s"),
                 op: "create".into(),
             },
             StagedProposal {
-                rel: "capabilities/changed.md".into(),
+                rel: changed.into(),
                 page_type: "capability".into(),
                 before_hash: "frozen-before-user-edit".into(),
                 after: capability_page("old", "s"),
@@ -864,7 +914,9 @@ Design request/response contracts.\n\n\
             commit_proposals(&vault, &state, "preflight", &proposals),
             Err(CommitError::Conflict(_))
         ));
-        assert!(!vault.join("capabilities/new.md").exists());
+        assert!(!state.join("generated/note/new.md").exists());
+        assert!(!vault.join("capabilities").exists());
+        assert!(!vault.join("work").exists());
     }
 
     #[test]
@@ -876,7 +928,7 @@ Design request/response contracts.\n\n\
         fs::create_dir_all(&state).unwrap();
         let source_id = "11111111-1111-4111-8111-111111111111";
         let note_id = "22222222-2222-4222-8222-222222222222";
-        let rel = format!("capabilities/interface-design-{note_id}.md");
+        let rel = format!("generated/note/interface-design-{note_id}.md");
         let after = capability_page(note_id, source_id);
         let job = "job-commit-1";
         let proposal = StagedProposal {
@@ -888,10 +940,12 @@ Design request/response contracts.\n\n\
         };
         let m1 = commit_proposals(&vault, &state, job, std::slice::from_ref(&proposal)).unwrap();
         assert!(m1.files.iter().all(|f| f.applied));
-        let path = vault.join(&rel);
+        let path = state.join(&rel);
         let first = fs::read_to_string(&path).unwrap();
         assert!(first.contains("[[sources/11111111-1111-4111-8111-111111111111]]"));
         assert!(first.contains("type: capability"));
+        assert!(!vault.join(&rel).exists());
+        assert!(!vault.join("capabilities").exists());
 
         let m2 = commit_proposals(&vault, &state, job, &[proposal]).unwrap();
         assert!(m2.files.iter().all(|f| f.applied));
@@ -905,10 +959,13 @@ Design request/response contracts.\n\n\
         let vault = dir.path().join("vault");
         let state = dir.path().join("state");
         initialize_vault(&vault).unwrap();
-        fs::create_dir_all(vault.join("capabilities")).unwrap();
-        let rel = "capabilities/keep.md";
+        let rel = "generated/note/keep.md";
         let original = capability_page("n1", "s1").replace("Interface design", "Original");
-        fs::write(vault.join(rel), &original).unwrap();
+        fs::create_dir_all(state.join("generated/note")).unwrap();
+        fs::write(state.join(rel), &original).unwrap();
+        let kept = vault.join("capabilities/keep.md");
+        fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        fs::write(&kept, &original).unwrap();
         let proposal = StagedProposal {
             rel: rel.into(),
             page_type: "capability".into(),
@@ -918,10 +975,10 @@ Design request/response contracts.\n\n\
         };
         let err = commit_proposals(&vault, &state, "job-conflict", &[proposal]).unwrap_err();
         assert!(matches!(err, CommitError::Conflict(_)));
-        let now = fs::read_to_string(vault.join(rel)).unwrap();
-        assert_eq!(now, original);
+        assert_eq!(fs::read_to_string(state.join(rel)).unwrap(), original);
+        assert_eq!(fs::read_to_string(&kept).unwrap(), original);
         assert!(conflicts_dir(&state, "job-conflict")
-            .join("capabilities__keep.md.after.md")
+            .join("generated__note__keep.md.after.md")
             .exists());
     }
 
@@ -949,19 +1006,18 @@ Design request/response contracts.\n\n\
         let vault = dir.path().join("vault");
         let state = dir.path().join("state");
         initialize_vault(&vault).unwrap();
-        fs::create_dir_all(vault.join("capabilities")).unwrap();
-        fs::create_dir_all(vault.join("sources")).unwrap();
-        let a_rel = "capabilities/a.md";
-        let b_rel = "sources/src.md";
+        let a_rel = "generated/note/a.md";
+        let b_rel = "generated/note/src.md";
+        fs::create_dir_all(state.join("generated/note")).unwrap();
         let a_after = capability_page("na", "src");
         let b_after = format!(
             "---\ntitle: Source\ntype: source\ntags:\n  - type/source\nsources: []\ncodeg_note_id: \"nb\"\n---\n\n{CONTENT_START}\n# Source\n{CONTENT_END}\n"
         );
-        fs::write(vault.join(a_rel), &a_after).unwrap();
+        fs::write(state.join(a_rel), &a_after).unwrap();
         let b_before = format!(
             "---\ntitle: Source\ntype: source\ntags:\n  - type/source\ncodeg_note_id: \"nb\"\n---\n\n{CONTENT_START}\n# old\n{CONTENT_END}\n"
         );
-        fs::write(vault.join(b_rel), &b_before).unwrap();
+        fs::write(state.join(b_rel), &b_before).unwrap();
 
         let mut manifest = CommitManifest {
             commit_id: None,
@@ -995,14 +1051,17 @@ Design request/response contracts.\n\n\
         persist_manifest(&state, &manifest).unwrap();
         let status = recover_manifest(&vault, &state, &mut manifest).unwrap();
         assert_eq!(status, RecoverStatus::Complete);
-        assert_eq!(fs::read_to_string(vault.join(a_rel)).unwrap(), a_after);
-        let b_now = fs::read_to_string(vault.join(b_rel)).unwrap();
+        assert_eq!(fs::read_to_string(state.join(a_rel)).unwrap(), a_after);
+        let b_now = fs::read_to_string(state.join(b_rel)).unwrap();
         assert!(
             b_now.contains("# Source")
                 || content_hash(&b_now) == content_hash(&b_after)
                 || b_now.contains("Source")
         );
         assert!(manifest.files.iter().all(|f| f.applied));
+        assert!(!vault.join("capabilities").exists());
+        assert!(!vault.join("sources").exists());
+        assert!(!vault.join("work").exists());
     }
 
     #[test]

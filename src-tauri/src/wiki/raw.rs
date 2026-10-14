@@ -1,6 +1,6 @@
 //! 将会话片段与提取后的文件文本写成带来源元数据的原始 Markdown。
 //! source、import 和 session_rollup 共用序列化与只创建写入，避免重复导入覆盖已有材料。
-//! 内容摘要用于重复识别与落盘一致性，不要求后续 Agent 锁定相同输入版本。
+//! 新导入正文写在 wiki-state 的 generated/import 下，不在用户库里新建 raw/。
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -201,11 +201,33 @@ pub fn content_hash(body: &str) -> String {
 }
 
 pub fn raw_session_path(vault: &Path, source_id: &str) -> PathBuf {
-    vault.join("raw/sessions").join(format!("{source_id}.md"))
+    vault.join(crate::wiki::paths::raw_session_rel(source_id))
 }
 
-pub fn raw_import_path(vault: &Path, source_id: &str) -> PathBuf {
-    vault.join("raw/imports").join(format!("{source_id}.md"))
+/// Open a session dump at `work/raw` first, then vault-root `raw/` when that file is missing.
+pub fn read_raw_session(vault: &Path, source_id: &str) -> Option<PathBuf> {
+    crate::wiki::paths::existing_stored_file(vault, &crate::wiki::paths::raw_session_rel(source_id))
+}
+
+pub fn import_markdown_rel(source_id: &str) -> io::Result<String> {
+    if !is_safe_import_id(source_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "import source id is not a single safe filename",
+        ));
+    }
+    Ok(format!("generated/import/{source_id}.md"))
+}
+
+fn is_safe_import_id(source_id: &str) -> bool {
+    !source_id.is_empty()
+        && !source_id.starts_with('.')
+        && !source_id.contains('/')
+        && !source_id.contains('\\')
+        && !source_id.contains("..")
+        && source_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
 #[derive(Debug, Clone)]
@@ -335,14 +357,43 @@ fn render_import_body(segments: &[TextSegment], _meta: &RawImportMeta<'_>) -> St
     body
 }
 
-/// Exclusive create of `raw/imports/<source-id>.md`.
+/// Exclusive create of `wiki-state/generated/import/<source-id>.md`.
 pub fn write_import_raw(
-    vault: &Path,
+    state_root: &Path,
     source_id: &str,
     contents: &str,
     hash: &str,
 ) -> io::Result<RawWriteOutcome> {
-    write_raw_exclusive(&raw_import_path(vault, source_id), contents, hash)
+    let rel = import_markdown_rel(source_id)?;
+    let dest = crate::wiki::paths::join_generated_body(state_root, &rel)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    ensure_import_parent(state_root, &dest)?;
+    write_raw_exclusive(&dest, contents, hash)
+}
+
+fn ensure_import_parent(state_root: &Path, dest: &Path) -> io::Result<()> {
+    let Some(parent) = dest.parent() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "import body is missing a parent directory",
+        ));
+    };
+    if !parent.starts_with(state_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "parent mkdir is only allowed under wiki-state",
+        ));
+    }
+    fs::create_dir_all(parent)?;
+    let root = fs::canonicalize(state_root)?;
+    let parent = fs::canonicalize(parent)?;
+    if !parent.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "import body escapes wiki-state",
+        ));
+    }
+    Ok(())
 }
 
 /// Exclusive create. Same hash at path = success; different content = conflict.
@@ -506,6 +557,7 @@ mod tests {
         let dir = tempdir().unwrap();
         initialize_vault(dir.path()).unwrap();
         let path = raw_session_path(dir.path(), "src-1");
+        assert!(path.ends_with("work/raw/sessions/src-1.md"));
         let s = snap();
         let (doc, hash) = render_session_raw(&s, &meta("src-1"));
         let first = write_raw_exclusive(&path, &doc, &hash).unwrap();
@@ -564,6 +616,47 @@ mod tests {
         assert!(!reading.body.contains("Coverage"));
         assert!(!reading.body.contains("Document dump"));
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn import_markdown_stays_under_wiki_state() {
+        let dir = tempdir().unwrap();
+        let state = dir.path().join("wiki-state");
+        let vault = dir.path().join("vault");
+        initialize_vault(&vault).unwrap();
+        crate::wiki::vault::initialize_state_root(&state).unwrap();
+        let (doc, hash) = render_import_raw(&[], &import_meta("src-import-1"));
+        let outcome = write_import_raw(&state, "src-import-1", &doc, &hash).unwrap();
+        assert!(matches!(outcome, RawWriteOutcome::Created { .. }));
+        let body = state.join("generated/import/src-import-1.md");
+        assert_eq!(fs::read_to_string(&body).unwrap(), doc);
+        assert!(!vault.join("raw").exists());
+        assert!(!vault.join("log.md").exists());
+        assert!(write_import_raw(&state, "../escape", &doc, &hash).is_err());
+        assert!(write_import_raw(&state, "nested/id", &doc, &hash).is_err());
+    }
+
+    fn import_meta(source_id: &str) -> RawImportMeta<'_> {
+        RawImportMeta {
+            source_id,
+            source_group_id: source_id,
+            source_kind: "pasted-text",
+            captured_at: Utc::now(),
+            title: "Note",
+            source_title: None,
+            source_url: None,
+            author: None,
+            material_role: "reference",
+            personal_role: None,
+            original_filename: Some("note.md"),
+            format: "markdown",
+            extraction_status: "complete",
+            extractor_version: "test",
+            redacted: false,
+            truncated: false,
+            page_count: None,
+            warnings: &[],
+        }
     }
 
     #[test]

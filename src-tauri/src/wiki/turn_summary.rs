@@ -1,6 +1,5 @@
-//! 把完成的ACP单轮记录整理为work/turns中的Wiki笔记。
-//! source负责归档原始材料，engine/worker触发整理；Agent依据来源路径产出正文，
-//! 本模块补身份、项目与来源元数据，经commit保护人工修改后写入并登记来源关联。
+//! 把完成的 ACP 单轮整理为 wiki-state 中的生成正文。
+//! source 负责归档原始材料，engine/worker 触发整理；正文不写入用户库。
 
 use std::fs;
 use std::path::Path;
@@ -25,7 +24,7 @@ pub const KIND: &str = "turn_summary";
 pub const PAGE_TYPE: &str = "turn-summary";
 
 pub fn page_rel(source_id: &str) -> String {
-    format!("work/turns/{source_id}.md")
+    format!("generated/turn/{source_id}.md")
 }
 
 pub fn dedupe_key(source_id: &str, raw_hash: &str) -> String {
@@ -219,17 +218,18 @@ pub async fn run_turn_summary_job(
         .as_deref()
         .ok_or_else(|| WikiLlmError::InvalidOutput("turn job missing source".into()))?;
     let source = wiki_service::get_source_model(conn, source_id).await?;
-    if source.vault_id != job.vault_id {
+    let vaults = wiki_service::vault_flags(conn).await?;
+    if !wiki_service::source_vault_accepted(&source.vault_id, &job.vault_id, &vaults) {
         return Err(WikiLlmError::InvalidOutput("source belongs to another vault".into()).into());
     }
     let rel = page_rel(&source.id);
-    let existing = read_existing(vault, &rel)?;
+    let existing = read_existing(state_root, &rel)?;
     let staging = state_root
         .join("staging")
         .join(&job.id)
         .join(job.attempt.to_string());
     fs::create_dir_all(&staging).map_err(|e| WorkerError::Failed(e.to_string()))?;
-    let material = material_markdown_for_source(job, &source, vault)?;
+    let material = material_markdown_for_source(job, &source, vault, state_root)?;
     let staging_source = staging.join("source.md");
     fs::write(&staging_source, &material).map_err(|e| WorkerError::Failed(e.to_string()))?;
     let required = source_inputs(&[(format!("source:{}", source.id), vec![source.id.clone()])])?;
@@ -298,8 +298,10 @@ pub async fn run_turn_summary_job(
     };
     commit::commit_proposals(vault, state_root, &job.id, &[proposal])
         .map_err(CompileError::from)?;
-    let actual =
-        fs::read_to_string(vault.join(&rel)).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    let actual = fs::read_to_string(
+        crate::wiki::paths::join_generated_body(state_root, &rel).map_err(WorkerError::Failed)?,
+    )
+    .map_err(|e| WorkerError::Failed(e.to_string()))?;
     let result = JobOutputManifest::generated(
         vec![WikiOutput {
             note_id: note_id.clone(),
@@ -365,8 +367,12 @@ pub(crate) async fn save_result(
     Ok(output)
 }
 
-pub(crate) fn read_existing(vault: &Path, rel: &str) -> Result<Option<String>, WorkerError> {
-    match fs::read_to_string(vault.join(rel)) {
+pub(crate) fn read_existing(root: &Path, rel: &str) -> Result<Option<String>, WorkerError> {
+    let path = match crate::wiki::paths::join_generated_body(root, rel) {
+        Ok(path) => path,
+        Err(error) => return Err(WikiLlmError::SourceReadFailed(error).into()),
+    };
+    match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(WikiLlmError::SourceReadFailed(e.to_string()).into()),
@@ -396,6 +402,7 @@ fn material_markdown_for_source(
     job: &wiki_job::Model,
     source: &crate::db::entities::wiki_source::Model,
     vault: &Path,
+    state_root: &Path,
 ) -> Result<String, WorkerError> {
     if let Some(manifest) = job.input_manifest.as_deref() {
         if let Ok(value) = serde_json::from_str::<Value>(manifest) {
@@ -415,8 +422,32 @@ fn material_markdown_for_source(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        return fs::read_to_string(vault.join(rel))
-            .map_err(|_| WikiLlmError::SourceMissing(source.id.clone()).into());
+        let root = if crate::wiki::paths::is_generated_body_rel(rel) {
+            state_root
+        } else {
+            vault
+        };
+        let candidates = if crate::wiki::paths::is_generated_body_rel(rel) {
+            vec![rel.to_string()]
+        } else {
+            crate::wiki::paths::stored_read_rels(rel)
+        };
+        for candidate in candidates {
+            let path = match crate::wiki::paths::join_vault_relative(root, &candidate) {
+                Ok(path) => path,
+                Err(_) => {
+                    return Err(WikiLlmError::SourceReadFailed("unsafe source path".into()).into())
+                }
+            };
+            match fs::read_to_string(&path) {
+                Ok(text) => return Ok(text),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    return Err(WikiLlmError::SourceMissing(source.id.clone()).into());
+                }
+            }
+        }
+        return Err(WikiLlmError::SourceMissing(source.id.clone()).into());
     }
     Err(WikiLlmError::SourceMissing(source.id.clone()).into())
 }
@@ -599,7 +630,7 @@ mod tests {
 
     #[test]
     fn page_rel_is_stable_per_source_id() {
-        assert_eq!(page_rel("abc"), "work/turns/abc.md");
+        assert_eq!(page_rel("abc"), "generated/turn/abc.md");
         assert_eq!(dedupe_key("abc", "hash"), "turn_summary:abc:hash");
     }
 
@@ -732,7 +763,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["outcome"], "generated");
-        let note = fs::read_to_string(vault.join("work/turns/src-turn-1.md")).unwrap();
+        let note = fs::read_to_string(state.join("generated/turn/src-turn-1.md")).unwrap();
+        assert!(!vault.join("work/turns/src-turn-1.md").exists());
         assert!(note.contains("codeg_source_id: \"src-turn-1\""));
         assert!(!note.contains("[[raw/sessions/src-turn-1]]"));
         assert!(!note.contains("start_line:"));
@@ -796,8 +828,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(out["outcome"], "generated");
-        assert_eq!(out["outputs"][0]["path"], "work/sessions/c3.md");
-        let text = fs::read_to_string(vault.join("work/sessions/c3.md")).unwrap();
+        assert_eq!(out["outputs"][0]["path"], "generated/session/c3.md");
+        let text = fs::read_to_string(state.join("generated/session/c3.md")).unwrap();
+        assert!(!vault.join("work/sessions/c3.md").exists());
         assert!(text.contains("type: session-summary"));
         assert!(text.contains("codeg_source_id:") || text.contains("source_ids:"));
         assert!(!text.contains("[[raw/sessions/src-turn-1]]"));
@@ -826,13 +859,14 @@ mod tests {
         let out = run_turn_summary_job(&db.conn, &job, &llm, &vault, &state)
             .await
             .unwrap();
-        let page = vault.join("work/turns/src-turn-1.md");
+        let page = state.join("generated/turn/src-turn-1.md");
         assert!(page.is_file());
+        assert!(!vault.join("work/turns/src-turn-1.md").exists());
         let text = fs::read_to_string(&page).unwrap();
         assert!(text.contains("type: turn-summary"));
         assert!(text.contains("codeg_source_id: \"src-turn-1\""));
         assert!(!text.contains("ACP turn:"));
-        assert_eq!(out["outputs"][0]["path"], "work/turns/src-turn-1.md");
+        assert_eq!(out["outputs"][0]["path"], "generated/turn/src-turn-1.md");
         assert_eq!(out["outputs"][0]["content_hash"], raw::content_hash(&text));
         let src = wiki_service::get_source_model(&db.conn, &sid)
             .await
@@ -848,5 +882,91 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(again.id, job.id);
+    }
+
+    async fn insert_vault(conn: &sea_orm::DatabaseConnection, id: &str, active: bool) {
+        let now = Utc::now();
+        wiki_vault::ActiveModel {
+            id: Set(id.into()),
+            canonical_path: Set(format!("/tmp/{id}")),
+            config_revision: Set(0),
+            next_compile_at: Set(None),
+            is_active: Set(active),
+            created_at: Set(now),
+            updated_at: Set(now),
+        }
+        .insert(conn)
+        .await
+        .unwrap();
+    }
+
+    async fn move_source_vault(
+        conn: &sea_orm::DatabaseConnection,
+        source_id: &str,
+        vault_id: &str,
+    ) {
+        let source = wiki_service::get_source_model(conn, source_id)
+            .await
+            .unwrap();
+        let mut active: wiki_source::ActiveModel = source.into();
+        active.vault_id = Set(vault_id.into());
+        active.update(conn).await.unwrap();
+    }
+
+    #[test]
+    fn source_vault_accepted_keeps_inactive_sources_for_the_sole_active_vault() {
+        let sole = [("old".to_string(), false), ("active".to_string(), true)];
+        assert!(wiki_service::source_vault_accepted("old", "active", &sole));
+        assert!(wiki_service::source_vault_accepted(
+            "active", "active", &sole
+        ));
+        let two_active = [
+            ("active".to_string(), true),
+            ("other".to_string(), true),
+            ("old".to_string(), false),
+        ];
+        assert!(!wiki_service::source_vault_accepted(
+            "other",
+            "active",
+            &two_active
+        ));
+        assert!(!wiki_service::source_vault_accepted(
+            "old",
+            "active",
+            &two_active
+        ));
+    }
+
+    #[tokio::test]
+    async fn inactive_vault_source_is_accepted_by_the_active_job() {
+        let (_dir, db, vault, state, sid, job, _abs) = fixture().await;
+        insert_vault(&db.conn, "vault-old", false).await;
+        move_source_vault(&db.conn, &sid, "vault-old").await;
+        let out = run_turn_summary_job(&db.conn, &job, &MockWikiLlm::default(), &vault, &state)
+            .await
+            .unwrap();
+        assert_eq!(out["outcome"], "generated");
+        assert_eq!(
+            wiki_service::get_source_model(&db.conn, &sid)
+                .await
+                .unwrap()
+                .vault_id,
+            "vault-old",
+            "resolving an inactive vault must not rewrite the source row"
+        );
+    }
+
+    #[tokio::test]
+    async fn foreign_active_vault_source_is_rejected() {
+        let (_dir, db, vault, state, sid, job, _abs) = fixture().await;
+        insert_vault(&db.conn, "vault-other", true).await;
+        move_source_vault(&db.conn, &sid, "vault-other").await;
+        let err = run_turn_summary_job(&db.conn, &job, &MockWikiLlm::default(), &vault, &state)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("source belongs to another vault"),
+            "{err}"
+        );
     }
 }

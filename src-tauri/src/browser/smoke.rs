@@ -364,8 +364,12 @@ async fn execute(app: &AppHandle, cmd: &Value) -> Result<Value, String> {
                 }
                 _ => None,
             };
-            browser_commands::set_window_viewport_core(&registry, &str_arg(cmd, "tab_id")?, viewport)
-                .map_err(err_string)?;
+            browser_commands::set_window_viewport_core(
+                &registry,
+                &str_arg(cmd, "tab_id")?,
+                viewport,
+            )
+            .map_err(err_string)?;
             Ok(Value::Null)
         }
         "browser_set_visible" => {

@@ -4473,7 +4473,13 @@ mod tests {
         let back = plan_window_viewport(Some(tablet), Some(own), None, tablet);
         assert_eq!(back.viewport, None);
         assert_eq!(back.restore, None);
-        assert_eq!(back.resize, Some(WindowResize { size: own, min: floor }));
+        assert_eq!(
+            back.resize,
+            Some(WindowResize {
+                size: own,
+                min: floor
+            })
+        );
 
         // Asked again for what it already shows: left alone, so a window the
         // person has since resized by hand stays the way they made it.

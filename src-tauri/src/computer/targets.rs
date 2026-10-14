@@ -2998,7 +2998,11 @@ mod tests {
                 repeat: 1,
             },
         ] {
-            assert_eq!(act(&table, &id, &writes), Err(ActDenied::Secret), "{writes:?}");
+            assert_eq!(
+                act(&table, &id, &writes),
+                Err(ActDenied::Secret),
+                "{writes:?}"
+            );
         }
     }
 
@@ -3330,7 +3334,11 @@ mod tests {
             Err(ActDenied::ChordBeyond)
         );
         assert_eq!(
-            act(&table, &id, &key(Key::Char('x'), Modifiers::default(), None)),
+            act(
+                &table,
+                &id,
+                &key(Key::Char('x'), Modifiers::default(), None)
+            ),
             Err(ActDenied::NeedsElement)
         );
         let field = ElementTarget {

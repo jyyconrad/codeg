@@ -10174,9 +10174,10 @@ mod tests {
         let global = conversation_tag_service::create_tag(&db.conn, None, "bug", "#d73a4a")
             .await
             .unwrap();
-        let owned = conversation_tag_service::create_tag(&db.conn, Some(folder_id), "ui", "#0e8a16")
-            .await
-            .unwrap();
+        let owned =
+            conversation_tag_service::create_tag(&db.conn, Some(folder_id), "ui", "#0e8a16")
+                .await
+                .unwrap();
         conversation_tag_service::update_conversation_tags(
             &db.conn,
             pre.id,
@@ -10199,7 +10200,10 @@ mod tests {
         let sibling = conversation_service::get_by_id(&db.conn, result.sibling_conversation_id)
             .await
             .unwrap();
-        assert_eq!(sibling.tag_ids, expected, "the pre-fork history keeps its tags");
+        assert_eq!(
+            sibling.tag_ids, expected,
+            "the pre-fork history keeps its tags"
+        );
         let current = conversation_service::get_by_id(&db.conn, pre.id)
             .await
             .unwrap();

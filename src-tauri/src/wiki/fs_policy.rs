@@ -1,16 +1,16 @@
-//! 限制Wiki生成页面的提交路径、类型与身份分配位置。
-//! compile检查候选笔记，commit在写入前再次校验，防止越出Wiki、写原始材料
-//! 或覆盖应用维护目录；模型工具的读取/staging权限由llm和FileSystemRuntime负责。
+//! 限制 Wiki 生成页面的路径与类型。
+//! 新正文只允许落在 wiki-state 的 generated/ 下，不能按页面类型进入用户库。
+//! 模型工具的读取和 staging 权限由 llm 与 FileSystemRuntime 负责。
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::wiki::paths::{is_safe_vault_relative, join_vault_relative};
 
-/// Page types the host may write during compile / memory jobs.
+/// Page types the host may record on a generated body.
 ///
-/// Memory-note stable paths (host-owned; model does not mint filenames):
-/// `work/turns/{source_id}.md`, `work/sessions/c{conversation_id}.md`.
+/// New files use wiki-state paths (`generated/turn`, `generated/session`,
+/// `generated/note`). Page type does not choose a vault directory.
 pub const ALLOWED_PAGE_TYPES: &[&str] = &[
     "work-record",
     "decision",
@@ -34,6 +34,18 @@ const DENIED_SEGMENTS: &[&str] = &[
     "originals",
     "session_store",
     ".codeg-wiki.lock",
+];
+
+/// Obsidian-owned names. Still rejected outside `.obsidian/codeg/`.
+const OBSIDIAN_OWNED: &[&str] = &[
+    "app.json",
+    "appearance.json",
+    "workspace.json",
+    "core-plugins.json",
+    "community-plugins.json",
+    "plugins",
+    "snippets",
+    "themes",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +91,7 @@ impl WikiFsPolicy {
                 "path is not an allowed wiki target: {rel}"
             )));
         }
-        if rel == "raw" || rel.starts_with("raw/") {
+        if crate::wiki::paths::is_raw_rel(rel) {
             return Err(FsPolicyError::Denied(
                 "compile must not write raw/ evidence".into(),
             ));
@@ -103,16 +115,16 @@ impl WikiFsPolicy {
         Ok(dest)
     }
 
+    /// Accept a wiki-state generated body. Taxonomy paths are not writable.
     pub fn check_page_type_path(&self, page_type: &str, rel: &str) -> Result<(), FsPolicyError> {
         if !ALLOWED_PAGE_TYPES.contains(&page_type) {
             return Err(FsPolicyError::Denied(format!(
                 "page type is not writable: {page_type}"
             )));
         }
-        let _ = self.check_commit_rel(rel)?;
-        if !page_type_matches_rel(page_type, rel) {
+        if !crate::wiki::paths::is_generated_body_rel(rel) {
             return Err(FsPolicyError::Denied(format!(
-                "path {rel} does not match type {page_type}"
+                "new notes stay under wiki-state, not the vault: {rel}"
             )));
         }
         Ok(())
@@ -172,30 +184,29 @@ pub fn page_type_matches_rel(page_type: &str, rel: &str) -> bool {
     }
 }
 
-/// The host mints a path once and persists it in the commit manifest. Titles
-/// never serve as an existing page's identity.
+/// Mint a wiki-state relative path. The page type is not a vault folder.
+/// Titles never serve as an existing page's identity.
 pub fn allocate_note_rel(
     page_type: &str,
     title: &str,
     note_id: &uuid::Uuid,
 ) -> Result<String, FsPolicyError> {
-    let directory = match page_type {
-        "work-record" => "work/records",
-        "decision" => "work/decisions",
-        "outcome" => "work/outcomes",
-        "project" => "work/projects",
-        "area" => "work/areas",
-        "capability" => "capabilities",
-        "concept" => "knowledge/concepts",
-        "method" => "knowledge/methods",
-        "entity" => "knowledge/entities",
-        "source" => "sources",
-        _ => {
-            return Err(FsPolicyError::Denied(format!(
-                "cannot allocate type {page_type}"
-            )))
-        }
-    };
+    if !matches!(
+        page_type,
+        "work-record"
+            | "decision"
+            | "outcome"
+            | "project"
+            | "area"
+            | "capability"
+            | "concept"
+            | "method"
+            | "entity"
+    ) {
+        return Err(FsPolicyError::Denied(format!(
+            "cannot allocate type {page_type}"
+        )));
+    }
     let mut slug = String::new();
     for ch in title.chars().take(64) {
         if ch.is_alphanumeric() {
@@ -207,17 +218,37 @@ pub fn allocate_note_rel(
     let slug = slug.trim_matches('-');
     let slug = if slug.is_empty() { "note" } else { slug };
     Ok(format!(
-        "{directory}/{slug}-{}.md",
+        "generated/note/{slug}-{}.md",
         &note_id.simple().to_string()[..12]
     ))
 }
 
 fn has_denied_segment(rel: &str) -> bool {
-    rel.split(['/', '\\']).any(|seg| {
-        if seg.is_empty() || seg == "." {
+    let segs: Vec<&str> = rel
+        .split(['/', '\\'])
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .collect();
+    // `.obsidian` stays denied except Codeg's own `.obsidian/codeg/` tree.
+    let codeg_tree = segs
+        .first()
+        .is_some_and(|seg| seg.eq_ignore_ascii_case(".obsidian"))
+        && segs
+            .get(1)
+            .is_some_and(|seg| seg.eq_ignore_ascii_case("codeg"));
+    segs.iter().enumerate().any(|(index, seg)| {
+        if codeg_tree && index == 0 {
             return false;
         }
-        DENIED_SEGMENTS.iter().any(|d| seg.eq_ignore_ascii_case(d))
+        DENIED_SEGMENTS
+            .iter()
+            .any(|denied| seg.eq_ignore_ascii_case(denied))
+            || (!codeg_tree
+                && segs
+                    .first()
+                    .is_some_and(|root| root.eq_ignore_ascii_case(".obsidian"))
+                && OBSIDIAN_OWNED
+                    .iter()
+                    .any(|owned| seg.eq_ignore_ascii_case(owned)))
     })
 }
 
@@ -275,8 +306,47 @@ mod tests {
         assert!(p.check_commit_rel("/etc/passwd").is_err());
         assert!(p.check_commit_rel("/work/projects/page.md").is_err());
         assert!(p.check_commit_rel("raw/sessions/x.md").is_err());
+        assert!(p.check_commit_rel("work/raw/sessions/x.md").is_err());
         assert!(p.check_commit_rel(".obsidian/app.json").is_err());
         assert!(p.check_commit_rel("capabilities/ok.md").is_ok());
+    }
+
+    #[test]
+    fn obsidian_owned_files_stay_denied_and_codeg_prefix_is_allowed() {
+        let dir = tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        let p = WikiFsPolicy::new(&vault);
+        for rel in [
+            ".obsidian/app.json",
+            ".obsidian/appearance.json",
+            ".obsidian/workspace.json",
+            ".obsidian/core-plugins.json",
+            ".obsidian/community-plugins.json",
+            ".obsidian/plugins/x.md",
+            ".obsidian/snippets/x.md",
+            ".obsidian/themes/x.md",
+            "notes/.obsidian/codeg/marker.md",
+        ] {
+            let err = p.check_commit_rel(rel).unwrap_err();
+            assert!(
+                err.to_string().contains("not an allowed wiki target"),
+                "{rel}: {err}"
+            );
+        }
+        let metadata = p
+            .check_commit_rel(".obsidian/codeg/metadata/projects/a.md")
+            .unwrap_err();
+        assert!(
+            metadata
+                .to_string()
+                .contains("not an allowed page location"),
+            "{metadata}"
+        );
+        assert!(!has_denied_segment(".obsidian/codeg/contract.json"));
+        assert!(!has_denied_segment(".obsidian/codeg/marker.json"));
+        assert!(has_denied_segment(".obsidian/app.json"));
+        assert!(has_denied_segment(".obsidian/codeg/.git/hooks.md"));
     }
 
     #[test]
@@ -305,15 +375,12 @@ mod tests {
     }
 
     #[test]
-    fn turn_and_session_summary_only_match_memory_dirs() {
+    fn new_notes_are_not_allocated_into_vault_taxonomy() {
         let dir = tempdir().unwrap();
         let vault = dir.path().join("vault");
         fs::create_dir_all(&vault).unwrap();
         let p = WikiFsPolicy::new(&vault);
 
-        // Stable paths: work/turns/{source_id}.md, work/sessions/c{conversation_id}.md
-        assert!(is_allowed_commit_rel("work/turns/source-id.md"));
-        assert!(is_allowed_commit_rel("work/sessions/c42.md"));
         assert!(page_type_matches_rel(
             "turn-summary",
             "work/turns/source-id.md"
@@ -324,33 +391,31 @@ mod tests {
         ));
         assert!(!page_type_matches_rel(
             "turn-summary",
-            "work/sessions/c42.md"
+            "generated/turn/source-id.md"
         ));
-        assert!(!page_type_matches_rel(
-            "session-summary",
-            "work/turns/source-id.md"
-        ));
-        assert!(!page_type_matches_rel("turn-summary", "work/projects/x.md"));
-        assert!(!page_type_matches_rel(
-            "session-summary",
-            "work/records/x.md"
-        ));
-        assert!(ALLOWED_PAGE_TYPES.contains(&"turn-summary"));
-        assert!(ALLOWED_PAGE_TYPES.contains(&"session-summary"));
-
         assert!(p
             .check_page_type_path("turn-summary", "work/turns/source-id.md")
-            .is_ok());
+            .is_err());
         assert!(p
             .check_page_type_path("session-summary", "work/sessions/c42.md")
+            .is_err());
+        assert!(p
+            .check_page_type_path("turn-summary", "generated/turn/source-id.md")
             .is_ok());
         assert!(p
-            .check_page_type_path("turn-summary", "work/projects/x.md")
-            .is_err());
+            .check_page_type_path("session-summary", "generated/session/c42.md")
+            .is_ok());
         assert!(p
-            .check_page_type_path("session-summary", "work/turns/source-id.md")
+            .check_page_type_path("method", "knowledge/methods/x.md")
             .is_err());
-        assert!(p.check_commit_rel("work/turns/source-id.md").is_ok());
-        assert!(p.check_commit_rel("work/sessions/c42.md").is_ok());
+        assert!(!vault.join("work").exists());
+        assert!(!vault.join("knowledge").exists());
+
+        let rel = allocate_note_rel("method", "Cursor paging", &uuid::Uuid::nil()).unwrap();
+        assert!(rel.starts_with("generated/note/"));
+        assert!(!rel.contains("knowledge"));
+        assert!(!rel.contains("work/"));
+        assert!(p.check_page_type_path("method", &rel).is_ok());
+        assert!(allocate_note_rel("source", "Imported", &uuid::Uuid::nil()).is_err());
     }
 }

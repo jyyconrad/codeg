@@ -31,7 +31,7 @@ function Route() {
   const { route, navigate } = useWikiData()
   return (
     <button onClick={() => navigate({ path: "work/a.md" })}>
-      {route.path || route.view}
+      {route.view}:{route.path ?? ""}
     </button>
   )
 }
@@ -119,7 +119,8 @@ describe("shared Wiki data refresh", () => {
     )
     act(() => screen.getByRole("button").click())
     expect(window.location.search).toContain("wikiPath=work%2Fa.md")
-    expect(window.location.search).toContain("wikiView=work")
+    expect(window.location.search).toContain("wikiView=files")
+    expect(window.location.search).not.toContain("wikiView=work")
     window.history.replaceState(
       {},
       "",
@@ -127,10 +128,10 @@ describe("shared Wiki data refresh", () => {
     )
     act(() => window.dispatchEvent(new PopStateEvent("popstate")))
     await waitFor(() =>
-      expect(screen.getByRole("button")).toHaveTextContent("sources")
+      expect(screen.getByRole("button")).toHaveTextContent("files:")
     )
   })
-  it("keeps note navigation in the default library", async () => {
+  it("keeps note navigation on Files instead of a path prefix", async () => {
     backend.call.mockResolvedValue({ active_job_count: 0 })
     await act(async () => {
       render(
@@ -139,9 +140,34 @@ describe("shared Wiki data refresh", () => {
         </WikiDataProvider>
       )
     })
-    expect(screen.getByRole("button")).toHaveTextContent("library")
+    expect(screen.getByRole("button")).toHaveTextContent("files:")
     act(() => screen.getByRole("button").click())
-    expect(window.location.search).toContain("wikiView=library")
+    expect(window.location.search).toContain("wikiView=files")
+    expect(window.location.search).not.toContain("wikiView=work")
     expect(window.location.search).toContain("wikiPath=work%2Fa.md")
+  })
+  it("opens legacy views that name a file on Files", async () => {
+    backend.call.mockResolvedValue({ active_job_count: 0 })
+    for (const legacy of [
+      "work",
+      "capabilities",
+      "sources",
+      "library",
+      "overview",
+    ]) {
+      window.history.replaceState(
+        {},
+        "",
+        `/?wikiView=${legacy}&wikiPath=journal%2Fa.md`
+      )
+      const view = render(
+        <WikiDataProvider>
+          <Route />
+        </WikiDataProvider>
+      )
+      expect(screen.getByRole("button")).toHaveTextContent("files:journal/a.md")
+      expect(window.location.search).toContain(`wikiView=${legacy}`)
+      view.unmount()
+    }
   })
 })

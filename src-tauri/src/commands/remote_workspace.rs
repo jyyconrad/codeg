@@ -249,8 +249,9 @@ pub(crate) fn build_remote_workspace_window(
     // h-10 title bar, so they get the workspace traffic-light position (not the
     // shorter auxiliary-window default).
     #[cfg(target_os = "macos")]
-    let builder = builder
-        .traffic_light_position(crate::commands::windows::workspace_window_traffic_light_position());
+    let builder = builder.traffic_light_position(
+        crate::commands::windows::workspace_window_traffic_light_position(),
+    );
     let built = builder
         .build()
         .map_err(|e| AppCommandError::window("Failed to open remote workspace", e.to_string()))?;

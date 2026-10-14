@@ -1281,10 +1281,9 @@ impl ComputerService {
             Err((why, ended)) => {
                 self.announce(&ended.into_iter().collect::<Vec<_>>());
                 Err(match why {
-                    ReadRefusal::NotGrantable(why) => Refusal::refused(
-                        ERROR_BLOCKED,
-                        blocked_note(&ticket.target_id, why.note()),
-                    ),
+                    ReadRefusal::NotGrantable(why) => {
+                        Refusal::refused(ERROR_BLOCKED, blocked_note(&ticket.target_id, why.note()))
+                    }
                     ReadRefusal::NoSuchTarget | ReadRefusal::GrantRequired => refused(),
                 })
             }

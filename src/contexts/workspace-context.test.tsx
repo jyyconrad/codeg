@@ -33,6 +33,7 @@ import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "@/stores/app-workspace-store"
+import { useTabStore } from "@/stores/tab-store"
 
 vi.mock("next-intl", () => {
   // Return a STABLE function instance across renders, mirroring next-intl's
@@ -113,6 +114,11 @@ vi.mock("@/contexts/active-folder-context", async () => {
 
 beforeEach(() => {
   foldersMock.reset()
+  useTabStore.setState({
+    rawTabs: [],
+    tabs: [],
+    activeTabId: null,
+  })
   // The provider reads workspace folders from the real zustand store: restore
   // pristine state, then seed the same default folders the active-folder mock
   // serves (partial FolderDetail shapes — the provider only reads id/path).
@@ -2308,6 +2314,105 @@ describe("WorkspaceProvider office auto-preview", () => {
       ])
     })
     expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+  })
+
+  it("does not attach a pending preview to conversation B after switching from A", async () => {
+    let finish!: (
+      entries: Awaited<ReturnType<typeof api.listDirectoryWithFiles>>
+    ) => void
+    vi.mocked(api.listDirectoryWithFiles).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve
+      })
+    )
+    const tabs = [
+      {
+        id: "conversation-a",
+        kind: "conversation" as const,
+        folderId: 1,
+        conversationId: 1,
+        agentType: "codex" as const,
+        title: "A",
+        isPinned: true,
+        workingDir: "/repo",
+      },
+      {
+        id: "conversation-b",
+        kind: "conversation" as const,
+        folderId: 1,
+        conversationId: 2,
+        agentType: "codex" as const,
+        title: "B",
+        isPinned: true,
+        workingDir: "/repo",
+      },
+    ]
+    useTabStore.setState({
+      rawTabs: tabs,
+      tabs,
+      activeTabId: "conversation-a",
+    })
+
+    renderWorkspace()
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+
+    act(() => {
+      useTabStore.setState({ activeTabId: "conversation-b" })
+    })
+    await act(async () => {
+      finish([
+        {
+          name: "report.docx",
+          path: "/repo/report.docx",
+          isDir: false,
+          hasChildren: false,
+          size: 100,
+        },
+      ])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+    expect(screen.getByTestId("active-pane")).toHaveTextContent("conversation")
+  })
+
+  it("does not auto-open an unowned office event when two conversations share a folder", async () => {
+    const tabs = [
+      {
+        id: "conversation-a",
+        kind: "conversation" as const,
+        folderId: 1,
+        conversationId: 1,
+        agentType: "codex" as const,
+        title: "A",
+        isPinned: true,
+        workingDir: "/repo",
+      },
+      {
+        id: "conversation-b",
+        kind: "conversation" as const,
+        folderId: 1,
+        conversationId: 2,
+        agentType: "codex" as const,
+        title: "B",
+        isPinned: true,
+        workingDir: "/repo",
+      },
+    ]
+    useTabStore.setState({
+      rawTabs: tabs,
+      tabs,
+      activeTabId: "conversation-b",
+    })
+
+    renderWorkspace()
+    await act(async () => {
+      workspaceStoreMock.emitEnvelope(["report.docx"])
+    })
+
+    expect(screen.getByTestId("file-tab-count")).toHaveTextContent("0")
+    expect(api.listDirectoryWithFiles).not.toHaveBeenCalled()
   })
 
   it("lists a parent once per burst and never re-lists a decided path", async () => {

@@ -32,14 +32,15 @@ pub async fn wiki_compile_now_core(
         return Err(AppCommandError::configuration_invalid("wiki is disabled"));
     }
     let vault = resolve_vault_path(settings.vault_path.as_deref());
+    let state_root = resolve_state_root();
     vault::initialize_vault(&vault).map_err(|e| AppCommandError::io_error(e.to_string()))?;
-    vault::initialize_state_root(&resolve_state_root())
+    vault::initialize_state_root(&state_root)
         .map_err(|e| AppCommandError::io_error(e.to_string()))?;
     let canonical = vault.to_string_lossy().to_string();
     let vault_row = wiki_service::ensure_active_vault(conn, &canonical)
         .await
         .map_err(AppCommandError::from)?;
-    let manifest = compile::list_pending_inputs(conn, &vault_row.id, &vault)
+    let manifest = compile::list_pending_inputs(conn, &vault_row.id, &vault, &state_root)
         .await
         .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
     let json = serde_json::to_string(&manifest)

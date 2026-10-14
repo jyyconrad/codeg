@@ -1,6 +1,5 @@
-//! 在对话明确完成后生成work/sessions中的会话总结。
-//! 优先提供已有轮次笔记，必要时使用本地会话导出的Markdown；与turn_summary
-//! 共用正文包装和来源关联规则，经commit写入，保持与原始归档相互独立。
+//! 在对话明确完成后，把会话总结写入 wiki-state。
+//! 优先提供已有轮次笔记，必要时使用本地会话导出的 Markdown；不在用户库里创建目录或新笔记。
 
 use std::fs;
 use std::path::Path;
@@ -31,7 +30,7 @@ pub const KIND: &str = "session_rollup";
 pub const PAGE_TYPE: &str = "session-summary";
 
 pub fn page_rel(conversation_id: i32) -> String {
-    format!("work/sessions/c{conversation_id}.md")
+    format!("generated/session/c{conversation_id}.md")
 }
 
 pub fn dedupe_key(conversation_id: i32) -> String {
@@ -323,9 +322,11 @@ pub async fn run_session_rollup_job(
     for (index, source) in sources.iter().enumerate() {
         let turn = turn_summary::page_rel(&source.id);
         let (identity, readable) =
-            if source.source_kind == "acp-turn" && read_vault_material(vault, &turn)?.is_some() {
+            if source.source_kind == "acp-turn" && turn_note_exists(state_root, &turn)? {
                 turn_rels.push(turn.clone());
-                (turn.clone(), turn)
+                let abs = crate::wiki::paths::join_generated_body(state_root, &turn)
+                    .map_err(WorkerError::Failed)?;
+                (turn.clone(), abs.to_string_lossy().into_owned())
             } else {
                 let (material, warning) = source_material(conn, source, vault, state_root).await?;
                 source_warnings.extend(warning);
@@ -343,7 +344,7 @@ pub async fn run_session_rollup_job(
         });
     }
     let required = turn_summary::source_inputs(&paths)?;
-    let existing = turn_summary::read_existing(vault, &rel)?;
+    let existing = turn_summary::read_existing(state_root, &rel)?;
     let input = json!({
         "schema": crate::wiki::llm::SESSION_ROLLUP_CONTRACT_VERSION,
         "job_id": job.id, "attempt": job.attempt,
@@ -410,8 +411,10 @@ pub async fn run_session_rollup_job(
     };
     commit::commit_proposals(vault, state_root, &job.id, &[proposal])
         .map_err(CompileError::from)?;
-    let actual =
-        fs::read_to_string(vault.join(&rel)).map_err(|e| WorkerError::Failed(e.to_string()))?;
+    let actual = fs::read_to_string(
+        crate::wiki::paths::join_generated_body(state_root, &rel).map_err(WorkerError::Failed)?,
+    )
+    .map_err(|e| WorkerError::Failed(e.to_string()))?;
     let result = JobOutputManifest::generated(
         vec![WikiOutput {
             note_id,
@@ -437,14 +440,17 @@ async fn source_material(
     state_root: &Path,
 ) -> Result<(String, Option<String>), WorkerError> {
     if source.source_kind == "acp-turn" {
+        let vaults = wiki_service::vault_flags(conn).await?;
         let jobs = wiki_job::Entity::find()
-            .filter(wiki_job::Column::VaultId.eq(&source.vault_id))
             .filter(wiki_job::Column::SourceId.eq(&source.id))
             .filter(wiki_job::Column::Kind.eq(turn_summary::KIND))
             .order_by_desc(wiki_job::Column::CreatedAt)
             .all(conn)
             .await
             .map_err(DbError::from)?;
+        let jobs = jobs.into_iter().filter(|job| {
+            wiki_service::source_vault_accepted(&source.vault_id, &job.vault_id, &vaults)
+        });
         for job in jobs {
             let Some(manifest) = job.input_manifest else {
                 continue;
@@ -488,21 +494,37 @@ async fn source_material(
     Err(WikiLlmError::SourceMissing(source.id.clone()).into())
 }
 
+fn turn_note_exists(state_root: &Path, rel: &str) -> Result<bool, WorkerError> {
+    Ok(read_rooted(state_root, rel)?.is_some())
+}
+
+fn read_rooted(root: &Path, rel: &str) -> Result<Option<String>, WorkerError> {
+    let path = crate::wiki::paths::join_generated_body(root, rel)
+        .map_err(WikiLlmError::SourceReadFailed)?;
+    read_contained(root, &path, rel)
+}
+
 /// 使用真实路径限制宿主读取，避免把越界软链接的内容复制进可读 staging。
 fn read_vault_material(vault: &Path, rel: &str) -> Result<Option<String>, WorkerError> {
-    let path = crate::wiki::paths::join_vault_relative(vault, rel)
-        .map_err(WikiLlmError::SourceReadFailed)?;
-    let canonical = match fs::canonicalize(&path) {
+    for candidate in crate::wiki::paths::stored_read_rels(rel) {
+        let path = crate::wiki::paths::join_vault_relative(vault, &candidate)
+            .map_err(WikiLlmError::SourceReadFailed)?;
+        if let Some(text) = read_contained(vault, &path, &candidate)? {
+            return Ok(Some(text));
+        }
+    }
+    Ok(None)
+}
+
+fn read_contained(root: &Path, path: &Path, rel: &str) -> Result<Option<String>, WorkerError> {
+    let canonical = match fs::canonicalize(path) {
         Ok(path) => path,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(WikiLlmError::SourceReadFailed(format!("{rel}: {error}")).into()),
     };
-    let root =
-        fs::canonicalize(vault).map_err(|e| WikiLlmError::SourceReadFailed(e.to_string()))?;
+    let root = fs::canonicalize(root).map_err(|e| WikiLlmError::SourceReadFailed(e.to_string()))?;
     if !canonical.starts_with(&root) {
-        return Err(
-            WikiLlmError::SourceReadFailed(format!("source path escapes vault: {rel}")).into(),
-        );
+        return Err(WikiLlmError::SourceReadFailed(format!("source path escapes: {rel}")).into());
     }
     fs::read_to_string(canonical)
         .map(Some)
@@ -669,7 +691,7 @@ mod tests {
 
     #[test]
     fn page_rel_is_stable_per_conversation() {
-        assert_eq!(page_rel(42), "work/sessions/c42.md");
+        assert_eq!(page_rel(42), "generated/session/c42.md");
         assert_eq!(dedupe_key(42), "session_rollup:42");
     }
 
@@ -778,11 +800,19 @@ mod tests {
     }
 
     #[test]
-    fn vault_init_has_session_dir() {
+    fn vault_init_creates_process_dirs_but_not_empty_raw_or_archive() {
         let dir = tempdir().unwrap();
         vault::initialize_vault(dir.path()).unwrap();
         assert!(dir.path().join("work/sessions").is_dir());
         assert!(dir.path().join("work/turns").is_dir());
+        assert!(dir.path().join("work/projects").is_dir());
+        assert!(dir.path().join("work/decisions").is_dir());
+        assert!(!dir.path().join("work/areas").exists());
+        assert!(!dir.path().join("work/outcomes").exists());
+        assert!(!dir.path().join("work/records").exists());
+        assert!(!dir.path().join("work/raw").exists());
+        assert!(!dir.path().join("work/_archive").exists());
+        assert!(dir.path().join(vault::FORMAT_MARKER).is_file());
     }
 
     struct MaterialFixture {
@@ -888,10 +918,13 @@ mod tests {
             out["processed_inputs"][0]["rel"],
             format!("source:{}", f.source.id)
         );
-        assert_eq!(
-            fs::read_dir(f.vault.join("raw/sessions")).unwrap().count(),
-            0
-        );
+        let raw_sessions = f.vault.join("raw/sessions");
+        let count = match fs::read_dir(&raw_sessions) {
+            Ok(entries) => entries.count(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => panic!("raw/sessions: {error}"),
+        };
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]
@@ -931,8 +964,9 @@ mod tests {
         let f = material_fixture().await;
         let outside = f.dir.path().join("private.md");
         fs::write(&outside, "Private unrelated material.").unwrap();
-        std::os::unix::fs::symlink(&outside, f.vault.join(turn_summary::page_rel(&f.source.id)))
-            .unwrap();
+        let link = f.state.join(turn_summary::page_rel(&f.source.id));
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
         let llm = InspectMaterialLlm::default();
         let error = run_session_rollup_job(&f.db.conn, &f.session_job, &llm, &f.vault, &f.state)
             .await
@@ -944,6 +978,7 @@ mod tests {
     #[tokio::test]
     async fn rollup_reports_saved_snapshot_fallback_to_model_and_result() {
         let f = material_fixture().await;
+        fs::create_dir_all(f.vault.join("raw/sessions")).unwrap();
         fs::write(
             f.vault.join("raw/sessions/saved.md"),
             "Saved session material.",
@@ -997,6 +1032,7 @@ mod tests {
             conv.update(&f.db.conn).await.unwrap();
             let mut source: wiki_source::ActiveModel = f.source.clone().into();
             source.source_kind = Set("local-session".into());
+            fs::create_dir_all(f.vault.join("raw/sessions")).unwrap();
             fs::write(f.vault.join("raw/sessions/old.md"), "Legacy snapshot before continuation.").unwrap();
             source.raw_path = Set(Some("raw/sessions/old.md".into()));
             source.update(&f.db.conn).await.unwrap();

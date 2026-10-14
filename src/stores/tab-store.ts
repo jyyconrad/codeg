@@ -8,6 +8,7 @@ import {
   saveOpenedTabs,
 } from "@/lib/api"
 import { resolveDefaultAgent } from "@/lib/resolve-default-agent"
+import { terminalLaunchDirectory } from "@/lib/session-terminal-session"
 import { formatConversationTitle } from "@/lib/conversation-title"
 import {
   firstLeafId,
@@ -1568,7 +1569,7 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
       tab.conversationId != null || !tab.agentTypeProvisional
         ? tab.agentType
         : null
-    const { allFolders, folders } = useAppWorkspaceStore.getState()
+    const { allFolders } = useAppWorkspaceStore.getState()
     const contextIsChat =
       tab.isChat === true ||
       allFolders.find((f) => f.id === tab.folderId)?.kind === "chat"
@@ -1600,8 +1601,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         agentType,
         title: runtime.labels.newConversation,
         isPinned: true,
-        workingDir:
-          tab.workingDir ?? folders.find((f) => f.id === tab.folderId)?.path,
+        workingDir: terminalLaunchDirectory(
+          allFolders.find((f) => f.id === tab.folderId)?.path,
+          tab.workingDir
+        ),
         agentTypeProvisional: provisional,
       }
     }

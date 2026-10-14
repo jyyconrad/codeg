@@ -4,6 +4,7 @@
 
 pub mod commit;
 pub mod compile;
+pub mod contract;
 pub mod engine;
 pub mod events;
 pub mod filter;

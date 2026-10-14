@@ -1655,7 +1655,7 @@ export function MessageListView({
 
   if (detailLoading && !hasRenderableContent) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex min-h-0 flex-1 items-center justify-center">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
           <span>{t("loading")}</span>
@@ -1678,7 +1678,10 @@ export function MessageListView({
     const showActions = Boolean(onReload || onNewSession)
     const reloading = detailLoading
     return (
-      <div role="alert" className="flex h-full items-center justify-center p-6">
+      <div
+        role="alert"
+        className="flex min-h-0 flex-1 items-center justify-center p-6"
+      >
         <div className="flex max-w-md flex-col items-center gap-4 text-center">
           <AlertCircle
             aria-hidden="true"
@@ -1732,7 +1735,7 @@ export function MessageListView({
     <SessionViewerHost>
       <div
         ref={selectionBoxRef}
-        className="relative flex h-full min-h-0 flex-col"
+        className="relative flex min-h-0 flex-1 flex-col"
       >
         <MessageThread
           className="flex-1 min-h-0"

@@ -7208,6 +7208,7 @@
     },
     "v2": {
       "nav": {
+        "files": "文件",
         "work": "工作",
         "capabilities": "能力",
         "sources": "资料",
@@ -7232,7 +7233,7 @@
       "settings": "设置",
       "browseFiles": "浏览文件",
       "showInternal": "显示内部文件",
-      "fileBrowserHint": "浏览已保存的文件，默认隐藏内部记录。",
+      "fileBrowserHint": "浏览库中的文件夹，打开 Markdown 文件。",
       "search": "搜索",
       "searchPlaceholder": "搜索笔记标题或正文",
       "searchScope": "搜索范围",
@@ -7378,6 +7379,8 @@
         "conflict": "文件已变化，需要核对"
       },
       "settingsTitle": "个人 Wiki 设置",
+      "layoutTitle": "库布局",
+      "layoutHint": "只读显示库根的 .codeg-wiki-v3.json。要改布局请编辑该文件，此页不保存布局。",
       "settingsHint": "选择如何记录工作、何时归纳笔记。添加的资料仅归档供阅读。",
       "backToWiki": "返回 Wiki",
       "enableHint": "记录已完成的会话轮次。暂停后已有内容仍可阅读。",

@@ -64,6 +64,7 @@ import { useSessionFeedback } from "@/hooks/use-session-feedback"
 import { AgentSelector } from "@/components/chat/agent-selector"
 import { ChatInput } from "@/components/chat/chat-input"
 import { SessionTerminalInput } from "@/components/terminal/session-terminal-input"
+import { terminalLaunchDirectory } from "@/lib/session-terminal-session"
 import { WelcomeHero, WelcomeTip } from "@/components/chat/welcome-hero"
 import { QuickActions } from "@/components/chat/quick-actions"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
@@ -2544,7 +2545,7 @@ const ConversationTabView = memo(function ConversationTabView({
       steerChannel={feedback.channel}
     >
       {sessionTerminalMode ? (
-        <div className="flex h-full min-h-0 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           <div className="shrink-0 px-4 pt-4 pb-2">
             <AgentSelector
               align="center"
@@ -2591,7 +2592,7 @@ const ConversationTabView = memo(function ConversationTabView({
         // keeps the original layout: content parked between two spacers, the
         // page scrolling only once it outgrows the viewport.
         <ScrollArea
-          className="relative isolate h-full min-h-0"
+          className="relative isolate min-h-0 flex-1"
           x="hidden"
           y="scroll"
         >
@@ -3147,7 +3148,7 @@ export function ConversationDetailPanel() {
         tabId={tab.id}
         conversationId={tab.conversationId}
         agentType={tab.agentType}
-        workingDir={tab.workingDir ?? folderPath}
+        workingDir={terminalLaunchDirectory(folderPath, tab.workingDir)}
         isActive={active}
         showActiveFlow={(isSplit || canTileG) && active}
         reloadSignal={reloadByTabId[tab.id] ?? 0}

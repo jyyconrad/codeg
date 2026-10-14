@@ -123,6 +123,7 @@ mod tests {
         )
         .await
         .unwrap();
+        std::fs::create_dir_all(dir.path().join("work/records")).unwrap();
         std::fs::write(dir.path().join("work/records/one.md"),"---\ncodeg_note_id: one\ntitle: HTTP 阅读\ntype: work-record\n---\n# 工作结果\n此正文由两个运行模式共用。").unwrap();
         let state = Arc::new(AppState::new_for_test(db, dir.path().join("test-state")));
         let router = axum::Router::new()

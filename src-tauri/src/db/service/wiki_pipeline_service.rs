@@ -7,6 +7,7 @@ use crate::db::entities::{
     wiki_contribution, wiki_job, wiki_job_batch, wiki_memory_consumption, wiki_source,
 };
 use crate::db::error::DbError;
+use crate::db::service::wiki_service;
 use crate::wiki::commit::BatchMetadata;
 use crate::wiki::result::JobOutputManifest;
 use chrono::Utc;
@@ -111,6 +112,7 @@ pub async fn finalize_batch(
     }
     .insert(&txn)
     .await?;
+    let vaults = wiki_service::vault_flags(&txn).await?;
     for input in &batch.result.processed_inputs {
         let consumed = wiki_memory_consumption::ActiveModel {
             id: Set(uuid::Uuid::new_v4().to_string()),
@@ -143,7 +145,7 @@ pub async fn finalize_batch(
                 .one(&txn)
                 .await?
                 .ok_or_else(|| DbError::Validation(format!("unknown source {source_id}")))?;
-            if source.vault_id != batch.vault_id {
+            if !wiki_service::source_vault_accepted(&source.vault_id, &batch.vault_id, &vaults) {
                 return Err(DbError::Validation(
                     "source belongs to another vault".into(),
                 ));

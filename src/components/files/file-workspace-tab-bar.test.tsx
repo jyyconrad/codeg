@@ -284,6 +284,75 @@ describe("FileWorkspaceTabBar — the add-tab '+'", () => {
     expect(screen.queryByText("Local servers")).toBeNull()
   })
 
+  it("keeps a readable tab width and scrolls the row when many files are open", () => {
+    mocks.fileTabs = Array.from({ length: 12 }, (_, index) =>
+      fileTab(`/repo/slides-${index}.pdf`)
+    )
+    renderStrip()
+    const list = screen.getByRole("tablist")
+    expect(list).toHaveClass("file-tab-strip")
+    expect(list.className).not.toContain("overflow-hidden")
+    const tabs = list.querySelectorAll("[data-file-tab-id]")
+    expect(tabs).toHaveLength(12)
+    for (const tab of tabs) {
+      expect(tab).toHaveClass("min-w-32")
+      expect(tab.className).not.toMatch(/\bmin-w-0\b/)
+    }
+    // Maximize stays outside the scrolling row so it does not ride off-screen.
+    const maximize = screen.getByRole("button", { name: "Maximize" })
+    expect(list.contains(maximize)).toBe(false)
+    expect(list.contains(screen.getByRole("button", { name: "New tab" }))).toBe(
+      true
+    )
+  })
+
+  it("turns a vertical wheel into sideways scrolling only when the row overflows", () => {
+    renderStrip()
+    const list = screen.getByRole("tablist")
+    const scrollBy = vi.fn()
+    list.scrollBy = scrollBy
+    Object.defineProperty(list, "scrollWidth", {
+      configurable: true,
+      value: 200,
+    })
+    Object.defineProperty(list, "clientWidth", {
+      configurable: true,
+      value: 200,
+    })
+    const idle = new WheelEvent("wheel", {
+      deltaY: 40,
+      bubbles: true,
+      cancelable: true,
+    })
+    list.dispatchEvent(idle)
+    expect(idle.defaultPrevented).toBe(false)
+    expect(scrollBy).not.toHaveBeenCalled()
+
+    Object.defineProperty(list, "scrollWidth", {
+      configurable: true,
+      value: 900,
+    })
+    const vertical = new WheelEvent("wheel", {
+      deltaY: 48,
+      bubbles: true,
+      cancelable: true,
+    })
+    list.dispatchEvent(vertical)
+    expect(vertical.defaultPrevented).toBe(true)
+    expect(scrollBy).toHaveBeenCalledWith({ left: 48 })
+
+    scrollBy.mockClear()
+    const horizontal = new WheelEvent("wheel", {
+      deltaX: 30,
+      deltaY: 4,
+      bubbles: true,
+      cancelable: true,
+    })
+    list.dispatchEvent(horizontal)
+    expect(horizontal.defaultPrevented).toBe(false)
+    expect(scrollBy).not.toHaveBeenCalled()
+  })
+
   it("hides itself entirely rather than opening an empty menu", () => {
     desktop = false
     browserAvailable = false

@@ -10,6 +10,8 @@ import {
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import messages from "@/i18n/messages/en.json"
+import { WikiDataProvider } from "./wiki-data"
+import { WikiLibraryView } from "./wiki-library-view"
 import { WikiPage } from "./wiki-page"
 
 const backend = vi.hoisted(() => ({
@@ -138,8 +140,17 @@ function mount() {
     </NextIntlClientProvider>
   )
 }
+function mountLibraryReader() {
+  return render(
+    <NextIntlClientProvider locale="en" messages={messages}>
+      <WikiDataProvider>
+        <WikiLibraryView />
+      </WikiDataProvider>
+    </NextIntlClientProvider>
+  )
+}
 beforeEach(() => {
-  window.history.replaceState({}, "", "/")
+  window.history.replaceState({}, "", "/?wikiView=library")
   backend.call.mockReset()
   backend.copy.mockReset().mockResolvedValue(true)
   backend.events.clear()
@@ -153,6 +164,11 @@ beforeEach(() => {
     async (command: string, args?: { path: string }) => {
       if (command === "wiki_get_overview") return { active_job_count: 0 }
       if (command === "wiki_refresh_library") return library
+      if (command === "wiki_vault_tree") return library.tree
+      if (command === "wiki_vault_read" && args) {
+        if (!(args.path in contents)) throw new Error("Missing")
+        return { path: args.path, content: contents[args.path] }
+      }
       if (command === "wiki_read_note" && args) {
         if (!(args.path in contents)) throw new Error("Missing")
         return document(args.path)
@@ -165,7 +181,7 @@ afterEach(cleanup)
 
 describe("Wiki library reading", () => {
   it("opens a real Markdown home and shows the Obsidian folder location", async () => {
-    mount()
+    mountLibraryReader()
     expect(
       await screen.findByRole("heading", { name: "Wiki home" })
     ).toBeVisible()
@@ -186,7 +202,7 @@ describe("Wiki library reading", () => {
   })
 
   it("opens a folder index when the folder name is clicked, while the chevron only expands", async () => {
-    mount()
+    mountLibraryReader()
     expect(
       await screen.findByRole("heading", { name: "Wiki home" })
     ).toBeVisible()
@@ -213,45 +229,48 @@ describe("Wiki library reading", () => {
     ).toHaveAttribute("aria-expanded", "true")
   })
 
-  it("follows links and directory selection without leaving the library, then restores history", async () => {
+  it("follows a note link into Files and restores a legacy file URL", async () => {
     mount()
+    expect(
+      screen.getByRole("button", { name: messages.Wiki.v2.nav.files })
+    ).toHaveAttribute("aria-current", "page")
+    fireEvent.click(await screen.findByRole("button", { name: "Home" }))
     fireEvent.click(await screen.findByRole("link", { name: "Start reading" }))
     expect(
-      await screen.findByRole("heading", { name: "Article A" })
+      await screen.findByRole("link", { name: "Next article" })
     ).toBeVisible()
-    expect(window.location.search).toContain("wikiView=library")
+    expect(window.location.search).toContain("wikiView=files")
+    expect(window.location.search).toContain("wikiPath=work%2Frecords%2Fa.md")
     expect(screen.getByRole("button", { name: "records" })).toHaveAttribute(
       "aria-expanded",
       "true"
     )
     fireEvent.click(screen.getByRole("link", { name: "Next article" }))
-    expect(
-      await screen.findByRole("heading", { name: "Article B" })
-    ).toBeVisible()
+    expect(await screen.findByText("Current B content")).toBeVisible()
     expect(window.location.search).toContain("wikiPath=work%2Frecords%2Fb.md")
+    expect(window.location.search).not.toContain("wikiView=work")
     fireEvent.click(screen.getByRole("button", { name: "Article A" }))
     expect(
-      await screen.findByRole("heading", { name: "Article A" })
+      await screen.findByRole("link", { name: "Next article" })
     ).toBeVisible()
+    expect(screen.getByRole("button", { name: "Article A" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    )
     window.history.replaceState(
       {},
       "",
       "/?wikiView=library&wikiPath=work%2Frecords%2Fb.md"
     )
     act(() => window.dispatchEvent(new PopStateEvent("popstate")))
-    expect(
-      await screen.findByRole("heading", { name: "Article B" })
-    ).toBeVisible()
+    expect(await screen.findByText("Current B content")).toBeVisible()
     expect(screen.getByRole("button", { name: "Article B" })).toHaveAttribute(
       "aria-current",
       "page"
     )
-    fireEvent.click(
-      screen.getByRole("button", { name: messages.Wiki.v2.library.backHome })
-    )
     expect(
-      await screen.findByRole("heading", { name: "Wiki home" })
-    ).toBeVisible()
+      screen.getByRole("button", { name: messages.Wiki.v2.nav.files })
+    ).toHaveAttribute("aria-current", "page")
   })
 
   it("refreshes the library before rereading the current page and retains selection", async () => {
@@ -260,7 +279,7 @@ describe("Wiki library reading", () => {
       "",
       "/?wikiView=library&wikiPath=work%2Frecords%2Fb.md"
     )
-    mount()
+    mountLibraryReader()
     expect(await screen.findByText("Current B content")).toBeVisible()
     const initialReadCount = backend.call.mock.calls.filter(
       ([command]) => command === "wiki_read_note"
@@ -300,7 +319,7 @@ describe("Wiki library reading", () => {
       "",
       "/?wikiView=library&wikiPath=work%2Frecords%2Fa.md"
     )
-    mount()
+    mountLibraryReader()
     expect(
       await screen.findByRole("heading", { name: "Article A" })
     ).toBeVisible()
@@ -309,18 +328,19 @@ describe("Wiki library reading", () => {
     expect(screen.queryByText("secret dump")).not.toBeInTheDocument()
   })
 
-  it("searches from the library using the existing overview results", async () => {
+  it("keeps a path-less library URL on Files instead of overview search", async () => {
     mount()
-    await screen.findByRole("heading", { name: "Wiki home" })
-    const search = screen.getByRole("textbox", {
-      name: messages.Wiki.v2.search,
-    })
-    fireEvent.change(search, { target: { value: "repository" } })
-    fireEvent.submit(search.closest("form")!)
-    expect(window.location.search).toContain("wikiView=overview")
-    expect(window.location.search).toContain("wikiQuery=repository")
+    expect(await screen.findByRole("button", { name: "Home" })).toBeVisible()
     expect(
-      screen.queryByRole("heading", { name: "Wiki home" })
+      screen.getByRole("button", { name: messages.Wiki.v2.nav.files })
+    ).toHaveAttribute("aria-current", "page")
+    expect(
+      screen.queryByRole("textbox", { name: messages.Wiki.v2.search })
     ).not.toBeInTheDocument()
+    expect(screen.queryByText("Overview")).not.toBeInTheDocument()
+    expect(screen.queryByText("Work list")).not.toBeInTheDocument()
+    expect(screen.queryByText(library.vault_path)).not.toBeInTheDocument()
+    expect(window.location.search).not.toContain("wikiView=overview")
+    expect(window.location.search).not.toContain("wikiQuery=")
   })
 })

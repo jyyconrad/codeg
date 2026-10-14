@@ -20,7 +20,7 @@ fn proposal_gets_host_identity_path_and_clickable_sources() {
     let result = validate_output(valid_output(), &[input()], &[]).unwrap();
     assert_eq!(result.proposals.len(), 1);
     let proposal = &result.proposals[0];
-    assert!(proposal.rel.starts_with("knowledge/methods/"));
+    assert!(proposal.rel.starts_with("generated/note/"));
     assert!(Uuid::parse_str(&yaml_string(&proposal.after, "codeg_note_id").unwrap()).is_ok());
     assert!(proposal.after.contains("work/turns/source.md"));
     assert_eq!(result.processed[0].source_ids, vec!["source"]);
@@ -51,6 +51,7 @@ fn an_empty_proposal_list_needs_no_input_hash_attestation() {
 fn updated_input_is_read_without_a_frozen_version_check() {
     let dir = tempdir().unwrap();
     vault::initialize_vault(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join("work/turns")).unwrap();
     fs::write(
         dir.path().join("work/turns/source.md"),
         "Updated source material.",
@@ -61,7 +62,7 @@ fn updated_input_is_read_without_a_frozen_version_check() {
         content_hash: "earlier-version".into(),
         ..Default::default()
     };
-    let loaded = load_memory(dir.path(), &reference).unwrap();
+    let loaded = load_memory(dir.path(), &dir.path().join("state"), &reference).unwrap();
     assert_eq!(loaded.text, "Updated source material.");
     assert_eq!(loaded.input.content_hash, content_hash(&loaded.text));
 }
@@ -113,6 +114,7 @@ async fn first_page_is_durable_and_repeat_does_not_duplicate_consumption() {
     let vault = dir.path().join("vault");
     let state = dir.path().join("state");
     vault::initialize_vault(&vault).unwrap();
+    fs::create_dir_all(vault.join("work/turns")).unwrap();
     let vault_row = wiki_service::ensure_active_vault(db, &vault.to_string_lossy())
         .await
         .unwrap();
@@ -136,11 +138,13 @@ async fn first_page_is_durable_and_repeat_does_not_duplicate_consumption() {
         .unwrap();
     assert_eq!(result.outcome, "generated");
     assert_eq!(result.outputs.len(), 1);
+    assert!(result.outputs[0].path.starts_with("generated/note/"));
+    assert!(!vault.join(&result.outputs[0].path).exists());
     assert_eq!(
         result.outputs[0].content_hash,
-        content_hash(&fs::read_to_string(vault.join(&result.outputs[0].path)).unwrap())
+        content_hash(&fs::read_to_string(state.join(&result.outputs[0].path)).unwrap())
     );
-    assert!(list_pending_inputs(db, &vault_row.id, &vault)
+    assert!(list_pending_inputs(db, &vault_row.id, &vault, &state)
         .await
         .unwrap()
         .memory_notes
@@ -190,6 +194,7 @@ async fn later_batch_failure_preserves_outputs_and_retry_consumes_only_remaining
     let vault = dir.path().join("vault");
     let state = dir.path().join("state");
     vault::initialize_vault(&vault).unwrap();
+    fs::create_dir_all(vault.join("work/turns")).unwrap();
     let row = wiki_service::ensure_active_vault(&db.conn, &vault.to_string_lossy())
         .await
         .unwrap();
@@ -248,7 +253,7 @@ async fn later_batch_failure_preserves_outputs_and_retry_consumes_only_remaining
     assert_eq!(result.outcome, "generated");
     assert_eq!(result.outputs.len(), 2);
     assert_eq!(result.processed_inputs.len(), 10);
-    assert!(list_pending_inputs(&db.conn, &row.id, &vault)
+    assert!(list_pending_inputs(&db.conn, &row.id, &vault, &state)
         .await
         .unwrap()
         .memory_notes
@@ -262,6 +267,7 @@ async fn long_input_uses_one_agent_run_without_preliminary_segment_summaries() {
     let vault = dir.path().join("vault");
     let state = dir.path().join("state");
     vault::initialize_vault(&vault).unwrap();
+    fs::create_dir_all(vault.join("work/turns")).unwrap();
     let row = wiki_service::ensure_active_vault(&db.conn, &vault.to_string_lossy())
         .await
         .unwrap();
@@ -325,8 +331,9 @@ async fn recovery_finalizes_committed_files_once_and_never_revives_deleted_notes
     };
     let committed =
         commit::commit_batch(&vault, &state, &job.id, &validated.proposals, meta).unwrap();
-    let path = vault.join(&committed.files[0].rel);
-    assert!(path.exists());
+    let path = state.join(&committed.files[0].rel);
+    assert!(path.is_file());
+    assert!(!vault.join(&committed.files[0].rel).exists());
     assert!(pipeline::load_job_result(&db.conn, &job.id)
         .await
         .unwrap()
@@ -364,9 +371,10 @@ fn standard_links_resolve_from_the_output_directory() {
     assert!(method
         .after
         .contains("[work/turns/source.md](../../work/turns/source.md)"));
+    let capability_file = capability.rel.rsplit('/').next().unwrap();
     assert!(method
         .after
-        .contains(&format!("[capability](../../{})", capability.rel)));
+        .contains(&format!("[capability]({capability_file})")));
 }
 
 #[test]
@@ -447,7 +455,7 @@ async fn recovery_conflict_in_one_job_does_not_block_another_job() {
             commit::commit_batch(&vault, &state, &job.id, &validated.proposals, meta).unwrap();
         if n == 0 {
             fs::write(
-                vault.join(&committed.files[0].rel),
+                state.join(&committed.files[0].rel),
                 "User changed the page after the interrupted commit.",
             )
             .unwrap();

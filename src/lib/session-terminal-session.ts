@@ -18,6 +18,22 @@ interface SessionTerminalRecord {
 
 const sessions = new Map<string, SessionTerminalRecord>()
 
+/**
+ * Directory a terminal CLI is started in.
+ * The folder row's live path wins over a draft's stored path, so a moved
+ * folder or a stale draft cannot start the CLI in the previous project.
+ * A chat scratch dir has no folder path yet and stays as stored.
+ */
+export function terminalLaunchDirectory(
+  folderPath: string | null | undefined,
+  storedWorkingDir: string | null | undefined
+): string | undefined {
+  const folder = folderPath?.trim()
+  if (folder) return folder
+  const stored = storedWorkingDir?.trim()
+  return stored || undefined
+}
+
 export function claimSessionTerminal(
   ownerKey: string,
   agentType: AgentType,
@@ -71,6 +87,7 @@ export function noteSessionTerminalConversation(
 export function sessionTerminalBinding(ownerKey: string): {
   terminalId: string
   agentType: AgentType
+  workingDir: string
   conversationId: number | null
 } | null {
   const existing = sessions.get(ownerKey)
@@ -78,6 +95,7 @@ export function sessionTerminalBinding(ownerKey: string): {
   return {
     terminalId: existing.terminalId,
     agentType: existing.agentType,
+    workingDir: existing.workingDir,
     conversationId: existing.conversationId,
   }
 }

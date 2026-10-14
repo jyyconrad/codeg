@@ -421,6 +421,29 @@ fn resume_session_argument(value: Option<&str>) -> Result<Option<String>, Termin
     Ok(Some(id.to_string()))
 }
 
+/// Absolute directory Codex and the PTY both start in.
+///
+/// A relative path is resolved against this process, not the login shell.
+/// Symlinks stay as the folder recorded them, so `/tmp` and `/private/tmp`
+/// remain the same string the sidebar uses.
+fn absolute_working_dir(working_dir: &str) -> Result<String, TerminalError> {
+    let path = Path::new(working_dir.trim());
+    if path.as_os_str().is_empty() {
+        return Err(TerminalError::SpawnFailed(
+            "working directory does not exist".to_string(),
+        ));
+    }
+    let absolute =
+        std::path::absolute(path).map_err(|error| TerminalError::SpawnFailed(error.to_string()))?;
+    if !absolute.is_dir() {
+        return Err(TerminalError::SpawnFailed(
+            "working directory does not exist".to_string(),
+        ));
+    }
+    Ok(absolute.to_string_lossy().into_owned())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_arguments(
     agent_type: AgentType,
     prompt: &str,
@@ -430,6 +453,7 @@ fn build_arguments(
     temp_files: &mut Vec<PathBuf>,
     resume_session_id: Option<&str>,
     submit_prompt_on_resume: bool,
+    working_dir: &str,
 ) -> Result<Vec<String>, TerminalError> {
     let resume = resume_session_argument(resume_session_id)?;
     let mut args = Vec::new();
@@ -450,6 +474,15 @@ fn build_arguments(
         AgentType::Codex => {
             if resume.is_some() {
                 args.push("resume".to_string());
+            }
+            // A login shell can `cd` in its profile before this command runs.
+            // `-C` is the working root Codex records. On resume, `current`
+            // keeps that directory instead of the session's previous one.
+            args.push("-C".to_string());
+            args.push(working_dir.to_string());
+            if resume.is_some() {
+                args.push("-c".to_string());
+                args.push("tui.resume_cwd=\"current\"".to_string());
             }
             if hook_enabled {
                 // See `codex_supports_hook_trust_bypass`. Only a build that
@@ -687,11 +720,7 @@ pub async fn spawn_agent(
             "invalid terminal id".to_string(),
         ));
     }
-    if !Path::new(&working_dir).is_dir() {
-        return Err(TerminalError::SpawnFailed(
-            "working directory does not exist".to_string(),
-        ));
-    }
+    let working_dir = absolute_working_dir(&working_dir)?;
     if prompt.len() > 64 * 1024 || prompt.contains('\0') {
         return Err(TerminalError::SpawnFailed(
             "invalid or oversized prompt".to_string(),
@@ -743,6 +772,7 @@ pub async fn spawn_agent(
             &mut temp_files,
             resume_session_id.as_deref(),
             submit_prompt_on_resume,
+            &working_dir,
         )?;
         let initial_command = shell_command(&shell, &binary, &args)?;
         let credential_env =
@@ -943,9 +973,12 @@ mod tests {
             &mut temps,
             None,
             false,
+            "/repo/codeg",
         )
         .unwrap();
         let joined = args.join(" ");
+        assert!(joined.contains("-C /repo/codeg"));
+        assert!(!joined.contains("resume_cwd"));
         assert!(joined.contains("UserPromptSubmit"));
         assert!(joined.contains("Stop"));
         assert!(joined.contains("--agent-hook turn-start"));
@@ -969,9 +1002,17 @@ mod tests {
             &mut temps,
             None,
             false,
+            "/repo/codeg",
         )
         .unwrap();
-        assert_eq!(args[0], "--dangerously-bypass-hook-trust");
+        assert_eq!(
+            args[..3],
+            [
+                "-C".to_string(),
+                "/repo/codeg".to_string(),
+                "--dangerously-bypass-hook-trust".to_string(),
+            ]
+        );
         assert!(args.iter().any(|arg| arg == "--enable"));
         assert_eq!(args.last().map(String::as_str), Some("ping"));
         let joined = args.join(" ");
@@ -988,9 +1029,17 @@ mod tests {
             &mut without_hooks,
             None,
             false,
+            "/repo/codeg",
         )
         .unwrap();
-        assert_eq!(plain, vec!["ping".to_string()]);
+        assert_eq!(
+            plain,
+            vec![
+                "-C".to_string(),
+                "/repo/codeg".to_string(),
+                "ping".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -1055,6 +1104,7 @@ mod tests {
             &mut temps,
             None,
             false,
+            "/repo/codeg",
         )
         .unwrap();
         assert_eq!(
@@ -1071,6 +1121,7 @@ mod tests {
             &mut temps,
             None,
             false,
+            "/repo/codeg",
         )
         .unwrap();
         assert_eq!(no_prompt, vec!["--no-auto-update".to_string()]);
@@ -1089,10 +1140,20 @@ mod tests {
             &mut temps,
             Some("sid-1"),
             false,
+            "/repo/codeg",
         )
         .unwrap();
         assert_eq!(codex[0], "resume");
-        assert_eq!(codex[1], "--dangerously-bypass-hook-trust");
+        assert_eq!(
+            codex[1..5],
+            [
+                "-C".to_string(),
+                "/repo/codeg".to_string(),
+                "-c".to_string(),
+                "tui.resume_cwd=\"current\"".to_string(),
+            ]
+        );
+        assert_eq!(codex[5], "--dangerously-bypass-hook-trust");
         assert_eq!(codex.last().map(String::as_str), Some("sid-1"));
         assert!(!codex.iter().any(|arg| arg == "ping"));
         let joined = codex.join(" ");
@@ -1112,9 +1173,20 @@ mod tests {
             &mut plain_temps,
             Some("sid-1"),
             false,
+            "/repo/codeg",
         )
         .unwrap();
-        assert_eq!(plain, vec!["resume".to_string(), "sid-1".to_string()]);
+        assert_eq!(
+            plain,
+            vec![
+                "resume".to_string(),
+                "-C".to_string(),
+                "/repo/codeg".to_string(),
+                "-c".to_string(),
+                "tui.resume_cwd=\"current\"".to_string(),
+                "sid-1".to_string(),
+            ]
+        );
         let submitted = build_arguments(
             AgentType::Codex,
             "ping",
@@ -1124,12 +1196,17 @@ mod tests {
             &mut plain_temps,
             Some("sid-1"),
             true,
+            "/repo/codeg",
         )
         .unwrap();
         assert_eq!(
             submitted,
             vec![
                 "resume".to_string(),
+                "-C".to_string(),
+                "/repo/codeg".to_string(),
+                "-c".to_string(),
+                "tui.resume_cwd=\"current\"".to_string(),
                 "sid-1".to_string(),
                 "ping".to_string()
             ]
@@ -1144,6 +1221,7 @@ mod tests {
             &mut plain_temps,
             Some("title with space"),
             false,
+            "/repo/codeg",
         )
         .unwrap();
         assert_eq!(
@@ -1164,6 +1242,7 @@ mod tests {
             &mut plain_temps,
             Some("sid-claude"),
             false,
+            "/repo/codeg",
         )
         .unwrap();
         assert_eq!(
@@ -1182,6 +1261,7 @@ mod tests {
             &mut hooked,
             Some("sid-claude"),
             false,
+            "/repo/codeg",
         )
         .unwrap();
         assert_eq!(claude_hooks[0], "--settings");
@@ -1201,7 +1281,8 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut plain_temps,
             Some("-rf"),
-            false
+            false,
+            "/repo/codeg",
         )
         .is_err());
         assert!(build_arguments(
@@ -1212,7 +1293,8 @@ mod tests {
             Path::new("/tmp/codeg"),
             &mut plain_temps,
             Some("id\nnext"),
-            false
+            false,
+            "/repo/codeg",
         )
         .is_err());
     }

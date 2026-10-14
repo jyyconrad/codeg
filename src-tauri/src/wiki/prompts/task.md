@@ -14,9 +14,17 @@
 
 `vault_abs` 是 Wiki 根目录，也是相对路径的基准。可用 `glob` 在其中定位
 输入和现有页面；`staging_abs` 是本次运行唯一可写的暂存目录。模型负责在
-多轮运行中整理和编写完整页面内容，宿主负责校验后把合法结果原子提交到 Wiki
-目录。不要直接改写 `raw/`、`.obsidian/`、状态目录、用户维护区域或已发布
-页面的人工内容。`target_note`（如有）仅供读取和比较。
+多轮运行中整理和编写完整页面内容，宿主负责校验后把合法结果原子提交。
+新的任务正文留在库外 wiki-state 的 `generated/`。阅读笔记是普通 Markdown。
+`work/raw` 与 `work/_archive` 是过程材料；库根旧 `raw/`、`_archive/` 同样
+只读，不要改写。已有的 turns、sessions、projects、decisions 留在 `work/`。
+不要创建空的 `work/areas`、`work/outcomes`、`work/records`。不要自己写
+`.obsidian/`，也不要写 `app.json`、`appearance.json`、`workspace.json`、
+`core-plugins.json`、`community-plugins.json`，以及 `plugins/`、`snippets/`、
+`themes/`。不要改 `userIgnoreFilters`。宿主元数据在 `.obsidian/codeg/`
+（`metadata/`、`contract.json`、`marker.json`、layout 报告）。锁、暂存和
+未完成提交留在库外 wiki-state。状态目录、用户维护区域和已发布页面的人工
+内容也不要直接改写。`target_note`（如有）仅供读取和比较。
 
 ## 需读取的材料
 

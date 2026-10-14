@@ -7208,6 +7208,7 @@
     },
     "v2": {
       "nav": {
+        "files": "檔案",
         "work": "工作",
         "capabilities": "能力",
         "sources": "資料",
@@ -7232,7 +7233,7 @@
       "settings": "設置",
       "browseFiles": "瀏覽文件",
       "showInternal": "顯示內部文件",
-      "fileBrowserHint": "瀏覽已保存的文件，默認隱藏內部記錄。",
+      "fileBrowserHint": "瀏覽庫中的資料夾，打開 Markdown 檔案。",
       "search": "搜索",
       "searchPlaceholder": "搜索筆記標題或正文",
       "searchScope": "搜索範圍",
@@ -7379,6 +7380,8 @@
       },
       "settingsTitle": "個人 Wiki 設置",
       "settingsHint": "選擇如何記錄工作、何時歸納筆記。添加的資料僅歸檔供閱讀。",
+      "layoutTitle": "庫佈局",
+      "layoutHint": "只讀顯示庫根的 .codeg-wiki-v3.json。要改佈局請編輯該檔，此頁不儲存佈局。",
       "backToWiki": "返回 Wiki",
       "enableHint": "記錄已完成的會話輪次。暫停後已有內容仍可閱讀。",
       "autoOrganize": "自動歸納",

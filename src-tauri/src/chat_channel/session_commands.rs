@@ -19,7 +19,7 @@ use super::types::{
 };
 use crate::acp::manager::ConnectionManager;
 use crate::acp::registry::all_acp_agents;
-use crate::acp::types::PromptInputBlock;
+use crate::acp::types::{ConnectionStatus, PromptInputBlock};
 use crate::db::entities::{chat_channel_thread_binding, conversation};
 use crate::db::service::{
     chat_channel_service, conversation_service, folder_service, sender_context_service,
@@ -1593,6 +1593,23 @@ async fn continue_folder_conversation(
             .with_conversation(conversation_id);
     }
 
+    // A desktop or web session is not in the chat-channel bridge. Spawning
+    // only reuses a connection when the working directory string matches, so
+    // a quote otherwise started a second process and the open session never
+    // saw the reply.
+    if let Some(connection_id) = promptable_owner_connection(conn_mgr, &conv).await {
+        return deliver_prompt_to_owner_connection(
+            db,
+            cmd,
+            &conv,
+            conn_mgr,
+            bridge,
+            &connection_id,
+            lang,
+        )
+        .await;
+    }
+
     let (connection_id, folder) = match spawn_chat_connection_for_conversation(
         db,
         &conv,
@@ -2068,6 +2085,110 @@ async fn build_chat_session_runtime_env(
         data_dir,
     )
     .await
+}
+
+/// Live ACP connection that already owns this conversation. Prefer the row
+/// binding, then the native session id. A disconnected or foreign row is not
+/// a target: sending there would file the reply into the wrong transcript.
+async fn promptable_owner_connection(
+    conn_mgr: &ConnectionManager,
+    conv: &DbConversationSummary,
+) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Some(id) = conn_mgr.find_connection_by_conversation_id(conv.id).await {
+        candidates.push(id);
+    }
+    if let Some(external_id) = conv
+        .external_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Some(id) = conn_mgr
+            .find_connection_by_external_id(external_id, conv.agent_type)
+            .await
+        {
+            if !candidates.iter().any(|existing| existing == &id) {
+                candidates.push(id);
+            }
+        }
+    }
+    for id in candidates {
+        let Some(state) = conn_mgr.get_state(&id).await else {
+            continue;
+        };
+        let snap = state.read().await;
+        if matches!(
+            snap.status,
+            ConnectionStatus::Disconnected | ConnectionStatus::Error
+        ) {
+            continue;
+        }
+        if snap.conversation_id.is_some_and(|bound| bound != conv.id) {
+            continue;
+        }
+        return Some(id);
+    }
+    None
+}
+
+async fn deliver_prompt_to_owner_connection(
+    db: &DatabaseConnection,
+    cmd: &IncomingCommand,
+    conv: &DbConversationSummary,
+    conn_mgr: &ConnectionManager,
+    bridge: &Arc<Mutex<SessionBridge>>,
+    connection_id: &str,
+    lang: Lang,
+) -> CommandMessageResult {
+    let text = cmd.command_text.trim();
+    let already_linked = match conn_mgr.get_state(connection_id).await {
+        Some(state) => state.read().await.conversation_id == Some(conv.id),
+        None => false,
+    };
+    // Already bound: `send_prompt` keeps the desktop link. Linking again runs
+    // `bind_external_id`, which can split the row when the session id moved.
+    let send_result = if already_linked {
+        send_chat_prompt(conn_mgr, connection_id, text, &cmd.extra_blocks).await
+    } else {
+        send_chat_prompt_linked(
+            db,
+            conn_mgr,
+            connection_id,
+            conv.folder_id,
+            conv.id,
+            text,
+            &cmd.extra_blocks,
+        )
+        .await
+    };
+    match send_result {
+        Ok(()) => CommandMessageResult::current_target(
+            RichMessage::info(i18n::message_sent(lang)),
+            &cmd.target,
+        )
+        .with_conversation(conv.id),
+        Err(error) if matches!(error, crate::acp::error::AcpError::TurnInProgress) => {
+            let deferred = defer_followup_prompt(bridge, connection_id, text).await;
+            CommandMessageResult::current_target(
+                RichMessage::info(if deferred {
+                    i18n::task_deferred_busy(lang).to_string()
+                } else {
+                    i18n::agent_busy_retry(lang).to_string()
+                }),
+                &cmd.target,
+            )
+            .with_conversation(conv.id)
+        }
+        Err(error) => CommandMessageResult::current_target(
+            RichMessage::error(format!(
+                "{}{error}",
+                i18n::failed_to_send_message_label(lang)
+            )),
+            &cmd.target,
+        )
+        .with_conversation(conv.id),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2775,6 +2896,74 @@ mod tests {
         assert_eq!(result.conversation_id, Some(conv_id));
         assert_eq!(result.message.body, i18n::task_deferred_busy(Lang::En));
         assert!(bridge.lock().await.get("conn-folder-busy").is_some());
+    }
+
+    /// A quote of a desktop session is not in the chat-channel bridge, and the
+    /// open connection's working directory may not equal the folder path.
+    /// The reply still has to reach that connection.
+    #[tokio::test]
+    async fn folder_quote_reaches_desktop_connection_without_channel_bridge() {
+        let db = fresh_in_memory_db().await;
+        let channel_id = seed_chat_channel(&db).await;
+        let folder_id = seed_folder(&db, "/tmp/folder-inbound-desktop").await;
+        let conv_id = seed_conversation(&db, folder_id, AgentType::OpenCode).await;
+        let target = ChannelMessageTarget::with_chat_id(channel_id, "oc_group");
+        let conn_mgr = ConnectionManager::new();
+        let mut rx = conn_mgr
+            .insert_test_connection_live(
+                "desktop-conn",
+                AgentType::OpenCode,
+                Some(std::path::PathBuf::from("/other/working-dir")),
+                EventEmitter::Noop,
+            )
+            .await;
+        conn_mgr
+            .get_state("desktop-conn")
+            .await
+            .expect("connection")
+            .write()
+            .await
+            .conversation_id = Some(conv_id);
+
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut cmd = IncomingCommand::plain(channel_id, "sender-1", "继续上次的任务", target);
+        cmd.quoted_message_id = Some("om_card".into());
+        let result = handle_folder_bound_inbound(
+            &db.conn,
+            &cmd,
+            FolderInboundPlan {
+                bound_folder_id: folder_id,
+                action: FolderInboundAction::Continue {
+                    conversation_id: conv_id,
+                },
+            },
+            &ChatChannelManager::new(),
+            &conn_mgr,
+            &EventEmitter::Noop,
+            &bridge,
+            Lang::ZhCn,
+            "/",
+            std::path::Path::new("/tmp/folder-inbound-desktop-data"),
+        )
+        .await;
+
+        assert_eq!(result.conversation_id, Some(conv_id));
+        assert_eq!(result.message.body, i18n::message_sent(Lang::ZhCn));
+        assert!(
+            bridge.lock().await.find_by_conversation(conv_id).is_none(),
+            "a desktop connection must stay out of the channel bridge"
+        );
+        let command = rx
+            .recv()
+            .await
+            .expect("prompt reached the desktop connection");
+        let ConnectionCommand::Prompt { blocks, .. } = command else {
+            panic!("expected prompt command");
+        };
+        assert!(matches!(
+            &blocks[0],
+            PromptInputBlock::Text { text } if text == "继续上次的任务"
+        ));
     }
 
     #[test]

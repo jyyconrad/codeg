@@ -848,7 +848,7 @@ export function CanvasConversationSurface({
           hideInput={showSessionTerminal}
         >
           {showSessionTerminal ? (
-            <div className="flex h-full min-h-0 flex-col">
+            <div className="flex min-h-0 flex-1 flex-col">
               {isDraft && onAgentTypeChange && (
                 <div className="flex shrink-0 justify-center px-3 py-2">
                   <AgentSelector

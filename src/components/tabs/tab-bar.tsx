@@ -11,6 +11,7 @@ import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useTabActions, useTabStore } from "@/contexts/tab-context"
 import type { TabItem as TabItemData } from "@/contexts/tab-context"
 import { groupOfTab } from "@/stores/tab-store"
+import { terminalLaunchDirectory } from "@/lib/session-terminal-session"
 import {
   firstLeafId,
   leafIds,
@@ -217,7 +218,8 @@ export function TabBar({ groupId }: TabBarProps) {
       if (selTab && selFolder) {
         openNewConversationTab(
           selFolder.id,
-          selTab.workingDir ?? selFolder.path,
+          terminalLaunchDirectory(selFolder.path, selTab.workingDir) ??
+            selFolder.path,
           groupOptions
         )
         return

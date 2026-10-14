@@ -15,6 +15,18 @@ pub struct CatalogEntry {
 }
 
 pub fn read_file(vault: &Path, rel: &str) -> Result<String, DbError> {
+    let mut missing = None;
+    for candidate in crate::wiki::paths::stored_read_rels(rel) {
+        match read_file_exact(vault, &candidate) {
+            Ok(text) => return Ok(text),
+            Err(error @ DbError::NotFound(_)) => missing = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(missing.unwrap_or_else(|| DbError::NotFound("Wiki document".into())))
+}
+
+fn read_file_exact(vault: &Path, rel: &str) -> Result<String, DbError> {
     let path = crate::wiki::paths::join_vault_relative(vault, rel).map_err(DbError::Validation)?;
     if !path
         .extension()
@@ -143,6 +155,10 @@ fn walk(
         }
         let child_rel = rel.join(name.as_ref());
         if kind.is_dir() {
+            let parent = rel.to_string_lossy().replace('\\', "/");
+            if parent == "work" && (name == "raw" || name == "_archive") {
+                continue;
+            }
             walk(vault, &child_rel, depth + 1, entries)?;
         } else if kind.is_file() && name.ends_with(".md") && name != "index.md" {
             let rel = child_rel.to_string_lossy().replace('\\', "/");
@@ -201,6 +217,32 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert_ne!(notes[0].summary.note_id, notes[1].summary.note_id);
         assert!(notes.iter().all(|n| n.summary.title == "分页"));
+        fs::create_dir_all(dir.path().join("work/raw/sessions")).unwrap();
+        fs::write(
+            dir.path().join("work/raw/sessions/dump.md"),
+            "# dump\n过程材料。",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("work/_archive")).unwrap();
+        fs::write(dir.path().join("work/_archive/old.md"), "# old\n归档。").unwrap();
+        let notes = scan(dir.path()).unwrap();
+        assert!(notes.iter().all(|n| !n.summary.path.contains("/raw/")));
+        assert!(notes.iter().all(|n| !n.summary.path.contains("_archive")));
+        assert_eq!(
+            read_file(dir.path(), "work/raw/sessions/dump.md").unwrap(),
+            "# dump\n过程材料。"
+        );
+        fs::create_dir_all(dir.path().join("raw/sessions")).unwrap();
+        fs::write(dir.path().join("raw/sessions/legacy.md"), "legacy body").unwrap();
+        assert_eq!(
+            read_file(dir.path(), "work/raw/sessions/legacy.md").unwrap(),
+            "legacy body"
+        );
+        fs::write(dir.path().join("work/raw/sessions/legacy.md"), "new body").unwrap();
+        assert_eq!(
+            read_file(dir.path(), "raw/sessions/legacy.md").unwrap(),
+            "new body"
+        );
     }
 
     #[cfg(unix)]

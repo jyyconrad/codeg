@@ -1,6 +1,6 @@
 /**
- * Wiki 阅读共用的空状态、Markdown 渲染、目录项和内部文件浏览器。
- * 链接解析使用 wiki-content；目录与原文读取使用共享查询，内部浏览选择不改变主阅读路由。
+ * Wiki 阅读共用的空状态、Markdown 渲染、目录项和文件浏览器。
+ * 链接按文件路径或唯一笔记名解析；选中文件写入 wikiPath，并用目录树与原文命令渲染。
  */
 "use client"
 
@@ -16,6 +16,7 @@ import {
   resolveWikiLink,
   remarkWikiLinks,
   wikiFolderLandingPath,
+  type WikiNoteRef,
 } from "@/lib/wiki-content"
 import { useWikiData, useWikiQuery } from "./wiki-data"
 
@@ -47,11 +48,13 @@ export function WikiMarkdownPreview({
   content,
   path = "",
   className,
+  notes,
   onOpenWikilink,
 }: {
   content: string
   path?: string
   className?: string
+  notes?: readonly WikiNoteRef[]
   onOpenWikilink?: (path: string, anchor: string) => void
 }) {
   const t = useTranslations("Wiki.v2")
@@ -85,7 +88,7 @@ export function WikiMarkdownPreview({
           a: ({ href, children }) => {
             if (href && /^(https?:|mailto:|tel:)/i.test(href))
               return <MarkdownLink href={href}>{children}</MarkdownLink>
-            const target = href ? resolveWikiLink(href, path) : null
+            const target = href ? resolveWikiLink(href, path, notes) : null
             return (
               <a
                 href={
@@ -271,6 +274,18 @@ export function VaultTreeItem({
   )
 }
 
+function noteRefs(nodes: readonly WikiVaultTreeNode[]): WikiNoteRef[] {
+  const refs: WikiNoteRef[] = []
+  const walk = (list: readonly WikiVaultTreeNode[]) => {
+    for (const node of list) {
+      refs.push({ path: node.path, name: node.name, is_dir: node.is_dir })
+      if (node.children?.length) walk(node.children)
+    }
+  }
+  walk(nodes)
+  return refs
+}
+
 export function WikiNoteBrowser({
   emptyTitle,
   emptyDescription,
@@ -281,9 +296,8 @@ export function WikiNoteBrowser({
   includeRaw?: boolean
 }) {
   const t = useTranslations("Wiki")
-  const { route } = useWikiData()
-  // 文件弹窗保留自己的选择，关闭后不改变主 Wiki 页的阅读位置。
-  const [selected, setSelected] = useState<string | null>(() => route.path)
+  const { route, navigate } = useWikiData()
+  const selected = route.path
   const tree = useWikiQuery<WikiVaultTreeNode[]>("wiki_vault_tree", {
     recursive: true,
     include_raw: includeRaw,
@@ -294,9 +308,23 @@ export function WikiNoteBrowser({
     !!selected
   )
   const nodes = tree.data ?? []
+  const notes = noteRefs(nodes)
   const loadChildren = useCallback(
     (path: string) => wikiVaultTree({ path, recursive: true, includeRaw }),
     [includeRaw]
+  )
+  const openFile = useCallback(
+    (path: string, anchor = "") => {
+      navigate({
+        view: "files",
+        path,
+        source: null,
+        job: null,
+        query: "",
+      })
+      if (anchor) window.location.hash = encodeURIComponent(anchor)
+    },
+    [navigate]
   )
 
   return (
@@ -346,7 +374,7 @@ export function WikiNoteBrowser({
                     key={node.path}
                     node={node}
                     selected={selected}
-                    onSelect={setSelected}
+                    onSelect={openFile}
                     depth={0}
                     loadChildren={loadChildren}
                   />
@@ -379,7 +407,8 @@ export function WikiNoteBrowser({
               <WikiMarkdownPreview
                 content={preview.data.content}
                 path={selected}
-                onOpenWikilink={setSelected}
+                notes={notes}
+                onOpenWikilink={openFile}
               />
             ) : null}
           </div>

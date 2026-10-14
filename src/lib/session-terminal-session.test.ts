@@ -5,6 +5,7 @@ import {
   releaseSessionTerminal,
   sessionTerminalBinding,
   sessionTerminalOwnerByTerminal,
+  terminalLaunchDirectory,
 } from "@/lib/session-terminal-session"
 
 const owners: string[] = []
@@ -18,6 +19,21 @@ function claim(owner: string, agent: "claude-code" | "codex", dir: string) {
   owners.push(owner)
   return claimSessionTerminal(owner, agent, dir)
 }
+
+describe("terminalLaunchDirectory", () => {
+  it("uses the live folder path when a draft still stores another directory", () => {
+    expect(terminalLaunchDirectory("/repo/codeg", "/repo/old")).toBe(
+      "/repo/codeg"
+    )
+  })
+
+  it("keeps a scratch directory when the tab has no folder path", () => {
+    expect(terminalLaunchDirectory("  ", "/tmp/chat-scratch")).toBe(
+      "/tmp/chat-scratch"
+    )
+    expect(terminalLaunchDirectory(null, "  ")).toBeUndefined()
+  })
+})
 
 describe("session terminal ownership", () => {
   it("keeps the same terminal while the agent and directory stay", () => {

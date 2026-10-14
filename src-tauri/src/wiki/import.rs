@@ -1,6 +1,6 @@
 //! 归档粘贴文本和上传文件：提取正文、保存原件、登记来源与项目注释。
 //! 桌面/HTTP 入口和目录批量导入共用；支持部分提取接受、重新提取与版本关联。
-//! 该入口只归档素材，不调用模型；错误保留到单文件结果，由上层发送界面刷新事件。
+//! 提取后的 Markdown 与导入日志写在 wiki-state，不在用户库里新建 raw/ 或 log.md。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -687,7 +687,9 @@ async fn ingest_locked(
             warnings: &warnings,
         };
         let (doc, hash) = raw::render_import_raw(&segments, &meta);
-        match raw::write_import_raw(&vault_path, &source_id, &doc, &hash)
+        let rel = raw::import_markdown_rel(&source_id)
+            .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
+        match raw::write_import_raw(&state_root, &source_id, &doc, &hash)
             .map_err(|e| AppCommandError::io_error(e.to_string()))?
         {
             RawWriteOutcome::Created { .. } | RawWriteOutcome::Identical { .. } => {}
@@ -701,7 +703,7 @@ async fn ingest_locked(
                 )));
             }
         }
-        raw_path = Some(format!("raw/imports/{source_id}.md"));
+        raw_path = Some(rel);
         raw_hash = Some(hash);
     } else {
         eligibility = "failed".into();
@@ -766,12 +768,15 @@ async fn ingest_locked(
             inserted.source.id,
             inserted.source.source_kind
         );
-        raw::append_log_idempotent(&vault_path.join("log.md"), &log_key, &log_line)
+        raw::append_log_idempotent(&state_root.join("logs/import.md"), &log_key, &log_line)
             .map_err(|e| AppCommandError::io_error(e.to_string()))?;
     } else {
         let _ = fs::remove_dir_all(originals_dir(&state_root, &source_id));
-        let leftover = raw::raw_import_path(&vault_path, &source_id);
-        let _ = fs::remove_file(leftover);
+        if let Ok(rel) = raw::import_markdown_rel(&source_id) {
+            if let Ok(leftover) = crate::wiki::paths::join_generated_body(&state_root, &rel) {
+                let _ = fs::remove_file(leftover);
+            }
+        }
     }
 
     let source = wiki_service::get_source(conn, &inserted.source.id)
@@ -1304,8 +1309,13 @@ mod tests {
             assert_eq!(out.source.source_kind, "pasted-text");
             assert_eq!(out.source.eligibility, "ready");
             assert_eq!(out.source.material_role.as_deref(), Some("reference"));
-            let raw_path = dir.path().join(out.source.raw_path.as_ref().unwrap());
+            let rel = out.source.raw_path.as_ref().unwrap();
+            assert!(rel.starts_with("generated/import/"));
+            let raw_path = dir.path().join("wiki-state").join(rel);
             let raw = std::fs::read_to_string(&raw_path).unwrap();
+            assert!(!dir.path().join("raw").exists());
+            assert!(!dir.path().join("log.md").exists());
+            assert!(dir.path().join("wiki-state/logs/import.md").is_file());
             assert!(raw.contains("source_kind: \"pasted-text\""));
             assert!(raw.contains("Hello") || raw.contains("Body paragraph"));
             assert!(source_segments(&raw)
@@ -1369,9 +1379,12 @@ mod tests {
                 .unwrap();
             assert_eq!(pdf_out.source.eligibility, "ready");
             assert_eq!(pdf_out.source.format.as_deref(), Some("pdf"));
-            let pdf_raw =
-                std::fs::read_to_string(dir.path().join(pdf_out.source.raw_path.as_ref().unwrap()))
-                    .unwrap();
+            let pdf_raw = std::fs::read_to_string(
+                dir.path()
+                    .join("wiki-state")
+                    .join(pdf_out.source.raw_path.as_ref().unwrap()),
+            )
+            .unwrap();
             assert!(source_segments(&pdf_raw)
                 .iter()
                 .any(|segment| segment["locator"]["kind"] == "page"
@@ -1386,7 +1399,9 @@ mod tests {
             .await
             .unwrap();
             let docx_raw = std::fs::read_to_string(
-                dir.path().join(docx_out.source.raw_path.as_ref().unwrap()),
+                dir.path()
+                    .join("wiki-state")
+                    .join(docx_out.source.raw_path.as_ref().unwrap()),
             )
             .unwrap();
             assert!(source_segments(&docx_raw)
@@ -1697,12 +1712,13 @@ mod tests {
                     .total,
                 0
             );
-            assert_eq!(
-                fs::read_dir(second_vault.join("raw/imports"))
-                    .unwrap()
-                    .count(),
-                0
-            );
+            let imports = second_vault.join("raw/imports");
+            let count = match fs::read_dir(&imports) {
+                Ok(entries) => entries.count(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+                Err(error) => panic!("raw/imports: {error}"),
+            };
+            assert_eq!(count, 0);
             let unchanged = wiki_service::get_source(&db.conn, &first.source.id)
                 .await
                 .unwrap();
@@ -1733,7 +1749,7 @@ mod tests {
             .await
             .unwrap();
             let rel = first.source.raw_path.clone().unwrap();
-            let old_bytes = fs::read(dir.path().join(&rel)).unwrap();
+            let old_bytes = fs::read(dir.path().join("wiki-state").join(&rel)).unwrap();
             let original = originals_dir(&resolve_state_root(), &first.source.id).join("note.pdf");
             fs::write(original, encrypted_pdf()).unwrap();
             let error = reextract(&db.conn, first.source.id.clone())
@@ -1745,7 +1761,10 @@ mod tests {
                 .unwrap();
             assert_eq!(still_readable.eligibility, "ready");
             assert_eq!(still_readable.raw_hash, first.source.raw_hash);
-            assert_eq!(fs::read(dir.path().join(rel)).unwrap(), old_bytes);
+            assert_eq!(
+                fs::read(dir.path().join("wiki-state").join(rel)).unwrap(),
+                old_bytes
+            );
             let sources = wiki_service::list_sources(&db.conn, 10, 0, None, None)
                 .await
                 .unwrap();
@@ -1837,9 +1856,12 @@ mod tests {
             assert_eq!(updated.annotation_revision, Some(rev + 1));
             assert_eq!(updated.material_role.as_deref(), Some("own-work"));
             assert_eq!(updated.raw_hash, raw_hash);
-            let on_disk =
-                std::fs::read_to_string(dir.path().join(out.source.raw_path.as_ref().unwrap()))
-                    .unwrap();
+            let on_disk = std::fs::read_to_string(
+                dir.path()
+                    .join("wiki-state")
+                    .join(out.source.raw_path.as_ref().unwrap()),
+            )
+            .unwrap();
             assert!(on_disk.contains("material_role: \"reference\""));
         })
         .await;

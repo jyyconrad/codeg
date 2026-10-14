@@ -1,6 +1,6 @@
 //! 列出 Wiki 目录，供默认目录阅读器和高级文件浏览器导航使用。
 //! 支持单层懒加载与有限深度递归；返回目录内相对路径，不跟随符号链接。
-//! 默认隐藏素材及维护文件，高级入口可显式展示；.git/.obsidian 始终隐藏。
+//! 只隐藏点开头的条目（.obsidian、.git 及其他点文件）；不按 raw、sources、journal、work 等名称隐藏。
 
 use std::fs;
 use std::io;
@@ -33,16 +33,9 @@ pub enum VaultTreeError {
     Io(io::Error),
 }
 
-fn skip_child_name(name: &str, include_raw: bool) -> bool {
-    name.eq_ignore_ascii_case(".obsidian")
-        || name.eq_ignore_ascii_case(".git")
-        || (!include_raw
-            && (name.eq_ignore_ascii_case("raw")
-                || name.eq_ignore_ascii_case("sources")
-                || name.eq_ignore_ascii_case("journal")
-                || name.eq_ignore_ascii_case("AGENTS.md")
-                || name.eq_ignore_ascii_case("log.md")
-                || name.starts_with(".codeg")))
+fn skip_child_name(name: &str, _include_raw: bool) -> bool {
+    // Dot entries only. `include_raw` stays in the request so existing clients parse.
+    name.starts_with('.')
 }
 
 fn child_rel(parent: &str, name: &str) -> String {
@@ -189,27 +182,34 @@ mod tests {
         assert!(listed.contains(&"index.md"));
         assert!(listed.contains(&"work"));
         assert!(listed.contains(&"knowledge"));
+        assert!(listed.contains(&"capabilities"));
+        assert!(listed.contains(&"sources"));
+        assert!(listed.contains(&"journal"));
+        assert!(listed.contains(&"raw"));
+        assert!(listed.contains(&"AGENTS.md"));
+        assert!(listed.contains(&"log.md"));
         assert!(!listed.iter().any(|p| p.contains("obsidian")));
-        assert!(!listed.iter().any(|p| *p == "raw" || p.starts_with("raw/")));
         assert!(!listed.iter().any(|p| p.contains(".git")));
         assert!(entries.iter().all(|e| e.children.is_none()));
         assert!(find(&entries, "work/projects/alpha.md").is_none());
     }
 
     #[test]
-    fn recursive_nests_children_and_skips_obsidian_git_raw() {
+    fn recursive_nests_children_and_hides_only_dot_entries() {
         let dir = tempdir().unwrap();
         seed_vault(dir.path());
         let entries = list_vault_tree(dir.path(), "", true, false).unwrap();
         let alpha = find(&entries, "work/projects/alpha.md").expect("nested note");
         assert!(!alpha.is_dir);
         assert!(find(&entries, "index.md").is_some());
-        assert!(find(&entries, "AGENTS.md").is_none());
+        assert!(find(&entries, "AGENTS.md").is_some());
+        assert!(find(&entries, "journal").is_some());
+        assert!(find(&entries, "sources").is_some());
         assert!(find(&entries, ".obsidian").is_none());
         assert!(find(&entries, ".obsidian/app.json").is_none());
         assert!(find(&entries, ".git").is_none());
-        assert!(find(&entries, "raw").is_none());
-        assert!(find(&entries, "raw/sessions/turn.md").is_none());
+        assert!(find(&entries, "raw").is_some());
+        assert!(find(&entries, "raw/sessions/turn.md").is_some());
         let work = find(&entries, "work").expect("work dir");
         assert!(work.is_dir);
         assert!(work.children.is_some());
@@ -255,6 +255,40 @@ mod tests {
             list_vault_tree(dir.path(), "does-not-exist", false, false),
             Err(VaultTreeError::NotFound)
         ));
+    }
+
+    #[test]
+    fn obsidian_vault_lists_chinese_note_and_hides_only_dot_entries() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".obsidian")).unwrap();
+        fs::write(root.join(".obsidian/app.json"), "{}").unwrap();
+        fs::write(root.join(".codeg-wiki.json"), "{\"kind\":\"codeg-wiki\"}\n").unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(root.join(".git/config"), "").unwrap();
+        fs::create_dir_all(root.join("日记")).unwrap();
+        fs::write(root.join("日记/今天.md"), "# 今天\n").unwrap();
+        fs::create_dir_all(root.join("journal")).unwrap();
+        fs::write(root.join("journal/note.md"), "# note\n").unwrap();
+        fs::create_dir_all(root.join("sources")).unwrap();
+        fs::write(root.join("sources/kept.md"), "# kept\n").unwrap();
+        fs::create_dir_all(root.join("capabilities")).unwrap();
+        fs::write(root.join("capabilities/skill.md"), "# skill\n").unwrap();
+        fs::create_dir_all(root.join("knowledge/concepts")).unwrap();
+        fs::write(root.join("knowledge/concepts/idea.md"), "# idea\n").unwrap();
+        fs::create_dir_all(root.join("work/records")).unwrap();
+        fs::write(root.join("work/records/kept.md"), "# kept\n").unwrap();
+        let entries = list_vault_tree(root, "", true, false).unwrap();
+        assert!(find(&entries, "日记/今天.md").is_some());
+        assert!(find(&entries, "journal/note.md").is_some());
+        assert!(find(&entries, "sources/kept.md").is_some());
+        assert!(find(&entries, "capabilities/skill.md").is_some());
+        assert!(find(&entries, "knowledge/concepts/idea.md").is_some());
+        assert!(find(&entries, "work/records/kept.md").is_some());
+        assert!(find(&entries, ".obsidian").is_none());
+        assert!(find(&entries, ".obsidian/app.json").is_none());
+        assert!(find(&entries, ".git").is_none());
+        assert!(find(&entries, ".codeg-wiki.json").is_none());
     }
 
     #[test]

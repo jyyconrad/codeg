@@ -38,9 +38,44 @@ export function wikiHeadingId(title: string): string {
     .replace(/\s/g, "-")
 }
 
+export type WikiNoteRef = {
+  path: string
+  name?: string
+  is_dir?: boolean
+}
+
+function noteStem(value: string): string {
+  const base = value.split("/").pop() ?? value
+  return base.replace(/\.md$/i, "")
+}
+
+function safeNotePath(path: string): boolean {
+  if (!path || path.startsWith("/") || path.includes("\\")) return false
+  return path.split("/").every((part) => part && part !== "." && part !== "..")
+}
+
+/** One vault file with this note name, or null when several share it. */
+function uniqueNotePath(
+  target: string,
+  notes: readonly WikiNoteRef[]
+): string | null | undefined {
+  const stem = noteStem(target)
+  if (!stem || target.includes("/")) return undefined
+  const hits: string[] = []
+  for (const note of notes) {
+    if (note.is_dir || !safeNotePath(note.path)) continue
+    if (noteStem(note.name || note.path) !== stem) continue
+    if (!hits.includes(note.path)) hits.push(note.path)
+  }
+  if (hits.length > 1) return null
+  if (hits.length === 1) return hits[0]
+  return undefined
+}
+
 export function resolveWikiLink(
   href: string,
-  currentPath: string
+  currentPath: string,
+  notes?: readonly WikiNoteRef[]
 ): { path: string; anchor: string } | null {
   let target: string
   let anchor: string
@@ -62,6 +97,14 @@ export function resolveWikiLink(
     return null
   const relative = target
   if (!relative) return currentPath ? { path: currentPath, anchor } : null
+  // Wikilinks (`wiki:`) use a path, or the one file with that note name.
+  // Neither form requires a work/ or capabilities/ prefix. Relative links stay
+  // relative to the current file.
+  if (library && notes && !relative.includes("/")) {
+    const unique = uniqueNotePath(relative, notes)
+    if (unique === null) return null
+    if (unique) return { path: unique, anchor }
+  }
   const parts = library ? [] : currentPath.split("/").slice(0, -1)
   for (const part of relative.split("/")) {
     if (!part || part === ".") continue

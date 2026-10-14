@@ -100,7 +100,7 @@ export function WorkbenchRouteProvider({ children }: { children: ReactNode }) {
     const url = new URL(window.location.href)
     if (id === "wiki") {
       if (!url.searchParams.has("wikiView"))
-        url.searchParams.set("wikiView", "library")
+        url.searchParams.set("wikiView", "files")
     } else {
       for (const key of [
         "wikiView",

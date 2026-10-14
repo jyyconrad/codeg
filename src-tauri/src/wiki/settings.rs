@@ -129,6 +129,8 @@ pub struct WikiSettingsView {
     pub synthesize_builtin_task: String,
     #[serde(default)]
     pub resolved_vault_path: String,
+    #[serde(default)]
+    pub layout: crate::wiki::contract::LayoutStatus,
 }
 
 fn default_true() -> bool {
@@ -251,6 +253,31 @@ mod tests {
         assert!(WIKI_TURN_SUMMARY_BUILTIN.contains("阅读"));
         assert!(WIKI_SESSION_ROLLUP_BUILTIN.contains("阅读"));
         assert!(WIKI_SYNTHESIZE_BUILTIN.contains("阅读"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("generated/"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("空提案"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("work/raw"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("work/_archive"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains(".obsidian/codeg/"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("app.json"));
+        assert!(WIKI_SYNTHESIZE_BUILTIN.contains("userIgnoreFilters"));
+        assert!(WIKI_TURN_SUMMARY_BUILTIN.contains("generated/"));
+        assert!(WIKI_TURN_SUMMARY_BUILTIN.contains("work/raw"));
+        assert!(WIKI_TURN_SUMMARY_BUILTIN.contains(".obsidian/codeg/"));
+        assert!(WIKI_SESSION_ROLLUP_BUILTIN.contains("generated/"));
+        assert!(WIKI_SESSION_ROLLUP_BUILTIN.contains("work/raw"));
+        assert!(WIKI_SESSION_ROLLUP_BUILTIN.contains(".obsidian/codeg/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("不要写入 `.obsidian/`、`raw/`"));
+        assert!(!WIKI_TURN_SUMMARY_BUILTIN.contains("不要直接覆盖 `raw/`"));
+        assert!(!WIKI_SESSION_ROLLUP_BUILTIN.contains("不能直接修改 `raw/`"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("work/projects/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("work/areas/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("work/records/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("work/decisions/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("work/outcomes/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("knowledge/concepts/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("knowledge/methods/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("knowledge/entities/"));
+        assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("work, projects, capabilities, and knowledge"));
         assert!(!WIKI_TURN_SUMMARY_BUILTIN.contains("codeg.wiki.turn_summary.v2"));
         assert!(!WIKI_SESSION_ROLLUP_BUILTIN.contains("codeg.wiki.session_rollup.v2"));
         assert!(!WIKI_SYNTHESIZE_BUILTIN.contains("codeg.wiki.synthesize.v2"));

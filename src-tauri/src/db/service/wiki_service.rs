@@ -5,6 +5,8 @@
 //! 本模块维护数据库事务、幂等键及每次执行记录；批次提交后的消费/来源关联见
 //! wiki_pipeline_service，模型调用和文件提交仍归 wiki 业务模块。
 
+use std::path::Path;
+
 use chrono::Utc;
 #[cfg(test)]
 use sea_orm::QuerySelect;
@@ -446,6 +448,71 @@ pub async fn active_vault(conn: &DatabaseConnection) -> Result<Option<wiki_vault
         .filter(wiki_vault::Column::IsActive.eq(true))
         .one(conn)
         .await?)
+}
+
+pub async fn vault_flags<C: ConnectionTrait>(conn: &C) -> Result<Vec<(String, bool)>, DbError> {
+    let rows = wiki_vault::Entity::find().all(conn).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.id, row.is_active))
+        .collect())
+}
+
+/// Work for `target_vault_id` may use a source bound to `source_vault_id`.
+///
+/// Exact matches are always accepted. A source still bound to an inactive vault
+/// is accepted only when `target_vault_id` is the sole active vault. A source
+/// that belongs to another active vault stays rejected. Rows are not rewritten.
+/// Increment `config_revision` when the applied v3 contract hash changes.
+/// The hash lives under `wiki-state` so the vault table needs no new column.
+pub async fn bump_config_revision_for_contract(
+    conn: &DatabaseConnection,
+    vault_id: &str,
+    contract_hash: &str,
+    state_root: &Path,
+) -> Result<i32, DbError> {
+    let row = wiki_vault::Entity::find_by_id(vault_id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("vault {vault_id}")))?;
+    let dir = state_root.join("layout");
+    std::fs::create_dir_all(&dir)?;
+    let stamp = dir.join(format!("{vault_id}.hash"));
+    if stamp.is_file() && std::fs::read_to_string(&stamp).ok().as_deref() == Some(contract_hash) {
+        return Ok(row.config_revision);
+    }
+    let next = row.config_revision.saturating_add(1);
+    let mut active: wiki_vault::ActiveModel = row.into();
+    active.config_revision = Set(next);
+    active.updated_at = Set(Utc::now());
+    active.update(conn).await?;
+    std::fs::write(stamp, contract_hash)?;
+    tracing::info!("[wiki] layout: config_revision {vault_id} -> {next}");
+    Ok(next)
+}
+
+pub fn source_vault_accepted(
+    source_vault_id: &str,
+    target_vault_id: &str,
+    vaults: &[(String, bool)],
+) -> bool {
+    if source_vault_id == target_vault_id {
+        return true;
+    }
+    let mut active_count = 0usize;
+    let mut target_is_active = false;
+    let mut source_is_inactive = false;
+    for (id, is_active) in vaults {
+        if *is_active {
+            active_count += 1;
+            if id == target_vault_id {
+                target_is_active = true;
+            }
+        } else if id == source_vault_id {
+            source_is_inactive = true;
+        }
+    }
+    source_is_inactive && target_is_active && active_count == 1
 }
 
 pub struct NewAcpSource {
@@ -1127,7 +1194,10 @@ pub async fn link_source_version(
 ) -> Result<wiki_source::Model, DbError> {
     let previous = get_source_model(conn, previous_source_id).await?;
     let row = get_source_model(conn, source_id).await?;
-    if row.vault_id != previous.vault_id {
+    let vaults = vault_flags(conn).await?;
+    if !source_vault_accepted(&row.vault_id, &previous.vault_id, &vaults)
+        && !source_vault_accepted(&previous.vault_id, &row.vault_id, &vaults)
+    {
         return Err(DbError::Validation(
             "cannot link sources from different vaults".into(),
         ));
@@ -1409,12 +1479,14 @@ pub async fn list_sources_for_conversation(
     vault_id: &str,
     conversation_id: i32,
 ) -> Result<Vec<wiki_source::Model>, DbError> {
-    Ok(wiki_source::Entity::find()
+    let vaults = vault_flags(conn).await?;
+    let mut rows = wiki_source::Entity::find()
         .filter(wiki_source::Column::ConversationId.eq(conversation_id))
-        .filter(wiki_source::Column::VaultId.eq(vault_id))
         .order_by_asc(wiki_source::Column::SourceSeq)
         .all(conn)
-        .await?)
+        .await?;
+    rows.retain(|source| source_vault_accepted(&source.vault_id, vault_id, &vaults));
+    Ok(rows)
 }
 
 pub async fn find_local_session_source(
@@ -1422,13 +1494,16 @@ pub async fn find_local_session_source(
     vault_id: &str,
     conversation_id: i32,
 ) -> Result<Option<wiki_source::Model>, DbError> {
-    Ok(wiki_source::Entity::find()
+    let vaults = vault_flags(conn).await?;
+    let rows = wiki_source::Entity::find()
         .filter(wiki_source::Column::ConversationId.eq(conversation_id))
-        .filter(wiki_source::Column::VaultId.eq(vault_id))
         .filter(wiki_source::Column::SourceKind.eq("local-session"))
         .order_by_asc(wiki_source::Column::CreatedAt)
-        .one(conn)
-        .await?)
+        .all(conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .find(|source| source_vault_accepted(&source.vault_id, vault_id, &vaults)))
 }
 
 pub struct NewLocalSessionSource {

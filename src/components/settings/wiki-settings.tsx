@@ -235,7 +235,7 @@ export function WikiSettings() {
       <div className="mx-auto max-w-4xl space-y-6 p-4 md:p-6">
         <header className="space-y-2">
           <Link
-            href="/?wikiView=library"
+            href="/?wikiView=files"
             className="text-sm text-primary underline"
           >
             {t("backToWiki")}
@@ -245,6 +245,20 @@ export function WikiSettings() {
             {t("settingsHint")}
           </p>
         </header>
+        {draft.layout && (
+          <SettingCard>
+            <SettingRow
+              title={t("layoutTitle")}
+              description={t("layoutHint")}
+              control={
+                <p className="max-w-md text-right text-sm text-muted-foreground">
+                  {draft.layout.summary}
+                  {draft.layout.warning ? ` — ${draft.layout.warning}` : ""}
+                </p>
+              }
+            />
+          </SettingCard>
+        )}
         {error && (
           <SettingsError>
             {error}{" "}

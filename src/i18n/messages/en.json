@@ -7208,6 +7208,7 @@
     },
     "v2": {
       "nav": {
+        "files": "Files",
         "work": "Work",
         "capabilities": "Capabilities",
         "sources": "Sources",
@@ -7232,7 +7233,7 @@
       "settings": "Settings",
       "browseFiles": "Browse files",
       "showInternal": "Show internal files",
-      "fileBrowserHint": "Browse stored files. Internal records are hidden by default.",
+      "fileBrowserHint": "Browse the vault folders and open a Markdown file.",
       "search": "Search",
       "searchPlaceholder": "Search note titles or content",
       "searchScope": "Search scope",
@@ -7379,6 +7380,8 @@
       },
       "settingsTitle": "Personal Wiki settings",
       "settingsHint": "Choose how to record work and when to organize notes. Added materials are archived for reading.",
+      "layoutTitle": "Vault layout",
+      "layoutHint": "Read from .codeg-wiki-v3.json in the vault. This page does not save layout.",
       "backToWiki": "Back to Wiki",
       "enableHint": "Record completed conversation turns. Pausing keeps existing content readable.",
       "autoOrganize": "Automatic organization",

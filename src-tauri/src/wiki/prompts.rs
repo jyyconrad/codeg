@@ -116,3 +116,29 @@ pub(super) fn task_message(stage: &str, input: &Value, output_contract: &str) ->
         output_contract,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn task_instructions_name_process_material_and_codeg_metadata() {
+        let task = include_str!("prompts/task.md");
+        let synthesize = include_str!("prompts/synthesize.md");
+        let turn = include_str!("prompts/turn-summary.md");
+        let session = include_str!("prompts/session-rollup.md");
+        for text in [task, synthesize, turn, session] {
+            assert!(text.contains("work/raw"), "{text}");
+            assert!(text.contains("work/_archive"));
+            assert!(text.contains(".obsidian/codeg/"));
+            assert!(text.contains("generated/"));
+            assert!(text.contains("app.json"));
+            assert!(!text.contains("不要直接改写 `raw/`、`.obsidian/`"));
+            assert!(!text.contains("不要写入 `.obsidian/`、`raw/`"));
+            assert!(!text.contains("原始材料、`raw/`、已发布页面"));
+        }
+        assert!(task.contains("userIgnoreFilters"));
+        assert!(synthesize.contains("userIgnoreFilters"));
+        assert!(task.contains("work/areas"));
+        assert!(!task.contains("work/areas/"));
+        assert!(!synthesize.contains("排除 `raw/`、点目录"));
+    }
+}

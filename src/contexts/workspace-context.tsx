@@ -13,6 +13,7 @@ import {
 import { useTranslations } from "next-intl"
 import { useActiveFolder } from "@/contexts/active-folder-context"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
+import { useTabStore } from "@/stores/tab-store"
 import { browserTabBackendId, buildFileTabId } from "@/lib/file-tab-id"
 import {
   gitDiff,
@@ -31,6 +32,7 @@ import type { FileEditContent } from "@/lib/types"
 import {
   expandHomePath,
   findOwningFolder,
+  isPathUnderRoot,
   isHomeRelativePath,
   joinRootRel,
   normalizeAbsPath,
@@ -1985,6 +1987,31 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   )
   const subscribeOfficeEnvelopes = officeWatchStore.subscribeEnvelopes
   const activeFolderIdForOffice = activeFolder?.id
+  // The watcher callback can outlive the tab that was active when it received
+  // an event: checking the directory is asynchronous. Rebind the listener on
+  // a conversation switch so a late result from A cannot call the global file
+  // action after B owns the file column.
+  const activeTabIdForOffice = useTabStore((state) => state.activeTabId)
+  const officeConversationTabs = useTabStore((state) => state.tabs)
+  // A generic filesystem event has no producing connection. Keep the roots of
+  // all open conversation tabs in the dependency signature so an event is
+  // auto-opened only when it has one possible conversation owner. The legacy
+  // no-tab path still follows the active folder. If A and B share a root,
+  // guessing the active tab would recreate the cross-conversation preview bug,
+  // so the ambiguous event is left for manual opening.
+  const officeOwnerRootSignature = useMemo(
+    () =>
+      JSON.stringify(
+        officeConversationTabs
+          .flatMap((tab) => {
+            const folder = allFolders.find((item) => item.id === tab.folderId)
+            const root = tab.workingDir?.trim() || folder?.path?.trim()
+            return root ? [normalizeAbsPath(root)] : []
+          })
+          .sort()
+      ),
+    [allFolders, officeConversationTabs]
+  )
   useEffect(() => {
     if (!folderPath || activeFolderIdForOffice == null || !officeAutoPreview) {
       return
@@ -1996,6 +2023,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     const pending = new Set<string>()
     let cancelled = false
     const streamRoot = folderPath
+    const officeOwnerRoots = JSON.parse(officeOwnerRootSignature) as string[]
     const unsubscribe = subscribeOfficeEnvelopes(({ changed_paths }) => {
       if (!changed_paths || changed_paths.length === 0) return
       const directories = new Map<
@@ -2026,6 +2054,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         // at once — which arrived here as a dozen unreadable previews.
         if (isOfficeOwnerFile(changed)) continue
         const abs = joinRootRel(streamRoot, changed)
+        const possibleOwners = officeOwnerRoots.filter((root) =>
+          isPathUnderRoot(abs, root)
+        )
+        if (possibleOwners.length > 1) continue
         if (autoOpened.has(abs) || pending.has(abs)) continue
         // An already-open tab counts as a sighting, not just a skip: this
         // feature exists to surface documents the user has NOT seen, so a tab
@@ -2076,6 +2108,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   }, [
     folderPath,
     activeFolderIdForOffice,
+    activeTabIdForOffice,
+    officeOwnerRootSignature,
     officeAutoPreview,
     subscribeOfficeEnvelopes,
     openFilePreview,

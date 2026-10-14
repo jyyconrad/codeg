@@ -5,9 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 
 use super::catalog::{self, CatalogEntry};
 use super::document::Document;
@@ -49,8 +47,16 @@ async fn catalog(context: &ReadContext) -> Result<Vec<CatalogEntry>, DbError> {
         .map_err(|e| DbError::Validation(format!("reading catalog failed: {e}")))?
 }
 
+fn output_root(vault: &std::path::Path, rel: &str) -> PathBuf {
+    if paths::is_generated_body_rel(rel) {
+        paths::resolve_state_root()
+    } else {
+        vault.to_path_buf()
+    }
+}
+
 async fn file(context: &ReadContext, rel: &str) -> Result<String, DbError> {
-    let root = context.root.clone();
+    let root = output_root(&context.root, rel);
     let rel = rel.to_string();
     tokio::task::spawn_blocking(move || catalog::read_file(&root, &rel))
         .await
@@ -83,10 +89,8 @@ pub async fn read_job(
     tokio::task::spawn_blocking(move || {
         if let Some(result) = &info.result {
             for output in &result.outputs {
-                let availability = match catalog::read_file(
-                    std::path::Path::new(&vault.canonical_path),
-                    &output.path,
-                ) {
+                let root = output_root(std::path::Path::new(&vault.canonical_path), &output.path);
+                let availability = match catalog::read_file(&root, &output.path) {
                     Ok(text) if crate::wiki::raw::content_hash(&text) == output.content_hash => {
                         "available"
                     }
@@ -117,9 +121,7 @@ pub async fn list_notes(
     if scope != "sources" {
         for entry in catalog(&context).await? {
             let mut note = entry.summary;
-            if query.view.as_deref() == Some("work") && !note.path.starts_with("work/") {
-                continue;
-            }
+            // 视图不是目录前缀。work 列表保留 capabilities/ 与 knowledge/ 笔记。
             if query.view.as_deref() == Some("capabilities") && note.page_type != "capability" {
                 continue;
             }
@@ -369,12 +371,15 @@ pub async fn read_note(
     })
 }
 
-fn source_availability(root: &std::path::Path, rel: &str) -> &'static str {
-    let present = paths::join_vault_relative(root, rel)
-        .ok()
-        .and_then(|path| path.canonicalize().ok())
-        .zip(root.canonicalize().ok())
-        .is_some_and(|(path, root)| path.starts_with(root) && path.is_file());
+fn source_availability(vault: &std::path::Path, rel: &str) -> &'static str {
+    let root = output_root(vault, rel);
+    let present = paths::stored_read_rels(rel).iter().any(|candidate| {
+        paths::join_vault_relative(&root, candidate)
+            .ok()
+            .and_then(|path| path.canonicalize().ok())
+            .zip(root.canonicalize().ok())
+            .is_some_and(|(path, root)| path.starts_with(root) && path.is_file())
+    });
     if present {
         "available"
     } else {
@@ -392,7 +397,8 @@ pub async fn read_source_document(
         .as_ref()
         .ok_or_else(|| DbError::NotFound("Wiki source".into()))?;
     let source = wiki_service::get_source_model(conn, id).await?;
-    if source.vault_id != active.id {
+    let vaults = wiki_service::vault_flags(conn).await?;
+    if !wiki_service::source_vault_accepted(&source.vault_id, &active.id, &vaults) {
         return Err(DbError::NotFound("Wiki source".into()));
     }
     let (raw, read_error) = match source.raw_path.as_deref() {
@@ -434,13 +440,17 @@ async fn source_models(
     let Some(active) = context.active.as_ref() else {
         return Ok(Vec::new());
     };
-    Ok(wiki_source::Entity::find()
-        .filter(wiki_source::Column::VaultId.eq(&active.id))
+    let vaults = wiki_service::vault_flags(conn).await?;
+    let mut rows = wiki_source::Entity::find()
         .filter(wiki_source::Column::Eligibility.ne("withdrawn"))
         .order_by_desc(wiki_source::Column::CreatedAt)
         .order_by_asc(wiki_source::Column::Id)
         .all(conn)
-        .await?)
+        .await?;
+    rows.retain(|source| {
+        wiki_service::source_vault_accepted(&source.vault_id, &active.id, &vaults)
+    });
+    Ok(rows)
 }
 
 fn source_title(source: &wiki_source::Model) -> String {
@@ -564,15 +574,16 @@ pub async fn get_overview(conn: &DatabaseConnection) -> Result<WikiOverview, DbE
             .count();
         // New logical-key uniqueness means attempts cannot inflate these counts.
         failed_job_count = jobs.iter().filter(|j| j.status == "failed").count();
-        source_count = wiki_source::Entity::find()
-            .filter(wiki_source::Column::VaultId.eq(&active.id))
-            .filter(wiki_source::Column::Eligibility.ne("withdrawn"))
-            .count(conn)
-            .await?;
+        source_count = source_models(conn, &context).await?.len() as u64;
         let root = paths::resolve_vault_path(config.vault_path.as_deref());
-        let pending = crate::wiki::compile::list_pending_inputs(conn, &active.id, &root)
-            .await
-            .map_err(|e| DbError::Validation(e.to_string()))?;
+        let pending = crate::wiki::compile::list_pending_inputs(
+            conn,
+            &active.id,
+            &root,
+            &paths::resolve_state_root(),
+        )
+        .await
+        .map_err(|e| DbError::Validation(e.to_string()))?;
         let claimed: HashSet<String> = jobs
             .iter()
             .filter(|j| {
@@ -625,6 +636,9 @@ mod tests {
     async fn fixture() -> (tempfile::TempDir, crate::db::AppDatabase, String) {
         let dir = tempfile::tempdir().unwrap();
         crate::wiki::vault::initialize_vault(dir.path()).unwrap();
+        for rel in ["work/records", "raw/imports", "sources"] {
+            std::fs::create_dir_all(dir.path().join(rel)).unwrap();
+        }
         let db = fresh_in_memory_db().await;
         let config = settings::WikiSettings {
             vault_path: Some(dir.path().to_string_lossy().into()),
@@ -715,7 +729,16 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("目标条目60"));
-        let overview = get_overview(&db.conn).await.unwrap();
+        let home = dir.path().to_string_lossy().to_string();
+        let overview = temp_env::async_with_vars(
+            [
+                ("CODEG_HOME", Some(home.as_str())),
+                ("CODEG_DATA_DIR", None::<&str>),
+            ],
+            get_overview(&db.conn),
+        )
+        .await
+        .unwrap();
         assert_eq!(overview.note_count, 61);
         assert_eq!(overview.source_count, 61);
         assert_eq!(
@@ -826,6 +849,7 @@ mod tests {
         let snapshot = ReadContext::load(&db.conn).await.unwrap();
         let second = tempfile::tempdir().unwrap();
         crate::wiki::vault::initialize_vault(second.path()).unwrap();
+        std::fs::create_dir_all(second.path().join("raw/imports")).unwrap();
         std::fs::write(
             second.path().join("raw/imports/one.md"),
             "second vault body",
@@ -851,13 +875,9 @@ mod tests {
             source_models(&db.conn, &snapshot).await.unwrap()[0].id,
             "first-source"
         );
-        assert_eq!(
-            list_sources(&db.conn, None, None, None)
-                .await
-                .unwrap()
-                .total,
-            0
-        );
+        let listed = list_sources(&db.conn, None, None, None).await.unwrap();
+        assert_eq!(listed.total, 1);
+        assert_eq!(listed.items[0].id, "first-source");
     }
 
     #[tokio::test]
@@ -875,6 +895,42 @@ mod tests {
         assert_eq!(doc.source.id, "no-text");
         assert!(doc.read_error.is_some());
         assert!(doc.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn work_view_lists_notes_outside_the_work_directory() {
+        let (dir, db, _) = fixture().await;
+        std::fs::create_dir_all(dir.path().join("capabilities")).unwrap();
+        std::fs::create_dir_all(dir.path().join("knowledge/concepts")).unwrap();
+        std::fs::write(
+            dir.path().join("capabilities/skill.md"),
+            "---\ncodeg_note_id: skill\ntitle: Skill\ntype: capability\n---\n# Skill\nA capability note outside work.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("knowledge/concepts/idea.md"),
+            "---\ncodeg_note_id: idea\ntitle: Idea\ntype: concept\n---\n# Idea\nA knowledge note outside work.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("work/records/task.md"),
+            "---\ncodeg_note_id: task\ntitle: Task\ntype: work-record\n---\n# Task\nA work note.\n",
+        )
+        .unwrap();
+        let page = list_notes(
+            &db.conn,
+            WikiNoteQuery {
+                view: Some("work".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let paths: Vec<_> = page.items.iter().map(|note| note.path.as_str()).collect();
+        assert!(paths.contains(&"capabilities/skill.md"));
+        assert!(paths.contains(&"knowledge/concepts/idea.md"));
+        assert!(paths.contains(&"work/records/task.md"));
+        assert_eq!(page.total, 3);
     }
 
     #[tokio::test]

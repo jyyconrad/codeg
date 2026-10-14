@@ -17,6 +17,7 @@ import { toErrorMessage } from "@/lib/app-error"
 import type { WikiOverview } from "@/lib/wiki-types"
 
 export type WikiViewId =
+  | "files"
   | "library"
   | "overview"
   | "work"
@@ -32,7 +33,7 @@ export interface WikiRoute {
   scope: "notes" | "sources" | "all"
 }
 const initialRoute: WikiRoute = {
-  view: "library",
+  view: "files",
   path: null,
   source: null,
   job: null,
@@ -43,19 +44,13 @@ function readRoute(): WikiRoute {
   if (typeof window === "undefined") return initialRoute
   const params = new URLSearchParams(window.location.search)
   const view = params.get("wikiView")
+  const path = params.get("wikiPath")
   const scope = params.get("wikiScope")
+  // 文件和任务是仅有的页签。没有路径的旧领域地址也打开文件，不留在领域页。
+  const resolved: WikiViewId = view === "jobs" ? "jobs" : "files"
   return {
-    view: [
-      "library",
-      "overview",
-      "work",
-      "capabilities",
-      "sources",
-      "jobs",
-    ].includes(view ?? "")
-      ? (view as WikiViewId)
-      : "library",
-    path: params.get("wikiPath"),
+    view: resolved,
+    path,
     source: params.get("wikiSource"),
     job: params.get("wikiJob"),
     query: params.get("wikiQuery") ?? "",
@@ -87,17 +82,12 @@ export function WikiDataProvider({ children }: { children: ReactNode }) {
     const previous = readRoute()
     const next = { ...previous, ...patch }
     if (patch.path) {
-      if (!patch.view && previous.view !== "library") {
-        next.view = patch.path.startsWith("capabilities/")
-          ? "capabilities"
-          : patch.path.startsWith("work/")
-            ? "work"
-            : "overview"
-      }
+      // 选中文件进入文件页。不要根据 work/、capabilities/ 等前缀切换视图。
+      if (!patch.view) next.view = "files"
       next.source = null
       next.job = null
     } else if (patch.source) {
-      next.view = "sources"
+      // 素材参数不能把页签切到资料页。
       next.path = null
       next.job = null
     } else if (patch.job) {

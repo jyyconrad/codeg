@@ -146,7 +146,7 @@ async function establishOwnedSession(
     title: claim.title ?? null,
     titleSeed: claim.titleSeed ?? null,
     model: claim.model ?? null,
-    workingDir: tab.workingDir ?? null,
+    workingDir: binding.workingDir || tab.workingDir || null,
     observation: observationName(event),
     terminalId: event.terminal_id,
     noticeBody: event.notice_body ?? null,

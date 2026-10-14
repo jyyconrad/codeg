@@ -213,8 +213,12 @@ fn open_channel() -> Result<Channel, (i32, String)> {
     if requirement.is_none() {
         // A helper that cannot tell whether it is a release build is treated
         // as one.
-        let me = self_info()
-            .map_err(|e| (EXIT_UNANCHORED, format!("cannot read my own signature: {e}")))?;
+        let me = self_info().map_err(|e| {
+            (
+                EXIT_UNANCHORED,
+                format!("cannot read my own signature: {e}"),
+            )
+        })?;
         if me.team_id.is_some() {
             return Err((
                 EXIT_UNANCHORED,

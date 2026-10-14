@@ -50,48 +50,24 @@ use crate::acp::delegation::transport::{
     client_browser_console_round_trip, client_browser_eval_round_trip,
     client_browser_snapshot_round_trip, client_browser_tab_op_round_trip,
     client_browser_tabs_round_trip, client_cancel, client_cancel_task_round_trip,
-    client_commit_feedback,
-    client_create_automation_round_trip,
-    client_create_work_task_round_trip,
-    client_feedback_round_trip,
-    client_resume_task_round_trip,
-    client_round_trip,
-    client_session_round_trip,
-    client_set_timer_round_trip,
-    client_status_round_trip,
-    client_task_complete_round_trip,
-    client_task_progress_round_trip,
-    BrokerAskRequest,
-    BrokerBrowserActRequest,
-    BrokerBrowserCaptureRequest,
-    BrokerBrowserConsoleRequest,
-    BrokerBrowserEvalRequest,
-    BrokerBrowserSnapshotRequest,
-    BrokerBrowserTabOpRequest,
-    BrokerBrowserTabsRequest,
-    BrokerCancelRequest,
-    BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest,
-    BrokerCreateAutomationRequest,
-    client_computer_act_round_trip,
-    client_computer_apps_round_trip,
-    client_computer_capture_round_trip,
-    client_computer_clipboard_round_trip,
-    client_computer_launch_round_trip,
-    client_computer_snapshot_round_trip,
-    client_computer_verify_round_trip,
-    client_computer_windows_round_trip,
-    BrokerComputerActRequest,
-    BrokerComputerAppsRequest,
-    BrokerComputerCaptureRequest,
-    BrokerComputerClipboardRequest,
-    BrokerComputerLaunchRequest,
-    BrokerComputerSnapshotRequest,
-    BrokerComputerVerifyRequest,
-    BrokerComputerWindowsRequest,
-    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerRequest, BrokerResponse,
-    BrokerResumeTaskRequest, BrokerSessionRequest, BrokerSetTimerRequest, BrokerStatusRequest,
-    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
+    client_commit_feedback, client_computer_act_round_trip, client_computer_apps_round_trip,
+    client_computer_capture_round_trip, client_computer_clipboard_round_trip,
+    client_computer_launch_round_trip, client_computer_snapshot_round_trip,
+    client_computer_verify_round_trip, client_computer_windows_round_trip,
+    client_create_automation_round_trip, client_create_work_task_round_trip,
+    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
+    client_session_round_trip, client_set_timer_round_trip, client_status_round_trip,
+    client_task_complete_round_trip, client_task_progress_round_trip, BrokerAskRequest,
+    BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
+    BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
+    BrokerBrowserTabsRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
+    BrokerCommitFeedbackRequest, BrokerComputerActRequest, BrokerComputerAppsRequest,
+    BrokerComputerCaptureRequest, BrokerComputerClipboardRequest, BrokerComputerLaunchRequest,
+    BrokerComputerSnapshotRequest, BrokerComputerVerifyRequest, BrokerComputerWindowsRequest,
+    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerFeedbackRequest,
+    BrokerRequest, BrokerResponse, BrokerResumeTaskRequest, BrokerSessionRequest,
+    BrokerSetTimerRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
+    BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -1036,8 +1012,14 @@ async fn build_tools_call_spawn(
             };
             let round_trip =
                 Box::pin(async move { client_computer_windows_round_trip(&socket, &req).await });
-            register_and_spawn(inflight, id, None, round_trip, render_computer_windows_result)
-                .await
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_computer_windows_result,
+            )
+            .await
         }
         "computer_screenshot" => {
             let (target_id, max_dimension) = match computer_capture_request(&arguments) {
@@ -1053,8 +1035,14 @@ async fn build_tools_call_spawn(
             // on the codeg side, which is what writes the activity line.
             let round_trip =
                 Box::pin(async move { client_computer_capture_round_trip(&socket, &req).await });
-            register_and_spawn(inflight, id, None, round_trip, render_computer_capture_result)
-                .await
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_computer_capture_result,
+            )
+            .await
         }
         "computer_snapshot" => {
             let (target_id, request) = match computer_snapshot_request(&arguments) {
@@ -1068,8 +1056,14 @@ async fn build_tools_call_spawn(
             };
             let round_trip =
                 Box::pin(async move { client_computer_snapshot_round_trip(&socket, &req).await });
-            register_and_spawn(inflight, id, None, round_trip, render_computer_snapshot_result)
-                .await
+            register_and_spawn(
+                inflight,
+                id,
+                None,
+                round_trip,
+                render_computer_snapshot_result,
+            )
+            .await
         }
         "computer_verify" => {
             let (target_id, request) = match computer_verify_request(&arguments) {
@@ -2705,7 +2699,11 @@ fn computer_optional_u32(arguments: &Value, tool: &str, key: &str) -> Result<Opt
         None | Some(Value::Null) => Ok(None),
         Some(v) => v
             .as_u64()
-            .or_else(|| v.as_f64().filter(|f| f.fract() == 0.0 && *f >= 0.0).map(|f| f as u64))
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|f| f.fract() == 0.0 && *f >= 0.0)
+                    .map(|f| f as u64)
+            })
             .and_then(|n| u32::try_from(n).ok())
             .map(Some)
             .ok_or_else(|| format!("{tool}: `{key}` must be a whole non-negative number, not {v}")),
@@ -2763,8 +2761,9 @@ pub fn computer_verify_request(
             .iter()
             .enumerate()
             .map(|(i, item)| {
-                serde_json::from_value::<VerifyPredicate>(item.clone())
-                    .map_err(|e| format!("{tool}: `expect[{i}]` is not a predicate this tool knows: {e}"))
+                serde_json::from_value::<VerifyPredicate>(item.clone()).map_err(|e| {
+                    format!("{tool}: `expect[{i}]` is not a predicate this tool knows: {e}")
+                })
             })
             .collect::<Result<_, _>>()?,
         _ => {
@@ -2901,7 +2900,11 @@ pub fn render_computer_windows_result(outcome: &Value) -> Value {
             for w in windows {
                 let s = |k: &str| w.get(k).and_then(Value::as_str).unwrap_or("");
                 let app = w.get("app");
-                let app_s = |k: &str| app.and_then(|a| a.get(k)).and_then(Value::as_str).unwrap_or("");
+                let app_s = |k: &str| {
+                    app.and_then(|a| a.get(k))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                };
                 let b = |k: &str| {
                     w.get("bounds")
                         .and_then(|b| b.get(k))
@@ -2918,7 +2921,9 @@ pub fn render_computer_windows_result(outcome: &Value) -> Value {
                     "  {}  {} (pid {})  {:.0}×{:.0} at ({:.0}, {:.0})",
                     s("targetId"),
                     app_s("name"),
-                    app.and_then(|a| a.get("pid")).and_then(Value::as_u64).unwrap_or(0),
+                    app.and_then(|a| a.get("pid"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
                     b("width"),
                     b("height"),
                     b("x"),
@@ -3052,7 +3057,10 @@ pub fn render_computer_snapshot_result(outcome: &Value) -> Value {
     out.push_str(&format!(
         "\nGeneration {} · {} elements\n",
         s("generation"),
-        snapshot.get("elementCount").and_then(Value::as_u64).unwrap_or(0)
+        snapshot
+            .get("elementCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
     ));
     if let Some(degraded) = snapshot.get("degraded").and_then(Value::as_str) {
         out.push_str(&format!("The tree is incomplete: {degraded}\n"));
@@ -3082,10 +3090,16 @@ pub fn render_computer_verify_result(outcome: &Value) -> Value {
     let Some(verify) = outcome.get("verify").filter(|v| v.is_object()) else {
         return computer_refusal(outcome, "The window could not be checked.");
     };
-    let status = verify.get("status").and_then(Value::as_str).unwrap_or("unknown");
+    let status = verify
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
     let mut out = format!(
         "Verify on window {}: {status}",
-        outcome.get("targetId").and_then(Value::as_str).unwrap_or("?")
+        outcome
+            .get("targetId")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
     );
     out.push_str(&format!(
         " ({} sample(s), {} ms{}).",
@@ -3427,7 +3441,9 @@ fn computer_bool(arguments: &Value, tool: &str, key: &str) -> Result<bool, Strin
     match arguments.get(key) {
         None | Some(Value::Null) => Ok(false),
         Some(Value::Bool(b)) => Ok(*b),
-        Some(other) => Err(format!("{tool}: `{key}` must be true or false, not {other}")),
+        Some(other) => Err(format!(
+            "{tool}: `{key}` must be true or false, not {other}"
+        )),
     }
 }
 
@@ -3587,11 +3603,12 @@ pub fn computer_act_request(
                      computer_screenshot), with its `generation`"
                 )
             })?;
-            let button = match computer_choice(arguments, tool, "button", &["left", "right", "middle"])? {
-                Some("right") => PointerButton::Right,
-                Some("middle") => PointerButton::Middle,
-                _ => PointerButton::Left,
-            };
+            let button =
+                match computer_choice(arguments, tool, "button", &["left", "right", "middle"])? {
+                    Some("right") => PointerButton::Right,
+                    Some("middle") => PointerButton::Middle,
+                    _ => PointerButton::Left,
+                };
             let count = computer_count(arguments, tool, "count", 1..=2, 1)?;
             if count == 2 && button != PointerButton::Left {
                 return Err(format!(
@@ -3803,7 +3820,10 @@ pub fn render_computer_act_result(outcome: &Value) -> Value {
     };
     let mut out = format!(
         "Window {}: {effect}.",
-        outcome.get("targetId").and_then(Value::as_str).unwrap_or("?")
+        outcome
+            .get("targetId")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
     );
     let route = match s("route") {
         "accessibility" => Some("through the accessibility interface"),
@@ -6537,7 +6557,6 @@ mod tests {
         assert_eq!(refused["isError"], false);
     }
 
-
     // ── computer use ───────────────────────────────────────────────────────
 
     const COMPUTER_ONLY: CompanionFeatures = CompanionFeatures {
@@ -6570,7 +6589,9 @@ mod tests {
         ))
         .is_empty());
         assert_eq!(
-            computer_names(&list_tool_names(dispatch_with_features(COMPUTER_ONLY, list).await)),
+            computer_names(&list_tool_names(
+                dispatch_with_features(COMPUTER_ONLY, list).await
+            )),
             vec![
                 "computer_list_apps".to_string(),
                 "computer_list_windows".to_string(),
@@ -6741,10 +6762,9 @@ mod tests {
         );
         assert!(computer_capture_request(&json!({ "targetId": "w3", "maxDimension": 0 })).is_err());
 
-        let (id, req) = computer_snapshot_request(
-            &json!({ "targetId": "w1", "maxChars": 0, "query": "Save" }),
-        )
-        .unwrap();
+        let (id, req) =
+            computer_snapshot_request(&json!({ "targetId": "w1", "maxChars": 0, "query": "Save" }))
+                .unwrap();
         assert_eq!(id, "w1");
         // 0 is "no cap", and passes through as such.
         assert_eq!(req.max_chars, Some(0));
@@ -6985,8 +7005,16 @@ mod tests {
             }
         );
         for (tool, bad, says) in [
-            ("computer_click", json!({ "targetId": "w1", "ref": 3 }), "generation"),
-            ("computer_click", json!({ "targetId": "w1" }), "requires `ref`"),
+            (
+                "computer_click",
+                json!({ "targetId": "w1", "ref": 3 }),
+                "generation",
+            ),
+            (
+                "computer_click",
+                json!({ "targetId": "w1" }),
+                "requires `ref`",
+            ),
             (
                 "computer_click",
                 json!({ "targetId": "w1", "ref": 3, "coordinate": [1, 2], "generation": "1.1" }),
@@ -7275,7 +7303,10 @@ mod tests {
         assert!(text.contains("[shared: read]  notes.txt"), "{text}");
         assert!(text.contains("w2  Mail (pid 6)"), "{text}");
         assert!(text.contains("[not shared]"), "{text}");
-        assert!(text.contains("[never shareable: codeg's own window]"), "{text}");
+        assert!(
+            text.contains("[never shareable: codeg's own window]"),
+            "{text}"
+        );
         assert!(text.contains("Share a window"), "{text}");
         assert!(!text.contains("Input:"), "{text}");
     }

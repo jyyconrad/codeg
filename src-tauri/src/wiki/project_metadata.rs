@@ -402,7 +402,11 @@ fn render_document(metadata: serde_yaml::Mapping, body: &str) -> String {
 pub fn documents(projects: &[ProjectMetadata]) -> Vec<(String, String)> {
     let mut documents = Vec::new();
     for project in projects {
-        let project_path = format!("metadata/projects/{}", path_key(&project.binding_id));
+        let project_path = format!(
+            "{}/projects/{}",
+            crate::wiki::paths::METADATA_DIR,
+            path_key(&project.binding_id)
+        );
         let title = project
             .root_folder
             .as_ref()
@@ -436,7 +440,8 @@ pub fn documents(projects: &[ProjectMetadata]) -> Vec<(String, String)> {
         );
         for folder in &project.folders {
             let folder_path = format!(
-                "metadata/folders/{}-{}",
+                "{}/folders/{}-{}",
+                crate::wiki::paths::METADATA_DIR,
                 path_key(&project.db_instance_id),
                 folder.id
             );
@@ -619,7 +624,11 @@ mod tests {
         assert_eq!(first[0].folders.len(), 2);
         let docs = documents(&first);
         assert_eq!(docs.len(), 3);
-        let project_path = format!("metadata/projects/{}.md", first[0].binding_id);
+        let project_path = format!(
+            "{}/projects/{}.md",
+            crate::wiki::paths::METADATA_DIR,
+            first[0].binding_id
+        );
         let project = docs.iter().find(|(path, _)| path == &project_path).unwrap();
         assert!(project.1.contains("开发分支"));
         for (path, text) in docs {
@@ -631,7 +640,11 @@ mod tests {
             );
             assert!(text.contains(CONTENT_START));
             if path.contains("/folders/") {
-                assert!(text.contains(&format!("[[metadata/projects/{}|", first[0].binding_id)));
+                assert!(text.contains(&format!(
+                    "[[{}/projects/{}|",
+                    crate::wiki::paths::METADATA_DIR,
+                    first[0].binding_id
+                )));
             }
         }
     }

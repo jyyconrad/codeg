@@ -46,9 +46,9 @@ pub struct FolderInboundPlan {
     pub action: FolderInboundAction,
 }
 
-/// A quote that maps to a conversation in the bound folder continues that
-/// conversation. Anything else, including an unquoted follow-up, starts a new
-/// one. The channel's default agent is chosen by the caller.
+/// A quote that maps to a conversation continues that conversation. Anything
+/// else, including an unquoted follow-up in a folder chat, starts a new one.
+/// The channel's default agent is chosen by the caller.
 pub fn decide_folder_inbound(quoted_conversation_id: Option<i32>) -> FolderInboundAction {
     match quoted_conversation_id {
         Some(conversation_id) => FolderInboundAction::Continue { conversation_id },
@@ -134,6 +134,25 @@ pub async fn route_folder_inbound(
     db: &DatabaseConnection,
     cmd: &IncomingCommand,
 ) -> Result<Option<FolderInboundPlan>, DbError> {
+    // A quote of a card we sent is the session, including when the card was
+    // delivered to the bot DM and the folder's configured chat is the group.
+    // Requiring the inbound chat to match the folder first dropped those
+    // replies before the message map was consulted.
+    for quoted_id in inbound_quoted_message_ids(cmd) {
+        let Some(conversation_id) =
+            chat_channel_message_map_service::conversation_id_for(db, cmd.channel_id, &quoted_id)
+                .await?
+        else {
+            continue;
+        };
+        if let Some(folder_id) = conversation_folder(db, conversation_id).await? {
+            return Ok(Some(FolderInboundPlan {
+                bound_folder_id: folder_id,
+                action: FolderInboundAction::Continue { conversation_id },
+            }));
+        }
+    }
+
     let chat_id = inbound_chat_id(cmd);
     let Some(folder_id) = folder_chat_channel_service::find_folder_id_for_inbound(
         db,
@@ -145,34 +164,19 @@ pub async fn route_folder_inbound(
         return Ok(None);
     };
 
-    let mut quoted_conversation_id = None;
-    for quoted_id in inbound_quoted_message_ids(cmd) {
-        let mapped =
-            chat_channel_message_map_service::conversation_id_for(db, cmd.channel_id, &quoted_id)
-                .await?;
-        if let Some(conversation_id) = mapped {
-            quoted_conversation_id = conversation_in_folder(db, conversation_id, folder_id).await?;
-            if quoted_conversation_id.is_some() {
-                break;
-            }
-        }
-    }
-
-    let action = decide_folder_inbound(quoted_conversation_id);
     Ok(Some(FolderInboundPlan {
         bound_folder_id: folder_id,
-        action,
+        action: decide_folder_inbound(None),
     }))
 }
 
-async fn conversation_in_folder(
+async fn conversation_folder(
     db: &DatabaseConnection,
     conversation_id: i32,
-    folder_id: i32,
 ) -> Result<Option<i32>, DbError> {
     match conversation_service::get_by_id(db, conversation_id).await {
-        Ok(conv) if conv.folder_id == folder_id => Ok(Some(conversation_id)),
-        Ok(_) | Err(DbError::NotFound(_)) | Err(DbError::Migration(_)) => Ok(None),
+        Ok(conv) => Ok(Some(conv.folder_id)),
+        Err(DbError::NotFound(_)) | Err(DbError::Migration(_)) => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -535,6 +539,47 @@ mod tests {
         );
     }
 
+    /// The card may have been delivered to the bot DM. Quoting it there still
+    /// continues the folder session; the inbound chat does not have to be the
+    /// folder's configured session id.
+    #[tokio::test]
+    async fn quote_in_another_chat_continues_mapped_session() {
+        let db = fresh_in_memory_db().await;
+        let folder_id = seed_folder(&db, "/tmp/folder-inbound-other-chat").await;
+        let quoted = seed_conversation(&db, folder_id, AgentType::Codex).await;
+        let channel_id = seed_lark_channel(&db).await;
+        bind_folder(&db, folder_id, channel_id, Some("oc_group")).await;
+        chat_channel_message_map_service::upsert(&db.conn, channel_id, "om_parent", quoted)
+            .await
+            .unwrap();
+
+        let cmd = lark_cmd(
+            channel_id,
+            serde_json::json!({
+                "event": {
+                    "message": {
+                        "message_id": "om_reply",
+                        "parent_id": "om_parent",
+                        "chat_id": "oc_bot_dm",
+                        "chat_type": "p2p",
+                        "create_time": "1694779200000"
+                    }
+                }
+            }),
+        );
+        let plan = route_folder_inbound(&db.conn, &cmd)
+            .await
+            .unwrap()
+            .expect("quote maps to the folder session");
+        assert_eq!(plan.bound_folder_id, folder_id);
+        assert_eq!(
+            plan.action,
+            FolderInboundAction::Continue {
+                conversation_id: quoted
+            }
+        );
+    }
+
     #[tokio::test]
     async fn no_quote_starts_a_new_conversation_even_when_recent() {
         let db = fresh_in_memory_db().await;
@@ -758,8 +803,12 @@ mod tests {
         );
     }
 
+    /// Quoting a card follows that card's conversation, even when the reply
+    /// arrives in a chat bound to a different folder. The previous rule started
+    /// a new task in the inbound chat and never ran the session that sent the
+    /// card.
     #[tokio::test]
-    async fn quote_outside_the_bound_folder_starts_new() {
+    async fn quote_of_another_folders_card_continues_that_session() {
         let db = fresh_in_memory_db().await;
         let bound = seed_folder(&db, "/tmp/folder-inbound-bound").await;
         let other = seed_folder(&db, "/tmp/folder-inbound-other").await;
@@ -785,8 +834,13 @@ mod tests {
         let plan = route_folder_inbound(&db.conn, &cmd)
             .await
             .unwrap()
-            .expect("bound");
-        assert_eq!(plan.bound_folder_id, bound);
-        assert_eq!(plan.action, FolderInboundAction::StartNew);
+            .expect("quote maps to a session");
+        assert_eq!(plan.bound_folder_id, other);
+        assert_eq!(
+            plan.action,
+            FolderInboundAction::Continue {
+                conversation_id: elsewhere
+            }
+        );
     }
 }

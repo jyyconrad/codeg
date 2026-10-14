@@ -37,6 +37,22 @@ describe("Wiki reading contract", () => {
       path: "work/one.md",
       anchor: "检查清单",
     })
+    expect(resolveWikiLink("wiki:日记/今天", "capabilities/index.md")).toEqual({
+      path: "日记/今天.md",
+      anchor: "",
+    })
+    expect(
+      resolveWikiLink("wiki:今天", "capabilities/index.md", [
+        { path: "日记/今天.md", name: "今天.md" },
+        { path: "work/index.md", name: "index.md" },
+      ])
+    ).toEqual({ path: "日记/今天.md", anchor: "" })
+    expect(
+      resolveWikiLink("wiki:note", "index.md", [
+        { path: "work/note.md", name: "note.md" },
+        { path: "journal/note.md", name: "note.md" },
+      ])
+    ).toBeNull()
     for (const target of [
       "../../secret",
       "%2e%2e/%2e%2e/secret",

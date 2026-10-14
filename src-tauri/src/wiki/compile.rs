@@ -1,7 +1,6 @@
-//! 综合轮次记录和对话总结，生成工作、能力与知识笔记。
-//! engine/worker触发本模块；模型依据当前来源路径和项目元数据自主整理，
-//! 主机补充来源关联，再通过commit写文件、wiki_pipeline_service登记处理进度。
-//! 输入摘要只用于重复处理去重，文件版本变化不构成整理前置条件。
+//! 综合轮次记录和对话总结，生成笔记正文。
+//! 新正文写入 wiki-state，不在用户库创建分类目录或 Markdown。
+//! 已有库内材料仍可作为输入读取，但不被删除或改写。
 
 use crate::db::entities::wiki_job;
 use crate::db::error::DbError;
@@ -129,7 +128,7 @@ pub async fn run_compile_job(
     // 先完成已写入页面的数据库登记，避免重试重新分配身份或重复生成同一批内容。
     recover_job_batches(conn, state_root, Some(&job.id)).await?;
     // 每次执行按当前文件重新列出待整理材料，排队记录只用于界面展示，不锁定输入版本。
-    let manifest = list_pending_inputs(conn, &job.vault_id, vault).await?;
+    let manifest = list_pending_inputs(conn, &job.vault_id, vault, state_root).await?;
     wiki_service::set_job_input_manifest(
         conn,
         &job.id,
@@ -139,7 +138,7 @@ pub async fn run_compile_job(
     let loaded = manifest
         .memory_notes
         .iter()
-        .map(|reference| load_memory(vault, reference))
+        .map(|reference| load_memory(vault, state_root, reference))
         .collect::<Result<Vec<_>, _>>()?;
     let mut aggregate = pipeline::load_job_result(conn, &job.id)
         .await?
@@ -155,7 +154,7 @@ pub async fn run_compile_job(
         return Ok(aggregate);
     }
     let all_inputs: Vec<_> = loaded.iter().map(|n| n.input.clone()).collect();
-    let budget = synthesis_budget(llm, &scan_note_index(vault))?;
+    let budget = synthesis_budget(llm, &scan_note_index(state_root))?;
     let batches = plan_batches(loaded, budget);
     let mut completed: HashSet<(String, String)> = aggregate
         .processed_inputs
@@ -171,7 +170,7 @@ pub async fn run_compile_job(
             .join(format!("attempt-{}", job.attempt))
             .join(&batch_id);
         fs::create_dir_all(&staging).map_err(|e| CompileError::Failed(e.to_string()))?;
-        let index = scan_note_index(vault);
+        let index = scan_note_index(state_root);
         let batch_inputs: Vec<_> = batch.iter().map(|n| n.input.clone()).collect();
         let sources: Vec<_> = batch_inputs
             .iter()
@@ -280,6 +279,7 @@ async fn decorate_sources(
     batch: &[LoadedMemory],
     proposals: &mut [StagedProposal],
 ) -> Result<(), CompileError> {
+    let vaults = wiki_service::vault_flags(conn).await?;
     for proposal in proposals {
         let source_ids = yaml_list(&proposal.after, "source_ids");
         let mut projects = BTreeSet::new();
@@ -291,7 +291,7 @@ async fn decorate_sources(
                 Err(DbError::NotFound(_)) => continue,
                 Err(error) => return Err(error.into()),
             };
-            if source.vault_id != vault_id {
+            if !wiki_service::source_vault_accepted(&source.vault_id, vault_id, &vaults) {
                 continue;
             }
             source_paths.extend(source.raw_path);
@@ -500,9 +500,13 @@ async fn recover_job_batches(
     }
     Ok(out)
 }
-fn load_memory(vault: &Path, reference: &MemoryNoteRef) -> Result<LoadedMemory, CompileError> {
-    let path = crate::wiki::fs_policy::WikiFsPolicy::new(vault).check_commit_rel(&reference.rel)?;
-    let text = fs::read_to_string(path)
+fn load_memory(
+    vault: &Path,
+    state_root: &Path,
+    reference: &MemoryNoteRef,
+) -> Result<LoadedMemory, CompileError> {
+    let path = memory_note_path(vault, state_root, &reference.rel)?;
+    let text = fs::read_to_string(&path)
         .map_err(|e| CompileError::Failed(format!("{}: {e}", reference.rel)))?;
     let mut source_ids = yaml_list(&text, "source_ids");
     source_ids.extend(yaml_list(&text, "sources").iter().filter_map(|s| {
@@ -548,9 +552,10 @@ pub async fn list_pending_inputs(
     conn: &DatabaseConnection,
     vault_id: &str,
     vault: &Path,
+    state_root: &Path,
 ) -> Result<PendingInputs, CompileError> {
     let mut memory_notes = Vec::new();
-    for note in scan_memory_notes_checked(vault)? {
+    for note in scan_memory_notes_checked(vault, state_root)? {
         if !pipeline::memory_consumed(
             conn,
             vault_id,
@@ -578,41 +583,86 @@ pub(crate) fn check_leaf_body(page_type: &str, after: &str) -> Result<(), Compil
 }
 #[cfg(test)]
 pub fn scan_memory_notes(vault: &Path) -> Vec<MemoryNoteRef> {
-    scan_memory_notes_checked(vault).unwrap_or_default()
+    scan_memory_notes_checked(vault, Path::new("")).unwrap_or_default()
 }
-fn scan_memory_notes_checked(vault: &Path) -> Result<Vec<MemoryNoteRef>, CompileError> {
+fn memory_note_path(vault: &Path, state_root: &Path, rel: &str) -> Result<PathBuf, CompileError> {
+    if crate::wiki::paths::is_generated_body_rel(rel) {
+        return crate::wiki::paths::join_generated_body(state_root, rel)
+            .map_err(CompileError::Failed);
+    }
+    crate::wiki::fs_policy::WikiFsPolicy::new(vault)
+        .check_commit_rel(rel)
+        .map_err(|e| CompileError::Validation(e.to_string()))
+}
+fn scan_memory_notes_checked(
+    vault: &Path,
+    state_root: &Path,
+) -> Result<Vec<MemoryNoteRef>, CompileError> {
     let mut out = Vec::new();
-    let policy = crate::wiki::fs_policy::WikiFsPolicy::new(vault);
+    // Existing vault notes can still be inputs. Do not create the directories.
     for dir in ["work/turns", "work/sessions"] {
-        let path = vault.join(dir);
-        if !path.exists() {
-            continue;
-        }
-        for entry in fs::read_dir(&path).map_err(|e| CompileError::Failed(e.to_string()))? {
-            let entry = entry.map_err(|e| CompileError::Failed(e.to_string()))?;
-            if entry.path().extension().and_then(|e| e.to_str()) != Some("md")
-                || entry.file_name() == "index.md"
-            {
-                continue;
-            }
-            let rel = format!("{dir}/{}", entry.file_name().to_string_lossy());
-            let safe = policy.check_commit_rel(&rel)?;
-            let text = fs::read_to_string(&safe)
-                .map_err(|e| CompileError::Failed(format!("{rel}: {e}")))?;
-            out.push(MemoryNoteRef {
-                rel,
-                content_hash: content_hash(&text),
-                project_binding_ids: yaml_list(&text, "codeg_project_binding_id"),
-            });
-        }
+        append_memory_dir(&mut out, vault, dir, true)?;
+    }
+    for dir in ["generated/turn", "generated/session"] {
+        append_memory_dir(&mut out, state_root, dir, false)?;
     }
     out.sort_by(|a, b| a.rel.cmp(&b.rel));
     Ok(out)
 }
+fn append_memory_dir(
+    out: &mut Vec<MemoryNoteRef>,
+    root: &Path,
+    dir: &str,
+    vault_legacy: bool,
+) -> Result<(), CompileError> {
+    let path = root.join(dir);
+    if !path.is_dir() {
+        return Ok(());
+    }
+    let policy = crate::wiki::fs_policy::WikiFsPolicy::new(root);
+    for entry in fs::read_dir(&path).map_err(|e| CompileError::Failed(e.to_string()))? {
+        let entry = entry.map_err(|e| CompileError::Failed(e.to_string()))?;
+        if entry.path().extension().and_then(|e| e.to_str()) != Some("md")
+            || entry.file_name() == "index.md"
+        {
+            continue;
+        }
+        let rel = format!("{dir}/{}", entry.file_name().to_string_lossy());
+        let text = if vault_legacy {
+            let safe = policy
+                .check_commit_rel(&rel)
+                .map_err(|e| CompileError::Validation(e.to_string()))?;
+            fs::read_to_string(&safe).map_err(|e| CompileError::Failed(format!("{rel}: {e}")))?
+        } else if !crate::wiki::paths::is_generated_body_rel(&rel) {
+            continue;
+        } else {
+            let safe = crate::wiki::paths::join_generated_body(root, &rel)
+                .map_err(CompileError::Failed)?;
+            let root_canon =
+                fs::canonicalize(root).map_err(|e| CompileError::Failed(e.to_string()))?;
+            let canon =
+                fs::canonicalize(&safe).map_err(|e| CompileError::Failed(format!("{rel}: {e}")))?;
+            if !canon.starts_with(&root_canon) {
+                return Err(CompileError::Failed(format!("{rel} escapes wiki-state")));
+            }
+            fs::read_to_string(&canon).map_err(|e| CompileError::Failed(format!("{rel}: {e}")))?
+        };
+        out.push(MemoryNoteRef {
+            rel,
+            content_hash: content_hash(&text),
+            project_binding_ids: yaml_list(&text, "codeg_project_binding_id"),
+        });
+    }
+    Ok(())
+}
 
-pub fn scan_note_index(vault: &Path) -> Vec<NoteIndexEntry> {
+pub fn scan_note_index(state_root: &Path) -> Vec<NoteIndexEntry> {
     let mut out = Vec::new();
-    let walker = walkdir::WalkDir::new(vault).into_iter();
+    let root = state_root.join("generated");
+    if !root.is_dir() {
+        return out;
+    }
+    let walker = walkdir::WalkDir::new(&root).into_iter();
     for ent in walker.flatten() {
         let path = ent.path();
         if !path.is_file() {
@@ -622,16 +672,10 @@ pub fn scan_note_index(vault: &Path) -> Vec<NoteIndexEntry> {
             continue;
         }
         let rel = path
-            .strip_prefix(vault)
+            .strip_prefix(state_root)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
-        if rel.starts_with("raw/") || rel.contains(".obsidian/") || rel.contains("/.git/") {
-            continue;
-        }
-        if crate::wiki::fs_policy::WikiFsPolicy::new(vault)
-            .check_commit_rel(&rel)
-            .is_err()
-        {
+        if !crate::wiki::paths::is_generated_body_rel(&rel) {
             continue;
         }
         let Ok(text) = fs::read_to_string(path) else {

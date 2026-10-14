@@ -362,12 +362,12 @@ impl BrowserSurface {
     /// embedded surface, whose size is its bounds.
     pub fn window_inner_size(&self) -> Result<Option<ViewportSize>, SurfaceError> {
         per_surface!(self,
-            child: |_c| Ok(None),
-            window: |w| {
-                let scale = w.scale_factor()?;
-                let size = w.inner_size()?.to_logical::<f64>(scale);
-                Ok(Some(ViewportSize { width: size.width, height: size.height }))
-            })
+        child: |_c| Ok(None),
+        window: |w| {
+            let scale = w.scale_factor()?;
+            let size = w.inner_size()?.to_logical::<f64>(scale);
+            Ok(Some(ViewportSize { width: size.width, height: size.height }))
+        })
     }
 
     /// Size an owned window's content to `size`, letting it go no smaller
@@ -378,14 +378,14 @@ impl BrowserSurface {
         min: ViewportSize,
     ) -> Result<(), SurfaceError> {
         per_surface!(self,
-            child: |_c| { let _ = (size, min); Ok(()) },
-            window: |w| {
-                // The floor first: a size below the current floor would be
-                // refused, and a raised floor is met by the size that follows.
-                w.set_min_size(Some(tauri::LogicalSize::new(min.width, min.height)))?;
-                w.set_size(tauri::LogicalSize::new(size.width, size.height))?;
-                Ok(())
-            })
+        child: |_c| { let _ = (size, min); Ok(()) },
+        window: |w| {
+            // The floor first: a size below the current floor would be
+            // refused, and a raised floor is met by the size that follows.
+            w.set_min_size(Some(tauri::LogicalSize::new(min.width, min.height)))?;
+            w.set_size(tauri::LogicalSize::new(size.width, size.height))?;
+            Ok(())
+        })
     }
 
     /// Wipe cookies, caches and storage. Every tab shares one data store, so

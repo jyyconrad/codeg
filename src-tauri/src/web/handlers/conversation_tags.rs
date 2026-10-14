@@ -92,8 +92,7 @@ pub async fn reorder_conversation_tags(
     Extension(state): Extension<Arc<AppState>>,
     Json(params): Json<ReorderConversationTagsParams>,
 ) -> Result<Json<()>, AppCommandError> {
-    tag_commands::reorder_conversation_tags_core(&state.emitter, &state.db, params.tag_ids)
-        .await?;
+    tag_commands::reorder_conversation_tags_core(&state.emitter, &state.db, params.tag_ids).await?;
     Ok(Json(()))
 }
 

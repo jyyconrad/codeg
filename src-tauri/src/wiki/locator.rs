@@ -49,7 +49,7 @@ pub fn read_locator(state_root: &Path, source_id: &str) -> io::Result<SourceLoca
 
 pub fn is_dump_rel(rel: &str) -> bool {
     let rel = rel.trim().trim_start_matches("./");
-    rel.starts_with("raw/") || rel.starts_with("wiki-state/")
+    crate::wiki::paths::is_raw_rel(rel) || rel.starts_with("wiki-state/")
 }
 
 #[cfg(test)]
@@ -81,6 +81,8 @@ mod tests {
     fn dump_paths_are_vault_copies_not_originals() {
         assert!(is_dump_rel("raw/sessions/a.md"));
         assert!(is_dump_rel("raw/imports/b.md"));
+        assert!(is_dump_rel("work/raw/sessions/a.md"));
+        assert!(is_dump_rel("work/raw/imports/b.md"));
         assert!(!is_dump_rel("work/turns/a.md"));
         assert!(!is_dump_rel("/Users/me/.codex/sessions/a.jsonl"));
     }

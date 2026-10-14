@@ -79,8 +79,8 @@ export function WikiAllView() {
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
               {(
                 [
-                  ["readable", overview.note_count, "work"],
-                  ["sourceCount", overview.source_count, "sources"],
+                  ["readable", overview.note_count, "files"],
+                  ["sourceCount", overview.source_count, "files"],
                   [
                     "pending",
                     overview.active_job_count + overview.pending_memory_count,
@@ -152,8 +152,6 @@ export function WikiAllView() {
                     note={note}
                     onClick={() =>
                       navigate({
-                        view:
-                          note.type === "capability" ? "capabilities" : "work",
                         path: note.path,
                         source: null,
                       })

@@ -19,16 +19,9 @@ use crate::acp::question::PendingQuestionState;
 use crate::acp::session_timer::SessionTimerSpec;
 use crate::acp::types::{
     AcpEvent, AsyncTaskRecord, AvailableCommandInfo, ConfigStaleKind, ConnectionStatus,
-    EventEnvelope,
-    GrokModelSpec,
-    PromptCapabilitiesInfo,
-    SessionConfigOptionInfo,
-    SessionFailureRecord,
-    SessionModeStateInfo,
-    ToolCallImageInfo,
-    WorkflowDelta,
-    WorkflowRun,
-    GrokModelCatalog,
+    EventEnvelope, GrokModelCatalog, GrokModelSpec, PromptCapabilitiesInfo,
+    SessionConfigOptionInfo, SessionFailureRecord, SessionModeStateInfo, ToolCallImageInfo,
+    WorkflowDelta, WorkflowRun,
 };
 use crate::models::agent::AgentType;
 use crate::models::message::MessageRole;

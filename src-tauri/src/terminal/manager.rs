@@ -231,7 +231,12 @@ fn detect_posix_shell_flavor(shell: &str) -> PosixShellFlavor {
     }
 }
 
-fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_command: Option<&str>) {
+fn configure_shell_command(
+    cmd: &mut CommandBuilder,
+    shell: &str,
+    initial_command: Option<&str>,
+    working_dir: &str,
+) {
     #[cfg(target_os = "windows")]
     {
         // Force UTF-8 output for all Windows shell flavors
@@ -242,8 +247,16 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
             WindowsShellFlavor::Cmd => {
                 if let Some(command) = initial_command {
                     cmd.env("CODEG_CMD", command);
-                    // Set UTF-8 code page before running the actual command
-                    cmd.args(["/D", "/S", "/C", "chcp 65001 >nul & %CODEG_CMD%"]);
+                    cmd.env("CODEG_WORKDIR", working_dir);
+                    // Set UTF-8 code page, then return to the requested folder.
+                    // cmd profile scripts are skipped by /D; the cd still wins
+                    // if a later wrapper changes directory.
+                    cmd.args([
+                        "/D",
+                        "/S",
+                        "/C",
+                        "chcp 65001 >nul & cd /d \"%CODEG_WORKDIR%\" & %CODEG_CMD%",
+                    ]);
                 } else {
                     // /K runs the command then stays open for interactive use
                     cmd.args(["/D", "/S", "/K", "chcp 65001 >nul"]);
@@ -252,11 +265,12 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
             WindowsShellFlavor::PowerShell => {
                 if let Some(command) = initial_command {
                     cmd.env("CODEG_CMD", command);
+                    cmd.env("CODEG_WORKDIR", working_dir);
                     cmd.args([
                         "-NoLogo",
                         "-NoProfile",
                         "-Command",
-                        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; Invoke-Expression $env:CODEG_CMD",
+                        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; Set-Location -LiteralPath $env:CODEG_WORKDIR; Invoke-Expression $env:CODEG_CMD",
                     ]);
                 } else {
                     // -NoExit runs the command then stays open for interactive use
@@ -276,7 +290,13 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
                 cmd.env("LANG", "C.UTF-8");
                 if let Some(command) = initial_command {
                     cmd.env("CODEG_CMD", command);
-                    cmd.args(["-l", "-i", "-c", "eval \"$CODEG_CMD\""]);
+                    cmd.env("CODEG_WORKDIR", working_dir);
+                    cmd.args([
+                        "-l",
+                        "-i",
+                        "-c",
+                        "cd -- \"$CODEG_WORKDIR\" && eval \"$CODEG_CMD\"",
+                    ]);
                 } else {
                     cmd.args(["-l", "-i"]);
                 }
@@ -299,9 +319,16 @@ fn configure_shell_command(cmd: &mut CommandBuilder, shell: &str, initial_comman
                 if let Some(command) = initial_command {
                     // Indirection via env var avoids quoting/escaping bugs
                     // for arbitrary commands (and keeps long commands off
-                    // argv for readability in `ps`).
+                    // argv for readability in `ps`). `cd` runs after the
+                    // login profile, which may itself have changed directory.
                     cmd.env("CODEG_CMD", command);
-                    cmd.args(["-l", "-i", "-c", "eval \"$CODEG_CMD\""]);
+                    cmd.env("CODEG_WORKDIR", working_dir);
+                    cmd.args([
+                        "-l",
+                        "-i",
+                        "-c",
+                        "cd -- \"$CODEG_WORKDIR\" && eval \"$CODEG_CMD\"",
+                    ]);
                 } else {
                     cmd.args(["-l", "-i"]);
                 }
@@ -380,7 +407,12 @@ impl TerminalManager {
             .map(ToOwned::to_owned)
             .unwrap_or_else(resolve_shell);
         let mut cmd = CommandBuilder::new(&shell);
-        configure_shell_command(&mut cmd, &shell, opts.initial_command.as_deref());
+        configure_shell_command(
+            &mut cmd,
+            &shell,
+            opts.initial_command.as_deref(),
+            &opts.working_dir,
+        );
         cmd.cwd(&opts.working_dir);
 
         // Inject extra environment variables (e.g. git credential helper config).

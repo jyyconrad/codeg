@@ -7208,6 +7208,7 @@
     "importFailed": "Import failed: {message}",
     "v2": {
       "nav": {
+        "files": "ファイル",
         "work": "作業",
         "capabilities": "能力",
         "sources": "資料",
@@ -7232,7 +7233,7 @@
       "settings": "設定",
       "browseFiles": "ファイルを参照",
       "showInternal": "内部ファイルを表示",
-      "fileBrowserHint": "保存済みファイルを参照します。内部記録は通常非表示です。",
+      "fileBrowserHint": "保管庫のフォルダを見て、Markdown ファイルを開きます。",
       "search": "検索",
       "searchPlaceholder": "タイトルや本文を検索",
       "searchScope": "検索範囲",
@@ -7379,6 +7380,8 @@
       },
       "settingsTitle": "個人 Wiki 設定",
       "settingsHint": "仕事の記録方法と整理の時刻を設定します。追加資料は閲覧用に保存されます。",
+      "layoutTitle": "ライブラリの配置",
+      "layoutHint": ".codeg-wiki-v3.json を読み取り専用で表示します。配置を変えるにはそのファイルを編集してください。",
       "backToWiki": "Wiki に戻る",
       "enableHint": "完了した会話ターンを記録します。一時停止しても既存の内容は読めます。",
       "autoOrganize": "自動整理",

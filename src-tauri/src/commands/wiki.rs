@@ -59,9 +59,13 @@ async fn wiki_settings_view(conn: &DatabaseConnection) -> Result<WikiSettingsVie
     let pending_source_count = crate::wiki::read_model::get_overview(conn)
         .await?
         .pending_memory_count as u64;
-    let resolved_vault_path = resolve_vault_path(settings.vault_path.as_deref())
-        .to_string_lossy()
-        .into_owned();
+    let resolved = resolve_vault_path(settings.vault_path.as_deref());
+    let resolved_vault_path = resolved.to_string_lossy().into_owned();
+    let revision = wiki_service::active_vault(conn)
+        .await?
+        .map(|row| row.config_revision)
+        .unwrap_or(0);
+    let layout = crate::wiki::contract::status(&resolved, revision);
     Ok(WikiSettingsView {
         settings,
         next_compile_at,
@@ -73,6 +77,7 @@ async fn wiki_settings_view(conn: &DatabaseConnection) -> Result<WikiSettingsVie
         session_rollup_builtin_task: crate::wiki::prompts::builtin_task_template("session_rollup"),
         synthesize_builtin_task: crate::wiki::prompts::builtin_task_template("synthesize"),
         resolved_vault_path,
+        layout,
     })
 }
 
@@ -537,11 +542,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vault_tree_recursive_skips_obsidian_and_raw() {
+    async fn vault_tree_lists_user_folders_and_hides_dot_entries() {
         let db = fresh_in_memory_db().await;
         let dir = tempfile::tempdir().unwrap();
         let vault = dir.path().join("vault");
         crate::wiki::vault::initialize_vault(&vault).unwrap();
+        std::fs::write(vault.join("index.md"), "# index").unwrap();
         std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
         std::fs::write(vault.join(".obsidian/app.json"), "{}").unwrap();
         std::fs::create_dir_all(vault.join("work/projects")).unwrap();
@@ -579,10 +585,91 @@ mod tests {
 
         assert!(contains(&entries, "work/projects/alpha.md"));
         assert!(contains(&entries, "index.md"));
+        assert!(contains(&entries, "raw/sessions/turn.md"));
         assert!(!contains(&entries, ".obsidian"));
         assert!(!contains(&entries, ".obsidian/app.json"));
-        assert!(!contains(&entries, "raw"));
-        assert!(!contains(&entries, "raw/sessions/turn.md"));
+        assert!(!contains(&entries, ".codeg-wiki.json"));
+    }
+
+    #[tokio::test]
+    async fn opening_an_obsidian_vault_lists_and_reads_the_existing_note() {
+        let db = fresh_in_memory_db().await;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = dir.path().join("vault");
+        std::fs::create_dir_all(vault.join(".obsidian")).unwrap();
+        let app_json = "{\"userIgnoreFilters\":[]}\n";
+        std::fs::write(vault.join(".obsidian/app.json"), app_json).unwrap();
+        std::fs::create_dir_all(vault.join("日记")).unwrap();
+        let note = "# 今天\n已有笔记。\n";
+        std::fs::write(vault.join("日记/今天.md"), note).unwrap();
+        std::fs::create_dir_all(vault.join("journal")).unwrap();
+        std::fs::write(vault.join("journal/note.md"), "# 日记\n").unwrap();
+        let home = dir.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars(
+            [
+                ("CODEG_HOME", Some(home.as_str())),
+                ("CODEG_DATA_DIR", None::<&str>),
+            ],
+            async {
+                let view = update_wiki_settings_core(
+                    &db.conn,
+                    WikiSettings {
+                        enabled: true,
+                        vault_path: Some(vault.to_string_lossy().into_owned()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("open obsidian vault");
+                assert!(view.settings.enabled);
+                let entries = wiki_vault_tree_core(
+                    &db.conn,
+                    WikiVaultTreeParams {
+                        path: None,
+                        recursive: Some(true),
+                        include_raw: Some(false),
+                    },
+                )
+                .await
+                .expect("tree");
+                fn contains(entries: &[WikiVaultTreeEntry], path: &str) -> bool {
+                    entries.iter().any(|entry| {
+                        entry.path == path
+                            || entry
+                                .children
+                                .as_deref()
+                                .is_some_and(|kids| contains(kids, path))
+                    })
+                }
+                assert!(contains(&entries, "日记/今天.md"));
+                assert!(contains(&entries, "journal/note.md"));
+                assert!(!contains(&entries, ".obsidian"));
+                assert!(!contains(&entries, ".obsidian/app.json"));
+                let file =
+                    crate::wiki::read_model::read_vault_file(&db.conn, "日记/今天.md".into())
+                        .await
+                        .expect("read note");
+                assert_eq!(file.content, note);
+                assert_eq!(
+                    std::fs::read_to_string(vault.join(".obsidian/app.json")).unwrap(),
+                    app_json
+                );
+                for rel in [
+                    "work",
+                    "capabilities",
+                    "knowledge",
+                    "sources",
+                    "raw",
+                    "metadata",
+                    "index.md",
+                    "work/index.md",
+                    "capabilities/index.md",
+                ] {
+                    assert!(!vault.join(rel).exists(), "{rel}");
+                }
+            },
+        )
+        .await;
     }
 
     #[tokio::test]

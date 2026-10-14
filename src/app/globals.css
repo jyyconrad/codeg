@@ -2369,6 +2369,23 @@ div.monaco-diff-editor.side-by-side .editor.modified {
   outline-offset: 1px;
 }
 
+/* File-column tab strip (file-workspace-tab-bar.tsx). Tabs share the row at
+   `basis-48` and shrink together, but only down to `min-w-32` (8rem). Past
+   that the row scrolls instead of collapsing each label to a couple of
+   letters. The strip is h-10: a classic scrollbar would cover the tab seat
+   and the bottom hairline, so the bar is hidden and the row scrolls by
+   trackpad, wheel (mapped in the component), and scrollIntoView. */
+.file-tab-strip {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: 0.5rem;
+  scrollbar-width: none;
+}
+.file-tab-strip::-webkit-scrollbar {
+  display: none;
+}
+
 /* Browser-style tab separators (embedded desktop title-bar tab strips).
    Each tab draws a hairline on its LEFT edge; the line is suppressed for the
    first tab and around any active / hovered tab (Chrome behavior) using only

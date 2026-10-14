@@ -832,11 +832,18 @@ pub async fn bind_external_id(
                 }
 
                 let agent_type = carried.agent_type.clone();
-                let preserved = carried.into_active_model(previous.clone()).insert(txn).await?;
+                let preserved = carried
+                    .into_active_model(previous.clone())
+                    .insert(txn)
+                    .await?;
                 // The preserving row IS the old conversation as far as the user
                 // can tell, so it keeps the tags they put on it.
-                conversation_tag_service::copy_conversation_tags(txn, conversation_id, preserved.id)
-                    .await?;
+                conversation_tag_service::copy_conversation_tags(
+                    txn,
+                    conversation_id,
+                    preserved.id,
+                )
+                .await?;
                 // The one signal that this happened at all. Deliberately WARN:
                 // every occurrence means a connection bound to a row while
                 // holding a session unrelated to that row's history, which is

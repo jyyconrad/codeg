@@ -367,8 +367,13 @@ async fn process_envelope(
         "permission_request" | "user_prompt_sent" | "question_request"
     );
 
-    let conversation_id =
-        envelope_conversation_id(&envelope.connection_id, conn_mgr.as_ref()).await;
+    // Live ACP connections carry the row on session state. Terminal-hook cards
+    // do not: `terminal-hook:*` is not a connection, and the row id is on the
+    // event. Using only the connection dropped those cards onto the channel's
+    // default chat (the bot DM) while the ACP copy went to the folder session.
+    let conversation_id = envelope_conversation_id(&envelope.connection_id, conn_mgr.as_ref())
+        .await
+        .or_else(|| payload_conversation_id(&envelope.payload));
     // A folder that names a channel session gets that session only. Other
     // enabled channels keep their own default chats, and would otherwise
     // deliver the same card into a second Feishu conversation.
@@ -443,6 +448,18 @@ async fn envelope_conversation_id(
     let state = conn_mgr?.get_state(connection_id).await?;
     let conversation_id = state.read().await.conversation_id;
     conversation_id
+}
+
+/// Conversation row carried by the event itself. Terminal hooks publish
+/// `TerminalSessionCard` on `terminal-hook:{id}`, which is not in the
+/// connection map, so this is the only id those cards have.
+fn payload_conversation_id(payload: &AcpEvent) -> Option<i32> {
+    match payload {
+        AcpEvent::TerminalSessionCard {
+            conversation_id, ..
+        } => Some(*conversation_id),
+        _ => None,
+    }
 }
 
 async fn folder_bindings_for_conversation(
@@ -1798,6 +1815,90 @@ mod permission_push_tests {
         assert_eq!(
             sent_chat_ids(&rec).await,
             vec![Some("oc_fe68230be88f670a68432db911f78a68".to_string())]
+        );
+    }
+
+    /// A terminal hook has no ACP connection. The card's conversation id must
+    /// still select the folder session, and the sent id must be remembered so
+    /// a quote can continue that session. Falling back to the channel default
+    /// is what put the same「开始任务」card in the bot DM.
+    #[tokio::test]
+    async fn terminal_hook_card_uses_folder_chat_and_remembers_message() {
+        use crate::db::service::{
+            chat_channel_message_map_service, chat_channel_service, conversation_service,
+            folder_chat_channel_service,
+        };
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/terminal-folder-chat").await;
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "Daimeng".to_string(),
+            "lark".to_string(),
+            serde_json::json!({ "chat_id": "oc_bot_dm" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .expect("seed chat channel");
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            folder_id,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_group".into()),
+            }],
+        )
+        .await
+        .expect("bind folder chat id");
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("Create AGENTS.md".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (chat, rec) = manager_with_recorder(channel.id).await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let mut config = config_all_on(channel.id);
+        config.lang = Lang::ZhCn;
+        config.global_filter = Some(vec!["user_prompt_sent".to_string()]);
+        let mut last_push = HashMap::new();
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "terminal-hook:t1".into(),
+                payload: AcpEvent::TerminalSessionCard {
+                    conversation_id: conv.id,
+                    agent_type: "grok".into(),
+                    kind: "turn_started".into(),
+                    body: Some("Create AGENTS.md contributors".into()),
+                },
+            },
+            &bridge,
+            &chat,
+            &db.conn,
+            &config,
+            &mut last_push,
+            &test_client(),
+        )
+        .await;
+
+        assert_eq!(sent(&rec).await.len(), 1);
+        assert_eq!(
+            sent_chat_ids(&rec).await,
+            vec![Some("oc_group".to_string())],
+            "terminal card must not also land in the bot DM"
+        );
+        assert_eq!(
+            chat_channel_message_map_service::conversation_id_for(&db.conn, channel.id, "1")
+                .await
+                .unwrap(),
+            Some(conv.id)
         );
     }
 

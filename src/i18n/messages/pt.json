@@ -7208,6 +7208,7 @@
     "importFailed": "Import failed: {message}",
     "v2": {
       "nav": {
+        "files": "Arquivos",
         "work": "Trabalho",
         "capabilities": "Capacidades",
         "sources": "Fontes",
@@ -7232,7 +7233,7 @@
       "settings": "Configurações",
       "browseFiles": "Explorar arquivos",
       "showInternal": "Mostrar arquivos internos",
-      "fileBrowserHint": "Explore os arquivos salvos. Os registros internos ficam ocultos por padrão.",
+      "fileBrowserHint": "Explore as pastas do vault e abra um arquivo Markdown.",
       "search": "Pesquisar",
       "searchPlaceholder": "Pesquisar títulos ou conteúdo",
       "searchScope": "Escopo da pesquisa",
@@ -7379,6 +7380,8 @@
       },
       "settingsTitle": "Configurações do Wiki pessoal",
       "settingsHint": "Escolha como registrar o trabalho e quando organizar as notas. Os materiais adicionados são arquivados para leitura.",
+      "layoutTitle": "Layout do vault",
+      "layoutHint": "Lido de .codeg-wiki-v3.json no vault. Esta página não grava o layout.",
       "backToWiki": "Voltar ao Wiki",
       "enableHint": "Registre turnos concluídos. Ao pausar, o conteúdo existente continua legível.",
       "autoOrganize": "Organização automática",

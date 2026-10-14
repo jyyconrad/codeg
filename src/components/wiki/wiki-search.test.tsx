@@ -1,4 +1,4 @@
-import { act, render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { act, render, screen, cleanup } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { afterEach, expect, it, vi } from "vitest"
 import messages from "@/i18n/messages/en.json"
@@ -18,10 +18,7 @@ vi.mock("./wiki-capabilities-view", () => ({
 vi.mock("./wiki-sources-view", () => ({ WikiSourcesView: () => null }))
 vi.mock("./wiki-jobs-view", () => ({ WikiJobsView: () => null }))
 vi.mock("./wiki-shared", () => ({ WikiNoteBrowser: () => null }))
-afterEach(() => {
-  cleanup()
-  vi.useRealTimers()
-})
+afterEach(cleanup)
 it("does not render a settings link that would replace the workspace window", async () => {
   window.history.replaceState({}, "", "/?wikiView=overview")
   await act(async () => {
@@ -36,30 +33,21 @@ it("does not render a settings link that would replace the workspace window", as
   ).toBeNull()
 })
 
-it("searches after typing settles and submits immediately with Enter", async () => {
-  vi.useFakeTimers()
+it("does not rewrite a legacy overview URL into domain search", async () => {
   window.history.replaceState({}, "", "/?wikiView=overview")
-  render(
-    <NextIntlClientProvider locale="en" messages={messages}>
-      <WikiPage />
-    </NextIntlClientProvider>
-  )
-  fireEvent.change(
-    screen.getByRole("textbox", { name: messages.Wiki.v2.search }),
-    { target: { value: "retry" } }
-  )
-  await act(async () => vi.advanceTimersByTimeAsync(299))
-  expect(window.location.search).not.toContain("wikiQuery=retry")
-  await act(async () => vi.advanceTimersByTimeAsync(1))
-  expect(window.location.search).toContain("wikiQuery=retry")
-  fireEvent.change(
-    screen.getByRole("textbox", { name: messages.Wiki.v2.search }),
-    { target: { value: "new" } }
-  )
-  fireEvent.submit(
-    screen
-      .getByRole("textbox", { name: messages.Wiki.v2.search })
-      .closest("form")!
-  )
-  expect(window.location.search).toContain("wikiQuery=new")
+  await act(async () => {
+    render(
+      <NextIntlClientProvider locale="en" messages={messages}>
+        <WikiPage />
+      </NextIntlClientProvider>
+    )
+  })
+  expect(
+    screen.getByRole("button", { name: messages.Wiki.v2.nav.files })
+  ).toHaveAttribute("aria-current", "page")
+  expect(
+    screen.queryByRole("textbox", { name: messages.Wiki.v2.search })
+  ).not.toBeInTheDocument()
+  expect(window.location.search).not.toContain("wikiQuery=")
+  expect(window.location.search).not.toContain("wikiView=sources")
 })

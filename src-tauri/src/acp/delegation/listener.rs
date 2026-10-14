@@ -21,37 +21,22 @@ use crate::acp::browser_tools::{
     ERROR_NO_SUCH_TAB,
 };
 use crate::acp::chat_authoring::{AuthoringContext, AuthoringOutcome, ChatAuthoringAccess};
-use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::computer_tools::{
     ComputerActOutcome, ComputerAppsOutcome, ComputerCaptureOutcome, ComputerSnapshotOutcome,
     ComputerToolAccess, ComputerVerifyOutcome, ComputerWindowsOutcome, ERROR_NO_SUCH_TARGET,
 };
+use crate::acp::delegation::broker::{DelegationBroker, StatusWait};
 use crate::acp::delegation::transport::{
     read_frame, write_frame, BrokerAskRequest, BrokerBrowserActRequest,
     BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest, BrokerBrowserEvalRequest,
     BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest, BrokerBrowserTabsRequest,
-    BrokerCancelRequest,
-    BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest,
-    BrokerCreateAutomationRequest,
-    BrokerCreateWorkTaskRequest,
-    BrokerFeedbackRequest,
-    BrokerMessage,
-    BrokerRequest,
-    BrokerResponse,
-    BrokerResumeTaskRequest,
-    BrokerSessionRequest,
-    BrokerSetTimerRequest,
-    BrokerStatusRequest,
-    BrokerTaskCompleteRequest,
+    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest,
+    BrokerComputerActRequest, BrokerComputerAppsRequest, BrokerComputerCaptureRequest,
+    BrokerComputerLaunchRequest, BrokerComputerSnapshotRequest, BrokerComputerVerifyRequest,
+    BrokerComputerWindowsRequest, BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest,
+    BrokerFeedbackRequest, BrokerMessage, BrokerRequest, BrokerResponse, BrokerResumeTaskRequest,
+    BrokerSessionRequest, BrokerSetTimerRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
     BrokerTaskProgressRequest,
-    BrokerComputerActRequest,
-    BrokerComputerAppsRequest,
-    BrokerComputerCaptureRequest,
-    BrokerComputerLaunchRequest,
-    BrokerComputerSnapshotRequest,
-    BrokerComputerVerifyRequest,
-    BrokerComputerWindowsRequest,
 };
 use crate::acp::delegation::types::{
     DelegationRequest, DelegationTaskReport, ResumeDelegationRequest, TaskStatus,
@@ -1058,7 +1043,9 @@ impl DelegationListener {
                 crate::acp::computer_tools::no_such_target_note(&req.target_id),
             );
         }
-        self.computer.capture(&req.target_id, req.max_dimension).await
+        self.computer
+            .capture(&req.target_id, req.max_dimension)
+            .await
     }
 
     async fn process_computer_snapshot(
@@ -1673,11 +1660,11 @@ pub fn default_socket_path(_temp_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::acp::browser_tools::{NoBrowserTabs, ERROR_GRANT_REQUIRED};
+    use crate::acp::computer_tools::NoComputerDesktop;
     use crate::acp::delegation::broker::{ConversationDepthLookup, DelegationConfig};
     use crate::acp::delegation::spawner::{
         mock::MockSpawner, ConnectionSpawner, ResumedSpawn, SpawnerError,
     };
-    use crate::acp::computer_tools::NoComputerDesktop;
     use crate::acp::delegation::types::{DelegationError, DelegationOutcome, DelegationSuccess};
     use serde_json::json;
     use std::time::Duration;

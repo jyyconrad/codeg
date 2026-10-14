@@ -7208,6 +7208,7 @@
     "importFailed": "Import failed: {message}",
     "v2": {
       "nav": {
+        "files": "Dateien",
         "work": "Arbeit",
         "capabilities": "Fähigkeiten",
         "sources": "Quellen",
@@ -7232,7 +7233,7 @@
       "settings": "Einstellungen",
       "browseFiles": "Dateien durchsuchen",
       "showInternal": "Interne Dateien anzeigen",
-      "fileBrowserHint": "Gespeicherte Dateien durchsuchen. Interne Einträge sind standardmäßig verborgen.",
+      "fileBrowserHint": "Ordner im Vault durchsuchen und eine Markdown-Datei öffnen.",
       "search": "Suchen",
       "searchPlaceholder": "Titel oder Inhalt suchen",
       "searchScope": "Suchbereich",
@@ -7379,6 +7380,8 @@
       },
       "settingsTitle": "Persönliches Wiki einrichten",
       "settingsHint": "Arbeitsaufzeichnung und Zeitpunkt der Organisation wählen. Hinzugefügtes Material wird zum Lesen archiviert.",
+      "layoutTitle": "Vault-Layout",
+      "layoutHint": "Gelesen aus .codeg-wiki-v3.json im Vault. Diese Seite speichert das Layout nicht.",
       "backToWiki": "Zurück zum Wiki",
       "enableHint": "Abgeschlossene Gesprächsrunden aufzeichnen. Beim Pausieren bleiben Inhalte lesbar.",
       "autoOrganize": "Automatische Organisation",

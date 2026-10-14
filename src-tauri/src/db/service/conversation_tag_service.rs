@@ -35,8 +35,8 @@ use std::collections::HashMap;
 use chrono::Utc;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
-    DbErr, EntityTrait, QueryFilter, QueryOrder, Set, SqlErr, TransactionTrait,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr,
+    EntityTrait, QueryFilter, QueryOrder, Set, SqlErr, TransactionTrait,
 };
 
 use crate::db::entities::folder::FolderKind;
@@ -413,11 +413,13 @@ pub async fn update_conversation_tags(
                 }
                 if !add.is_empty() {
                     let now = Utc::now();
-                    let rows = add.into_iter().map(|tag_id| conversation_tag_link::ActiveModel {
-                        conversation_id: Set(conversation_id),
-                        tag_id: Set(tag_id),
-                        created_at: Set(now),
-                    });
+                    let rows = add
+                        .into_iter()
+                        .map(|tag_id| conversation_tag_link::ActiveModel {
+                            conversation_id: Set(conversation_id),
+                            tag_id: Set(tag_id),
+                            created_at: Set(now),
+                        });
                     conversation_tag_link::Entity::insert_many(rows)
                         .on_conflict(
                             OnConflict::columns([
@@ -624,7 +626,10 @@ mod tests {
     #[test]
     fn names_are_trimmed_capped_and_never_blank() {
         assert_eq!(normalize_tag_name("  bug  ").unwrap(), "bug");
-        assert!(matches!(normalize_tag_name(" \t "), Err(TagError::EmptyName)));
+        assert!(matches!(
+            normalize_tag_name(" \t "),
+            Err(TagError::EmptyName)
+        ));
         let long: String = "长".repeat(MAX_TAG_NAME_CHARS + 10);
         assert_eq!(
             normalize_tag_name(&long).unwrap().chars().count(),
@@ -683,7 +688,11 @@ mod tests {
         let owned = create_tag(&db.conn, Some(worktree), "Review", "#0e8a16")
             .await
             .expect("folder tag");
-        assert_eq!(owned.folder_id, Some(repo), "owned by the root, not the child");
+        assert_eq!(
+            owned.folder_id,
+            Some(repo),
+            "owned by the root, not the child"
+        );
 
         // Same family, same name: refused, whichever member asks.
         assert!(matches!(
@@ -909,7 +918,10 @@ mod tests {
         }
 
         assert!(delete_tag(&db.conn, doomed.id).await.unwrap());
-        assert!(!delete_tag(&db.conn, doomed.id).await.unwrap(), "already gone");
+        assert!(
+            !delete_tag(&db.conn, doomed.id).await.unwrap(),
+            "already gone"
+        );
         for conv in [one, two] {
             assert_eq!(tag_ids(&db.conn, conv).await, vec![kept.id]);
         }
@@ -961,11 +973,7 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(
-            in_folder
-                .iter()
-                .find(|s| s.id == parent)
-                .unwrap()
-                .tag_ids,
+            in_folder.iter().find(|s| s.id == parent).unwrap().tag_ids,
             vec![tag.id]
         );
         let children = conversation_service::list_children(&db.conn, parent)
