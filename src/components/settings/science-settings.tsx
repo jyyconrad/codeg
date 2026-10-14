@@ -17,6 +17,7 @@ import {
 } from "@/lib/api"
 import { invalidateAgentSkillsCache } from "@/hooks/use-agent-skills"
 import { isAvailableAgent } from "@/lib/available-agents"
+import { useLatestCall } from "@/hooks/use-latest-call"
 import { piUsesCustomAgentDir } from "@/lib/pi-config"
 import type {
   AcpAgentInfo,
@@ -50,7 +51,11 @@ export function ScienceBody({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
 
+  // A late answer from an earlier Refresh must not overwrite a newer one.
+  const beginLoad = useLatestCall()
+
   const refresh = useCallback(async () => {
+    const current = beginLoad()
     setLoading(true)
     setLoadError(null)
     try {
@@ -58,6 +63,7 @@ export function ScienceBody({
         scienceList(),
         acpListAgents(),
       ])
+      if (!current()) return
       setSkills(skillList)
       // Columns are available (enabled+installed) agents that have a skill
       // store. A pi pointed at a custom PI_CODING_AGENT_DIR isn't managed by
@@ -72,13 +78,14 @@ export function ScienceBody({
       )
       setReloadKey((k) => k + 1)
     } catch (err) {
+      if (!current()) return
       setLoadError(toErrorMessage(err))
       setSkills([])
       setAgents([])
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
-  }, [])
+  }, [beginLoad])
 
   useEffect(() => {
     refresh().catch((err) => {

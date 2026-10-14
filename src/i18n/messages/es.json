@@ -242,6 +242,19 @@
       "sectionDescription": "Las tarjetas de acceso rápido «Desarrollo de código / Ofimática» que se muestran sobre el editor en la página de nueva conversación.",
       "showQuickActions": "Mostrar en la página de nueva conversación"
     },
+    "chatAnimations": {
+      "sectionTitle": "Animaciones del chat",
+      "sectionDescription": "Animaciones de plegado/desplegado, llamadas a herramientas y estado de trabajo en el área de conversación, además del desplazamiento suave. Desactívalas para actualizaciones inmediatas. Los indicadores de carga siguen girando.",
+      "enable": "Activar las animaciones del chat"
+    },
+    "chatWidth": {
+      "sectionTitle": "Ancho del chat",
+      "sectionDescription": "Ancho máximo de la columna de conversación y del cuadro de entrada. También puedes arrastrar los bordes del chat para ajustarlo.",
+      "label": "Ancho del contenido",
+      "default": "Predeterminado ({width}px)",
+      "hint": "Medido con el zoom de ventana al 100% y escalado con él. Los valores muy grandes se limitan para caber en la ventana.",
+      "reset": "Restablecer"
+    },
     "workspaceBackground": {
       "sectionTitle": "Fondo del espacio de trabajo",
       "sectionDescription": "Muestra una imagen detrás de todo el espacio de trabajo. La barra lateral y los paneles se vuelven translúcidos y esmerilados para dejar ver la imagen, y una máscara mantiene el texto legible.",
@@ -2221,7 +2234,8 @@
         "assistant": "Asistente",
         "system": "Sistema",
         "toolResult": "Resultado",
-        "toolError": "Error"
+        "toolError": "Error",
+        "turnFailed": "Turno fallido"
       },
       "moreActions": "Más acciones"
     },
@@ -2263,6 +2277,8 @@
     "conversationCard": {
       "untitledConversation": "Conversación sin título",
       "newConversation": "Nueva conversación",
+      "maximize": "Maximizar",
+      "restore": "Restaurar",
       "attachToCurrentSession": "Agregar a la sesión",
       "rename": "Renombrar",
       "status": "Estado",
@@ -2473,6 +2489,9 @@
       "closeAll": "Cerrar todo",
       "hideTerminal": "Ocultar terminal ({shortcut})",
       "openFolderFirst": "Abre primero una carpeta",
+      "processExited": "Proceso finalizado",
+      "processExitedWithCode": "Proceso finalizado (código {code})",
+      "unavailable": "La sesión de terminal no está disponible. Puede haber terminado o el servidor se ha reiniciado.",
       "keybar": {
         "label": "Teclas virtuales del terminal",
         "show": "Mostrar teclas virtuales",
@@ -3628,6 +3647,7 @@
         "errorActionCommandCopied": "Copiado",
         "emptyConversation": "No hay mensajes en esta conversación.",
         "systemMessage": "Mensaje del sistema",
+        "turnFailed": "El turno falló: {message}",
         "copyMessage": "Copiar",
         "editLastRound": "Editar el último mensaje",
         "editingLastRound": "Al enviar se reemplazará esta ronda",
@@ -3669,7 +3689,8 @@
         "showMore": "Mostrar más",
         "showLess": "Mostrar menos",
         "loadBackgroundActivity": "Cargar actividad en segundo plano",
-        "workflowFollowUpLabel": "Codeg · Resultado del workflow"
+        "workflowFollowUpLabel": "Codeg · Resultado del workflow",
+        "resizeWidth": "Arrastra para cambiar el ancho del chat · doble clic para restablecer"
       },
       "liveTurnStats": {
         "thinking": "Pensando...",
@@ -3783,8 +3804,12 @@
         "nameLabel": "Nombre:",
         "agentPromptLabel": "Instrucción",
         "agentModelLabel": "Modelo",
+        "agentEffortLabel": "Esfuerzo",
         "agentRunning": "Ejecutando...",
         "agentLiveTranscript": "Actividad en vivo",
+        "agentProcessCount": "{count, plural, one {Actividad del subagente · # paso} other {Actividad del subagente · # pasos}}",
+        "agentProcessDuration": "Actividad del subagente · {duration}",
+        "agentRecoveredNote": "El subagente realmente terminó; su resultado nunca se entregó porque el turno se abortó:",
         "agentProgressTools": "{count} llamadas a herramientas",
         "agentProgressTurns": "{count} turnos",
         "agentProgressContext": "contexto {pct}%",
@@ -3950,6 +3975,8 @@
       "messageNav": {
         "title": "Navegación de mensajes",
         "collapse": "Contraer navegación de mensajes",
+        "loadingEarlier": "Cargando mensajes anteriores…",
+        "loadEarlier": "Cargar mensajes anteriores",
         "collapsedSummary": "Mensajes {count}",
         "fileCount": "{count, plural, one {# archivo} other {# archivos}}",
         "remove": "Quitar",
@@ -4356,7 +4383,25 @@
     "loading": "Cargando...",
     "emptyDirectory": "Este directorio está vacío",
     "errorLoadingDir": "Error al cargar el directorio",
-    "permissionDenied": "Permiso denegado"
+    "permissionDenied": "Permiso denegado",
+    "newFolder": {
+      "button": "Nueva carpeta",
+      "placeholder": "Nombre de la carpeta",
+      "create": "Crear carpeta",
+      "location": "En {path}",
+      "errors": {
+        "empty": "Escribe un nombre para la carpeta.",
+        "reservedName": "«{name}» no se puede usar como nombre de carpeta.",
+        "separator": "El nombre de una carpeta no puede contener / ni \\.",
+        "controlCharacter": "El nombre de una carpeta no puede contener caracteres de control ni saltos de línea.",
+        "reservedCharacter": "El nombre de una carpeta no puede contener {character}.",
+        "invalidParent": "No se puede crear una carpeta en {path}.",
+        "parentNotFound": "{path} ya no existe.",
+        "alreadyExists": "«{name}» ya existe aquí.",
+        "permissionDenied": "No tienes permiso para crear una carpeta aquí.",
+        "failed": "No se pudo crear la carpeta: {reason}"
+      }
+    }
   },
   "ChatChannelSettings": {
     "loading": "Cargando...",
@@ -4766,6 +4811,7 @@
       "experts": "Expertos",
       "science": "Ciencia",
       "office": "Herramientas de oficina",
+      "ui": "Interfaz",
       "custom": "Personalizadas"
     },
     "actions": {
@@ -4774,6 +4820,25 @@
     },
     "toasts": {
       "openFolderFailed": "Error al abrir la carpeta"
+    }
+  },
+  "GenerativeUiSettings": {
+    "loading": "Cargando…",
+    "category": "Interfaz generativa",
+    "skillName": "Renderizado de UI",
+    "skillDescription": "Permite que el agente responda con tarjetas, tablas y gráficos interactivos en el chat de Codeg.",
+    "usage": "Escribe /ui-render seguido de tu petición, por ejemplo /ui-render muestra en una tabla los archivos modificados. En Codex, usa $ui-render. También puedes pedirle al agente que lo muestre en tarjetas, en una tabla o en un gráfico. El agente tiene la habilidad en las conversaciones iniciadas después de habilitarla.",
+    "conflict": "Tu carpeta central de habilidades ya tiene una habilidad propia llamada ui-render. Cámbiale el nombre en la pestaña Personalizadas para usar la integrada.",
+    "notReadyHint": "Una habilidad propia llamada ui-render ocupa el nombre. Cámbiale el nombre en la pestaña Personalizadas.",
+    "badges": {
+      "nameTaken": "Nombre en uso"
+    },
+    "states": {
+      "not_linked": "No habilitado",
+      "linked_to_codeg": "Habilitado",
+      "linked_elsewhere": "Bloqueado — existe otro vínculo",
+      "blocked_by_real_directory": "Bloqueado — una habilidad personalizada ocupa este nombre",
+      "broken": "Vínculo roto"
     }
   },
   "QuickMessagesSettings": {
@@ -5029,6 +5094,8 @@
     }
   },
   "RemoteWorkspace": {
+    "openLocalWorkspace": "Abrir espacio de trabajo local",
+    "openLocalFailed": "No se pudo abrir el espacio de trabajo local",
     "openRemoteWorkspace": "Open remote workspace",
     "manage": "Manage remote workspace",
     "manageTitle": "Remote Workspace connections",
@@ -6444,7 +6511,10 @@
     "emptyHint": "Codeg lee los tokens directamente de la transcripción de cada agente. Actualiza para contabilizar lo que ya hay en esta máquina.",
     "emptyAction": "Contabilizar mis sesiones",
     "loadFailed": "No se pudo cargar el uso",
-    "truncatedNotice": "Este periodo es muy amplio: las cifras cubren solo su tramo más reciente."
+    "truncatedNotice": "Este periodo es muy amplio: las cifras cubren solo su tramo más reciente.",
+    "apiListEstimate": "≈ {amount} tarifa API",
+    "apiListEstimatePartial": "≈ {amount} tarifa API · {percent}% de tokens",
+    "apiListEstimateHint": "Tarifas base públicas de API de models.dev, con lecturas y escrituras de caché pero sin recargos por contexto largo ni por razonamiento. Los planes de suscripción facturan distinto."
   },
   "Forge": {
     "title": "Panel del repositorio",

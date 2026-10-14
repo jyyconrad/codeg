@@ -233,6 +233,10 @@ pub fn build_router(
             post(handlers::conversations::get_folder_conversation_turns),
         )
         .route(
+            "/get_folder_conversation_outline",
+            post(handlers::conversations::get_folder_conversation_outline),
+        )
+        .route(
             "/list_opened_tabs",
             post(handlers::conversations::list_opened_tabs),
         )
@@ -492,6 +496,10 @@ pub fn build_router(
         .route(
             "/list_directory_entries",
             post(handlers::folders::list_directory_entries),
+        )
+        .route(
+            "/create_directory",
+            post(handlers::folders::create_directory),
         )
         .route(
             "/list_directory_with_files",
@@ -1274,6 +1282,23 @@ pub fn build_router(
         .route(
             "/experts_open_central_dir",
             post(handlers::experts::experts_open_central_dir),
+        )
+        // ─── Generative UI (the ui-render skill) ───
+        .route(
+            "/generative_ui_skill_info",
+            post(handlers::generative_ui::generative_ui_skill_info),
+        )
+        .route(
+            "/generative_ui_list_all_install_statuses",
+            post(handlers::generative_ui::generative_ui_list_all_install_statuses),
+        )
+        .route(
+            "/generative_ui_apply_links",
+            post(handlers::generative_ui::generative_ui_apply_links),
+        )
+        .route(
+            "/generative_ui_read_content",
+            post(handlers::generative_ui::generative_ui_read_content),
         )
         // ─── Science ───
         .route("/science_list", post(handlers::science::science_list))

@@ -518,6 +518,26 @@ mod tauri_app {
             apply_webview_rendering_override()
         };
 
+        // The data directory next, for the same reason, and before the logging
+        // init resolves the log directory from it — the order `codeg-server`
+        // keeps. When `setup` exported it, the logs of a launch from the Start
+        // menu or the Dock went to `~/.codeg/logs`, while an instance codeg
+        // restarted inherited the variable and wrote beside the database (see
+        // `paths::desktop_data_dir`). Written back absolutized even when
+        // preset, so subprocesses inherit an absolute path (a relative one
+        // would re-resolve against their own working directory) and every
+        // reader of the variable sees the value the in-process resolver
+        // returns.
+        let context = tauri::generate_context!();
+        if let Some(data_dir) = paths::desktop_data_dir(
+            std::env::var_os("CODEG_DATA_DIR").as_deref(),
+            dirs::data_dir().as_deref(),
+            &context.config().identifier,
+        ) {
+            // SAFETY: single-threaded as argued above.
+            unsafe { std::env::set_var("CODEG_DATA_DIR", &data_dir) };
+        }
+
         // Install the logging subscriber next so it captures everything from
         // here on. The file appender's logs dir is resolved from env (no DB
         // needed); hold the guard for the whole process so buffered file lines
@@ -681,31 +701,30 @@ mod tauri_app {
                 // to the same helper so a pre-set `CODEG_DATA_DIR` is
                 // honored end-to-end.
                 //
-                // We also write the absolutized value back to the env,
-                // even when the operator pre-set it, so:
-                //   * subprocesses inherit an absolute path (a relative
-                //     `CODEG_DATA_DIR` would otherwise re-resolve
-                //     against the subprocess CWD, which may differ
-                //     from ours), and
-                //   * any future caller that reaches for the env
-                //     directly sees the same value the in-process
-                //     resolver returns.
-                //
-                // `set_var` is `unsafe` in edition 2024. We are still
-                // single-threaded at this point: `setup` runs on the
-                // main thread before any window or async runtime task
-                // reads the var, the Tauri plugins registered above
-                // (window state, opener, dialog, updater, process,
-                // notification) do not read `CODEG_DATA_DIR`, and the
-                // value is never mutated again for the lifetime of the
-                // process.
+                // `run()` exported the effective root as `CODEG_DATA_DIR`
+                // before the logging init (see `paths::desktop_data_dir`),
+                // so this resolves to it; nothing writes the variable after
+                // that. The derivation `run()` falls back to is Tauri's own
+                // — the platform data directory joined with the identifier —
+                // checked here on the raw values, since the exported root
+                // would only echo itself back: were the two ever to part, a
+                // plain launch would open a database Tauri's directory does
+                // not hold.
                 let effective_data_dir = paths::resolve_effective_data_dir(&app_data_dir);
-                // SAFETY: see the rationale block above — still
-                // single-threaded at setup; edition 2024 will require
-                // the `unsafe` block, mirroring the WebView2 rendering
-                // override.
-                unsafe {
-                    std::env::set_var("CODEG_DATA_DIR", &effective_data_dir);
+                let derived_data_dir = paths::desktop_data_dir(
+                    None,
+                    dirs::data_dir().as_deref(),
+                    &app.config().identifier,
+                );
+                if derived_data_dir.as_deref()
+                    != Some(git_credential::absolutize(&app_data_dir).as_path())
+                {
+                    tracing::warn!(
+                        "[paths][WARN] the data directory derived at startup ({:?}) differs from Tauri's app_data_dir ({}); the database follows {}",
+                        derived_data_dir,
+                        app_data_dir.display(),
+                        effective_data_dir.display()
+                    );
                 }
 
                 // `CODEG_HOME` overrides `CODEG_DATA_DIR` inside
@@ -1147,6 +1166,14 @@ mod tauri_app {
                             &computer_tools_for_init,
                         )
                         .await;
+                        // The generative-UI skill's central copy, and the move
+                        // from 0.35.0's `json-render`: here, before any command
+                        // runs, so the move can never undo a change made on
+                        // the settings page.
+                        crate::commands::generative_ui::install_generative_ui_skill(
+                            &db_for_init,
+                        )
+                        .await;
                     });
 
                     // Computer use: the helper, the window table, and the two
@@ -1391,7 +1418,9 @@ mod tauri_app {
                 // `list_open_folder_details` / `list_opened_tabs` inside it. It
                 // starts hidden only when it was hidden to the tray at quit and
                 // other workspace windows are coming back in its place; the
-                // tray, the dock and a second launch still bring it up.
+                // tray, a `codeg://` link and the other explicit local-workspace
+                // actions still bring it up, and so do the Dock and a second
+                // launch once no other workspace is open or on its way back.
                 if app.get_webview_window("main").is_none() {
                     let url = tauri::WebviewUrl::App(workspace_path.into());
                     let builder = tauri::WebviewWindowBuilder::new(app, "main", url)
@@ -1422,7 +1451,7 @@ mod tauri_app {
 
                 #[cfg(all(
                     feature = "browser-child",
-                    any(target_os = "macos", target_os = "windows")
+                    any(target_os = "macos", target_os = "windows", target_os = "linux")
                 ))]
                 crate::browser::surface_child::init_main_thread();
                 crate::browser::surface_window::init_main_thread();
@@ -1580,8 +1609,9 @@ mod tauri_app {
                         //     aux windows in a process with no workspace and
                         //     no way to bring it back — `pet` runs with
                         //     `skip_taskbar(true)`, and the single-instance
-                        //     callback's `show_main_window` is a no-op once
-                        //     main is destroyed. So the choice folds to Exit,
+                        //     callback's activation can only raise windows
+                        //     that still exist; nothing rebuilds a destroyed
+                        //     main. So the choice folds to Exit,
                         //     rather than exiting right here: folding keeps
                         //     the running-terminal confirmation below on the
                         //     path for this platform too.
@@ -1664,6 +1694,7 @@ mod tauri_app {
                 conversations::import_selected_sessions,
                 conversations::get_folder_conversation,
                 conversations::get_folder_conversation_turns,
+                conversations::get_folder_conversation_outline,
                 conversations::list_folders,
                 conversations::get_stats,
                 conversations::get_sidebar_data,
@@ -1778,6 +1809,7 @@ mod tauri_app {
                 workspace_state_commands::get_workspace_snapshot,
                 folders::get_home_directory,
                 folders::list_directory_entries,
+                crate::commands::create_directory::create_directory,
                 folders::list_directory_with_files,
                 folders::get_file_tree,
                 folders::list_workspace_files,
@@ -1806,6 +1838,7 @@ mod tauri_app {
                 windows::open_push_window,
                 windows::open_project_boot_window,
                 windows::open_import_sessions_window,
+                windows::open_local_workspace,
                 remote_workspace_commands::list_remote_workspace_connections,
                 remote_workspace_commands::create_remote_workspace_connection,
                 remote_workspace_commands::update_remote_workspace_connection,
@@ -2042,6 +2075,10 @@ mod tauri_app {
                 science_commands::science_apply_links,
                 science_commands::science_read_content,
                 science_commands::science_open_central_dir,
+                crate::commands::generative_ui::generative_ui_skill_info,
+                crate::commands::generative_ui::generative_ui_list_all_install_statuses,
+                crate::commands::generative_ui::generative_ui_apply_links,
+                crate::commands::generative_ui::generative_ui_read_content,
                 custom_skills_commands::custom_list,
                 custom_skills_commands::custom_list_all_install_statuses,
                 custom_skills_commands::custom_apply_links,
@@ -2256,22 +2293,18 @@ mod tauri_app {
                 web::update_web_service_config,
                 web::probe_web_service_port,
             ])
-            .build(tauri::generate_context!())
+            .build(context)
             .expect("error while building tauri application")
             .run(|app, event| match event {
                 // Some quits only ever reach `Exit`; see `shut_down`.
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => shut_down(app),
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
-                    // Dock-icon click: bring the workspace forward
-                    // unconditionally. `has_visible_windows` is true
-                    // whenever any aux window (pet, settings, commit…)
-                    // is alive, so gating on it would suppress recovery
-                    // even though `main` itself is hidden.
-                    // `show_main_window` is idempotent — already-visible
-                    // windows just get re-focused, which is what dock
-                    // activation should do anyway.
-                    windows::show_main_window(app);
+                    // Every Dock click, whatever `has_visible_windows` says:
+                    // it is true whenever an auxiliary window (pet, settings,
+                    // commit…) is up, even with every workspace hidden or
+                    // minimized. Raise the last-used local/remote workspace.
+                    workspace_windows::activate_workspace(app);
                 }
                 _ => {}
             });

@@ -93,9 +93,11 @@ export type AdaptedToolCallPart = {
    */
   meta?: Record<string, unknown> | null
   /**
-   * Live subagent transcript (claude-agent-acp ≥0.63), forwarded from
-   * `ContentBlock.tool_result.agent_transcript`. Present only on a RUNNING
-   * Agent card during streaming — promotion and history never carry it.
+   * The child's mixed timeline: the live transcript
+   * (`ContentBlock.tool_result.agent_transcript`, claude-agent-acp ≥0.63),
+   * which stays attached through settle and promotion, or — once history
+   * reloads from disk — the parsed `agent_stats.timeline`. Its `tool_call`
+   * markers index into `agentStats.tool_calls`.
    */
   agentTranscript?: AgentTranscriptEntry[] | null
 }
@@ -202,6 +204,11 @@ export type AdaptedContentPart =
   | AdaptedGeneratedImagePart
   | AdaptedPlanPart
   | AdaptedProposedPlanPart
+  /**
+   * The turn FAILED, in the agent's own words (`turn_error` block) — drawn as
+   * one muted line closing the round, never as a reply.
+   */
+  | { type: "turn-error"; message: string }
 
 export interface UserResourceDisplay {
   name: string
@@ -1573,6 +1580,9 @@ function adaptContentBlock(
         isStreaming,
       }
 
+    case "turn_error":
+      return { type: "turn-error", message: block.message }
+
     default:
       return null
   }
@@ -2093,6 +2103,7 @@ export function isTurnAnswerPart(part: AdaptedContentPart): boolean {
     case "text":
     case "proposed-plan":
     case "generated-image":
+    case "turn-error":
       return true
     case "reasoning":
     case "tool-call":
@@ -2521,7 +2532,14 @@ export function adaptMessageTurn(
               : undefined,
           agentStats: matchedResult.agent_stats ?? undefined,
           meta: block.meta ?? null,
-          agentTranscript: matchedResult.agent_transcript ?? undefined,
+          // The settled card keeps its interleaved view from whichever source
+          // survives: the live transcript while localTurns still holds it, the
+          // parsed child transcript once history reloads from disk.
+          agentTranscript: matchedResult.agent_transcript?.length
+            ? matchedResult.agent_transcript
+            : matchedResult.agent_stats?.timeline?.length
+              ? matchedResult.agent_stats.timeline
+              : undefined,
         })
       } else {
         // Position-based matching: if this tool_use has no ID, check next block
@@ -2564,7 +2582,12 @@ export function adaptMessageTurn(
                 : undefined,
             agentStats: positionalResult.agent_stats ?? undefined,
             meta: block.meta ?? null,
-            agentTranscript: positionalResult.agent_transcript ?? undefined,
+            // Same dual source as the id-matched branch above.
+            agentTranscript: positionalResult.agent_transcript?.length
+              ? positionalResult.agent_transcript
+              : positionalResult.agent_stats?.timeline?.length
+                ? positionalResult.agent_stats.timeline
+                : undefined,
           })
         } else {
           // For live streaming, unmatched tools are still running.

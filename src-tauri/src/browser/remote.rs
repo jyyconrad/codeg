@@ -288,11 +288,9 @@ enum ProbeSurface {
     #[cfg(all(target_os = "windows", feature = "browser-child"))]
     Child(crate::browser::surface_child::ChildHandle),
     /// Linux, and Windows without the embedded surface: a window that is
-    /// never shown, as the profile's tabs are owned windows there.
-    #[cfg(not(any(
-        target_os = "macos",
-        all(target_os = "windows", feature = "browser-child")
-    )))]
+    /// never shown, in the profile's own context (on Linux the one its
+    /// embedded tabs share too).
+    #[cfg(not(any(target_os = "macos", all(target_os = "windows", feature = "browser-child"))))]
     Window(tauri::WebviewWindow),
 }
 

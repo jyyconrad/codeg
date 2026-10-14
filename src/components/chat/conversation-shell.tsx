@@ -28,6 +28,9 @@ import type {
 } from "@/contexts/acp-connections-context"
 import type { QueuedMessage } from "@/hooks/use-message-queue"
 import { ChatInput } from "@/components/chat/chat-input"
+import { ChatWidthHandles } from "@/components/chat/chat-width-handles"
+import { chatGutterStyle } from "@/lib/chat-content-width"
+import { cn } from "@/lib/utils"
 import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { QuestionDialog } from "@/components/chat/question-dialog"
@@ -150,6 +153,12 @@ interface ConversationShellProps {
    *  once the composer has taken it. */
   injectContent?: ComposerInjectContent | null
   onInjectConsumed?: () => void
+  /** Give the chat column drag handles on its edges (`ChatWidthHandles`) and
+   *  the window-edge gutter they need. Only for the conversation tab: a canvas
+   *  card renders this shell inside the board's zoom transform, where the
+   *  handles' layout maths would be off by the zoom factor, and a card has no
+   *  window edge to keep clear. */
+  resizableWidth?: boolean
 }
 
 export function ConversationShell({
@@ -213,10 +222,14 @@ export function ConversationShell({
   topBanner,
   injectContent,
   onInjectConsumed,
+  resizableWidth = false,
 }: ConversationShellProps) {
   return (
     <WorkflowProgressDockProvider runs={workflows ?? []}>
-      <div className="relative flex h-full min-h-0 flex-col">
+      <div
+        className="relative flex h-full min-h-0 flex-col"
+        style={resizableWidth ? chatGutterStyle : undefined}
+      >
         {topBanner}
 
         {/* Above the transcript, not down in the composer dock: this is the state
@@ -231,7 +244,10 @@ export function ConversationShell({
         {/* Flex column, not a percentage-height slot. WKWebView often treats
             `h-full` inside a flex item as auto, which collapses an absolutely
             positioned terminal to a cursor. */}
-        <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+        <div className={cn("relative flex min-h-0 flex-1 flex-col")}>
+          {children}
+          {resizableWidth && <ChatWidthHandles />}
+        </div>
 
         <PermissionDialog
           permission={pendingPermission}
@@ -248,18 +264,18 @@ export function ConversationShell({
           feedback list and input — like the permission/question dialogs — so it
           shrinks the message list instead of covering it, while staying aligned
           to the input width. */}
-        <div>
-          {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
-            <div className="mx-auto w-full max-w-3xl px-4">
-              <AskQuestionCard
-                question={pendingAskQuestion}
-                onAnswer={onAnswerAskQuestion}
-              />
-            </div>
-          )}
-          {pendingPlanApproval && (
-            <div className="mx-auto w-full max-w-3xl px-4">
-              {/* key on approval_id so the card always remounts (fresh in-flight /
+      <div>
+        {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
+          <div className="mx-auto w-full chat-content-w px-4">
+            <AskQuestionCard
+              question={pendingAskQuestion}
+              onAnswer={onAnswerAskQuestion}
+            />
+          </div>
+        )}
+        {pendingPlanApproval && (
+          <div className="mx-auto w-full chat-content-w px-4">
+            {/* key on approval_id so the card always remounts (fresh in-flight /
                 feedback state) if the slot is ever reused for a new approval. */}
               <PlanApprovalCard
                 key={pendingPlanApproval.approval_id}
@@ -270,16 +286,16 @@ export function ConversationShell({
           )}
 
           {composerBanner && (
-            <div className="mx-auto w-full max-w-3xl px-4 pb-2">
+            <div className="mx-auto w-full chat-content-w px-4 pb-2">
               {composerBanner}
             </div>
           )}
 
           {!hideInput && feedbackList && (
-            <div className="mx-auto w-full max-w-3xl px-4">{feedbackList}</div>
+            <div className="mx-auto w-full chat-content-w px-4">{feedbackList}</div>
           )}
 
-          <div className="mx-auto w-full max-w-3xl">
+          <div className="mx-auto w-full chat-content-w">
             <div className="px-4">
               <WorkflowProgressOverlay placement="composer" />
             </div>

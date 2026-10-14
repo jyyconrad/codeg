@@ -56,6 +56,55 @@ struct BackgroundNotification {
     result: Option<String>,
 }
 
+/// Record one `<task-notification>` payload under its task id. The same id can
+/// notify more than once (a resumed sub-agent re-notifies), so the last wins.
+fn record_task_notification(
+    notifications: &mut std::collections::HashMap<String, BackgroundNotification>,
+    raw: &str,
+) {
+    if !raw.trim_start().starts_with("<task-notification>") {
+        return;
+    }
+    let Some(task_id) = capture_tag(task_notification_task_id_regex(), raw) else {
+        return;
+    };
+    notifications.insert(
+        task_id,
+        BackgroundNotification {
+            status: capture_tag(task_notification_status_regex(), raw)
+                .unwrap_or_else(|| "completed".to_string()),
+            summary: capture_tag(task_notification_summary_regex(), raw),
+            result: capture_tag(task_notification_result_regex(), raw)
+                .map(|r| truncate_str(&r, BACKGROUND_RESULT_MAX_CHARS)),
+        },
+    );
+}
+
+/// The `<task-notification>` text of a background task that settled while a
+/// turn was running, or `None` for any other record.
+///
+/// Settling between turns, a task's notification is a `user` record that
+/// starts a turn of its own. Settling mid-turn — the common case: a sub-agent
+/// or a command finishing while the agent keeps working — it is
+/// folded into the running turn as a `queued_command` attachment with
+/// `commandMode: "task-notification"` and the notification as its `prompt`
+/// string.
+pub(crate) fn queued_task_notification(value: &serde_json::Value) -> Option<&str> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("attachment") {
+        return None;
+    }
+    let attachment = value.get("attachment")?;
+    if attachment.get("type").and_then(|t| t.as_str()) != Some("queued_command")
+        || attachment.get("commandMode").and_then(|m| m.as_str()) != Some("task-notification")
+    {
+        return None;
+    }
+    attachment
+        .get("prompt")
+        .and_then(|p| p.as_str())
+        .filter(|raw| raw.trim_start().starts_with("<task-notification>"))
+}
+
 pub(crate) fn task_notification_task_id_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?s)<task-id>(.*?)</task-id>").unwrap())
@@ -289,7 +338,12 @@ fn pending_command_verdict(
     match value.get("type").and_then(|t| t.as_str()) {
         // A synthetic placeholder is what Claude Code writes FOR a client
         // command — evidence of the opposite, but the next prompt settles it.
-        Some("assistant") if !is_synthetic_assistant(value) => PendingCommandVerdict::Emit,
+        // A failed request's record is synthetic too, yet it is evidence FOR:
+        // only a request the command sent to the model can fail that way, and
+        // its failure line would otherwise answer a prompt that is not shown.
+        Some("assistant") if !is_synthetic_assistant(value) || api_error_text(value).is_some() => {
+            PendingCommandVerdict::Emit
+        }
         Some("user") => {
             // The marker is only ever written against a request that was
             // running, so the command did drive one — keep the prompt that
@@ -348,6 +402,12 @@ fn pending_command_verdict(
                 PendingCommandVerdict::Drop
             }
         }
+        // A message the user sent mid-turn is the next prompt just as a `user`
+        // record is (see `queued_human_prompt`), by the same emptiness test.
+        Some("attachment") => match queued_human_prompt(value) {
+            Some(prompt) if !user_content_blocks(prompt).is_empty() => PendingCommandVerdict::Drop,
+            _ => PendingCommandVerdict::Wait,
+        },
         _ => PendingCommandVerdict::Wait,
     }
 }
@@ -635,6 +695,49 @@ pub(crate) fn is_interrupt_marker(value: &serde_json::Value) -> bool {
     MARKERS.contains(&text)
 }
 
+/// The prompt of a message the user sent while a turn was running and Claude
+/// Code folded into that turn, or `None` for any other record.
+///
+/// Such a message is not a `user` record. The CLI writes it as a
+/// `queued_command` attachment where the running turn took it in — a native
+/// steer that lands while a foreground tool runs, and a prompt sent while Claude
+/// Code runs a turn it started on its own (after a background task's
+/// notification), folded in at the next tool boundary:
+///
+/// ```text
+/// {"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt",
+///  "origin":{"kind":"human"},"humanTurn":true,"prompt":[{"type":"text","text":"…"}]}}
+/// ```
+///
+/// The same attachment carries what nobody typed here: a background task's
+/// notification arriving mid-turn (`commandMode: "task-notification"`), a peer
+/// session's message (`origin.kind: "peer"`, flagged `isMeta`) and a
+/// coordinator's note to a sub-agent (no `commandMode`). So the origin decides
+/// when there is one — only `human` counts, an unknown kind included — and
+/// `humanTurn` only when there is none. The text is `prompt`, a string or a
+/// block array shaped like a user record's `message.content`; never `rendered`,
+/// which is the system-reminder wrapper the model reads.
+pub(crate) fn queued_human_prompt(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("attachment") || is_meta_message(value) {
+        return None;
+    }
+    let attachment = value.get("attachment")?;
+    if attachment.get("type").and_then(|t| t.as_str()) != Some("queued_command")
+        || attachment.get("commandMode").and_then(|m| m.as_str()) != Some("prompt")
+        || is_meta_message(attachment)
+    {
+        return None;
+    }
+    let human = match attachment.get("origin").filter(|origin| !origin.is_null()) {
+        Some(origin) => origin.get("kind").and_then(|k| k.as_str()) == Some("human"),
+        None => attachment.get("humanTurn").and_then(|h| h.as_bool()) == Some(true),
+    };
+    if !human {
+        return None;
+    }
+    attachment.get("prompt")
+}
+
 /// Capture Claude Code's two dedicated title records into their slots.
 ///
 /// * `{"type":"custom-title","customTitle":…}` — the name the USER set, via
@@ -666,11 +769,58 @@ pub(crate) fn capture_title_record(
         "ai-title" => ("aiTitle", ai_title),
         _ => return,
     };
-    if let Some(t) = value.get(field).and_then(|v| v.as_str()) {
-        let t = t.trim();
-        if !t.is_empty() {
-            *slot = Some(truncate_str(t, 100));
+    if let Some(t) = value
+        .get(field)
+        .and_then(|v| v.as_str())
+        .and_then(displayed_session_title)
+    {
+        *slot = Some(t);
+    }
+}
+
+/// A stored or published session title as codeg shows it: trimmed, without
+/// JetBrains AIR's archive marker, and capped at 100 characters. `None` when
+/// nothing is left.
+///
+/// AIR archives a Claude session by appending its title again with an
+/// `[archived] ` prefix (a `custom-title` record, plus an `agent-name` record
+/// codeg does not read). From claude-agent-acp 0.89.0 the adapter publishes
+/// such a title to an AIR client, which codeg is, with the marker removed
+/// once (`clientTitle`, AIR's `visibleTitle`), while the transcript keeps it.
+/// codeg has two producers for a Claude title, this transcript reader and the
+/// wire's `session_info_update.title`
+/// (`acp::session_title::native_title_from_session_info`), and
+/// `publish_native_title` only collapses identical strings. So both go
+/// through this one function; otherwise a session archived in AIR would flip
+/// between the two names on the sidebar while it is open in codeg.
+///
+/// The marker follows AIR's rule: `[archived]`, a run of ASCII white space,
+/// then a title. A bare `[archived]`, or one with no white space after it, is
+/// a title like any other.
+///
+/// EVERY leading marker goes, where AIR's display removes one. The adapter
+/// removes one before it publishes, so the wire hands this function what the
+/// transcript reader gets minus a marker; only a rule that gives the same
+/// answer on its own output keeps the two producers equal (`[archived]
+/// [archived] X` reads `X` either way). AIR's `storedTitle` drops them all as
+/// well, so it never writes two.
+pub(crate) fn displayed_session_title(raw: &str) -> Option<String> {
+    // What AIR's pattern calls white space: Java's ASCII `\s`.
+    const AIR_WHITESPACE: [char; 6] = [' ', '\t', '\n', '\u{0B}', '\u{0C}', '\r'];
+    let mut visible = raw.trim();
+    while let Some(rest) = visible.strip_prefix("[archived]") {
+        let title = rest.trim_start_matches(AIR_WHITESPACE);
+        if title.len() == rest.len() || title.trim().is_empty() {
+            break;
         }
+        // `trim` again: the adapter collapses and trims what it publishes, so
+        // a Unicode space left after the marker never reaches the wire.
+        visible = title.trim();
+    }
+    if visible.is_empty() {
+        None
+    } else {
+        Some(truncate_str(visible, 100))
     }
 }
 
@@ -856,6 +1006,36 @@ pub(crate) fn is_synthetic_assistant(value: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// What a request that FAILED for good died of. Claude Code then writes an
+/// assistant record flagged `isApiErrorMessage`, on the `<synthetic>` model,
+/// whose text is the error (`API Error: 503 …`, `Failed to authenticate. …`);
+/// its retries along the way are `system`/`api_error` records, not this.
+/// claude-agent-acp titles the live failure record with that same text
+/// (`assistantMessageText`), so the line a reload draws from it is the line the
+/// turn showed live.
+///
+/// `pub(crate)`: Qoder writes its failed turns the same way (see
+/// `parsers::qoder::is_non_conversational_assistant`).
+pub(crate) fn api_error_text(value: &serde_json::Value) -> Option<String> {
+    if !value
+        .get("isApiErrorMessage")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let text: String = match value.get("message")?.get("content")? {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+            .collect(),
+        _ => return None,
+    };
+    (!text.trim().is_empty()).then_some(text)
+}
+
 /// Context window to display for a *file-parsed* Claude Code session, which
 /// carries no authoritative window of its own (live sessions get one from the
 /// ACP `usage_update.size` and never reach here).
@@ -869,9 +1049,10 @@ pub(crate) fn is_synthetic_assistant(value: &serde_json::Value) -> bool {
 /// unavoidable. Assuming the 1M lane keeps the meter from over-reporting
 /// pressure ~5x on the extended-context models most sessions run; the cost is
 /// under-reporting for a session that really was on the 200K lane. Other
-/// agents' transcripts keep the id verbatim, so that path can detect the lane
-/// and defaults to 200K instead. Change one of these without the other and
-/// they silently disagree again.
+/// agents' transcripts keep the id verbatim, so that path can detect the lane:
+/// it reads 1M for the natively 1M models and the `-1m` spelling, and 200K
+/// for the older models whose 1M lane is opt-in. Change one of these without
+/// the other and they silently disagree again.
 fn claude_context_window_max_tokens_for_model(model: Option<&str>) -> Option<u64> {
     let model = model?.trim();
     if model.is_empty() {
@@ -1861,33 +2042,28 @@ impl ClaudeRecordAccumulator {
 
         match msg_type {
             "assistant" if is_synthetic_assistant(&value) => {
-                // Skip synthetic assistant placeholders for local commands
+                // Skip synthetic assistant placeholders for local commands —
+                // all but the one recording a request that FAILED, which
+                // closes its round as the failure line.
                 *pending_assistant_message_id = None;
+                if let Some(failure) = api_error_text(&value).and_then(|text| {
+                    let uuid = value.get("uuid").and_then(|u| u.as_str()).unwrap_or("");
+                    let timestamp = parse_timestamp(&value).unwrap_or_else(Utc::now);
+                    super::turn_error_message(uuid.to_string(), &text, timestamp)
+                }) {
+                    messages.push(failure);
+                }
             }
             "user" => {
                 // Capture `<task-notification>` payloads for the background
                 // lifecycle fold BEFORE tag-stripping empties the record out
-                // of the message stream (same id can notify more than once —
-                // a resumed sub-agent re-notifies — so last wins).
+                // of the message stream.
                 if let Some(raw) = value
                     .get("message")
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_str())
                 {
-                    if raw.trim_start().starts_with("<task-notification>") {
-                        if let Some(task_id) = capture_tag(task_notification_task_id_regex(), raw) {
-                            background_notifications.insert(
-                                task_id,
-                                BackgroundNotification {
-                                    status: capture_tag(task_notification_status_regex(), raw)
-                                        .unwrap_or_else(|| "completed".to_string()),
-                                    summary: capture_tag(task_notification_summary_regex(), raw),
-                                    result: capture_tag(task_notification_result_regex(), raw)
-                                        .map(|r| truncate_str(&r, BACKGROUND_RESULT_MAX_CHARS)),
-                                },
-                            );
-                        }
-                    }
+                    record_task_notification(background_notifications, raw);
                 }
 
                 let mut content = extract_user_content(&value);
@@ -1930,12 +2106,7 @@ impl ClaudeRecordAccumulator {
                     MessageRole::System
                 } else {
                     if title.is_none() {
-                        if let Some(first_text) = content.iter().find_map(|c| match c {
-                            ContentBlock::Text { text } => Some(text.clone()),
-                            _ => None,
-                        }) {
-                            *title = Some(title_from_user_text(&first_text));
-                        }
+                        *title = title_from_user_blocks(&content);
                     }
                     MessageRole::User
                 };
@@ -2000,7 +2171,15 @@ impl ClaudeRecordAccumulator {
                                 let subagent_path =
                                     subagent_dir.join(format!("agent-{}.jsonl", agent_id));
                                 if subagent_path.exists() {
-                                    stats.tool_calls = parse_subagent_tool_calls(&subagent_path).0;
+                                    let (calls, timeline, _, _, duration_ms) =
+                                        parse_subagent_tool_calls(&subagent_path);
+                                    stats.tool_calls = calls;
+                                    stats.timeline = timeline;
+                                    // The transcript-derived span only fills
+                                    // the gap: a task-reported duration is the
+                                    // more direct measurement.
+                                    stats.total_duration_ms =
+                                        stats.total_duration_ms.or(duration_ms);
                                 }
                             }
                         }
@@ -2130,7 +2309,46 @@ impl ClaudeRecordAccumulator {
                 *pending_assistant_message_id = message_id.map(str::to_string);
             }
             "attachment" => {
-                // `/goal` transitions ride on attachment records; everything
+                // A message the user sent mid-turn is the user turn a `user`
+                // record would have been, at the point the running turn took it
+                // in (see `queued_human_prompt`). Dropping it glued the reply to
+                // it onto the reply before.
+                if let Some(prompt) = queued_human_prompt(&value) {
+                    let content = user_content_blocks(prompt);
+                    if content.is_empty() {
+                        return;
+                    }
+                    if title.is_none() {
+                        *title = title_from_user_blocks(&content);
+                    }
+                    let timestamp = parse_timestamp(&value).unwrap_or_else(Utc::now);
+                    messages.push(UnifiedMessage {
+                        id: value
+                            .get("uuid")
+                            .and_then(|u| u.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        role: MessageRole::User,
+                        content,
+                        timestamp,
+                        usage: None,
+                        duration_ms: None,
+                        model: None,
+                        completed_at: Some(timestamp),
+                        agent_message_id: None,
+                    });
+                    return;
+                }
+                // A background task that settled mid-turn: nothing to render,
+                // but its payload is what settles the launch card (see
+                // `queued_task_notification`). Without it, a sub-agent that
+                // finished while the agent kept working showed as still
+                // pending once the conversation was reopened.
+                if let Some(raw) = queued_task_notification(&value) {
+                    record_task_notification(background_notifications, raw);
+                    return;
+                }
+                // `/goal` transitions ride on attachment records too; everything
                 // else the CLI attaches (agent listings, skill listings, task
                 // reminders) is context for the model, not conversation.
                 if let Some((phase, snapshot)) = goal_status_transition(&value) {
@@ -2175,7 +2393,12 @@ impl ClaudeRecordAccumulator {
                 match subtype {
                     "turn_duration" => {
                         if let Some(duration) = value.get("durationMs").and_then(|d| d.as_u64()) {
-                            // Attach to the last assistant message
+                            // Attach to the last assistant message. When a
+                            // message sent mid-turn split the turn
+                            // (`queued_human_prompt`), that is the part after the
+                            // message, which then carries the whole turn's time.
+                            // Only very old CLIs write this record (see
+                            // `parse_conversation_detail`).
                             if let Some(last) = messages
                                 .iter_mut()
                                 .rev()
@@ -2555,7 +2778,7 @@ impl ClaudeParser {
             title,
             started_at: first_timestamp.unwrap_or_else(Utc::now),
             ended_at: last_timestamp,
-            message_count: turns.len() as u32,
+            message_count: super::message_turn_count(&turns),
             model,
             git_branch,
             parent_id: None,
@@ -2608,16 +2831,17 @@ pub(crate) fn extract_user_text(value: &serde_json::Value) -> Option<String> {
 /// `pub(crate)`: shared with `parsers::qoder` (same envelope: string or block
 /// array, `image` blocks, `tool_result` / `server_tool_result` with images).
 pub(crate) fn extract_user_content(value: &serde_json::Value) -> Vec<ContentBlock> {
-    let mut blocks = Vec::new();
-    let message = match value.get("message") {
-        Some(m) => m,
-        None => return blocks,
-    };
-    let content = match message.get("content") {
-        Some(c) => c,
-        None => return blocks,
-    };
+    value
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .map(user_content_blocks)
+        .unwrap_or_default()
+}
 
+/// The blocks of a user `content` value — a record's `message.content`, or the
+/// `prompt` of a message folded into a running turn ([`queued_human_prompt`]).
+fn user_content_blocks(content: &serde_json::Value) -> Vec<ContentBlock> {
+    let mut blocks = Vec::new();
     if let Some(text) = content.as_str() {
         if let Some(cleaned) = strip_system_tags(text) {
             blocks.push(ContentBlock::Text { text: cleaned });
@@ -2666,6 +2890,14 @@ pub(crate) fn extract_user_content(value: &serde_json::Value) -> Vec<ContentBloc
     }
 
     blocks
+}
+
+/// The conversation title a user message gives: from its first text block.
+fn title_from_user_blocks(content: &[ContentBlock]) -> Option<String> {
+    content.iter().find_map(|block| match block {
+        ContentBlock::Text { text } => Some(title_from_user_text(text)),
+        _ => None,
+    })
 }
 
 fn extract_claude_user_image(item: &serde_json::Value) -> Option<ContentBlock> {
@@ -2744,6 +2976,8 @@ fn parse_data_uri_image(raw: &str) -> Option<(String, String)> {
 /// * `Edit` (already accepted by 2.1.274): `path` → `file_path`, `old_str` →
 ///   `old_string`, `new_str` → `new_string`, and `replace_name` →
 ///   `replace_all` (true only for `true` / `"true"`).
+/// * `Grep` (2.1.292, read out of the 2.1.293 binary): the other way round,
+///   see [`canonical_grep_input`].
 ///
 /// Each rename fills a canonical key the input left ABSENT, and only from a
 /// string, so an input that already uses the canonical names — the common
@@ -2763,6 +2997,7 @@ pub(crate) fn canonical_file_tool_input(
     let (is_write, aliases): (bool, &[&str]) = match tool_name {
         "Write" => (true, &["path", "file_text", "file_content"]),
         "Edit" => (false, &["path", "old_str", "new_str", "replace_name"]),
+        "Grep" => return canonical_grep_input(input),
         _ => return None,
     };
     let args = input.as_object()?;
@@ -2799,6 +3034,32 @@ pub(crate) fn canonical_file_tool_input(
         }
     }
     changed.then_some(serde_json::Value::Object(args))
+}
+
+/// Grep's one alias, the way the CLI repairs it: a non-empty `file_path` is
+/// read as `path` when `path` is absent, and dropped when it repeats `path`.
+/// Beside a different `path` it is left alone, as the CLI leaves it, and so is
+/// an empty one. The CLI also appends a note on the rename to the result
+/// ("Note: Grep's parameter for where to search is named `path`. …"), which
+/// the search card's output parser keeps as a note line.
+fn canonical_grep_input(input: &serde_json::Value) -> Option<serde_json::Value> {
+    let original = input.as_object()?;
+    let file_path = original
+        .get("file_path")?
+        .as_str()
+        .filter(|path| !path.is_empty())?;
+    let mut args = original.clone();
+    match original.get("path") {
+        None => {
+            let value = args.remove("file_path")?;
+            args.insert("path".to_string(), value);
+        }
+        Some(path) if path.as_str() == Some(file_path) => {
+            args.remove("file_path");
+        }
+        Some(_) => return None,
+    }
+    Some(serde_json::Value::Object(args))
 }
 
 /// Move `alias` onto `canonical` when the canonical key is absent and the alias
@@ -2952,6 +3213,8 @@ fn extract_agent_execution_stats(tur: &serde_json::Value) -> AgentExecutionStats
             .and_then(|v| v.as_u64())
             .map(|v| v as u32),
         tool_calls: Vec::new(),
+        timeline: Vec::new(),
+        recovered_result: None,
         // Claude's sub-agent lives inside the parent transcript (a sidechain),
         // not as a session of its own.
         child_session_id: None,
@@ -3006,7 +3269,7 @@ fn attribute_subagent_usage(session_path: &Path, turns: &mut [MessageTurn]) {
     transcripts.sort();
 
     for transcript in transcripts {
-        let (_, usage, started_at) = parse_subagent_tool_calls(&transcript);
+        let (_, _, usage, started_at, _) = parse_subagent_tool_calls(&transcript);
         let Some(extra) = usage else { continue };
 
         // The turn that was speaking when the sub-agent began. Falling back to
@@ -3042,19 +3305,62 @@ fn attribute_subagent_usage(session_path: &Path, turns: &mut [MessageTurn]) {
     }
 }
 
-/// Read one sub-agent's transcript: the tool calls it made, what it spent, and
-/// when it started.
+/// Per-entry cap for thinking/text blocks folded into a sub-agent timeline, so
+/// one huge block cannot balloon the stats every detail load carries. Almost
+/// every block is far below it; the ones that reach it are typically the
+/// child's long final report (measured on local Claude Code transcripts: 27 of
+/// 7,715 blocks, the longest ~40K chars), which the card also shows in full as
+/// the Agent call's own result.
+const TIMELINE_ENTRY_MAX_CHARS: usize = 16_384;
+
+/// One parsed sub-agent transcript: the tool calls, the mixed timeline,
+/// the deduped usage, the first record's timestamp, and the
+/// first-to-last-timestamped-record span (`None` without a real interval).
+pub(crate) type SubagentTranscript = (
+    Vec<AgentToolCall>,
+    Vec<AgentTimelineEntry>,
+    Option<TurnUsage>,
+    Option<DateTime<Utc>>,
+    Option<u64>,
+);
+
+/// Read one sub-agent's transcript: the tool calls it made, its mixed
+/// thinking/text/tool timeline, what it spent, when it started, and how long
+/// it ran.
+///
+/// The timeline preserves arrival order — a sub-agent transcript interleaves
+/// `thinking`/`text` blocks with its `tool_use` blocks exactly as the model
+/// emitted them, and that order IS the card's historical activity view. Each
+/// timeline `tool_call` entry anchors into the returned `AgentToolCall` vec by
+/// ordinal (`child_index`), which stays exact because the vec keeps arrival
+/// order: results are joined by id afterwards and never reorder it. `thinking`
+/// is read from the Anthropic field name (`thinking`), `text` from `text`;
+/// unknown block kinds (`redacted_thinking`, …) stay ignored. One API call is
+/// written as several records that PARTITION its content blocks (measured on
+/// real transcripts: no block repeats across the records of one `message.id`),
+/// so per-block extraction needs no dedup — only the usage below does.
 ///
 /// The usage is deduped by `message.id` on the same rule the parent transcript
 /// uses (see [`ClaudeRecordAccumulator::claim_assistant_usage`]) — a sub-agent
 /// transcript has the identical one-line-per-content-block shape. It is
 /// consumed by [`attribute_subagent_usage`]; the tool-call caller ignores it.
-fn parse_subagent_tool_calls(
-    path: &PathBuf,
-) -> (Vec<AgentToolCall>, Option<TurnUsage>, Option<DateTime<Utc>>) {
+///
+/// The duration is the span between the transcript's first and last timestamped
+/// records — the child's real active time, derived from data every record
+/// already carries. It is the fallback source for
+/// `AgentExecutionStats::total_duration_ms` where the task/meta file carries no
+/// duration (qoder's `task-*.json` has none). Records are appended in time
+/// order, so the last parse wins; a transcript with no interval (a single
+/// record, or no timestamps at all) yields `None` rather than a zero span.
+///
+/// Rewind rule, shared by `tool_calls` and the timeline: a sub-agent
+/// transcript left behind by a rewind stays on disk, but the attach passes
+/// only fill Agent calls present in the current branch's turns, so an
+/// abandoned branch's transcript is parsed and then dropped, never rendered.
+pub(crate) fn parse_subagent_tool_calls(path: &PathBuf) -> SubagentTranscript {
     let file = match fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return (Vec::new(), None, None),
+        Err(_) => return (Vec::new(), Vec::new(), None, None, None),
     };
     let reader = BufReader::new(file);
 
@@ -3066,6 +3372,14 @@ fn parse_subagent_tool_calls(
     let mut usage_by_message_id: std::collections::HashMap<String, TurnUsage> =
         std::collections::HashMap::new();
     let mut started_at: Option<DateTime<Utc>> = None;
+    // Last record that carried a usable `timestamp`. Cheap field-presence gate
+    // ahead of the RFC3339 parse keeps the per-line cost at zero for tail
+    // records once `started_at` is already known.
+    let mut last_timestamp: Option<DateTime<Utc>> = None;
+    // The card's mixed timeline in arrival order. `child_index` anchors each
+    // tool_call entry into `calls` — safe to record at push time because the
+    // final `tool_calls` array below keeps `calls`' arrival order untouched.
+    let mut timeline: Vec<AgentTimelineEntry> = Vec::new();
 
     for line in reader.lines() {
         let line = match line {
@@ -3082,8 +3396,13 @@ fn parse_subagent_tool_calls(
 
         let msg_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
-        if started_at.is_none() {
-            started_at = parse_timestamp(&value);
+        if value.get("timestamp").is_some() {
+            if let Some(ts) = parse_timestamp(&value) {
+                if started_at.is_none() {
+                    started_at = Some(ts);
+                }
+                last_timestamp = Some(ts);
+            }
         }
 
         if msg_type == "assistant" {
@@ -3116,23 +3435,53 @@ fn parse_subagent_tool_calls(
             {
                 for item in content {
                     let block_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if block_type == "tool_use" || block_type == "server_tool_use" {
-                        let id = item
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let name = item
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let input = item
-                            .get("input")
-                            .map(|v| truncate_str(&tool_input_json(&name, v), 500));
-                        if !id.is_empty() {
-                            calls.push((id, name, input));
+                    match block_type {
+                        "tool_use" | "server_tool_use" => {
+                            let id = item
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = item
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            let input = item
+                                .get("input")
+                                .map(|v| truncate_str(&tool_input_json(&name, v), 500));
+                            if !id.is_empty() {
+                                calls.push((id, name, input));
+                                timeline.push(AgentTimelineEntry {
+                                    entry_type: "tool_call".to_string(),
+                                    text: None,
+                                    child_index: Some(calls.len() - 1),
+                                });
+                            }
                         }
+                        "thinking" | "text" => {
+                            // The sub-agent's own reasoning and narration,
+                            // interleaved with its tool calls in the
+                            // transcript. Guard-railed per entry so one
+                            // pathologically large block cannot balloon the
+                            // stats payload attached to every ToolResult.
+                            if let Some(text) = item
+                                .get(if block_type == "thinking" {
+                                    "thinking"
+                                } else {
+                                    "text"
+                                })
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
+                                timeline.push(AgentTimelineEntry {
+                                    entry_type: block_type.to_string(),
+                                    text: Some(truncate_str(text, TIMELINE_ENTRY_MAX_CHARS)),
+                                    child_index: None,
+                                });
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -3190,7 +3539,15 @@ fn parse_subagent_tool_calls(
             }
         })
         .collect();
-    (calls, usage, started_at)
+    // A zero span is no span: a single-record transcript has no interval to
+    // report, and claiming 0ms would describe activity that never happened.
+    let duration_ms = match (started_at, last_timestamp) {
+        (Some(start), Some(end)) if end > start => {
+            Some((end - start).num_milliseconds().max(0) as u64)
+        }
+        _ => None,
+    };
+    (calls, timeline, usage, started_at, duration_ms)
 }
 
 /// The header Claude Code writes above a subagent's report inside the raw
@@ -3606,6 +3963,68 @@ mod tests {
     }
 
     #[test]
+    fn grep_file_path_is_read_as_path_the_way_the_cli_reads_it() {
+        // CLI 2.1.292: `path` from a non-empty `file_path` when `path` is absent.
+        assert_eq!(
+            canonical_file_tool_input(
+                "Grep",
+                &json!({"pattern": "needle", "file_path": "/w/a.txt", "output_mode": "content"})
+            ),
+            Some(json!({"pattern": "needle", "path": "/w/a.txt", "output_mode": "content"}))
+        );
+        // A repeat of `path` is dropped.
+        assert_eq!(
+            canonical_file_tool_input(
+                "Grep",
+                &json!({"pattern": "x", "path": "/w", "file_path": "/w"})
+            ),
+            Some(json!({"pattern": "x", "path": "/w"}))
+        );
+        // Beside a different `path`, empty, or not a string: the CLI repairs
+        // nothing, and neither does the card.
+        for input in [
+            json!({"pattern": "x", "path": "/w", "file_path": "/v"}),
+            json!({"pattern": "x", "path": null, "file_path": "/v"}),
+            json!({"pattern": "x", "file_path": ""}),
+            json!({"pattern": "x", "file_path": 7}),
+            json!({"pattern": "x"}),
+        ] {
+            assert_eq!(canonical_file_tool_input("Grep", &input), None, "{input}");
+        }
+        // Glob takes no such alias.
+        assert_eq!(
+            canonical_file_tool_input("Glob", &json!({"pattern": "*.rs", "file_path": "/w"})),
+            None
+        );
+    }
+
+    #[test]
+    fn a_history_grep_that_used_file_path_renders_with_path() {
+        let record = json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_g",
+                    "name": "Grep",
+                    "input": {"pattern": "needle", "file_path": "/w/a.txt"},
+                }],
+            },
+        });
+        let blocks = extract_assistant_content(&record);
+        let Some(ContentBlock::ToolUse {
+            input_preview: Some(input),
+            ..
+        }) = blocks.first()
+        else {
+            panic!("expected a tool_use block, got {blocks:?}");
+        };
+        let input: serde_json::Value = serde_json::from_str(input).unwrap();
+        assert_eq!(input, json!({"pattern": "needle", "path": "/w/a.txt"}));
+    }
+
+    #[test]
     fn aliases_are_only_settled_for_the_file_tools_and_only_from_strings() {
         // `path` is Grep's and Glob's own argument.
         for tool in ["Grep", "Glob", "Read", "Bash", "MultiEdit"] {
@@ -3671,13 +4090,233 @@ mod tests {
             })
         )
         .unwrap();
-        let (calls, _, _) = parse_subagent_tool_calls(&file.path().to_path_buf());
+        let (calls, _, _, _, _) = parse_subagent_tool_calls(&file.path().to_path_buf());
         let input: serde_json::Value =
             serde_json::from_str(calls[0].input_preview.as_deref().unwrap()).unwrap();
         assert_eq!(
             input,
             json!({"file_path": "/w/lib.rs", "old_string": "a", "new_string": "b"})
         );
+    }
+
+    /// One sub-agent record, one content block. The helper keeps the fixture
+    /// lines below shape-identical to what the CLI writes per streaming chunk.
+    fn subagent_record(at: &str, block: serde_json::Value) -> String {
+        json!({
+            "type": "assistant",
+            "timestamp": at,
+            "uuid": "c",
+            "message": {"id": "m1", "role": "assistant", "content": [block]},
+        })
+        .to_string()
+    }
+
+    /// Same record at the helper's default timestamp — the fixtures below that
+    /// don't care about the clock.
+    fn subagent_record_undated(block: serde_json::Value) -> String {
+        subagent_record("2026-08-16T15:45:33.089Z", block)
+    }
+
+    #[test]
+    fn a_subagent_timeline_keeps_the_arrival_order_of_thinking_text_and_tools() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for line in [
+            subagent_record(
+                "2026-08-16T15:45:33.089Z",
+                json!({
+                    "type": "thinking", "thinking": "Need the file first.", "signature": "s"
+                }),
+            ),
+            subagent_record("2026-08-16T15:45:33.189Z", json!({"type": "text", "text": "Checking."})),
+            subagent_record(
+                "2026-08-16T15:45:33.289Z",
+                json!({
+                    "type": "tool_use", "id": "tu1", "name": "Read",
+                    "input": {"file_path": "/a"}
+                }),
+            ),
+            subagent_record(
+                "2026-08-16T15:45:33.389Z",
+                json!({
+                    "type": "thinking", "thinking": "Now the command.", "signature": "s"
+                }),
+            ),
+            subagent_record(
+                "2026-08-16T15:45:33.489Z",
+                json!({
+                    "type": "tool_use", "id": "tu2", "name": "Bash",
+                    "input": {"command": "ls"}
+                }),
+            ),
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": "tu1", "content": "1\theader"
+                }]},
+            })
+            .to_string(),
+        ] {
+            writeln!(file, "{line}").unwrap();
+        }
+        let (calls, timeline, _, _, _) = parse_subagent_tool_calls(&file.path().to_path_buf());
+
+        assert_eq!(calls.len(), 2);
+        let kinds: Vec<(&str, Option<usize>, Option<&str>)> = timeline
+            .iter()
+            .map(|e| (e.entry_type.as_str(), e.child_index, e.text.as_deref()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("thinking", None, Some("Need the file first.")),
+                ("text", None, Some("Checking.")),
+                ("tool_call", Some(0), None),
+                ("thinking", None, Some("Now the command.")),
+                ("tool_call", Some(1), None),
+            ]
+        );
+        // Every tool_call entry anchors the call it sits at in `tool_calls`.
+        for entry in timeline.iter().filter(|e| e.entry_type == "tool_call") {
+            let call = &calls[entry.child_index.unwrap()];
+            assert_eq!(
+                call.tool_name,
+                if entry.child_index == Some(0) { "Read" } else { "Bash" }
+            );
+        }
+        assert_eq!(calls[0].output_preview.as_deref(), Some("1\theader"));
+    }
+
+    #[test]
+    fn a_pathologically_large_thinking_block_is_guard_railed_in_the_timeline() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            subagent_record_undated(json!({
+                "type": "thinking", "thinking": "x".repeat(20_000), "signature": "s"
+            }))
+        )
+        .unwrap();
+        let (_, timeline, _, _, _) = parse_subagent_tool_calls(&file.path().to_path_buf());
+        assert_eq!(timeline.len(), 1);
+        // `truncate_str` appends "..." past the cap.
+        let text = timeline[0].text.as_deref().unwrap();
+        assert_eq!(text.chars().count(), TIMELINE_ENTRY_MAX_CHARS + 3);
+        assert!(text.ends_with("..."));
+    }
+
+    #[test]
+    fn an_empty_subagent_transcript_yields_no_calls_and_no_timeline() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let (calls, timeline, usage, _, _) = parse_subagent_tool_calls(&file.path().to_path_buf());
+        assert!(calls.is_empty());
+        assert!(timeline.is_empty());
+        assert!(usage.is_none());
+    }
+
+    #[test]
+    fn a_subagent_transcripts_first_and_last_timestamps_yield_its_active_span() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for line in [
+            subagent_record(
+                "2026-08-16T15:45:33.000Z",
+                json!({
+                    "type": "tool_use", "id": "tu1", "name": "Read",
+                    "input": {"file_path": "/a"}
+                }),
+            ),
+            subagent_record(
+                "2026-08-16T15:45:35.500Z",
+                json!({"type": "text", "text": "done"}),
+            ),
+        ] {
+            writeln!(file, "{line}").unwrap();
+        }
+        let (_, _, _, _, duration_ms) = parse_subagent_tool_calls(&file.path().to_path_buf());
+        assert_eq!(duration_ms, Some(2_500));
+    }
+
+    #[test]
+    fn a_single_record_transcript_has_no_span_and_yields_no_duration() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            subagent_record(
+                "2026-08-16T15:45:33.000Z",
+                json!({"type": "text", "text": "one and only"}),
+            )
+        )
+        .unwrap();
+        let (_, _, _, _, duration_ms) = parse_subagent_tool_calls(&file.path().to_path_buf());
+        assert_eq!(duration_ms, None);
+    }
+
+    #[test]
+    fn a_transcript_without_timestamps_yields_no_duration() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        for line in [
+            json!({
+                "type": "assistant",
+                "uuid": "c1",
+                "message": {"id": "m1", "role": "assistant", "content": [
+                    {"type": "text", "text": "no clock here"}
+                ]},
+            })
+            .to_string(),
+            json!({
+                "type": "assistant",
+                "uuid": "c2",
+                "message": {"id": "m1", "role": "assistant", "content": [
+                    {"type": "text", "text": "still none"}
+                ]},
+            })
+            .to_string(),
+        ] {
+            writeln!(file, "{line}").unwrap();
+        }
+        let (_, _, _, _, duration_ms) = parse_subagent_tool_calls(&file.path().to_path_buf());
+        assert_eq!(duration_ms, None);
+    }
+
+    #[test]
+    fn a_subagent_timeline_reaches_the_history_card_through_the_sidechain_attach() {
+        let child = vec![
+            subagent_record_undated(json!({
+                "type": "thinking", "thinking": "Reading.", "signature": "s"
+            })),
+            subagent_record_undated(json!({
+                "type": "tool_use", "id": "tu1", "name": "Read",
+                "input": {"file_path": "/a"}
+            })),
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": "tu1", "content": "done"
+                }]},
+            })
+            .to_string(),
+        ];
+        let detail = parse_with_subagents(&session_launching("abc", 1), &[("abc", child)]);
+        let stats = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolResult { agent_stats, .. } => agent_stats.clone(),
+                _ => None,
+            })
+            .expect("Agent result carries agent_stats");
+        assert_eq!(
+            stats
+                .timeline
+                .iter()
+                .map(|e| e.entry_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["thinking", "tool_call"]
+        );
+        assert_eq!(stats.timeline[1].child_index, Some(0));
+        assert_eq!(stats.tool_calls[0].tool_name, "Read");
     }
 
     /// A resume replays the surviving history into the SAME transcript,
@@ -4877,6 +5516,37 @@ mod tests {
                     "type": "ai-title",
                     "aiTitle": "Concise AI Summary",
                     "sessionId": "custom-title-test"
+                }),
+            ],
+        );
+        assert_eq!(detail.as_deref(), Some("auth-refactor"));
+        assert_eq!(summary.as_deref(), Some("auth-refactor"));
+    }
+
+    #[test]
+    fn parse_shows_an_air_archived_title_without_its_marker() {
+        // JetBrains AIR archives a session by appending the title again with
+        // an `[archived] ` prefix, as this record pair. claude-agent-acp 0.89.0
+        // publishes the title to codeg without the marker, so the history
+        // reads it the same way rather than flipping the row between the two.
+        let (detail, summary) = parse_both_titles(
+            "customtitle-archived",
+            &[
+                user_line("custom-title-archived", "first user prompt"),
+                serde_json::json!({
+                    "type": "custom-title",
+                    "customTitle": "auth-refactor",
+                    "sessionId": "custom-title-archived"
+                }),
+                serde_json::json!({
+                    "type": "custom-title",
+                    "customTitle": "[archived] auth-refactor",
+                    "sessionId": "custom-title-archived"
+                }),
+                serde_json::json!({
+                    "type": "agent-name",
+                    "agentName": "[archived] auth-refactor",
+                    "sessionId": "custom-title-archived"
                 }),
             ],
         );
@@ -6806,6 +7476,136 @@ mod tests {
         assert_eq!(texts, vec!["/goal ship it", "never mind"]);
     }
 
+    /// The record Claude Code writes when a request FAILED for good closes its
+    /// round as the failure line: a `System` turn holding one `TurnError` with
+    /// the record's text — what claude-agent-acp titles the live failure with.
+    /// Never the model's reply. The retry notices before it (`system` /
+    /// `api_error`) stay out, and so does the `<synthetic>` placeholder a local
+    /// command writes, which records no failure.
+    #[test]
+    fn a_failed_request_closes_its_round_as_the_failure_line() {
+        let failure = "Failed to authenticate. API Error: 403 Your balance is too low.";
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in [
+            json!({
+                "type": "user",
+                "timestamp": "2026-09-12T12:27:30.000Z",
+                "uuid": "u1",
+                "message": { "role": "user", "content": [{"type": "text", "text": "hi"}] }
+            }),
+            json!({
+                "type": "system",
+                "subtype": "api_error",
+                "level": "error",
+                "timestamp": "2026-09-12T12:27:31.000Z",
+                "uuid": "s1",
+                "error": { "message": "Request timed out." },
+                "retryInMs": 500,
+                "retryAttempt": 1,
+                "maxRetries": 10
+            }),
+            // The shape of a real one (2026-09-12), its text shortened.
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-09-12T12:27:37.330Z",
+                "uuid": "e1",
+                "message": {
+                    "id": "65f6ee5b-9dd7-4d1a-924c-13291cb9ea69",
+                    "model": "<synthetic>",
+                    "role": "assistant",
+                    "stop_reason": "stop_sequence",
+                    "type": "message",
+                    "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                    "content": [{"type": "text", "text": failure}]
+                },
+                "error": "authentication_failed",
+                "isApiErrorMessage": true,
+                "apiErrorStatus": 403
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-09-12T12:28:00.000Z",
+                "uuid": "n1",
+                "message": {
+                    "id": "n1",
+                    "model": "<synthetic>",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "No response requested."}]
+                },
+                "isApiErrorMessage": false
+            }),
+        ] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        assert_eq!(
+            turns.iter().map(role_name).collect::<Vec<_>>(),
+            vec!["user", "system"]
+        );
+        assert!(
+            matches!(
+                turns[1].blocks.as_slice(),
+                [ContentBlock::TurnError { message }] if message == failure
+            ),
+            "{:?}",
+            turns[1].blocks
+        );
+    }
+
+    /// A command whose request FAILED drove a model request all the same, so
+    /// it keeps its prompt — or the failure line would answer nothing shown.
+    #[test]
+    fn failed_command_turn_keeps_its_prompt() {
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in [
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:43:38.000Z",
+                "uuid": "u-review",
+                "promptId": "p1",
+                "message": { "role": "user", "content": "<command-name>/review</command-name>\n<command-args>main</command-args>" }
+            }),
+            json!({
+                "type": "assistant",
+                "timestamp": "2026-08-15T23:43:45.000Z",
+                "uuid": "e1",
+                "message": {
+                    "model": "<synthetic>",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "API Error: 503 No available accounts."}]
+                },
+                "isApiErrorMessage": true
+            }),
+            json!({
+                "type": "user",
+                "timestamp": "2026-08-15T23:44:00.000Z",
+                "uuid": "u1",
+                "message": { "role": "user", "content": [{"type": "text", "text": "never mind"}] }
+            }),
+        ] {
+            acc.feed_line(&record.to_string());
+        }
+        acc.finalize_background_lifecycle();
+        let turns = group_into_turns(acc.messages);
+        let shown: Vec<_> = turns
+            .iter()
+            .map(|t| match t.blocks.as_slice() {
+                [ContentBlock::Text { text }] => text.clone(),
+                [ContentBlock::TurnError { message }] => format!("failed: {message}"),
+                other => panic!("unexpected blocks {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                "/review main",
+                "failed: API Error: 503 No available accounts.",
+                "never mind"
+            ]
+        );
+    }
+
     /// The fallback evidence, for a shape the stronger rules can't see: no
     /// `promptId` to correlate an injection with (nothing in today's corpus
     /// reaches this — every real command resolves at its expansion, injection or
@@ -7174,5 +7974,447 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    /// Records CLI 2.1.293 (claude-agent-acp 0.88.0) wrote for a native steer
+    /// that landed while a foreground `Bash` ran: the CLI moved the command to
+    /// the background to deliver the message, and recorded the message as a
+    /// `queued_command` attachment rather than a `user` record. Captured live,
+    /// trimmed to the fields the parser reads.
+    fn steered_bash_records() -> Vec<serde_json::Value> {
+        vec![
+            json!({
+                "type": "user",
+                "promptId": "262411ca",
+                "uuid": "3f0a9db3",
+                "timestamp": "2026-10-09T14:42:08.239Z",
+                "origin": {"kind": "human"},
+                "message": {"role": "user", "content": [{"type": "text", "text": "PLEASE_BASH:sleep 8"}]},
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "341620f3",
+                "timestamp": "2026-10-09T14:42:08.275Z",
+                "message": {
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_788f6f5c91fd4f6fa1f8",
+                        "name": "Bash",
+                        "input": {"command": "sleep 8", "description": "probe command"},
+                    }],
+                },
+            }),
+            json!({
+                "type": "user",
+                "promptId": "262411ca",
+                "uuid": "98b6533b",
+                "timestamp": "2026-10-09T14:42:12.337Z",
+                "message": {"role": "user", "content": [{
+                    "tool_use_id": "toolu_788f6f5c91fd4f6fa1f8",
+                    "type": "tool_result",
+                    "content": "Command was moved to the background (ID: bpedf5c38) so that a message that arrived while it was running can reach you; it was not interrupted.",
+                    "is_error": false,
+                }]},
+                "toolUseResult": {
+                    "stdout": "",
+                    "stderr": "",
+                    "interrupted": false,
+                    "backgroundTaskId": "bpedf5c38",
+                    "backgroundedToDeliverMessage": true,
+                },
+            }),
+            json!({
+                "type": "attachment",
+                "uuid": "3f1eeb50",
+                "timestamp": "2026-10-09T14:42:11.285Z",
+                "renderedRole": "system",
+                "attachment": {
+                    "type": "queued_command",
+                    "prompt": [{"type": "text", "text": "steer note S"}],
+                    "source_uuid": "62ae059e",
+                    "delivery_id": "a6c8322e",
+                    "commandMode": "prompt",
+                    "origin": {"kind": "human"},
+                    "timestamp": "2026-10-09T14:42:11.285Z",
+                    "humanTurn": true,
+                },
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "6f06b243",
+                "timestamp": "2026-10-09T14:42:12.352Z",
+                "message": {
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [{"type": "text", "text": "ok"}],
+                },
+            }),
+        ]
+    }
+
+    fn record_lines(records: &[serde_json::Value]) -> Vec<String> {
+        records.iter().map(|r| r.to_string()).collect()
+    }
+
+    /// The first text of every turn, or the tool it carries, by role.
+    fn turn_texts(turns: &[MessageTurn]) -> Vec<(&'static str, String)> {
+        turns
+            .iter()
+            .map(|t| {
+                let what = t
+                    .blocks
+                    .iter()
+                    .find_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        ContentBlock::ToolUse { tool_name, .. } => Some(format!("<{tool_name}>")),
+                        ContentBlock::Image { .. } => Some("<image>".to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                (role_name(t), what)
+            })
+            .collect()
+    }
+
+    /// A steer that lands while a tool runs reaches the transcript only as a
+    /// `queued_command` attachment. Reopening the conversation used to drop it
+    /// and glue the reply to it onto the reply before; it is the user turn the
+    /// live view drew, between the two.
+    #[test]
+    fn a_steer_folded_into_the_running_turn_is_a_user_turn() {
+        let detail = parse_lines("steer", &record_lines(&steered_bash_records()));
+        assert_eq!(
+            turn_texts(&detail.turns),
+            vec![
+                ("user", "PLEASE_BASH:sleep 8".to_string()),
+                ("assistant", "<Bash>".to_string()),
+                ("user", "steer note S".to_string()),
+                ("assistant", "ok".to_string()),
+            ]
+        );
+        // The command's result stays on its call, ahead of the steer.
+        assert!(detail.turns[1].blocks.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolResult { tool_use_id: Some(id), .. }
+                if id == "toolu_788f6f5c91fd4f6fa1f8"
+        )));
+        assert_eq!(
+            detail.turns[2].timestamp,
+            "2026-10-09T14:42:11.285Z".parse::<DateTime<Utc>>().unwrap()
+        );
+    }
+
+    /// The shape of #893: a background task's notification starts a turn
+    /// Claude Code runs on its own, and a prompt the user sends while that turn
+    /// runs a tool is folded into it. The notification renders nothing; the
+    /// prompt is a user turn ahead of the reply that answers it.
+    #[test]
+    fn a_prompt_folded_into_a_turn_claude_code_started_is_a_user_turn() {
+        let records = vec![
+            json!({
+                "type": "user",
+                "promptId": "d7649417",
+                "uuid": "n1",
+                "timestamp": "2026-10-09T14:25:25.807Z",
+                "origin": {"kind": "task-notification", "producer": "session-task"},
+                "message": {"role": "user", "content": "<task-notification>\n<task-id>bm4tzw9bf</task-id>\n<tool-use-id>toolu_3f58</tool-use-id>\n<status>completed</status>\n<summary>Background command \"bg probe\" completed (exit code 0)</summary>\n</task-notification>"},
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "a1",
+                "timestamp": "2026-10-09T14:25:25.900Z",
+                "message": {"role": "assistant", "content": [{
+                    "type": "tool_use", "id": "toolu_ce", "name": "Bash",
+                    "input": {"command": "sleep 8"},
+                }]},
+            }),
+            json!({
+                "type": "user",
+                "promptId": "d7649417",
+                "uuid": "r1",
+                "timestamp": "2026-10-09T14:25:33.870Z",
+                "message": {"role": "user", "content": [{
+                    "tool_use_id": "toolu_ce", "type": "tool_result",
+                    "content": "(Bash completed with no output)", "is_error": false,
+                }]},
+            }),
+            json!({
+                "type": "attachment",
+                "uuid": "d45c3de6",
+                "timestamp": "2026-10-09T14:25:27.843Z",
+                "attachment": {
+                    "type": "queued_command",
+                    "prompt": [{"type": "text", "text": "question B"}],
+                    "source_uuid": "b582704b",
+                    "delivery_id": "1e87be61",
+                    "commandMode": "prompt",
+                    "origin": {"kind": "human"},
+                    "timestamp": "2026-10-09T14:25:27.843Z",
+                    "humanTurn": true,
+                },
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "a2",
+                "timestamp": "2026-10-09T14:25:33.900Z",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            }),
+        ];
+        let detail = parse_lines("fold", &record_lines(&records));
+        assert_eq!(
+            turn_texts(&detail.turns),
+            vec![
+                ("assistant", "<Bash>".to_string()),
+                ("user", "question B".to_string()),
+                ("assistant", "ok".to_string()),
+            ]
+        );
+    }
+
+    /// One `queued_command` attachment record around `attachment`.
+    fn queued(attachment: serde_json::Value) -> serde_json::Value {
+        json!({
+            "type": "attachment",
+            "uuid": "q1",
+            "timestamp": "2026-10-09T14:42:11.285Z",
+            "attachment": attachment,
+        })
+    }
+
+    /// The same attachment type carries what nobody typed here. Only a human
+    /// origin counts; `humanTurn` decides only when there is no origin.
+    #[test]
+    fn queued_human_prompt_admits_only_what_the_user_typed() {
+        let typed = json!([{"type": "text", "text": "hi"}]);
+        let admitted = [
+            // CLI 2.1.293.
+            json!({"type": "queued_command", "prompt": typed, "commandMode": "prompt",
+                   "origin": {"kind": "human"}, "humanTurn": true, "delivery_id": "d"}),
+            // CLI 2.1.284: no `delivery_id` yet.
+            json!({"type": "queued_command", "prompt": typed, "commandMode": "prompt",
+                   "origin": {"kind": "human"}, "humanTurn": true}),
+            // A string prompt.
+            json!({"type": "queued_command", "prompt": "hi", "commandMode": "prompt",
+                   "origin": {"kind": "human"}}),
+            // No origin: `humanTurn` decides.
+            json!({"type": "queued_command", "prompt": typed, "commandMode": "prompt",
+                   "humanTurn": true}),
+            json!({"type": "queued_command", "prompt": typed, "commandMode": "prompt",
+                   "origin": null, "humanTurn": true}),
+        ];
+        for attachment in admitted {
+            assert!(
+                queued_human_prompt(&queued(attachment.clone())).is_some(),
+                "{attachment}"
+            );
+        }
+        let refused = [
+            // A background task settling mid-turn.
+            json!({"type": "queued_command", "commandMode": "task-notification",
+                   "prompt": "<task-notification>\n<task-id>b1</task-id>\n</task-notification>",
+                   "origin": {"kind": "task-notification", "producer": "session-task"}}),
+            // A peer session's message.
+            json!({"type": "queued_command", "prompt": "heads-up", "commandMode": "prompt",
+                   "origin": {"kind": "peer", "from": "x", "body": "heads-up"}, "isMeta": true}),
+            json!({"type": "queued_command", "prompt": "heads-up", "commandMode": "prompt",
+                   "origin": {"kind": "peer"}}),
+            // A coordinator's note to a sub-agent.
+            json!({"type": "queued_command", "prompt": "note", "origin": {"kind": "coordinator"},
+                   "isMeta": true}),
+            // An origin decides over `humanTurn`, an unknown kind included.
+            json!({"type": "queued_command", "prompt": typed, "commandMode": "prompt",
+                   "origin": {"kind": "scheduler"}, "humanTurn": true}),
+            // No origin and no `humanTurn`.
+            json!({"type": "queued_command", "prompt": typed, "commandMode": "prompt"}),
+            json!({"type": "queued_command", "prompt": typed, "commandMode": "prompt",
+                   "humanTurn": false}),
+            // Another attachment type.
+            json!({"type": "goal_status", "condition": "x", "met": false}),
+        ];
+        for attachment in refused {
+            assert!(
+                queued_human_prompt(&queued(attachment.clone())).is_none(),
+                "{attachment}"
+            );
+        }
+        // A meta record, and a record that is no attachment at all.
+        let mut meta = queued(json!({"type": "queued_command", "prompt": typed,
+                                      "commandMode": "prompt", "origin": {"kind": "human"}}));
+        meta["isMeta"] = json!(true);
+        assert!(queued_human_prompt(&meta).is_none());
+        assert!(queued_human_prompt(&json!({
+            "type": "user",
+            "attachment": {"type": "queued_command", "prompt": typed, "commandMode": "prompt",
+                           "origin": {"kind": "human"}},
+        }))
+        .is_none());
+    }
+
+    /// The text comes from `prompt`, never from `rendered` (the reminder the
+    /// model reads), and an image sent on its own still makes a user turn.
+    #[test]
+    fn a_folded_message_renders_its_prompt_blocks() {
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        let mut record = queued(json!({
+            "type": "queued_command",
+            "commandMode": "prompt",
+            "origin": {"kind": "human"},
+            "humanTurn": true,
+            "prompt": [{"type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": "QUJD",
+            }}],
+        }));
+        record["rendered"] = json!([{"content": [{"type": "text",
+            "text": "<system-reminder>\nThe user sent a new message while you were working:\n</system-reminder>"}]}]);
+        acc.feed_line(&record.to_string());
+        acc.feed_line(
+            &queued(json!({
+                "type": "queued_command",
+                "commandMode": "prompt",
+                "origin": {"kind": "human"},
+                "prompt": "   ",
+            }))
+            .to_string(),
+        );
+        let turns = group_into_turns(acc.messages);
+        assert_eq!(
+            turns.len(),
+            1,
+            "a prompt with nothing to show makes no turn"
+        );
+        assert!(matches!(
+            turns[0].blocks.as_slice(),
+            [ContentBlock::Image { data, mime_type, .. }]
+                if data == "QUJD" && mime_type == "image/png"
+        ));
+        assert!(matches!(turns[0].role, TurnRole::User));
+    }
+
+    /// A message the user sent mid-turn is the next prompt, the way a `user`
+    /// record is: it refutes a buffered client command, which therefore never
+    /// claims the reply that follows.
+    #[test]
+    fn a_folded_message_refutes_a_buffered_client_command() {
+        let records = vec![
+            json!({
+                "type": "user",
+                "uuid": "c1",
+                "promptId": "p-model",
+                "timestamp": "2026-10-09T14:00:00.000Z",
+                "message": {"role": "user", "content": "<command-name>/model</command-name>\n<command-args>opus</command-args>"},
+            }),
+            queued(json!({
+                "type": "queued_command",
+                "commandMode": "prompt",
+                "origin": {"kind": "human"},
+                "prompt": [{"type": "text", "text": "and then this"}],
+            })),
+            json!({
+                "type": "assistant",
+                "uuid": "a1",
+                "timestamp": "2026-10-09T14:00:05.000Z",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+            }),
+        ];
+        let mut acc = ClaudeRecordAccumulator::new(PathBuf::from("/nonexistent.jsonl"));
+        for record in &records {
+            acc.feed_line(&record.to_string());
+        }
+        assert_eq!(
+            turn_texts(&group_into_turns(acc.messages)),
+            vec![
+                ("user", "and then this".to_string()),
+                ("assistant", "done".to_string()),
+            ]
+        );
+    }
+
+    /// A sub-agent that finishes while the agent keeps working settles in a
+    /// `queued_command` attachment folded into the running turn, not in a
+    /// `user` record — the usual case. Its launch card used to read "result
+    /// pending" forever once the conversation was reopened.
+    #[test]
+    fn a_task_notification_folded_into_a_turn_settles_its_launch_card() {
+        let records = vec![
+            json!({
+                "type": "assistant",
+                "uuid": "a1",
+                "timestamp": "2026-10-09T06:11:38.000Z",
+                "message": {"role": "assistant", "content": [{
+                    "type": "tool_use", "id": "toolu_01C9", "name": "Agent",
+                    "input": {"description": "Review the plan", "prompt": "…", "run_in_background": true},
+                }]},
+            }),
+            json!({
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-10-09T06:11:39.000Z",
+                "message": {"role": "user", "content": [{
+                    "tool_use_id": "toolu_01C9", "type": "tool_result",
+                    "content": [{"type": "text", "text": "Async agent launched successfully. agentId: a0d5f5c8f20f7b765"}],
+                }]},
+                "toolUseResult": {"isAsync": true, "status": "async_launched", "agentId": "a0d5f5c8f20f7b765"},
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "a2",
+                "timestamp": "2026-10-09T06:12:00.000Z",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "Meanwhile, reading the code."}]},
+            }),
+            json!({
+                "type": "attachment",
+                "uuid": "q1",
+                "timestamp": "2026-10-09T06:21:32.400Z",
+                "attachment": {
+                    "type": "queued_command",
+                    "commandMode": "task-notification",
+                    "origin": {"kind": "task-notification", "producer": "session-task"},
+                    "prompt": "<task-notification>\n<task-id>a0d5f5c8f20f7b765</task-id>\n<tool-use-id>toolu_01C9</tool-use-id>\n<output-file>/tmp/x.output</output-file>\n<status>completed</status>\n<summary>Agent \"Review the plan\" completed</summary>\n<note>…</note>\n<result>Looks good.</result>\n<usage>…</usage>\n</task-notification>",
+                    "timestamp": "2026-10-09T06:21:32.400Z",
+                },
+            }),
+            json!({
+                "type": "assistant",
+                "uuid": "a3",
+                "timestamp": "2026-10-09T06:21:40.000Z",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "The review is back."}]},
+            }),
+        ];
+        let detail = parse_lines("bg", &record_lines(&records));
+        let marker = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolResult {
+                    output_preview: Some(o),
+                    ..
+                } => o.strip_prefix(BACKGROUND_TASK_MARKER),
+                _ => None,
+            })
+            .expect("the launch card carries a lifecycle marker");
+        let marker: serde_json::Value = serde_json::from_str(marker).unwrap();
+        assert_eq!(
+            marker,
+            json!({
+                "task_id": "a0d5f5c8f20f7b765",
+                "status": "completed",
+                "summary": "Agent \"Review the plan\" completed",
+                "result": "Looks good.",
+            })
+        );
+        // The notification itself renders nothing.
+        assert_eq!(
+            turn_texts(&detail.turns),
+            vec![
+                ("assistant", "<Agent>".to_string()),
+                ("assistant", "Meanwhile, reading the code.".to_string()),
+                ("assistant", "The review is back.".to_string()),
+            ]
+        );
     }
 }

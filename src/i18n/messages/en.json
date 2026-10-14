@@ -242,6 +242,19 @@
       "sectionDescription": "The Code Development / Office Work shortcut cards shown above the composer on the new conversation page.",
       "showQuickActions": "Show on the new conversation page"
     },
+    "chatAnimations": {
+      "sectionTitle": "Chat animations",
+      "sectionDescription": "Entrance, expand/collapse, tool-call and working-status animations in the conversation area, plus smooth scrolling. Turn off for instant, motion-free updates. Spinners keep rotating.",
+      "enable": "Enable chat animations"
+    },
+    "chatWidth": {
+      "sectionTitle": "Chat width",
+      "sectionDescription": "Maximum width of the conversation column and the composer. You can also drag the edges of the chat column to adjust it.",
+      "label": "Content width",
+      "default": "Default ({width}px)",
+      "hint": "Measured at 100% window zoom and scaled with it. Very wide values are limited to fit the window.",
+      "reset": "Reset to default"
+    },
     "workspaceBackground": {
       "sectionTitle": "Workspace background",
       "sectionDescription": "Show a picture behind the whole workspace. Sidebar and panels turn translucent and frosted so the image shows through, and a mask keeps text readable.",
@@ -2221,7 +2234,8 @@
         "assistant": "Assistant",
         "system": "System",
         "toolResult": "Result",
-        "toolError": "Error"
+        "toolError": "Error",
+        "turnFailed": "Turn failed"
       },
       "moreActions": "More actions"
     },
@@ -2263,6 +2277,8 @@
     "conversationCard": {
       "untitledConversation": "Untitled conversation",
       "newConversation": "New Conversation",
+      "maximize": "Maximize",
+      "restore": "Restore",
       "attachToCurrentSession": "Add to session",
       "rename": "Rename",
       "status": "Status",
@@ -2473,6 +2489,9 @@
       "closeAll": "Close All",
       "hideTerminal": "Hide Terminal ({shortcut})",
       "openFolderFirst": "Open a folder first",
+      "processExited": "Process exited",
+      "processExitedWithCode": "Process exited (code {code})",
+      "unavailable": "Terminal session unavailable. It may have ended or the backend restarted.",
       "keybar": {
         "label": "Terminal virtual keys",
         "show": "Show virtual keys",
@@ -3628,6 +3647,7 @@
         "errorActionCommandCopied": "Copied",
         "emptyConversation": "No messages in this conversation.",
         "systemMessage": "System message",
+        "turnFailed": "Turn failed: {message}",
         "copyMessage": "Copy",
         "editLastRound": "Edit last message",
         "editingLastRound": "Sending will replace this round",
@@ -3669,7 +3689,8 @@
         "showMore": "Show more",
         "showLess": "Show less",
         "loadBackgroundActivity": "Load background activity",
-        "workflowFollowUpLabel": "Codeg · Workflow result"
+        "workflowFollowUpLabel": "Codeg · Workflow result",
+        "resizeWidth": "Drag to resize the chat width · double-click to reset"
       },
       "liveTurnStats": {
         "thinking": "Thinking...",
@@ -3783,8 +3804,12 @@
         "nameLabel": "Name:",
         "agentPromptLabel": "Prompt",
         "agentModelLabel": "Model",
+        "agentEffortLabel": "Effort",
         "agentRunning": "Running...",
         "agentLiveTranscript": "Live activity",
+        "agentProcessCount": "{count, plural, one {Sub-agent activity · # step} other {Sub-agent activity · # steps}}",
+        "agentProcessDuration": "Sub-agent activity · {duration}",
+        "agentRecoveredNote": "The sub-agent actually finished; its result was never delivered because the turn aborted:",
         "agentProgressTools": "{count} tool calls",
         "agentProgressTurns": "{count} turns",
         "agentProgressContext": "context {pct}%",
@@ -3950,6 +3975,8 @@
       "messageNav": {
         "title": "Message navigation",
         "collapse": "Collapse message navigation",
+        "loadingEarlier": "Loading earlier messages…",
+        "loadEarlier": "Load earlier messages",
         "collapsedSummary": "Messages {count}",
         "fileCount": "{count, plural, one {# file} other {# files}}",
         "remove": "Remove",
@@ -4356,7 +4383,25 @@
     "loading": "Loading...",
     "emptyDirectory": "This directory is empty",
     "errorLoadingDir": "Failed to load directory",
-    "permissionDenied": "Permission denied"
+    "permissionDenied": "Permission denied",
+    "newFolder": {
+      "button": "New folder",
+      "placeholder": "Folder name",
+      "create": "Create folder",
+      "location": "In {path}",
+      "errors": {
+        "empty": "Enter a name for the folder.",
+        "reservedName": "“{name}” can't be used as a folder name.",
+        "separator": "A folder name can't contain / or \\.",
+        "controlCharacter": "A folder name can't contain control characters or line breaks.",
+        "reservedCharacter": "A folder name can't contain {character}.",
+        "invalidParent": "A folder can't be created in {path}.",
+        "parentNotFound": "{path} no longer exists.",
+        "alreadyExists": "“{name}” already exists here.",
+        "permissionDenied": "You don't have permission to create a folder here.",
+        "failed": "Couldn't create the folder: {reason}"
+      }
+    }
   },
   "ServerFileBrowser": {
     "title": "Pick server file",
@@ -4778,6 +4823,7 @@
       "experts": "Experts",
       "science": "Science",
       "office": "Office Tools",
+      "ui": "UI",
       "custom": "Custom"
     },
     "actions": {
@@ -4786,6 +4832,25 @@
     },
     "toasts": {
       "openFolderFailed": "Failed to open folder"
+    }
+  },
+  "GenerativeUiSettings": {
+    "loading": "Loading…",
+    "category": "Generative UI",
+    "skillName": "UI Render",
+    "skillDescription": "Lets the agent answer with interactive cards, tables and charts in Codeg's chat.",
+    "usage": "Type /ui-render followed by your request, for example /ui-render list the changed files as a table. In Codex, use $ui-render. You can also just ask the agent to show something as cards, a table or a chart. An agent gets the skill in conversations started after you enable it.",
+    "conflict": "Your central skills folder already has a skill of your own named ui-render. Rename it on the Custom tab to use the built-in one.",
+    "notReadyHint": "Your own skill named ui-render is in the way. Rename it on the Custom tab.",
+    "badges": {
+      "nameTaken": "Name in use"
+    },
+    "states": {
+      "not_linked": "Not enabled",
+      "linked_to_codeg": "Enabled",
+      "linked_elsewhere": "Blocked — another link exists",
+      "blocked_by_real_directory": "Blocked — a custom skill occupies this name",
+      "broken": "Broken link"
     }
   },
   "QuickMessagesSettings": {
@@ -5041,6 +5106,8 @@
     }
   },
   "RemoteWorkspace": {
+    "openLocalWorkspace": "Open local workspace",
+    "openLocalFailed": "Failed to open local workspace",
     "openRemoteWorkspace": "Open remote workspace",
     "manage": "Manage remote workspace",
     "manageTitle": "Remote Workspace connections",
@@ -6444,7 +6511,10 @@
     "emptyHint": "Codeg reads token counts straight from each agent's own transcript. Run a refresh to count what's already on this machine.",
     "emptyAction": "Count my sessions",
     "loadFailed": "Could not load usage",
-    "truncatedNotice": "This range is very large — the numbers cover only the most recent slice of it."
+    "truncatedNotice": "This range is very large — the numbers cover only the most recent slice of it.",
+    "apiListEstimate": "≈ {amount} API list",
+    "apiListEstimatePartial": "≈ {amount} API list · {percent}% of tokens",
+    "apiListEstimateHint": "Base API list rates from models.dev, including cache reads and writes but not long-context or reasoning surcharges. Subscription plans bill differently."
   },
   "Forge": {
     "title": "Repository panel",

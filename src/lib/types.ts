@@ -132,6 +132,21 @@ export interface AgentExecutionStats {
   lines_removed?: number | null
   other_tool_count?: number | null
   tool_calls?: AgentToolCall[]
+  /** The child's thinking/text/tool activity in arrival order, from the same
+   *  transcript pass that produced `tool_calls` (Rust mirror:
+   *  `AgentExecutionStats.timeline`; a `tool_call` entry's `childIndex`
+   *  anchors into `tool_calls` at the same ordinal). Lets the settled card
+   *  replay the child's mixed timeline when the live transcript is gone. */
+  timeline?: AgentTranscriptEntry[]
+  /** What the child's task file filed as its outcome (Qoder): for a
+   *  `status: "completed"` run, its final report, recovered after the parent
+   *  turn died before the async result was delivered (the card's tool_result
+   *  is then an error); other statuses file an error message or a
+   *  placeholder. Rendered ONLY on an errored card whose `status` is
+   *  `completed` — a normally completed async child delivered its result via
+   *  the notification turn, so this field stays invisible there (display
+   *  policy lives in the card, parsers attach it blindly). */
+  recovered_result?: string
   /** The child's own session id, when the sub-agent ran as a standalone session
    *  on disk instead of as chunks folded into the parent (Grok: every
    *  `spawn_subagent` child). Drives the Agent card's "open the sub-agent's
@@ -141,15 +156,27 @@ export interface AgentExecutionStats {
 }
 
 /**
- * One entry of a live subagent transcript (LIVE-only — never persisted, never
- * emitted by the Rust parsers). Entries arrive pre-merged: the reducer/backend
- * split blocks only at kind/attribution boundaries, so consecutive same-kind
- * chunks of one subagent are a single growing entry.
+ * One entry of a subagent transcript. Two data sources share this shape: the
+ * LIVE channel (a running capsule's stream; entries arrive pre-merged — the
+ * reducer/backend split blocks only at kind/attribution boundaries, so
+ * consecutive same-kind chunks of one subagent are a single growing entry)
+ * and history (`AgentExecutionStats.timeline`, parsed from the child's own
+ * JSONL by the Rust parsers — one entry per thinking/text/tool block, in
+ * arrival order).
  */
-export interface AgentTranscriptEntry {
-  type: "text" | "thinking"
-  text: string
-}
+export type AgentTranscriptEntry =
+  | { type: "text" | "thinking"; text: string }
+  | {
+      /**
+       * A marker into the mixed timeline: the child's OWN tool call, keeping
+       * its chronological position among the prose around it. `childIndex` is
+       * the call's ordinal among this parent's children — `agent_stats.
+       * tool_calls` carries no ids, and both lists are appended in the same
+       * arrival pass, so the ordinal is exact.
+       */
+      type: "tool_call"
+      childIndex: number
+    }
 
 /**
  * Image payload shared across `ContentBlock::Image` /
@@ -234,17 +261,26 @@ export type ContentBlock =
        */
       images?: ImageData[] | null
       /**
-       * Frontend-only, LIVE-stream data (same doctrine as the `plan` block:
-       * never persisted, never emitted by the Rust JSONL parsers). The
-       * in-flight transcript of a Claude native subagent — text/thinking
-       * chunks attributed to this Agent tool call via
+       * LIVE-stream data: the in-flight transcript of a native subagent —
+       * a marker per child tool call, plus (Claude Code only) the text/
+       * thinking chunks attributed to this Agent tool call via
        * `_meta.claudeCode.parentToolUseId` (claude-agent-acp ≥0.63) —
-       * rendered inside the live Agent capsule. Detached at settle:
-       * history shows the parsed `agent_stats` shape only.
+       * rendered inside the live Agent capsule. Still attached at settle so
+       * the finished card keeps the interleaved order it showed live; once
+       * history reloads from disk, the parsed `agent_stats.timeline` takes
+       * over as the card's timeline source.
        */
       agent_transcript?: AgentTranscriptEntry[] | null
     }
   | { type: "thinking"; text: string }
+  /**
+   * The turn FAILED, in the agent's own words. Mirror of Rust
+   * `ContentBlock::TurnError`: a parser puts it alone in a `system` turn
+   * closing the round, and the live stream does the same with the failure the
+   * adapter reported (`buildStreamingTurnsFromLiveMessage`). Drawn as one muted
+   * line, never as a reply.
+   */
+  | { type: "turn_error"; message: string }
   /**
    * Frontend-only, LIVE-stream synthetic block. It is NEVER persisted and
    * NEVER emitted by the Rust JSONL parsers — the persisted plan path is a
@@ -982,6 +1018,13 @@ export interface DbConversationDetail {
   /** Assistant turns in `full[0..turns_offset)` (baseline globalization). */
   assistant_turns_before_offset?: number | null
   /**
+   * User turns in `full[0..turns_offset)`: the messages above the loaded
+   * window, which the message navigator counts without loading them. Absent
+   * from servers that predate the navigator outline
+   * (`getFolderConversationOutline`), so it doubles as that capability flag.
+   */
+  user_turns_before_offset?: number | null
+  /**
    * Structural fingerprint of `full[0..turns_offset)` as a fixed-width 16-hex
    * string (a raw u64 JSON number would be rounded past 2^53-1). Compared on
    * window refreshes to detect prefix rewrites (compaction), and used as the
@@ -1004,12 +1047,29 @@ export interface ConversationTurnsPage {
   turns_offset: number
   turns_total: number
   assistant_turns_before_offset: number
+  /** User turns in `full[0..turns_offset)`; absent from older servers. */
+  user_turns_before_offset?: number | null
   /** H(0..turns_offset) — adopted as the window fingerprint after a prepend. */
   prefix_hash: string
   /** H(0..min(beforeIndex, total)) — must equal the client's current window
    *  fingerprint for the page to legally join the loaded window. */
   prefix_hash_before_index: string
   uncovered_prefix_max_ts?: string | null
+}
+
+/**
+ * The message navigator's outline of the history above the loaded window:
+ * `full[0..min(beforeIndex, total))`, one entry per turn (`turns[i]` is
+ * global turn `i`), each cut down by the backend to what
+ * `extractSessionFilesGrouped` reads — so it indexes exactly like the full
+ * turns would. Ids, roles and timestamps are kept, so any prefix of it can be
+ * fingerprinted and checked against the window before it is used.
+ */
+export interface ConversationOutline {
+  turns: MessageTurn[]
+  turns_total: number
+  /** H(0..turns.length). */
+  prefix_hash: string
 }
 
 export type ConversationStatus =
@@ -4731,15 +4791,24 @@ export interface TerminalEvent {
    *  snapshot already contains (`seq <= snapshot.seq`). Absent on the exit
    *  event, which carries no output. */
   seq?: number
+  generation?: string
 }
 
-/** Recent output of a live terminal plus the cursor it was read at. `alive`
- *  false means no such terminal is running — the caller should spawn one
- *  rather than attach. */
+/** Recent output of a live or completed terminal.
+ *  When `alive` is false, `exists` distinguishes retained final output
+ *  from a missing session. */
 export interface TerminalSnapshot {
+  /** False after a backend restart or explicit close. Absent on old servers. */
+  exists?: boolean
+  /** Process exit code when a completed PTY reported one. */
+  exit_code?: number | null
+  generation?: string | null
   alive: boolean
   data: string
   seq: number
+  /** The PTY's size, which `data` was laid out for. Absent on old servers. */
+  cols?: number | null
+  rows?: number | null
 }
 
 export type TerminalAgentHookSupport = "available" | "unsupported"
@@ -4912,6 +4981,8 @@ export interface OpenCodeCatalogModel {
   context: number | null
   cost_in: number | null
   cost_out: number | null
+  cost_cache_read: number | null
+  cost_cache_write: number | null
 }
 
 /**

@@ -242,6 +242,19 @@
       "sectionDescription": "新会话页面输入框上方显示的「代码开发 / 日常办公」快捷卡片区域。",
       "showQuickActions": "在新会话页面显示"
     },
+    "chatAnimations": {
+      "sectionTitle": "聊天区域动画",
+      "sectionDescription": "会话区域内的折叠/展开、工具调用、工作状态等动画，以及平滑滚动。关闭后界面立即更新、不再有过渡动画；加载转圈图标仍会旋转。",
+      "enable": "启用聊天区域动画"
+    },
+    "chatWidth": {
+      "sectionTitle": "聊天区域宽度",
+      "sectionDescription": "会话列与输入框的最大宽度。也可以直接拖动聊天区域左右两侧的边缘来调整。",
+      "label": "内容宽度",
+      "default": "默认（{width}px）",
+      "hint": "数值按 100% 窗口缩放计，随缩放等比变化；过宽的值会按窗口大小自动限制。",
+      "reset": "恢复默认"
+    },
     "workspaceBackground": {
       "sectionTitle": "工作区背景",
       "sectionDescription": "在整个工作区背后显示一张图片。侧栏与面板会变半透明并磨砂让图片透出，遮罩保证文字可读。",
@@ -2221,7 +2234,8 @@
         "assistant": "助手",
         "system": "系统",
         "toolResult": "结果",
-        "toolError": "错误"
+        "toolError": "错误",
+        "turnFailed": "本轮失败"
       },
       "moreActions": "更多操作"
     },
@@ -2263,6 +2277,8 @@
     "conversationCard": {
       "untitledConversation": "未命名会话",
       "newConversation": "新建会话",
+      "maximize": "最大化",
+      "restore": "还原",
       "attachToCurrentSession": "添加到会话",
       "rename": "重命名",
       "status": "状态",
@@ -2473,6 +2489,9 @@
       "closeAll": "关闭所有",
       "hideTerminal": "隐藏终端（{shortcut}）",
       "openFolderFirst": "请先打开一个文件夹",
+      "processExited": "进程已退出",
+      "processExitedWithCode": "进程已退出（代码 {code}）",
+      "unavailable": "终端会话不可用；它可能已结束，或后端已重启。",
       "keybar": {
         "label": "终端虚拟键",
         "show": "显示虚拟键",
@@ -3628,6 +3647,7 @@
         "errorActionCommandCopied": "已复制",
         "emptyConversation": "当前会话暂无消息。",
         "systemMessage": "系统消息",
+        "turnFailed": "本轮失败：{message}",
         "copyMessage": "复制",
         "editLastRound": "修改上一轮",
         "editingLastRound": "发送后将覆盖这一轮对话",
@@ -3669,7 +3689,8 @@
         "showMore": "展开",
         "showLess": "收起",
         "loadBackgroundActivity": "加载后台活动",
-        "workflowFollowUpLabel": "Codeg · Workflow 结果"
+        "workflowFollowUpLabel": "Codeg · Workflow 结果",
+        "resizeWidth": "拖动调整聊天区域宽度 · 双击恢复默认"
       },
       "liveTurnStats": {
         "thinking": "思考中...",
@@ -3783,8 +3804,12 @@
         "nameLabel": "名称：",
         "agentPromptLabel": "提示词",
         "agentModelLabel": "模型",
+        "agentEffortLabel": "思考强度",
         "agentRunning": "运行中...",
         "agentLiveTranscript": "实时活动",
+        "agentProcessCount": "子智能体活动 · {count} 步",
+        "agentProcessDuration": "子智能体活动 · {duration}",
+        "agentRecoveredNote": "子智能体实际已完成，以下产出因回合中断未送达主会话：",
         "agentProgressTools": "{count} 次工具调用",
         "agentProgressTurns": "{count} 轮",
         "agentProgressContext": "上下文 {pct}%",
@@ -3950,6 +3975,8 @@
       "messageNav": {
         "title": "消息导航",
         "collapse": "收起消息导航",
+        "loadingEarlier": "正在加载更早的消息…",
+        "loadEarlier": "加载更早的消息",
         "collapsedSummary": "消息 {count}",
         "fileCount": "{count} 个文件",
         "remove": "移除",
@@ -4356,7 +4383,25 @@
     "loading": "加载中...",
     "emptyDirectory": "此目录为空",
     "errorLoadingDir": "加载目录失败",
-    "permissionDenied": "权限不足"
+    "permissionDenied": "权限不足",
+    "newFolder": {
+      "button": "新建文件夹",
+      "placeholder": "文件夹名称",
+      "create": "创建文件夹",
+      "location": "位于 {path}",
+      "errors": {
+        "empty": "请输入文件夹名称。",
+        "reservedName": "“{name}”不能用作文件夹名称。",
+        "separator": "文件夹名称不能包含 / 或 \\。",
+        "controlCharacter": "文件夹名称不能包含控制字符或换行符。",
+        "reservedCharacter": "文件夹名称不能包含 {character}。",
+        "invalidParent": "无法在 {path} 中创建文件夹。",
+        "parentNotFound": "{path} 已不存在。",
+        "alreadyExists": "“{name}”已存在。",
+        "permissionDenied": "没有在此处创建文件夹的权限。",
+        "failed": "无法创建文件夹：{reason}"
+      }
+    }
   },
   "ServerFileBrowser": {
     "title": "选择服务端文件",
@@ -4778,6 +4823,7 @@
       "experts": "专家",
       "science": "科学研究",
       "office": "办公工具",
+      "ui": "界面",
       "custom": "自定义"
     },
     "actions": {
@@ -4786,6 +4832,25 @@
     },
     "toasts": {
       "openFolderFailed": "打开目录失败"
+    }
+  },
+  "GenerativeUiSettings": {
+    "loading": "加载中…",
+    "category": "生成式界面",
+    "skillName": "界面渲染",
+    "skillDescription": "让智能体在 Codeg 的聊天里用可交互的卡片、表格和图表回复。",
+    "usage": "输入 /ui-render 加需求，例如 /ui-render 用表格列出这次改动的文件；Codex 用 $ui-render。也可以直接让智能体用卡片、表格或图表展示。启用后新建的会话里才有这个技能。",
+    "conflict": "中央目录里已有你自己的 ui-render 技能。在「自定义」页给它改个名，才能用 Codeg 内置的版本。",
+    "notReadyHint": "你自己的 ui-render 技能占用了这个名字，请在「自定义」页改名。",
+    "badges": {
+      "nameTaken": "名称被占用"
+    },
+    "states": {
+      "not_linked": "未启用",
+      "linked_to_codeg": "已启用",
+      "linked_elsewhere": "冲突 — 已有其他链接",
+      "blocked_by_real_directory": "冲突 — 已有同名的自定义 skill 占用",
+      "broken": "链接损坏"
     }
   },
   "QuickMessagesSettings": {
@@ -5041,6 +5106,8 @@
     }
   },
   "RemoteWorkspace": {
+    "openLocalWorkspace": "打开本地工作区",
+    "openLocalFailed": "打开本地工作区失败",
     "openRemoteWorkspace": "打开远端工作区",
     "manage": "管理远端工作区",
     "manageTitle": "远端工作区连接",
@@ -6444,7 +6511,10 @@
     "emptyHint": "codeg 直接从各智能体自己的会话记录里读取 Token 数。点一下刷新，把本机已有的会话统计进来。",
     "emptyAction": "统计我的会话",
     "loadFailed": "用量加载失败",
-    "truncatedNotice": "该范围过大 —— 下面的数字只覆盖了其中最近的一段。"
+    "truncatedNotice": "该范围过大 —— 下面的数字只覆盖了其中最近的一段。",
+    "apiListEstimate": "≈ {amount} API 标价",
+    "apiListEstimatePartial": "≈ {amount} API 标价 · {percent}% 的 token",
+    "apiListEstimateHint": "来自 models.dev 的公开 API 基础标价，含缓存读写，不含长上下文和推理加价。订阅套餐的计费方式不同。"
   },
   "Forge": {
     "title": "仓库面板",

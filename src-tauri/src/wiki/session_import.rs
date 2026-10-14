@@ -133,6 +133,12 @@ fn turn_text(turn: &crate::models::MessageTurn) -> String {
                     parts.push(format!("Tool result:\n{preview}"));
                 }
             }
+            ContentBlock::TurnError { message } => {
+                let t = message.trim();
+                if !t.is_empty() {
+                    parts.push(t.to_string());
+                }
+            }
             ContentBlock::Thinking { .. }
             | ContentBlock::Image { .. }
             | ContentBlock::ImageGeneration { .. } => {}

@@ -242,6 +242,19 @@
       "sectionDescription": "新しい会話ページで入力欄の上に表示される「コード開発 / 日常業務」のショートカットカードです。",
       "showQuickActions": "新しい会話ページに表示する"
     },
+    "chatAnimations": {
+      "sectionTitle": "チャットのアニメーション",
+      "sectionDescription": "会話エリア内の折りたたみ/展開、ツール呼び出し、作業状態などのアニメーションとスムーズスクロールを制御します。オフにすると即時に更新されます。スピナーは回転し続けます。",
+      "enable": "チャットのアニメーションを有効にする"
+    },
+    "chatWidth": {
+      "sectionTitle": "チャット幅",
+      "sectionDescription": "会話列と入力欄の最大幅です。チャット領域の左右の端をドラッグして調整することもできます。",
+      "label": "コンテンツ幅",
+      "default": "既定（{width}px）",
+      "hint": "値はウィンドウズーム 100% 時のもので、ズームに合わせて拡大縮小されます。広すぎる値はウィンドウに収まるよう自動的に制限されます。",
+      "reset": "既定に戻す"
+    },
     "workspaceBackground": {
       "sectionTitle": "ワークスペースの背景",
       "sectionDescription": "ワークスペース全体の背後に画像を表示します。サイドバーやパネルは半透明のすりガラスになり画像が透けて見えます。マスクで文字の可読性を保ちます。",
@@ -2221,7 +2234,8 @@
         "assistant": "アシスタント",
         "system": "システム",
         "toolResult": "結果",
-        "toolError": "エラー"
+        "toolError": "エラー",
+        "turnFailed": "ターン失敗"
       },
       "moreActions": "その他の操作"
     },
@@ -2263,6 +2277,8 @@
     "conversationCard": {
       "untitledConversation": "無題の会話",
       "newConversation": "新しい会話",
+      "maximize": "最大化",
+      "restore": "元に戻す",
       "attachToCurrentSession": "セッションに追加",
       "rename": "名前を変更",
       "status": "ステータス",
@@ -2473,6 +2489,9 @@
       "closeAll": "すべて閉じる",
       "hideTerminal": "ターミナルを隠す ({shortcut})",
       "openFolderFirst": "先にフォルダを開いてください",
+      "processExited": "プロセスが終了しました",
+      "processExitedWithCode": "プロセスが終了しました（コード {code}）",
+      "unavailable": "ターミナルセッションを利用できません。終了したか、バックエンドが再起動した可能性があります。",
       "keybar": {
         "label": "仮想ターミナルキー",
         "show": "仮想キーを表示",
@@ -3628,6 +3647,7 @@
         "errorActionCommandCopied": "コピーしました",
         "emptyConversation": "この会話にはメッセージがありません。",
         "systemMessage": "システムメッセージ",
+        "turnFailed": "このターンは失敗しました：{message}",
         "copyMessage": "コピー",
         "editLastRound": "直前のメッセージを編集",
         "editingLastRound": "送信するとこのラウンドが置き換わります",
@@ -3669,7 +3689,8 @@
         "showMore": "もっと見る",
         "showLess": "折りたたむ",
         "loadBackgroundActivity": "バックグラウンドの動作を読み込む",
-        "workflowFollowUpLabel": "Codeg · ワークフロー結果"
+        "workflowFollowUpLabel": "Codeg · ワークフロー結果",
+        "resizeWidth": "ドラッグでチャット幅を調整 · ダブルクリックで元に戻す"
       },
       "liveTurnStats": {
         "thinking": "考え中...",
@@ -3783,8 +3804,12 @@
         "nameLabel": "名前:",
         "agentPromptLabel": "プロンプト",
         "agentModelLabel": "モデル",
+        "agentEffortLabel": "思考の強度",
         "agentRunning": "実行中...",
         "agentLiveTranscript": "ライブアクティビティ",
+        "agentProcessCount": "サブエージェントのアクティビティ · {count} ステップ",
+        "agentProcessDuration": "サブエージェントのアクティビティ · {duration}",
+        "agentRecoveredNote": "サブエージェントは実際には完了しています。ターン中断のため結果はメインセッションに届きませんでした：",
         "agentProgressTools": "{count} 件のツール呼び出し",
         "agentProgressTurns": "{count} ターン",
         "agentProgressContext": "コンテキスト {pct}%",
@@ -3950,6 +3975,8 @@
       "messageNav": {
         "title": "メッセージナビ",
         "collapse": "メッセージナビを閉じる",
+        "loadingEarlier": "以前のメッセージを読み込み中…",
+        "loadEarlier": "以前のメッセージを読み込む",
         "collapsedSummary": "メッセージ {count}",
         "fileCount": "{count, plural, one {# 個のファイル} other {# 個のファイル}}",
         "remove": "削除",
@@ -4356,7 +4383,25 @@
     "loading": "読み込み中...",
     "emptyDirectory": "このディレクトリは空です",
     "errorLoadingDir": "ディレクトリの読み込みに失敗しました",
-    "permissionDenied": "アクセス権がありません"
+    "permissionDenied": "アクセス権がありません",
+    "newFolder": {
+      "button": "新しいフォルダ",
+      "placeholder": "フォルダ名",
+      "create": "フォルダを作成",
+      "location": "{path} 内",
+      "errors": {
+        "empty": "フォルダ名を入力してください。",
+        "reservedName": "「{name}」はフォルダ名に使用できません。",
+        "separator": "フォルダ名に / や \\ は使用できません。",
+        "controlCharacter": "フォルダ名に制御文字や改行は使用できません。",
+        "reservedCharacter": "フォルダ名に {character} は使用できません。",
+        "invalidParent": "{path} にはフォルダを作成できません。",
+        "parentNotFound": "{path} は存在しません。",
+        "alreadyExists": "「{name}」はすでに存在します。",
+        "permissionDenied": "ここにフォルダを作成する権限がありません。",
+        "failed": "フォルダを作成できませんでした: {reason}"
+      }
+    }
   },
   "ChatChannelSettings": {
     "loading": "読み込み中...",
@@ -4766,6 +4811,7 @@
       "experts": "エキスパート",
       "science": "科学研究",
       "office": "Officeツール",
+      "ui": "UI",
       "custom": "カスタム"
     },
     "actions": {
@@ -4774,6 +4820,25 @@
     },
     "toasts": {
       "openFolderFailed": "フォルダを開けませんでした"
+    }
+  },
+  "GenerativeUiSettings": {
+    "loading": "読み込み中…",
+    "category": "生成 UI",
+    "skillName": "UI レンダリング",
+    "skillDescription": "エージェントが Codeg のチャットで、操作できるカード・表・グラフを使って回答できるようにします。",
+    "usage": "入力欄に /ui-render と依頼内容を入力します。例: /ui-render 今回変更したファイルを表で一覧にして。Codex では $ui-render を使います。エージェントに、カードや表、グラフで見せてと頼むこともできます。スキルは有効にした後に始めた会話で使えます。",
+    "conflict": "中央フォルダーに、ui-render という名前の自作スキルがすでにあります。組み込み版を使うには、「カスタム」タブで名前を変更してください。",
+    "notReadyHint": "ui-render という名前の自作スキルと重なっています。「カスタム」タブで名前を変更してください。",
+    "badges": {
+      "nameTaken": "名前が使用中"
+    },
+    "states": {
+      "not_linked": "未有効",
+      "linked_to_codeg": "有効",
+      "linked_elsewhere": "ブロック — 別のリンクが存在",
+      "blocked_by_real_directory": "ブロック — カスタムスキルがこの名前を占有",
+      "broken": "壊れたリンク"
     }
   },
   "QuickMessagesSettings": {
@@ -5029,6 +5094,8 @@
     }
   },
   "RemoteWorkspace": {
+    "openLocalWorkspace": "ローカルワークスペースを開く",
+    "openLocalFailed": "ローカルワークスペースを開けませんでした",
     "openRemoteWorkspace": "Open remote workspace",
     "manage": "Manage remote workspace",
     "manageTitle": "Remote Workspace connections",
@@ -6444,7 +6511,10 @@
     "emptyHint": "codeg は各エージェント自身のセッション記録から直接トークン数を読み取ります。更新すると、このマシンにある記録を集計します。",
     "emptyAction": "セッションを集計",
     "loadFailed": "使用量を読み込めませんでした",
-    "truncatedNotice": "期間が非常に長いため、表示中の数値は直近の一部のみを対象としています。"
+    "truncatedNotice": "期間が非常に長いため、表示中の数値は直近の一部のみを対象としています。",
+    "apiListEstimate": "≈ {amount} APIリスト",
+    "apiListEstimatePartial": "≈ {amount} APIリスト · トークンの {percent}%",
+    "apiListEstimateHint": "models.dev の公開 API 基本リスト料金です。キャッシュの読み書きを含み、長いコンテキストや推論の割増料金は含みません。サブスクリプションの課金とは異なります。"
   },
   "Forge": {
     "title": "リポジトリパネル",

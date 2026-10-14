@@ -27,6 +27,8 @@ export function TerminalPanel() {
     markAgentLaunchFailed,
     isTerminalExplicitlyClosed,
     closeTerminal,
+    markTerminalRunning,
+    markTerminalStarted,
   } = useTerminalContext()
   const isMobile = useIsMobile()
 
@@ -96,6 +98,10 @@ export function TerminalPanel() {
             onAgentLaunched={markAgentLaunched}
             onAgentLaunchFailed={markAgentLaunchFailed}
             isExplicitlyClosed={isTerminalExplicitlyClosed}
+            spawnOnMissing={!tab.restored}
+            reuseCompleted
+            onSpawned={markTerminalStarted}
+            onProcessRestored={markTerminalRunning}
             isActive={tab.id === activeTabId}
             isVisible={isOpen}
             keybarVisible={keybarVisible}

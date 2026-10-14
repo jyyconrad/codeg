@@ -242,6 +242,19 @@
       "sectionDescription": "Les cartes de raccourci « Développement / Bureautique » affichées au-dessus du champ de saisie sur la page de nouvelle conversation.",
       "showQuickActions": "Afficher sur la page de nouvelle conversation"
     },
+    "chatAnimations": {
+      "sectionTitle": "Animations du chat",
+      "sectionDescription": "Animations de pliage/dépliage, d'appels d'outils et d'état de travail dans la zone de conversation, ainsi que le défilement fluide. Désactivez-les pour des mises à jour instantanées. Les indicateurs de chargement continuent de tourner.",
+      "enable": "Activer les animations du chat"
+    },
+    "chatWidth": {
+      "sectionTitle": "Largeur du chat",
+      "sectionDescription": "Largeur maximale de la colonne de conversation et de la zone de saisie. Vous pouvez aussi faire glisser les bords du chat pour l'ajuster.",
+      "label": "Largeur du contenu",
+      "default": "Par défaut ({width}px)",
+      "hint": "Mesurée avec un zoom de la fenêtre à 100% et mise à l'échelle avec lui. Les valeurs très grandes sont limitées pour tenir dans la fenêtre.",
+      "reset": "Réinitialiser"
+    },
     "workspaceBackground": {
       "sectionTitle": "Arrière-plan de l'espace de travail",
       "sectionDescription": "Affiche une image derrière tout l'espace de travail. La barre latérale et les panneaux deviennent translucides et dépolis pour laisser transparaître l'image, et un masque préserve la lisibilité du texte.",
@@ -2221,7 +2234,8 @@
         "assistant": "Assistant",
         "system": "Système",
         "toolResult": "Résultat",
-        "toolError": "Erreur"
+        "toolError": "Erreur",
+        "turnFailed": "Échec du tour"
       },
       "moreActions": "Plus d’actions"
     },
@@ -2263,6 +2277,8 @@
     "conversationCard": {
       "untitledConversation": "Conversation sans titre",
       "newConversation": "Nouvelle conversation",
+      "maximize": "Agrandir",
+      "restore": "Restaurer",
       "attachToCurrentSession": "Ajouter à la session",
       "rename": "Renommer",
       "status": "Statut",
@@ -2473,6 +2489,9 @@
       "closeAll": "Tout fermer",
       "hideTerminal": "Masquer le terminal ({shortcut})",
       "openFolderFirst": "Ouvrez d'abord un dossier",
+      "processExited": "Processus terminé",
+      "processExitedWithCode": "Processus terminé (code {code})",
+      "unavailable": "Session de terminal indisponible. Elle s'est peut-être terminée ou le serveur a redémarré.",
       "keybar": {
         "label": "Touches virtuelles du terminal",
         "show": "Afficher les touches virtuelles",
@@ -3628,6 +3647,7 @@
         "errorActionCommandCopied": "Copié",
         "emptyConversation": "Aucun message dans cette conversation.",
         "systemMessage": "Message système",
+        "turnFailed": "Échec du tour : {message}",
         "copyMessage": "Copier",
         "editLastRound": "Modifier le dernier message",
         "editingLastRound": "L’envoi remplacera ce tour",
@@ -3669,7 +3689,8 @@
         "showMore": "Afficher plus",
         "showLess": "Afficher moins",
         "loadBackgroundActivity": "Charger l'activité en arrière-plan",
-        "workflowFollowUpLabel": "Codeg · Résultat du workflow"
+        "workflowFollowUpLabel": "Codeg · Résultat du workflow",
+        "resizeWidth": "Faites glisser pour ajuster la largeur du chat · double-clic pour réinitialiser"
       },
       "liveTurnStats": {
         "thinking": "Réflexion...",
@@ -3783,8 +3804,12 @@
         "nameLabel": "Nom :",
         "agentPromptLabel": "Instruction",
         "agentModelLabel": "Modèle",
+        "agentEffortLabel": "Effort",
         "agentRunning": "En cours...",
         "agentLiveTranscript": "Activité en direct",
+        "agentProcessCount": "{count, plural, one {Activité du sous-agent · # étape} other {Activité du sous-agent · # étapes}}",
+        "agentProcessDuration": "Activité du sous-agent · {duration}",
+        "agentRecoveredNote": "Le sous-agent a en réalité terminé ; son résultat n'a jamais été livré car le tour s'est interrompu :",
         "agentProgressTools": "{count} appels d'outils",
         "agentProgressTurns": "{count} tours",
         "agentProgressContext": "contexte {pct}%",
@@ -3950,6 +3975,8 @@
       "messageNav": {
         "title": "Navigation des messages",
         "collapse": "Réduire la navigation des messages",
+        "loadingEarlier": "Chargement des messages précédents…",
+        "loadEarlier": "Charger les messages précédents",
         "collapsedSummary": "Messages {count}",
         "fileCount": "{count, plural, one {# fichier} other {# fichiers}}",
         "remove": "Retirer",
@@ -4356,7 +4383,25 @@
     "loading": "Chargement...",
     "emptyDirectory": "Ce répertoire est vide",
     "errorLoadingDir": "Échec du chargement du répertoire",
-    "permissionDenied": "Permission refusée"
+    "permissionDenied": "Permission refusée",
+    "newFolder": {
+      "button": "Nouveau dossier",
+      "placeholder": "Nom du dossier",
+      "create": "Créer le dossier",
+      "location": "Dans {path}",
+      "errors": {
+        "empty": "Saisissez un nom pour le dossier.",
+        "reservedName": "« {name} » ne peut pas servir de nom de dossier.",
+        "separator": "Un nom de dossier ne peut contenir ni / ni \\.",
+        "controlCharacter": "Un nom de dossier ne peut contenir ni caractères de contrôle ni sauts de ligne.",
+        "reservedCharacter": "Un nom de dossier ne peut pas contenir {character}.",
+        "invalidParent": "Impossible de créer un dossier dans {path}.",
+        "parentNotFound": "{path} n’existe plus.",
+        "alreadyExists": "« {name} » existe déjà ici.",
+        "permissionDenied": "Vous n’avez pas l’autorisation de créer un dossier ici.",
+        "failed": "Impossible de créer le dossier : {reason}"
+      }
+    }
   },
   "ChatChannelSettings": {
     "loading": "Chargement...",
@@ -4766,6 +4811,7 @@
       "experts": "Experts",
       "science": "Science",
       "office": "Outils bureautiques",
+      "ui": "Interface",
       "custom": "Personnalisées"
     },
     "actions": {
@@ -4774,6 +4820,25 @@
     },
     "toasts": {
       "openFolderFailed": "Échec de l'ouverture du dossier"
+    }
+  },
+  "GenerativeUiSettings": {
+    "loading": "Chargement…",
+    "category": "Interface générative",
+    "skillName": "Rendu d'interface",
+    "skillDescription": "Permet à l'agent de répondre avec des cartes, des tableaux et des graphiques interactifs dans le chat de Codeg.",
+    "usage": "Tapez /ui-render suivi de votre demande, par exemple /ui-render présente dans un tableau les fichiers modifiés. Dans Codex, utilisez $ui-render. Vous pouvez aussi simplement demander à l'agent de présenter le résultat en cartes, en tableau ou en graphique. La compétence est disponible dans les conversations démarrées après l'activation.",
+    "conflict": "Votre dossier central contient déjà une compétence personnelle nommée ui-render. Renommez-la dans l'onglet Personnalisées pour utiliser la version intégrée.",
+    "notReadyHint": "Une compétence personnelle nommée ui-render occupe ce nom. Renommez-la dans l'onglet Personnalisées.",
+    "badges": {
+      "nameTaken": "Nom déjà pris"
+    },
+    "states": {
+      "not_linked": "Non activé",
+      "linked_to_codeg": "Activé",
+      "linked_elsewhere": "Bloqué — un autre lien existe",
+      "blocked_by_real_directory": "Bloqué — une compétence personnalisée occupe ce nom",
+      "broken": "Lien cassé"
     }
   },
   "QuickMessagesSettings": {
@@ -5029,6 +5094,8 @@
     }
   },
   "RemoteWorkspace": {
+    "openLocalWorkspace": "Ouvrir l’espace de travail local",
+    "openLocalFailed": "Impossible d’ouvrir l’espace de travail local",
     "openRemoteWorkspace": "Ouvrir l’espace de travail distant",
     "manage": "Gérer l’espace de travail distant",
     "manageTitle": "Connexions à l’espace de travail distant",
@@ -6444,7 +6511,10 @@
     "emptyHint": "Codeg lit les tokens directement dans la transcription de chaque agent. Actualisez pour compter ce qui est déjà sur cette machine.",
     "emptyAction": "Compter mes sessions",
     "loadFailed": "Impossible de charger la consommation",
-    "truncatedNotice": "Cette période est très large — les chiffres ne couvrent que sa portion la plus récente."
+    "truncatedNotice": "Cette période est très large — les chiffres ne couvrent que sa portion la plus récente.",
+    "apiListEstimate": "≈ {amount} tarif API",
+    "apiListEstimatePartial": "≈ {amount} tarif API · {percent}% des jetons",
+    "apiListEstimateHint": "Tarifs de base publics API issus de models.dev, lectures et écritures de cache comprises, hors majorations pour contexte long ou raisonnement. Les abonnements facturent autrement."
   },
   "Forge": {
     "title": "Panneau du dépôt",

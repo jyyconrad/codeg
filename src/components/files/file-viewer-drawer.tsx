@@ -24,6 +24,7 @@ import {
   useWorkspaceFileTabs,
   type FileWorkspaceTab,
 } from "@/contexts/workspace-context"
+import { useHistoryBackDismiss } from "@/hooks/use-history-back-dismiss"
 import { useAppWorkspaceStore } from "@/stores/app-workspace-store"
 import { buildFileTabId } from "@/lib/file-tab-id"
 import {
@@ -88,6 +89,10 @@ export function FileViewerDrawer({
   onOpenChange: (open: boolean) => void
 }) {
   const t = useTranslations("Folder.fileViewer")
+
+  // The drawer is a state toggle, not a route: without a history entry behind
+  // it, the back gesture unloads the whole page instead of closing the panel.
+  useHistoryBackDismiss(open, () => onOpenChange(false))
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange} swipeDirection="right">
