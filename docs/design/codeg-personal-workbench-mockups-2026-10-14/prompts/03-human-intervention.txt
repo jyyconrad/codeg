@@ -1,0 +1,18 @@
+Use case: ui-mockup. Generate ONE high-fidelity desktop UI design screenshot for Codeg, the personal multi-agent workbench for an experienced FDE. Output a single flat front-facing full application screenshot, landscape 16:10, crisp readable Chinese typography, no device frame, no perspective, no presentation board, no watermark.
+Input Image 1 is a STYLE AND APPLICATION SHELL REFERENCE, not an edit target. Create a NEW screen with the same Codeg brand, light theme, component styling, spacing, top bar and left navigation. Preserve the professional white and pale-gray surfaces, near-black text, restrained blue primary buttons, teal running/finished status and amber waiting status, thin dividers, compact outline icons and subtle 8px radii. Use the same narrow sidebar and slim topbar as the reference. Chinese text legible, filenames/agent names/commit hashes in English where appropriate. Do not reproduce the previous screen's center content.
+Shared sidebar: "工作台", "待我处理" with badge 2, "助手", "成果", "知识库"; section "项目": selected "客户工单接入", "日志排障", "交付材料"; bottom "此电脑 · 在线", "云端 · 在线". Top bar Codeg wordmark, search field, quiet notification icon and neutral user avatar. No fictional personal name.
+Design actual working controls and hierarchy, not a dashboard of metrics, graph-canvas, robot illustrations or marketing concept. Render the quoted Chinese labels accurately.
+Screen 3: HUMAN INTERVENTION INBOX, "待我处理".
+The left navigation has "待我处理" selected. Main page title "待我处理", subtitle "问题、权限与成果验收，集中在这里". Top filter chips "全部", "提问", "权限", "验收" and project filter "客户工单接入".
+Main split has a concise inbox list ~33% and a spacious selected request detail ~67%.
+Inbox list contains three meaningful cards with type badges and execution location:
+selected amber-question card "提供测试接口地址", type "提问", "验证助手 · 此电脑", small time "5 分钟前";
+permission card "创建验证记录", type "权限", "验证助手 · 此电脑", small file hint "docs/validation/";
+artifact card "接入方案待验收", type "验收", "主助手 · 云端", artifact "接入方案.md".
+Each request remains its own type rather than one generic approve button.
+Selected detail header amber badge "等待你补充", title "提供测试接口地址". A compact identity row clearly states "客户工单接入 / 接口验证", "验证助手", "此电脑", "本次运行". Short direct explanation "验证助手需要测试环境的 API 地址，才能继续检查认证与字段映射。"
+A generous white form area with input label "测试接口地址", filled sample "https://sandbox.example.com/api". Optional multiline text input label "补充说明", sample "使用测试环境，只验证查询接口。". A clear scope note "回复仅发送给本次接口验证任务".
+Context strip heading "相关资料", file chips "客户需求.md", "接口说明.yaml", a discreet link "查看原会话". A boxed short assistant question preview: "可以提供测试环境地址吗？验证结果会写入项目资料。"
+Bottom primary action "发送给验证助手", secondary "稍后处理". Under button small feedback-state hint area reserved for "节点收到后继续", not pretending delivery is already acknowledged.
+A thin bottom activity section "最近介入" with two entries "你调整了验证范围" and "主助手已收到需求资料", clearly separated from the pending request.
+Use restrained amber only for status and blue for the sending action. This must feel like a fast, practical control surface for one person working with multiple agents, not enterprise compliance administration.

@@ -1,0 +1,20 @@
+Use case: ui-mockup.
+Generate ONE high-fidelity desktop application UI design screenshot for Codeg, a personal multi-agent workbench for an experienced FDE. This is screen 1 of a coherent four-screen design set: PROJECT WORKBENCH.
+Output: a single flat front-facing full application screenshot, wide landscape 16:10, crisp readable typography, no device frame, no perspective, no presentation-board captions, no watermark. The interface fills the canvas.
+Visual system: very light warm-gray canvas, white content, pale neutral sidebar, near-black text, restrained deep blue primary action, teal running indicators, amber attention indicators. Professional and calm, compact yet readable, subtle 1px dividers, 8px corner radii, generous spacing around main conversation. Match a polished native desktop productivity application, with small consistent outline icons. Chinese UI, English only for agent names, filenames and Git hashes. Do not turn it into a generic analytics dashboard or graph canvas.
+Layout: slim app top bar, narrow navigation sidebar ~200px, central project workspace ~950px, right contextual rail ~330px. Clear alignment and comfortable hierarchy.
+Top left wordmark "Codeg". Sidebar: "工作台", "待我处理" with badge 2, "助手", "成果", "知识库". A section "项目" with selected "客户工单接入", then "日志排障", "交付材料". Bottom compact execution location rows: "此电脑 · 在线", "云端 · 在线".
+Main header breadcrumb "项目 / 客户工单接入", title "客户工单接入", subtitle "从需求澄清到验证与交付", small top-right action "新工作". Under header, unobtrusive tabs "进行中", "会话", "成果", "资料". Show three concise ongoing work rows, not huge metric cards:
+"需求与方案" — "主助手" — "云端" — "进行中"
+"接口验证" — "Codex" — "此电脑" — "等待你补充"
+"交付材料" — "写作助手" — "云端" — "准备中".
+The principal central area is an active conversation section titled "主助手" with a small cloud pill. A short user message "基于客户需求，整理接入方案，并验证本地 API。" The assistant says "我已拆分为调研、接口验证和交付材料三条支线。" Below it two clean inline child-agent cards:
+"调研助手" with "云端 · 已完成" and artifact "接入方案.md";
+"验证助手" with "此电脑 · 等待材料" and note "需要测试接口地址".
+Show attachment/source chips "客户需求.md", "接口说明.yaml", and repository context "fde/ticket-bridge · 7c2a9e1".
+Sticky central bottom composer: placeholder "补充资料或调整方向…"; attachment plus icon, contextual button "选取资料", location selector "云端", send arrow. Make initiating work from selected documents obvious.
+Right rail has two practical sections:
+"待我处理" with amber question card "提供测试接口地址", explanatory line "接口验证 · 此电脑", button "填写信息";
+"最新成果" with tidy file rows "接入方案.md", "验证记录.json", then small link "查看全部".
+At bottom right a compact "项目约束" note with "先验证测试环境" and "交付需附证据".
+Use the quoted Chinese labels exactly and legibly. User intervention and execution location must be immediately obvious; show actual work, outputs and context rather than decorative charts. Render realistic product UI with no floating 3D shapes, robot avatars, giant gradients or marketing slogans.

@@ -1,0 +1,4 @@
+Use case: text-localization. Input image 1 is the edit target. Make ONLY a small text correction in this existing Codeg UI screenshot. Keep every layout, component, color, font, icon, agent state, avatar, other text, and canvas dimensions exactly unchanged.
+Correct the repository context strip's Chinese label next to hash 7c2a9e1 so it reads exactly "输入版本".
+In the lower-left "跨端交接" section, change the hash after "云端提交方案" from "8d17ac2" to "7c2a9e1". The submitted version and the version the personal computer reads must both be 7c2a9e1.
+These two localized text replacements fix the one version-handoff consistency issue. Do not alter other content or add UI.

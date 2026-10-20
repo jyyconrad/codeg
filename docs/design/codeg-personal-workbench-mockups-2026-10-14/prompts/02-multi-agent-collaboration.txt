@@ -1,0 +1,22 @@
+Use case: ui-mockup. Generate ONE high-fidelity desktop UI design screenshot for Codeg, the personal multi-agent workbench for an experienced FDE. Output a single flat front-facing full application screenshot, landscape 16:10, crisp readable Chinese typography, no device frame, no perspective, no presentation board, no watermark.
+Input Image 1 is a STYLE AND APPLICATION SHELL REFERENCE, not an edit target. Create a NEW screen with the same Codeg brand, light theme, component styling, spacing, top bar and left navigation. Preserve the professional white and pale-gray surfaces, near-black text, restrained blue primary buttons, teal running/finished status and amber waiting status, thin dividers, compact outline icons and subtle 8px radii. Use the same narrow sidebar and slim topbar as the reference. Chinese text legible, filenames/agent names/commit hashes in English where appropriate. Do not reproduce the previous screen's center content.
+Shared sidebar: "工作台", "待我处理" with badge 2, "助手", "成果", "知识库"; section "项目": selected "客户工单接入", "日志排障", "交付材料"; bottom "此电脑 · 在线", "云端 · 在线". Top bar Codeg wordmark, search field, quiet notification icon and neutral user avatar. No fictional personal name.
+Design actual working controls and hierarchy, not a dashboard of metrics, graph-canvas, robot illustrations or marketing concept. Render the quoted Chinese labels accurately.
+Screen 2: MULTI-AGENT COLLABORATION AND LIVE INTERVENTION.
+Header breadcrumb "项目 / 客户工单接入 / 需求与方案". Main title "多 Agent 协作", subtle subtitle "同一工作项，云端与此电脑共同推进". Top right buttons "补充资料" and quiet dropdown "停止…".
+A compact project context strip: repository "fde/ticket-bridge", source "7c2a9e1", chips "客户需求.md" and "接口说明.yaml". Small tabs "协作", "活动", "成果".
+Main split: left ~45% an elegant hierarchical agent task list, right ~55% the selected agent's live workspace; no freeform graph.
+Left heading "负责助手与子任务". Root row: "主助手", "云端", "进行中", short line "汇总方案与验证结果". Beneath indented child rows with fine vertical hierarchy connectors and distinct status icons:
+"调研助手" — "云端 · 已完成" — "接入方案与参考来源";
+"验证助手" — "此电脑 · 运行中" — "验证测试环境 API", selected with soft blue fill;
+"方案复核" — "云端 · 等待结果" — "等待接口验证完成".
+Give each row a small detail chevron. Small footer summary "2 个节点协作 · 1 项等待依赖", no percentage completion.
+Right pane header "验证助手", computer-location chip "此电脑", green "运行中"; tiny contextual actions "查看会话", "更多".
+Below header a calm status line "正在检查字段映射". Two-column small key/value lines "输入版本 7c2a9e1" and "成果分支 task/api-check". A visible chronological live activity list with times:
+"10:31 已读取接口说明.yaml"
+"10:32 认证接口验证通过"
+"10:33 正在检查字段映射"
+One compact real code/log panel with readable lines "GET /api/tickets → 200", "schema check: passed".
+Below a small file-output row "验证记录.json" with link "预览".
+Sticky bottom of the right pane is a well-designed steering composer with title "给验证助手补充指令", typed sample "同时检查重复工单的幂等处理。", attachment icon and blue "发送" button. A subtle delivery-mode pill "下一轮读取" must be clearly visible, not an instant-action claim.
+Lower left concise activity section "跨端交接": two neat timeline items "云端提交方案 · 8d17ac2", "此电脑读取指定版本". Provide a link "查看交接记录". Maintain room for real execution information and controls. Do not offer live process migration, auto-failover or unlimited global approvals.

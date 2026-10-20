@@ -1,0 +1,18 @@
+Use case: ui-mockup. Generate ONE high-fidelity desktop UI design screenshot for Codeg, the personal multi-agent workbench for an experienced FDE. Output a single flat front-facing full application screenshot, landscape 16:10, crisp readable Chinese typography, no device frame, no perspective, no presentation board, no watermark.
+Input Image 1 is a STYLE AND APPLICATION SHELL REFERENCE, not an edit target. Create a NEW screen with the same Codeg brand, light theme, component styling, spacing, top bar and left navigation. Preserve the professional white and pale-gray surfaces, near-black text, restrained blue primary buttons, teal running/finished status and amber waiting status, thin dividers, compact outline icons and subtle 8px radii. Use the same narrow sidebar and slim topbar as the reference. Chinese text legible, filenames/agent names/commit hashes in English where appropriate. Do not reproduce the previous screen's center content.
+Shared sidebar: "工作台", "待我处理" with badge 2, "助手", "成果", "知识库"; section "项目": selected "客户工单接入", "日志排障", "交付材料"; bottom "此电脑 · 在线", "云端 · 在线". Top bar Codeg wordmark, search field, quiet notification icon and neutral user avatar. No fictional personal name.
+Design actual working controls and hierarchy, not a dashboard of metrics, graph-canvas, robot illustrations or marketing concept. Render the quoted Chinese labels accurately.
+Screen 4: ARTIFACT REVIEW WITH DOCUMENT PREVIEW, SOURCES AND VERSION EVIDENCE.
+Header breadcrumb "项目 / 客户工单接入 / 成果". Main title "成果与证据". Top right subtle button "导出", primary action "确认采用".
+Below header, three functional columns: compact project artifact file list ~220px, large document preview ~620px, evidence and context rail ~300px. Together fit cleanly beside the persistent sidebar, without squeezing text.
+File-list heading "本次成果" with three rows: selected "接入方案.md", "验证记录.json", "字段映射.csv". Small section below "版本", selected "v3 · 待验收", previous "v2", "v1". Include a quiet "查看变更" action, no fake merge requirement for a document.
+Document header "接入方案.md", small amber "待验收" pill, tabs "预览", "变更", "原文". Render a beautiful readable Markdown document, not code source. Main document heading "客户工单接入方案", subtitle "需求、接口设计与验证结论".
+Document body with short clean numbered sections:
+"1. 目标与范围" and sentence "接入客户工单数据，支持查询与字段映射。"
+"2. 接入流程", a simple inline textual chain "客户 API → 字段映射 → 工单服务" with small understated icons.
+"3. 验证结果", a compact table with columns "检查项", "结果", "证据"; rows "认证接口 / 通过 / 日志 01", "字段映射 / 通过 / 记录 02", "幂等处理 / 通过 / 测试 03". Teal pass marks only, no made-up percentages.
+"4. 交付建议", sentence "先在测试环境联调，再确认生产配置。"
+Right evidence rail heading "来源与版本", source rows "客户需求.md", "接口说明.yaml", pinned source commit "输入 7c2a9e1", result commit "成果 c81bd42", branch "task/ticket-bridge". Clear separation between source and result versions.
+Next section "协作记录", two rows "方案整理 · 云端" and "接口验证 · 此电脑" with agent icons.
+Next section "验证依据", three clickable-looking compact evidence rows "认证请求日志", "字段映射记录", "幂等测试输出". Small scope note "验证环境：测试环境".
+Sticky review composer below document preview, placeholder "指出需要修改的段落或补充交付要求…", attachment icon, button "提出修改". "确认采用" belongs to document acceptance; do not label it merge or deployment. Keep the user able to review actual content and evidence before accepting.
