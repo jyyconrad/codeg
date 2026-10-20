@@ -1,7 +1,6 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 
-use rmcp::model::{JsonObject, Tool, ToolAnnotations};
+use rmcp::model::Tool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolProvider {
@@ -67,6 +66,10 @@ pub fn merge_provider_tools(groups: Vec<(ToolProvider, Vec<Tool>)>) -> Vec<Tool>
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use rmcp::model::{JsonObject, ToolAnnotations};
+
     use super::*;
 
     fn tool(name: &str, read_only: Option<bool>) -> Tool {

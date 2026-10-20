@@ -12,10 +12,13 @@
 //! (resolve a referenced session by id), and `set_session_timer` (schedule a
 //! host wake of this same session) — whose schemas are embedded at compile
 //! time from [`TOOL_SCHEMA_JSON`] and gated by the `--features` groups (delegation
-//! / feedback / ask / sessions / timer). Only `delegate_to_agent` registers a broker-side
-//! cancel handle; canceling a status / cancel / feedback / session / timer round-trip
-//! merely suppresses its response — and for `check_user_feedback` also skips the
-//! delivery commit, so a cancelled note stays pending.
+//! / feedback / ask / sessions / timer). `submit_result` (the `result` group of a
+//! `codeg-cli --output-schema` run) is the one tool not embedded: its input
+//! schema is the run's own, asked of the parent. Only `delegate_to_agent`
+//! registers a broker-side cancel handle; canceling a status / cancel /
+//! feedback / session / timer round-trip merely suppresses its response — and for
+//! `check_user_feedback` also skips the delivery commit, so a cancelled note
+//! stays pending.
 //!
 //! Notifications (id = None) produce no response, matching MCP's expectation
 //! that `notifications/initialized` etc. are fire-and-forget.
@@ -45,6 +48,7 @@ use tokio::sync::{oneshot, Mutex};
 use crate::acp::chat_authoring::{
     NewAutomationSpec, NewWorkTaskSpec, MAX_PROMPT_CHARS, MAX_TITLE_CHARS,
 };
+use crate::acp::delegation::assistants::{roster_for_schema, AssistantRosterEntry};
 use crate::acp::delegation::transport::{
     client_ask_round_trip, client_browser_act_round_trip, client_browser_capture_round_trip,
     client_browser_console_round_trip, client_browser_eval_round_trip,
@@ -55,19 +59,21 @@ use crate::acp::delegation::transport::{
     client_computer_launch_round_trip, client_computer_snapshot_round_trip,
     client_computer_verify_round_trip, client_computer_windows_round_trip,
     client_create_automation_round_trip, client_create_work_task_round_trip,
-    client_feedback_round_trip, client_resume_task_round_trip, client_round_trip,
+    client_feedback_round_trip, client_list_assistants_round_trip, client_ping,
+    client_result_schema_round_trip, client_resume_task_round_trip, client_round_trip,
     client_session_round_trip, client_set_timer_round_trip, client_status_round_trip,
-    client_task_complete_round_trip, client_task_progress_round_trip, BrokerAskRequest,
-    BrokerBrowserActRequest, BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest,
-    BrokerBrowserEvalRequest, BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest,
-    BrokerBrowserTabsRequest, BrokerCancelRequest, BrokerCancelTaskRequest,
-    BrokerCommitFeedbackRequest, BrokerComputerActRequest, BrokerComputerAppsRequest,
-    BrokerComputerCaptureRequest, BrokerComputerClipboardRequest, BrokerComputerLaunchRequest,
-    BrokerComputerSnapshotRequest, BrokerComputerVerifyRequest, BrokerComputerWindowsRequest,
-    BrokerCreateAutomationRequest, BrokerCreateWorkTaskRequest, BrokerFeedbackRequest,
-    BrokerRequest, BrokerResponse, BrokerResumeTaskRequest, BrokerSessionRequest,
-    BrokerSetTimerRequest, BrokerStatusRequest, BrokerTaskCompleteRequest,
-    BrokerTaskProgressRequest,
+    client_submit_result_round_trip, client_task_complete_round_trip,
+    client_task_progress_round_trip, BrokerAskRequest, BrokerBrowserActRequest,
+    BrokerBrowserCaptureRequest, BrokerBrowserConsoleRequest, BrokerBrowserEvalRequest,
+    BrokerBrowserSnapshotRequest, BrokerBrowserTabOpRequest, BrokerBrowserTabsRequest,
+    BrokerCancelRequest, BrokerCancelTaskRequest, BrokerCommitFeedbackRequest,
+    BrokerComputerActRequest, BrokerComputerAppsRequest, BrokerComputerCaptureRequest,
+    BrokerComputerClipboardRequest, BrokerComputerLaunchRequest, BrokerComputerSnapshotRequest,
+    BrokerComputerVerifyRequest, BrokerComputerWindowsRequest, BrokerCreateAutomationRequest,
+    BrokerCreateWorkTaskRequest, BrokerFeedbackRequest, BrokerListAssistantsRequest, BrokerRequest,
+    BrokerResponse, BrokerResultSchemaRequest, BrokerResumeTaskRequest, BrokerSessionRequest,
+    BrokerSetTimerRequest, BrokerStatusRequest, BrokerSubmitResultRequest,
+    BrokerTaskCompleteRequest, BrokerTaskProgressRequest,
 };
 use crate::acp::question::parse_questions;
 use crate::acp::session_info::MAX_SESSION_MESSAGES;
@@ -164,6 +170,10 @@ pub struct CompanionFeatures {
     /// Work-task reporting tools (`task_progress` / `task_complete`) — injected
     /// only into spawns launched by the task engine.
     pub tasks: bool,
+    /// `submit_result` — injected only into the root connection of a
+    /// `codeg-cli` run given `--output-schema`. Its input schema is that run's
+    /// schema, asked of the parent at `tools/list` time.
+    pub result: bool,
     /// `create_automation` — save a scheduled/manual automation from chat.
     pub automations: bool,
     /// `create_work_task` — queue a card on the work-task board from chat.
@@ -226,6 +236,7 @@ impl CompanionFeatures {
                 ask: false,
                 sessions: false,
                 tasks: false,
+                result: false,
                 automations: false,
                 taskboard: false,
                 browser: false,
@@ -242,6 +253,7 @@ impl CompanionFeatures {
             ask: false,
             sessions: false,
             tasks: false,
+            result: false,
             automations: false,
             taskboard: false,
             browser: false,
@@ -258,6 +270,7 @@ impl CompanionFeatures {
                 "ask" => f.ask = true,
                 "sessions" => f.sessions = true,
                 "tasks" => f.tasks = true,
+                "result" => f.result = true,
                 "automations" => f.automations = true,
                 "taskboard" => f.taskboard = true,
                 "browser" => f.browser = true,
@@ -279,6 +292,7 @@ impl CompanionFeatures {
             "ask_user_question" => self.ask,
             "get_session_info" => self.sessions,
             "task_progress" | "task_complete" => self.tasks,
+            "submit_result" => self.result,
             "create_automation" => self.automations,
             "create_work_task" => self.taskboard,
             "browser_list_tabs"
@@ -351,6 +365,142 @@ pub struct CompanionContext {
     /// flag). Disabled customs never appear here: the parent just leaves them
     /// out of `custom_agents`.
     pub disabled_agents: Vec<String>,
+    /// Whether the parent's listener understands assistant delegation, learned
+    /// by probing it (see [`AssistantSupportProbe`]). Shared by every clone of
+    /// the context, so the answer is learned once per companion.
+    pub assistant_support: AssistantSupportProbe,
+    /// The schema `submit_result` takes, asked of the parent once (see
+    /// [`ResultSchemaProbe`]).
+    pub result_schema: ResultSchemaProbe,
+}
+
+/// Upper bound on asking the parent for `submit_result`'s schema.
+const RESULT_SCHEMA_BUDGET: Duration = Duration::from_secs(5);
+
+/// The companion's copy of the schema `submit_result` takes. A definite
+/// answer — the schema, or that this connection was asked for none — is kept
+/// for the companion's life: a run's schema never changes. No answer is asked
+/// again next time.
+#[derive(Debug, Clone, Default)]
+pub struct ResultSchemaProbe {
+    known: Arc<Mutex<Option<Option<Value>>>>,
+}
+
+impl ResultSchemaProbe {
+    pub async fn resolve(&self, socket_path: &str, token: &str) -> Option<Value> {
+        let mut known = self.known.lock().await;
+        if let Some(answer) = &*known {
+            return answer.clone();
+        }
+        let req = BrokerResultSchemaRequest {
+            token: token.to_string(),
+        };
+        let resp = tokio::time::timeout(
+            RESULT_SCHEMA_BUDGET,
+            client_result_schema_round_trip(socket_path, &req),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        // An answer without the field is no answer: asked again next time.
+        let schema = resp
+            .outcome
+            .get("schema")?
+            .as_object()
+            .cloned()
+            .map(Value::Object);
+        *known = Some(schema.clone());
+        schema
+    }
+}
+
+/// `submit_result`'s description. The input schema is the run's own.
+pub(crate) const SUBMIT_RESULT_DESCRIPTION: &str = "Hand in the result of this run. The person \
+who started it from Codeg's command line asked for the result as JSON matching this tool's input \
+schema: call this once you are done, with the result as the arguments. A result that does not \
+match is refused with what to fix; call again with the fixed result. The last result accepted is \
+the one that counts.";
+
+fn submit_result_tool(schema: Value) -> Value {
+    json!({
+        "name": "submit_result",
+        "description": SUBMIT_RESULT_DESCRIPTION,
+        "inputSchema": schema,
+    })
+}
+
+/// Whether the parent listener understands assistant delegation.
+///
+/// It matters because `delegate_to_agent` keeps its name: a listener that
+/// predates assistants reads only `agent_type`, so a call carrying
+/// `{"assistant_id": 3, "agent_type": "codex"}` would run as a plain Codex
+/// delegation and the assistant's options and instructions would vanish
+/// without a trace. That combination — old codeg, new companion — exists for a
+/// moment during an upgrade, when the parent resolves its companion binary
+/// next to the newly installed executable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssistantSupport {
+    /// The listener answered `Ping` with `assistants: true`.
+    Supported,
+    /// The listener answered `Ping` without it — it predates assistants.
+    Unsupported,
+    /// No answer (timed out, could not connect, connection dropped). Never
+    /// cached: a listener re-binding its socket drops connections it has not
+    /// accepted yet, so silence says nothing about the version.
+    Unknown,
+}
+
+/// Upper bound on one `Ping` probe.
+const ASSISTANT_PROBE_BUDGET: Duration = Duration::from_secs(2);
+
+/// Upper bound on the whole `tools/list` assistant step — probe plus roster.
+/// The schema is served without a roster when it runs out.
+const TOOLS_LIST_ASSISTANT_BUDGET: Duration = Duration::from_secs(2);
+
+/// The companion's cached answer to "does the parent understand assistants?".
+/// A definite answer is kept for the companion's life (it serves one parent
+/// process); [`AssistantSupport::Unknown`] is probed again next time.
+#[derive(Debug, Clone, Default)]
+pub struct AssistantSupportProbe {
+    known: Arc<Mutex<Option<bool>>>,
+}
+
+impl AssistantSupportProbe {
+    /// The current answer, probing the listener when none is known yet.
+    pub async fn resolve(&self, socket_path: &str) -> AssistantSupport {
+        let mut known = self.known.lock().await;
+        if let Some(supported) = *known {
+            return if supported {
+                AssistantSupport::Supported
+            } else {
+                AssistantSupport::Unsupported
+            };
+        }
+        match probe_assistant_support(socket_path).await {
+            Some(supported) => {
+                *known = Some(supported);
+                if supported {
+                    AssistantSupport::Supported
+                } else {
+                    AssistantSupport::Unsupported
+                }
+            }
+            None => AssistantSupport::Unknown,
+        }
+    }
+}
+
+/// `Some(true/false)` for a listener that answered `Ping`, `None` for no
+/// answer at all.
+async fn probe_assistant_support(socket_path: &str) -> Option<bool> {
+    let resp = tokio::time::timeout(ASSISTANT_PROBE_BUDGET, client_ping(socket_path))
+        .await
+        .ok()?
+        .ok()?;
+    if resp.outcome.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(resp.outcome.get("assistants").and_then(Value::as_bool) == Some(true))
 }
 
 /// Per-in-flight-call state. The companion stashes one of these per
@@ -537,6 +687,20 @@ pub async fn dispatch_line(
             };
             remove_disabled_agents_from_delegate_enum(&mut tools, &ctx.disabled_agents);
             append_custom_agents_to_delegate_enum(&mut tools, &ctx.custom_agents);
+            if ctx.features.allows_tool("delegate_to_agent") {
+                offer_assistants_in_delegate_schema(ctx, &mut tools).await;
+            }
+            // Not in the embedded schema: its input schema is the run's own.
+            if ctx.features.result {
+                if let (Some(schema), Some(list)) = (
+                    ctx.result_schema
+                        .resolve(&ctx.socket_path, &ctx.token)
+                        .await,
+                    tools.as_array_mut(),
+                ) {
+                    list.push(submit_result_tool(schema));
+                }
+            }
             LineAction::Respond(ok(id, json!({ "tools": tools })))
         }
         "tools/call" => build_tools_call_spawn(ctx.clone(), inflight, id, req.params).await,
@@ -606,6 +770,127 @@ pub(crate) fn append_custom_agents_to_delegate_enum(tools: &mut Value, custom_ag
     }
 }
 
+/// Extend `delegate_to_agent` to take `assistant_id`, unless the parent is
+/// known NOT to understand it — then the embedded schema is served exactly as
+/// it always was, so the delegating agent never learns of a parameter its
+/// parent would silently drop.
+///
+/// An unknown answer still extends the schema: the companion and its parent
+/// ship together, so "no answer yet" is overwhelmingly a busy or re-binding
+/// listener, and every `assistant_id` call re-checks before it is forwarded.
+/// The roster is fetched only from a listener known to understand it.
+async fn offer_assistants_in_delegate_schema(ctx: &CompanionContext, tools: &mut Value) {
+    let lookup = async {
+        match ctx.assistant_support.resolve(&ctx.socket_path).await {
+            AssistantSupport::Unsupported => None,
+            AssistantSupport::Unknown => Some(None),
+            AssistantSupport::Supported => Some(fetch_assistant_roster(ctx).await),
+        }
+    };
+    let roster = match tokio::time::timeout(TOOLS_LIST_ASSISTANT_BUDGET, lookup).await {
+        Ok(None) => return,
+        Ok(Some(roster)) => roster,
+        // Out of time: offer the parameter without a roster — calls by id do
+        // not depend on it.
+        Err(_) => None,
+    };
+    describe_assistants_in_delegate_schema(tools, roster.as_deref());
+}
+
+async fn fetch_assistant_roster(ctx: &CompanionContext) -> Option<Vec<AssistantRosterEntry>> {
+    let req = BrokerListAssistantsRequest {
+        token: ctx.token.clone(),
+    };
+    let resp = client_list_assistants_round_trip(&ctx.socket_path, &req)
+        .await
+        .ok()?;
+    if resp.outcome.get("error").is_some() {
+        return None;
+    }
+    serde_json::from_value(resp.outcome.get("assistants")?.clone()).ok()
+}
+
+/// Sentence appended to `delegate_to_agent`'s description: how an assistant
+/// mention looks, and what to do with one.
+pub(crate) const ASSISTANT_MENTION_SENTENCE: &str = " A user-defined ASSISTANT is named the \
+same way — `@AssistantName` or `[@AssistantName](codeg://assistant/<number>)` — and that \
+mention is likewise an explicit instruction to delegate to it: pass `assistant_id` set to that \
+number and leave `agent_type` out. An assistant brings its own agent, options and standing \
+instructions.";
+
+/// Prefix put on `agent_type`'s description once `assistant_id` exists.
+pub(crate) const AGENT_TYPE_UNLESS_ASSISTANT: &str = "Required unless `assistant_id` is given. ";
+
+/// `assistant_id`'s description, before the roster sentence.
+pub(crate) const ASSISTANT_ID_DESCRIPTION: &str = "Delegate to a user-defined assistant instead \
+of picking an agent yourself. Take the number from a `codeg://assistant/<number>` link in the \
+user's message (e.g. `codeg://assistant/3` means 3). When set, `agent_type` is ignored: the \
+assistant decides which agent runs, with which options and instructions.";
+
+/// Rewrite `delegate_to_agent` to take `assistant_id`: `task` becomes the only
+/// required field (one of `agent_type` / `assistant_id` is enforced by the
+/// listener — `oneOf` at the schema root is refused by some hosts), the new
+/// property is declared with the roster when there is one, and the
+/// description learns what an assistant mention looks like. Same defensive
+/// posture as the enum edits above: a missing tool or schema shape leaves the
+/// tools untouched.
+fn describe_assistants_in_delegate_schema(
+    tools: &mut Value,
+    roster: Option<&[AssistantRosterEntry]>,
+) {
+    let Some(tool) = tools.as_array_mut().and_then(|arr| {
+        arr.iter_mut()
+            .find(|t| t.get("name").and_then(|v| v.as_str()) == Some("delegate_to_agent"))
+    }) else {
+        return;
+    };
+    let Some(schema) = tool.get_mut("inputSchema").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if let Some(Value::String(description)) = properties
+        .get_mut("agent_type")
+        .and_then(|p| p.get_mut("description"))
+    {
+        if !description.starts_with(AGENT_TYPE_UNLESS_ASSISTANT) {
+            description.insert_str(0, AGENT_TYPE_UNLESS_ASSISTANT);
+        }
+    }
+    let mut id_description = ASSISTANT_ID_DESCRIPTION.to_string();
+    if let Some(roster) = roster {
+        id_description.push_str(&roster_for_schema(roster));
+    }
+    properties.insert(
+        "assistant_id".to_string(),
+        json!({
+            "type": "integer",
+            "minimum": 1,
+            "description": id_description,
+        }),
+    );
+    schema.insert("required".to_string(), json!(["task"]));
+    if let Some(Value::String(description)) = tool.get_mut("description") {
+        if !description.ends_with(ASSISTANT_MENTION_SENTENCE) {
+            description.push_str(ASSISTANT_MENTION_SENTENCE);
+        }
+    }
+}
+
+/// A `delegate_to_agent` call the companion answers itself, as a failed task
+/// report — the same shape the broker's refusals take, so the card and the
+/// delegating agent read it the same way.
+fn local_delegation_refusal(error_code: &str, message: &str) -> BrokerResponse {
+    BrokerResponse {
+        outcome: json!({
+            "status": "failed",
+            "error_code": error_code,
+            "message": message,
+        }),
+    }
+}
+
 /// Build the spawned-call descriptor for a `tools/call` (or, when the
 /// arguments are obviously bogus, a synchronous error response). Registers
 /// the inflight entry and returns a future the binary should drive.
@@ -647,6 +932,12 @@ async fn build_tools_call_spawn(
             // Mint an external_handle so a `notifications/cancelled` during setup
             // tears down the just-started child via `cancel_by_external_handle`.
             let external_handle = uuid::Uuid::new_v4().to_string();
+            // Any `assistant_id` at all — even one the listener would refuse
+            // as invalid — makes this an assistant call, which is forwarded
+            // only to a parent known to understand it (see
+            // `AssistantSupport`). Agent calls are never held up by the probe.
+            let names_assistant = arguments.get("assistant_id").is_some_and(|v| !v.is_null());
+            let support = ctx.assistant_support.clone();
             let req = BrokerRequest {
                 token: ctx.token.clone(),
                 parent_connection_id: ctx.parent_connection_id.clone(),
@@ -654,7 +945,30 @@ async fn build_tools_call_spawn(
                 external_handle: Some(external_handle.clone()),
                 input: arguments,
             };
-            let round_trip = Box::pin(async move { client_round_trip(&socket, &req).await });
+            let round_trip = Box::pin(async move {
+                if names_assistant {
+                    match support.resolve(&socket).await {
+                        AssistantSupport::Supported => {}
+                        AssistantSupport::Unsupported => {
+                            return Ok(local_delegation_refusal(
+                                "assistants_unsupported",
+                                "This Codeg has not finished upgrading, so it cannot \
+                                 delegate to assistants yet. Ask the user to restart \
+                                 Codeg, then try again. Do not delegate this to another \
+                                 agent instead.",
+                            ));
+                        }
+                        AssistantSupport::Unknown => {
+                            return Ok(local_delegation_refusal(
+                                "assistant_support_unknown",
+                                "Codeg did not answer in time, so the assistant was not \
+                                 called. Try the same call again shortly.",
+                            ));
+                        }
+                    }
+                }
+                client_round_trip(&socket, &req).await
+            });
             register_and_spawn(
                 inflight,
                 id,
@@ -1179,6 +1493,17 @@ async fn build_tools_call_spawn(
             let round_trip =
                 Box::pin(async move { client_task_complete_round_trip(&socket, &req).await });
             register_and_spawn(inflight, id, None, round_trip, render_task_ack).await
+        }
+        "submit_result" => {
+            // Checked against the schema on the codeg side, which keeps the
+            // result: the companion never holds a copy that could differ.
+            let req = BrokerSubmitResultRequest {
+                token: ctx.token.clone(),
+                result: arguments,
+            };
+            let round_trip =
+                Box::pin(async move { client_submit_result_round_trip(&socket, &req).await });
+            register_and_spawn(inflight, id, None, round_trip, render_submit_result).await
         }
         "create_automation" => {
             // Validate the shape HERE so a malformed call gets a synchronous
@@ -4026,6 +4351,35 @@ pub fn render_task_ack(outcome: &Value) -> Value {
     })
 }
 
+/// Map a `submit_result` round-trip outcome (a serialized
+/// [`crate::cli_run::output_schema::SubmitOutcome`]) into an MCP `tools/call`
+/// result. A refused result is not a tool error, as with
+/// [`render_authoring_result`]: the agent reads what to fix and calls again.
+/// The text carries the mismatches too — some hosts show the model only the
+/// text, others only `structuredContent`.
+pub fn render_submit_result(outcome: &Value) -> Value {
+    let mut text = outcome
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("Not accepted.")
+        .to_string();
+    for error in outcome
+        .get("errors")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        text.push_str("\n- ");
+        text.push_str(error);
+    }
+    json!({
+        "content": [{ "type": "text", "text": text }],
+        "isError": false,
+        "structuredContent": outcome.clone(),
+    })
+}
+
 /// Map a `create_automation` / `create_work_task` round-trip outcome (a
 /// serialized [`crate::acp::chat_authoring::AuthoringOutcome`]) into an MCP
 /// `tools/call` result.
@@ -4233,6 +4587,7 @@ mod tests {
             ask: false,
             sessions: false,
             tasks: false,
+            result: false,
             automations: false,
             taskboard: false,
             browser: false,
@@ -4252,6 +4607,8 @@ mod tests {
             features,
             custom_agents: Vec::new(),
             disabled_agents: Vec::new(),
+            assistant_support: AssistantSupportProbe::default(),
+            result_schema: Default::default(),
         }
     }
 
@@ -4304,7 +4661,7 @@ mod tests {
         let required = resume["inputSchema"]["required"].as_array().unwrap();
         assert_eq!(required.len(), 1);
         assert!(required.iter().any(|v| v == "task_id"));
-        // delegate_to_agent schema still enumerates all 16 built-in agent types.
+        // delegate_to_agent schema still enumerates every built-in agent type.
         let delegate = tools
             .iter()
             .find(|t| t["name"] == "delegate_to_agent")
@@ -4312,7 +4669,10 @@ mod tests {
         let agents = delegate["inputSchema"]["properties"]["agent_type"]["enum"]
             .as_array()
             .unwrap();
-        assert_eq!(agents.len(), 16);
+        assert_eq!(
+            agents.len(),
+            crate::models::agent::BUILTIN_AGENT_TYPES.len()
+        );
         assert!(agents.iter().any(|a| a == "hermes"));
         assert!(agents.iter().any(|a| a == "code_buddy"));
         assert!(agents.iter().any(|a| a == "kimi_code"));
@@ -4322,6 +4682,10 @@ mod tests {
         assert!(agents.iter().any(|a| a == "deepseek"));
         assert!(agents.iter().any(|a| a == "qoder"));
         assert!(agents.iter().any(|a| a == "antigravity"));
+        assert!(agents.iter().any(|a| a == "kiro"));
+        assert!(agents.iter().any(|a| a == "zcode"));
+        assert!(agents.iter().any(|a| a == "trae"));
+        assert!(agents.iter().any(|a| a == "command_code"));
         assert!(agents.iter().any(|a| a == "codeg_agent"));
         // get_delegation_status takes a single id param — task_ids (required) —
         // plus wait_ms. The legacy single `task_id` param is gone.
@@ -4362,11 +4726,12 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 18, "16 builtins + 2 distinct customs");
+        let builtin_count = crate::models::agent::BUILTIN_AGENT_TYPES.len();
+        assert_eq!(agents.len(), builtin_count + 2);
         // Builtins keep the embedded order and come first.
         assert_eq!(agents[0], "claude_code");
-        assert_eq!(agents[16], "custom:goose");
-        assert_eq!(agents[17], "custom:amp");
+        assert_eq!(agents[builtin_count], "custom:goose");
+        assert_eq!(agents[builtin_count + 1], "custom:amp");
         // The other delegation tools carry no agent_type and are untouched.
         let status = tools
             .as_array()
@@ -4401,13 +4766,16 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 15, "16 builtins - 2 disabled + 1 custom");
+        assert_eq!(
+            agents.len(),
+            crate::models::agent::BUILTIN_AGENT_TYPES.len() - 2 + 1
+        );
         assert!(!agents.contains(&serde_json::json!("codex")));
         assert!(!agents.contains(&serde_json::json!("grok")));
         // Survivors keep the embedded order, customs still come last.
         assert_eq!(agents[0], "claude_code");
         assert_eq!(agents[1], "open_code");
-        assert_eq!(agents[14], "custom:goose");
+        assert_eq!(agents[agents.len() - 1], "custom:goose");
     }
 
     // An empty disabled list (the parent omitted `--disabled-agents`) leaves
@@ -4429,10 +4797,17 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(agents.len(), 16);
+        assert_eq!(
+            agents.len(),
+            crate::models::agent::BUILTIN_AGENT_TYPES.len()
+        );
         assert_eq!(agents[0], "claude_code");
         assert_eq!(agents[14], "antigravity");
-        assert_eq!(agents[15], "codeg_agent");
+        assert_eq!(agents[15], "kiro");
+        assert_eq!(agents[16], "zcode");
+        assert_eq!(agents[17], "trae");
+        assert_eq!(agents[18], "command_code");
+        assert_eq!(agents[19], "codeg_agent");
     }
 
     #[tokio::test]
@@ -4832,6 +5207,7 @@ mod tests {
         ask: false,
         sessions: false,
         tasks: false,
+        result: false,
         automations: false,
         taskboard: false,
         browser: false,
@@ -4847,6 +5223,7 @@ mod tests {
         ask: false,
         sessions: false,
         tasks: false,
+        result: false,
         automations: false,
         taskboard: false,
         browser: false,
@@ -4862,6 +5239,7 @@ mod tests {
         ask: true,
         sessions: false,
         tasks: false,
+        result: false,
         automations: false,
         taskboard: false,
         browser: false,
@@ -4877,6 +5255,7 @@ mod tests {
         ask: false,
         sessions: true,
         tasks: false,
+        result: false,
         automations: false,
         taskboard: false,
         browser: false,
@@ -4900,6 +5279,8 @@ mod tests {
         computer: false,
         computer_launch: false,
         computer_clipboard: false,
+
+        result: false,
     };
 
     fn list_tool_names(action: LineAction) -> Vec<String> {
@@ -5399,6 +5780,8 @@ mod tests {
             computer: false,
             computer_launch: false,
             computer_clipboard: false,
+
+            result: false,
         };
         assert!(!off.allows_tool("set_session_timer"));
         assert!(!off.allows_tool("not_a_real_tool"));
@@ -5469,6 +5852,7 @@ mod tests {
         ask: false,
         sessions: false,
         tasks: false,
+        result: false,
         automations: true,
         taskboard: false,
         browser: false,
@@ -5484,6 +5868,7 @@ mod tests {
         ask: false,
         sessions: false,
         tasks: false,
+        result: false,
         automations: false,
         taskboard: true,
         browser: false,
@@ -6054,9 +6439,10 @@ mod tests {
         use tokio::net::UnixListener;
 
         // `/tmp`, not `$TMPDIR`: a socket path has ~104 bytes of `sun_path` to
-        // live in, and codeg exports a 72-byte per-session `TMPDIR` to the
-        // agents it launches. Under `tempdir()` this lands at 92 bytes there —
-        // green, but with very little left for a deeper nesting.
+        // live in, and `$TMPDIR` is whatever the environment hands us. Under
+        // the ~72-byte per-session `TMPDIR` codeg exported before #754 this
+        // landed at 92 bytes — green, but with very little left for a deeper
+        // nesting — and a hand-set one can be longer still.
         let dir = tempfile::tempdir_in("/tmp").unwrap();
         let sock = dir.path().join("fb.sock").to_string_lossy().to_string();
         let listener = UnixListener::bind(&sock).unwrap();
@@ -6127,9 +6513,10 @@ mod tests {
         use tokio::net::UnixListener;
 
         // `/tmp`, not `$TMPDIR`: a socket path has ~104 bytes of `sun_path` to
-        // live in, and codeg exports a 72-byte per-session `TMPDIR` to the
-        // agents it launches. Under `tempdir()` this lands at 92 bytes there —
-        // green, but with very little left for a deeper nesting.
+        // live in, and `$TMPDIR` is whatever the environment hands us. Under
+        // the ~72-byte per-session `TMPDIR` codeg exported before #754 this
+        // landed at 92 bytes — green, but with very little left for a deeper
+        // nesting — and a hand-set one can be longer still.
         let dir = tempfile::tempdir_in("/tmp").unwrap();
         let sock = dir.path().join("fb.sock").to_string_lossy().to_string();
         let listener = UnixListener::bind(&sock).unwrap();
@@ -6163,6 +6550,8 @@ mod tests {
             features: FEEDBACK_ONLY,
             custom_agents: Vec::new(),
             disabled_agents: Vec::new(),
+            assistant_support: AssistantSupportProbe::default(),
+            result_schema: Default::default(),
         };
         let inflight = Arc::new(InflightCalls::new());
         // tools/call → Spawn (registers the inflight entry).
@@ -6248,6 +6637,8 @@ mod tests {
             features: FEEDBACK_ONLY,
             custom_agents: Vec::new(),
             disabled_agents: Vec::new(),
+            assistant_support: AssistantSupportProbe::default(),
+            result_schema: Default::default(),
         };
         let inflight = Arc::new(InflightCalls::new());
         let mut texts = Vec::new();
@@ -6302,6 +6693,7 @@ mod tests {
         ask: false,
         sessions: false,
         tasks: false,
+        result: false,
         automations: false,
         taskboard: false,
         browser: true,
@@ -7937,5 +8329,394 @@ mod tests {
         assert!(text.starts_with("Verify on window w1: unknown"), "{text}");
         assert!(text.contains("Unknown is not success"), "{text}");
         assert!(text.contains("#0 unknown (target_missing)"), "{text}");
+    }
+    // ── Assistant support ───────────────────────────────────────────────────
+
+    /// A fake listener answering every connection through `answer`; `None`
+    /// drops the connection without a reply. Records every message it reads.
+    #[cfg(unix)]
+    fn fake_listener(
+        dir: &tempfile::TempDir,
+        answer: impl Fn(&crate::acp::delegation::transport::BrokerMessage) -> Option<Value>
+            + Send
+            + Sync
+            + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        use crate::acp::delegation::transport::{read_frame, write_frame, BrokerMessage};
+        use tokio::net::UnixListener;
+        let sock = dir.path().join("as.sock").to_string_lossy().to_string();
+        let listener = UnixListener::bind(&sock).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_server = seen.clone();
+        let answer = Arc::new(answer);
+        tokio::spawn(async move {
+            while let Ok((mut conn, _)) = listener.accept().await {
+                let Ok(msg) = read_frame::<_, BrokerMessage>(&mut conn).await else {
+                    continue;
+                };
+                let kind = serde_json::to_value(&msg).unwrap()["kind"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                seen_by_server.lock().await.push(kind);
+                if let Some(outcome) = answer(&msg) {
+                    let _ = write_frame(&mut conn, &BrokerResponse { outcome }).await;
+                }
+            }
+        });
+        (sock, seen)
+    }
+
+    #[cfg(unix)]
+    fn ctx_on(sock: &str) -> CompanionContext {
+        let mut ctx = ctx();
+        ctx.socket_path = sock.to_string();
+        ctx
+    }
+
+    #[cfg(unix)]
+    async fn delegate_schema(ctx: &CompanionContext) -> Value {
+        let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        let resp = unwrap_respond(dispatch_line(ctx, Arc::new(InflightCalls::new()), line).await);
+        resp.result.unwrap()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "delegate_to_agent")
+            .cloned()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn embedded_delegate_schema() -> Value {
+        serde_json::from_str::<Value>(TOOL_SCHEMA_JSON)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "delegate_to_agent")
+            .cloned()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_parent_that_understands_assistants_gets_the_parameter_and_its_roster() {
+        use crate::acp::delegation::transport::BrokerMessage;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let (sock, seen) = fake_listener(&dir, |msg| match msg {
+            BrokerMessage::Ping => Some(json!({"ok": true, "assistants": true})),
+            BrokerMessage::ListAssistants(req) => {
+                assert_eq!(req.token, "tok");
+                Some(json!({"assistants": [
+                    {"id": 3, "name": "Reviewer", "description": "Reviews diffs", "agent_type": "codex"}
+                ]}))
+            }
+            _ => None,
+        });
+        let delegate = delegate_schema(&ctx_on(&sock)).await;
+        assert_eq!(delegate["inputSchema"]["required"], json!(["task"]));
+        let id = &delegate["inputSchema"]["properties"]["assistant_id"];
+        assert_eq!(id["type"], "integer");
+        assert_eq!(id["minimum"], 1);
+        let id_description = id["description"].as_str().unwrap();
+        assert!(id_description.starts_with(ASSISTANT_ID_DESCRIPTION));
+        assert!(id_description.contains("3: Reviewer [Codex CLI] — Reviews diffs"));
+        assert!(
+            delegate["inputSchema"]["properties"]["agent_type"]["description"]
+                .as_str()
+                .unwrap()
+                .starts_with(AGENT_TYPE_UNLESS_ASSISTANT)
+        );
+        assert!(delegate["description"]
+            .as_str()
+            .unwrap()
+            .ends_with(ASSISTANT_MENTION_SENTENCE));
+        assert_eq!(*seen.lock().await, vec!["ping", "list_assistants"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_parent_that_predates_assistants_keeps_the_embedded_schema() {
+        use crate::acp::delegation::transport::BrokerMessage;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        // The exact answer an old listener gives, and it would drop the
+        // connection on a message it cannot decode.
+        let (sock, seen) = fake_listener(&dir, |msg| match msg {
+            BrokerMessage::Ping => Some(json!({"ok": true})),
+            _ => None,
+        });
+        let delegate = delegate_schema(&ctx_on(&sock)).await;
+        assert_eq!(delegate, embedded_delegate_schema());
+        assert_eq!(
+            delegate["inputSchema"]["required"],
+            json!(["agent_type", "task"])
+        );
+        assert_eq!(
+            *seen.lock().await,
+            vec!["ping"],
+            "no roster asked of an old parent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_answer_is_not_a_verdict_and_is_asked_again() {
+        use crate::acp::delegation::transport::BrokerMessage;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let answered_by_server = answered.clone();
+        // The first probe lands on a listener that drops it — what a parent
+        // re-binding its socket does to connections it has not accepted yet.
+        let (sock, seen) = fake_listener(&dir, move |msg| match msg {
+            BrokerMessage::Ping => {
+                if answered_by_server.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    Some(json!({"ok": true, "assistants": true}))
+                } else {
+                    None
+                }
+            }
+            BrokerMessage::ListAssistants(_) => Some(json!({"assistants": []})),
+            _ => None,
+        });
+        let ctx = ctx_on(&sock);
+        // Unknown still offers the parameter (calls re-check), without a roster.
+        let delegate = delegate_schema(&ctx).await;
+        let id_description = delegate["inputSchema"]["properties"]["assistant_id"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(id_description, ASSISTANT_ID_DESCRIPTION);
+        assert_eq!(
+            ctx.assistant_support.resolve(&sock).await,
+            AssistantSupport::Supported,
+            "the dropped probe was not cached as a verdict"
+        );
+        assert_eq!(*seen.lock().await, vec!["ping", "ping"]);
+    }
+
+    fn assistant_call(args: Value) -> String {
+        json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": "delegate_to_agent", "arguments": args }
+        })
+        .to_string()
+    }
+
+    async fn drive_call(ctx: &CompanionContext, line: &str) -> Value {
+        let LineAction::Spawn(call) =
+            dispatch_line(ctx, Arc::new(InflightCalls::new()), line).await
+        else {
+            panic!("expected Spawn");
+        };
+        call.future.await.response.unwrap().result.unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_assistant_call_is_refused_locally_by_a_parent_that_predates_assistants() {
+        use crate::acp::delegation::transport::BrokerMessage;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let (sock, seen) = fake_listener(&dir, |msg| match msg {
+            BrokerMessage::Ping => Some(json!({"ok": true})),
+            // An old listener would run this as a plain Codex delegation.
+            BrokerMessage::Call(_) => Some(json!({"status": "running", "task_id": "t"})),
+            _ => None,
+        });
+        let ctx = ctx_on(&sock);
+        let result = drive_call(
+            &ctx,
+            &assistant_call(json!({"assistant_id": 3, "agent_type": "codex", "task": "x"})),
+        )
+        .await;
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            result["structuredContent"]["error_code"],
+            "assistants_unsupported"
+        );
+        assert_eq!(*seen.lock().await, vec!["ping"], "never forwarded");
+
+        // A plain agent call is forwarded as always, without another probe.
+        let result = drive_call(
+            &ctx,
+            &assistant_call(json!({"agent_type": "codex", "task": "x"})),
+        )
+        .await;
+        assert_eq!(result["structuredContent"]["status"], "running");
+        assert_eq!(*seen.lock().await, vec!["ping", "call"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_assistant_call_is_forwarded_to_a_parent_that_understands_it() {
+        use crate::acp::delegation::transport::BrokerMessage;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let (sock, seen) = fake_listener(&dir, |msg| match msg {
+            BrokerMessage::Ping => Some(json!({"ok": true, "assistants": true})),
+            BrokerMessage::Call(req) => {
+                assert_eq!(
+                    req.input["assistant_id"], "3",
+                    "arguments go through untouched"
+                );
+                Some(json!({"status": "running", "task_id": "t"}))
+            }
+            _ => None,
+        });
+        // No tools/list first: the call probes on its own.
+        let result = drive_call(
+            &ctx_on(&sock),
+            &assistant_call(json!({"assistant_id": "3", "task": "x"})),
+        )
+        .await;
+        assert_eq!(result["structuredContent"]["status"], "running");
+        assert_eq!(*seen.lock().await, vec!["ping", "call"]);
+    }
+
+    #[tokio::test]
+    async fn an_assistant_call_with_no_answer_from_the_parent_is_retryable() {
+        // The default test socket does not exist: no answer at all.
+        let result = drive_call(
+            &ctx(),
+            &assistant_call(json!({"assistant_id": 3, "task": "x"})),
+        )
+        .await;
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            result["structuredContent"]["error_code"],
+            "assistant_support_unknown"
+        );
+    }
+
+    // -- submit_result (the `result` group) -----------------------------------
+
+    #[cfg(unix)]
+    fn result_ctx(sock: &str, features: &str) -> CompanionContext {
+        let mut ctx = ctx_on(sock);
+        ctx.features = CompanionFeatures::parse(Some(features));
+        ctx
+    }
+
+    #[cfg(unix)]
+    async fn listed(ctx: &CompanionContext) -> Vec<Value> {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let resp = unwrap_respond(dispatch_line(ctx, Arc::new(InflightCalls::new()), line).await);
+        resp.result.unwrap()["tools"].as_array().unwrap().clone()
+    }
+
+    /// `submit_result` is listed only with its group, with the run's own
+    /// schema as its input schema — asked of the parent once, and asked again
+    /// only when the parent gave no answer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submit_result_takes_the_runs_schema_and_only_with_its_group() {
+        use crate::acp::delegation::transport::BrokerMessage;
+        let schema = json!({"type": "object", "required": ["verdict"]});
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let answer = schema.clone();
+        let (sock, seen) = fake_listener(&dir, move |msg| match msg {
+            BrokerMessage::ResultSchema(req) if req.token == "tok" => {
+                Some(json!({ "schema": answer }))
+            }
+            _ => None,
+        });
+        let ctx = result_ctx(&sock, "sessions,result");
+        for _ in 0..2 {
+            let tools = listed(&ctx).await;
+            let tool = tools
+                .iter()
+                .find(|t| t["name"] == "submit_result")
+                .expect("listed");
+            assert_eq!(tool["inputSchema"], schema);
+            assert_eq!(tool["description"], SUBMIT_RESULT_DESCRIPTION);
+        }
+        assert_eq!(*seen.lock().await, vec!["result_schema"], "asked once");
+
+        let without = result_ctx(&sock, "sessions");
+        assert!(!listed(&without)
+            .await
+            .iter()
+            .any(|t| t["name"] == "submit_result"));
+        assert_eq!(seen.lock().await.len(), 1, "not asked without the group");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_schema_lists_no_submit_result_and_no_answer_is_asked_again() {
+        use crate::acp::delegation::transport::BrokerMessage;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let (sock, seen) = fake_listener(&dir, |msg| match msg {
+            BrokerMessage::ResultSchema(_) => Some(json!({ "schema": null })),
+            _ => None,
+        });
+        let ctx = result_ctx(&sock, "result");
+        assert!(listed(&ctx).await.is_empty());
+        assert!(listed(&ctx).await.is_empty());
+        assert_eq!(
+            *seen.lock().await,
+            vec!["result_schema"],
+            "a definite answer is kept"
+        );
+
+        let quiet = tempfile::tempdir_in("/tmp").unwrap();
+        let (sock, seen) = fake_listener(&quiet, |_| None);
+        let ctx = result_ctx(&sock, "result");
+        assert!(listed(&ctx).await.is_empty());
+        assert!(listed(&ctx).await.is_empty());
+        assert_eq!(seen.lock().await.len(), 2, "silence is asked again");
+    }
+
+    /// A call hands its arguments to the parent as they are, and relays the
+    /// answer — what to fix included, in the text and in the structured
+    /// content alike. Without the group the tool does not exist.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submit_result_hands_the_result_to_the_parent_and_says_what_to_fix() {
+        use crate::acp::delegation::transport::BrokerMessage;
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let (sock, _seen) = fake_listener(&dir, |msg| match msg {
+            BrokerMessage::SubmitResult(req) if req.result == json!({"verdict": "pass"}) => {
+                Some(json!({"accepted": true, "message": "Accepted."}))
+            }
+            BrokerMessage::SubmitResult(_) => Some(json!({
+                "accepted": false,
+                "message": "Not accepted: fix it.",
+                "errors": ["at /verdict: value must be one of 'pass', 'fail'"]
+            })),
+            _ => None,
+        });
+        let call = |args: Value| {
+            json!({
+                "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                "params": { "name": "submit_result", "arguments": args }
+            })
+            .to_string()
+        };
+        let ctx = result_ctx(&sock, "result");
+        let refused = drive_call(&ctx, &call(json!({"verdict": "maybe"}))).await;
+        assert_eq!(
+            refused["isError"], false,
+            "the agent fixes it and calls again"
+        );
+        assert_eq!(refused["structuredContent"]["accepted"], false);
+        let text = refused["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with("Not accepted: fix it."), "{text}");
+        assert!(
+            text.contains("\n- at /verdict: value must be one of"),
+            "{text}"
+        );
+        let accepted = drive_call(&ctx, &call(json!({"verdict": "pass"}))).await;
+        assert_eq!(accepted["structuredContent"]["accepted"], true);
+        assert_eq!(accepted["content"][0]["text"], "Accepted.");
+
+        let LineAction::Respond(resp) = dispatch_line(
+            &result_ctx(&sock, "delegation"),
+            Arc::new(InflightCalls::new()),
+            &call(json!({"verdict": "pass"})),
+        )
+        .await
+        else {
+            panic!("refused at once");
+        };
+        assert!(resp.error.unwrap().message.contains("unknown tool"));
     }
 }

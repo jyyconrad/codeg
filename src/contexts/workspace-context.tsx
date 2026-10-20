@@ -50,6 +50,8 @@ import {
   isHiddenPath,
   isImageFile,
   isOfficeOwnerFile,
+  isOfficePreviewable,
+  isPdfFile,
   languageFromPath,
 } from "@/lib/language-detect"
 import {
@@ -531,6 +533,38 @@ const IMAGE_MIME: Record<string, string> = {
   webp: "image/webp",
   bmp: "image/bmp",
   ico: "image/x-icon",
+}
+
+// Byte ceiling for reading a PDF. Documents (scans especially) routinely run
+// past the 20 MB that `read_file_base64` defaults to, a default sized for
+// images, so a PDF asks for the backend's own ceiling instead (it clamps).
+const PDF_READ_MAX_BYTES = 100_000_000
+
+type BinaryPreviewKind = "image" | "pdf"
+
+/**
+ * Images and PDFs: the files a tab holds as a base64 `data:` URL rather than
+ * as text. The kind doubles as the tab's synthetic `language`, which is what
+ * every renderer branches on. Null for every other file.
+ */
+function binaryPreviewKind(absPath: string): BinaryPreviewKind | null {
+  if (isImageFile(absPath)) return "image"
+  if (isPdfFile(absPath)) return "pdf"
+  return null
+}
+
+async function readBinaryPreview(
+  absPath: string,
+  kind: BinaryPreviewKind
+): Promise<string> {
+  if (kind === "pdf") {
+    const b64 = await readFileBase64(absPath, PDF_READ_MAX_BYTES)
+    return `data:application/pdf;base64,${b64}`
+  }
+  const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
+  const mime = IMAGE_MIME[ext] ?? "image/png"
+  const b64 = await readFileBase64(absPath)
+  return `data:${mime};base64,${b64}`
 }
 
 function loadingTab(
@@ -1572,17 +1606,15 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       if (existing.isDirty) return
       if (inFlightLoadsRef.current.has(tabId)) return
 
-      const image = isImageFile(absPath)
+      const binary = binaryPreviewKind(absPath)
 
       markTabRefreshing(tabId)
       const gen = beginFetchGeneration(tabId)
 
       try {
-        if (image) {
-          const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
-          const mime = IMAGE_MIME[ext] ?? "image/png"
-          const b64 = await withTimeout(
-            readFileBase64(absPath),
+        if (binary) {
+          const dataUrl = await withTimeout(
+            readBinaryPreview(absPath, binary),
             15_000,
             t("previewRequestTimedOut")
           )
@@ -1592,7 +1624,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
               tab.id === tabId
                 ? {
                     ...tab,
-                    content: `data:${mime};base64,${b64}`,
+                    content: dataUrl,
                     readonly: true,
                     loading: false,
                     saveState: "idle",
@@ -1877,8 +1909,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           }
         }
         const tabId = buildFileTabId({ kind: "file", path: absPath })
-        const image = isImageFile(absPath)
-        const binaryPreview = !image && isBinaryPreviewable(absPath)
+        // Images and PDFs load as data URLs (`binary`). Office OpenXML and
+        // other binary previews (xls) are empty shells: officecli or
+        // FilePreview renders them, and they are never read as text.
+        const binary = binaryPreviewKind(absPath)
+        const office = !binary && isOfficePreviewable(absPath)
+        const binaryPreview = !binary && isBinaryPreviewable(absPath)
         const seed = loadingTab(
           tabId,
           null,
@@ -1886,7 +1922,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           fileName(absPath),
           absPath,
           absPath,
-          tabLanguageFromPath(absPath)
+          binary ?? (office ? "office" : tabLanguageFromPath(absPath))
         )
 
         const decision = decideLoad(
@@ -1899,9 +1935,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         const { gen } = decision
 
         try {
-          // Binary preview files (pdf/docx/pptx/xlsx/xls) are never read as
-          // text. FilePreview renders them from bytes or a paged spreadsheet
-          // command, so just settle the tab as a ready preview shell.
+          // Office OpenXML and other binary previews (xls) are never read as
+          // text. OfficeCLI or FilePreview renders them, so just settle the
+          // tab as a ready preview shell. PDFs and images are data URLs below.
           if (binaryPreview) {
             if (!settleFetch(tabId, gen)) return
             setFileTabs((prev) =>
@@ -1922,11 +1958,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
             return
           }
 
-          if (image) {
-            const ext = absPath.split(".").pop()?.toLowerCase() ?? ""
-            const mime = IMAGE_MIME[ext] ?? "image/png"
-            const b64 = await withTimeout(
-              readFileBase64(absPath),
+          // Images and PDFs are bytes, not text: they land on the tab as a
+          // `data:` URL for their renderer, with no etag and no git base.
+          if (binary) {
+            const dataUrl = await withTimeout(
+              readBinaryPreview(absPath, binary),
               15_000,
               t("previewRequestTimedOut")
             )
@@ -1936,7 +1972,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
                 tab.id === tabId
                   ? {
                       ...tab,
-                      content: `data:${mime};base64,${b64}`,
+                      content: dataUrl,
                       readonly: true,
                       loading: false,
                       saveState: "idle",

@@ -292,10 +292,10 @@ export function useOpenFileTabsWatch({
           const path = tab.path
           if (!path) continue
 
-          // Image tabs do not carry an etag and load via readFileBase64.
-          // Bypass the text-file resolver: a single path-match is enough
-          // to trigger a refresh.
-          if (isImageFile(path)) {
+          // Image and PDF tabs do not carry an etag and load via
+          // readFileBase64. Bypass the text-file resolver: a single
+          // path-match is enough to trigger a refresh.
+          if (isImageFile(path) || isPdfFile(path)) {
             void reloadOpenFileBackground(path)
             continue
           }
@@ -463,9 +463,11 @@ export function useOpenFileTabsWatch({
     // Branch ③ — activation freshness for unwatched tabs.
     if (!isTransition) return
     if (tab.loading || tab.saveState === "saving") return
-    // Text files only: image tabs carry no etag (the resolver would
-    // misread a fine image as "missing"), and binary preview tabs are
-    // refreshed by FilePreview's own path listener.
+    // Text files only: image and PDF tabs carry no etag (the resolver
+    // would misread a fine file as "missing"), office tabs are refreshed
+    // by their own officecli watch, and other binary previews (xls) are
+    // refreshed by FilePreview's own path listener. `isBinaryPreviewable`
+    // covers PDF, Office OpenXML, and those spreadsheets.
     if (isImageFile(tab.path) || isBinaryPreviewable(tab.path)) return
     if (findOwningFolder(tab.path, allFolders)) return
     const io = splitAbsPath(tab.path)

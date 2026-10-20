@@ -60,6 +60,11 @@ mod m20260930_000001_agent_setting_launch_mode;
 mod m20261003_000001_conversation_launch_mode;
 mod m20261006_000001_conversation_tag;
 mod m20261008_000001_chat_channel_default_agent;
+mod m20261015_000001_kiro_builtin_agent;
+mod m20261015_000001_work_task_deferred_at;
+mod m20261016_000001_assistant;
+mod m20261016_000002_conversation_assistant;
+mod m20261017_000002_conversation_source;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -126,6 +131,11 @@ impl MigratorTrait for Migrator {
             Box::new(m20261003_000001_conversation_launch_mode::Migration),
             Box::new(m20261006_000001_conversation_tag::Migration),
             Box::new(m20261008_000001_chat_channel_default_agent::Migration),
+            Box::new(m20261015_000001_kiro_builtin_agent::Migration),
+            Box::new(m20261015_000001_work_task_deferred_at::Migration),
+            Box::new(m20261016_000001_assistant::Migration),
+            Box::new(m20261016_000002_conversation_assistant::Migration),
+            Box::new(m20261017_000002_conversation_source::Migration),
         ]
     }
 }

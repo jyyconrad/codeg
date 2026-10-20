@@ -109,7 +109,10 @@ pub fn resolve_session_store(
     let session_id = external_id.filter(|id| !id.is_empty())?;
     match agent_type {
         crate::models::AgentType::ClaudeCode => {
-            crate::parsers::claude::find_session_file(session_id)
+            let projects = crate::parsers::claude::resolve_claude_projects_dir_for_env(
+                &crate::parsers::AgentEnv::inherited(),
+            );
+            crate::parsers::claude::find_session_file_in(&projects, session_id)
         }
         crate::models::AgentType::Grok => {
             crate::parsers::grok::GrokParser::new().find_session_dir(session_id)

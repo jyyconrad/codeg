@@ -94,6 +94,7 @@ import {
   acpDetectAgentLocalVersion,
   acpDownloadAgentBinary,
   acpFetchAgentLatestRelease,
+  acpUpdateSystemAgent,
   acpInstallUvTool,
   acpGetAgentStatus,
   acpListAgents,
@@ -225,6 +226,16 @@ import {
   ANTIGRAVITY_ENV_KEYS,
   AntigravityConfigPanel,
 } from "./antigravity-config-panel"
+import { KiroConfigPanel } from "./kiro-config-panel"
+import {
+  TRAE_HOST_ENV,
+  TRAE_PAT_ENV,
+  TraeConfigPanel,
+} from "./trae-config-panel"
+import {
+  COMMAND_CODE_API_KEY_ENV,
+  CommandCodeConfigPanel,
+} from "./command-code-config-panel"
 import { CodeBuddyConfigPanel } from "./codebuddy-config-panel"
 import { CursorConfigPanel } from "./cursor-config-panel"
 import {
@@ -362,6 +373,7 @@ type RunningActionKind =
   | "custom_install"
   | "upgrade_latest"
   | "install_uv"
+  | "upgrade_system"
 
 type UiFixAction =
   | FixAction
@@ -379,6 +391,7 @@ type UiFixAction =
         | "focus_codeg_bind"
         | "open_model_providers"
         | "focus_codeg_window"
+        | "upgrade_system"
         // Payload is the version to install, not the agent type.
         | "upgrade_latest"
       payload: string
@@ -416,6 +429,7 @@ const PACKAGE_ACTION_FIX_KINDS: ReadonlyArray<UiFixAction["kind"]> = [
   "custom_install",
   "upgrade_latest",
   "install_uv",
+  "upgrade_system",
 ]
 
 type AcpTranslator = (
@@ -449,6 +463,18 @@ function publishAgentDisplay(list: AcpAgentInfo[]): void {
       iconUrl: agent.icon_url,
     }))
   )
+}
+
+/**
+ * The distribution badge. `npx`, `binary` and `uvx` are the channels' own
+ * names and stay as they are; `system` is codeg's internal word for "the
+ * vendor's installer put it there", which reads as noise next to them.
+ */
+function distributionLabel(distributionType: string): string {
+  if (distributionType === "system") {
+    return acpText("distribution.system", "official installer")
+  }
+  return distributionType
 }
 
 function statusTone(status: CheckStatus): string {
@@ -835,6 +861,9 @@ export function inferGrokMode(
 export function importantEnvKeysByAgent(
   agentType: AgentType
 ): ImportantEnvKeys {
+  if (agentType === "zcode") {
+    return { apiBaseUrl: [], apiKey: [], model: [] }
+  }
   if (agentType === "claude_code") {
     return {
       apiBaseUrl: ["ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "API_BASE_URL"],
@@ -903,6 +932,44 @@ export function importantEnvKeysByAgent(
       apiBaseUrl: [],
       apiKey: ["QODER_PERSONAL_ACCESS_TOKEN"],
       model: ["QODER_MODEL"],
+    }
+  }
+  if (agentType === "kiro") {
+    // `KIRO_API_KEY` is Kiro CLI's non-interactive sign-in (its headless mode
+    // requires it; an interactive `kiro-cli login` covers the desktop). There
+    // is no endpoint or model env — the model is picked per session over ACP —
+    // so both lists stay empty and the panel shows only the key. Mirrors the
+    // backend `agent_env_keys(Kiro)`.
+    return {
+      apiBaseUrl: [],
+      apiKey: ["KIRO_API_KEY"],
+      model: [],
+    }
+  }
+  if (agentType === "trae") {
+    // TRAE CLI's non-interactive sign-in is its personal access token, which
+    // codeg exchanges through TRAE's PAT auth method when a session starts;
+    // `TRAECLI_HOST` is the API URL of an enterprise's own deployment. The
+    // model is picked per session over ACP, so there is no model env. Generic
+    // OPENAI_*/API_KEY aliases are absent: TRAE CLI reads neither. Mirrors the
+    // backend `agent_env_keys(Trae)`.
+    return {
+      apiBaseUrl: [TRAE_HOST_ENV],
+      apiKey: [TRAE_PAT_ENV],
+      model: [],
+    }
+  }
+  if (agentType === "command_code") {
+    // Command Code's non-interactive sign-in is `COMMAND_CODE_API_KEY`, which
+    // it reads ahead of the login `command-code login` stores. It talks only
+    // to its own service and the model is picked per session over ACP, so
+    // there is no endpoint or model env. Generic OPENAI_*/API_KEY aliases are
+    // absent: Command Code reads neither. Mirrors the backend
+    // `agent_env_keys(CommandCode)`.
+    return {
+      apiBaseUrl: [],
+      apiKey: [COMMAND_CODE_API_KEY_ENV],
+      model: [],
     }
   }
   return {
@@ -3909,6 +3976,40 @@ function compareVersion(a: string, b: string): number {
   return 0
 }
 
+/**
+ * What follows a version's dotted numbers: `-0f9edde` for
+ * `2026.10.14-0f9edde`, nothing for `1.19.3`. Read from where
+ * `compareVersion` starts reading, and only as far as the version runs.
+ */
+function versionBuildSuffix(value: string): string {
+  const version =
+    /^[0-9A-Za-z.+-]*/.exec(value.trim().replace(/^[^\d]*/, ""))?.[0] ?? ""
+  return version.replace(/^\d+(?:\.\d+)*/, "")
+}
+
+/**
+ * Whether Version Status offers the recommended version in place of the
+ * installed one: an older release, or another build of the same release.
+ * Cursor publishes several builds a day under one date (`2026.10.14-0f9edde`,
+ * then `2026.10.14-941492e`), which `compareVersion` ranks equal, so a pin
+ * that moves within a day would leave every install of the earlier build
+ * reading "Already latest" while connect keeps launching it. Builds of one
+ * release cannot be ordered, so the reviewed one is what gets offered. Only a
+ * suffix on both sides names two builds; `1.0.0+abc` against `1.0.0` stays
+ * equal, as it always has.
+ */
+function isBehindRecommended(installed: string, recommended: string): boolean {
+  const order = compareVersion(installed, recommended)
+  if (order !== 0) return order < 0
+  const installedBuild = versionBuildSuffix(installed)
+  const recommendedBuild = versionBuildSuffix(recommended)
+  return (
+    installedBuild !== "" &&
+    recommendedBuild !== "" &&
+    installedBuild !== recommendedBuild
+  )
+}
+
 function hasComparableVersion(
   value: string | null | undefined
 ): value is string {
@@ -4080,6 +4181,25 @@ export function buildAcpAdapterCheck(
   // The English fallbacks mirror the four i18n messages one-for-one (they are
   // what renders if no translator is mounted), so each state keeps the detail
   // that state is about — above all, the path we found the vendor CLI at.
+  if (adapter.native_required) {
+    return {
+      check_id: "acp_adapter",
+      label: acpText("adapter.label", "ACP adapter"),
+      status: installed && sawNative ? "pass" : "warn",
+      message: acpText(
+        "zcode.adapterInfo",
+        "Codeg runs {adapterPackage} as an ACP bridge. Install and sign in to the official ZCode runtime first; the bridge uses its existing configuration.",
+        values
+      ),
+      fixes: [
+        {
+          label: acpText("adapter.learnMore", "Learn more"),
+          kind: "open_url",
+          payload: adapter.docs_url,
+        },
+      ],
+    }
+  }
   const split = `Codeg drives agents over ACP and the ${adapter.native_label} does not speak ACP, so Codeg needs a separate adapter package, ${adapter.adapter_package}.`
   const coexist = `It ships its own runtime, never modifies or replaces your ${adapter.native_cmd} command, and reads the same ${adapter.shared_config_dir} — your existing sign-in and settings carry over.`
   const [key, fallback] = installed
@@ -4154,7 +4274,10 @@ export function providerToRebindTo(
 export function buildVersionCheck(
   agent: AcpAgentInfo,
   uvReady: boolean = true,
-  latestRelease: AgentLatestRelease | null = null
+  latestRelease: AgentLatestRelease | null = null,
+  // For a `system` agent: whether the preflight found the user's install
+  // (its `system_cli` check), or `undefined` before a preflight has answered.
+  systemCliFound?: boolean
 ): UiCheckItem | null {
   if (agent.distribution_type === "in_process") {
     const version =
@@ -4168,6 +4291,74 @@ export function buildVersionCheck(
         "Built-in in-process runtime. No CLI install required."
       )} (${version})`,
       fixes: [],
+    }
+  }
+  // An agent codeg launches but never installs (Kiro CLI): no pin to compare
+  // against, and installing or removing it is its own installer's job. The
+  // card says whether the user's install was found — where to get it when it
+  // was not — and upgrades it in place through the vendor's own updater, so
+  // the copy the terminal runs and the one Codeg launches stay the same.
+  if (agent.distribution_type === "system") {
+    const installed = agent.installed_version
+    // Whether the install is there is the preflight's call: it resolves the
+    // very binary a launch would run. The version is only what `--version`
+    // printed — it can come back empty for a CLI that is present (a probe
+    // that timed out, say right after an update) and stay set after the CLI
+    // was removed (a refresh keeps the last version it saw). Without a
+    // preflight answer yet, a known version is the evidence there is.
+    const found = systemCliFound ?? Boolean(installed)
+    if (found) {
+      return {
+        check_id: "version_status",
+        label: acpText("version.statusLabel", "Version Status"),
+        status: "pass",
+        message: acpText(
+          agent.supports_self_update
+            ? "version.systemInstalledUpdatable"
+            : "version.systemInstalled",
+          agent.supports_self_update
+            ? "{versionText}. Installed with the official installer; Upgrade runs its own updater."
+            : "{versionText}. Installed and updated by its own installer; Codeg launches it as-is.",
+          {
+            versionText: installed
+              ? acpText("version.localOnly", "Local: {localVersion}", {
+                  localVersion: installed,
+                })
+              : acpText(
+                  "version.localUndetected",
+                  "Local: version not detected"
+                ),
+          }
+        ),
+        fixes: agent.supports_self_update
+          ? [
+              {
+                label: acpText("actions.upgrade", "Upgrade"),
+                kind: "upgrade_system",
+                payload: agent.agent_type,
+              },
+            ]
+          : [],
+      }
+    }
+    return {
+      check_id: "version_status",
+      label: acpText("version.statusLabel", "Version Status"),
+      status: "fail",
+      message: acpText(
+        "version.systemMissing",
+        "Not found on this machine. Install it with the official installer, then refresh."
+      ),
+      fixes: agent.install_url
+        ? [
+            {
+              label: acpText("actions.installGuide", "Install guide"),
+              kind: "open_url",
+              payload: agent.install_url,
+            },
+          ]
+        : [],
+
     }
   }
   if (
@@ -4364,7 +4555,7 @@ export function buildVersionCheck(
   if (
     hasComparableVersion(agent.registry_version) &&
     hasComparableVersion(agent.installed_version) &&
-    compareVersion(agent.installed_version, agent.registry_version) < 0
+    isBehindRecommended(agent.installed_version, agent.registry_version)
   ) {
     return {
       check_id: "version_status",
@@ -4567,10 +4758,14 @@ export function getAgentChecks(
   )
   const uvReady =
     agent.distribution_type !== "uvx" || !uvCheck || uvCheck.status === "pass"
+  const systemCliCheck = current?.result?.checks?.find(
+    (check) => check.check_id === "system_cli"
+  )
   const versionCheck = buildVersionCheck(
     agent,
     uvReady,
-    resolvedLatestRelease ?? null
+    resolvedLatestRelease ?? null,
+    systemCliCheck ? systemCliCheck.status === "pass" : undefined
   )
   const remoteChecks: UiCheckItem[] = (current?.result?.checks ?? []).map(
     (check) => ({
@@ -5696,6 +5891,77 @@ export function AcpAgentSettings() {
     [runPreflight, t, installStream.start]
   )
 
+  // Upgrade an agent Codeg does not install (Kiro CLI) through its own
+  // updater. The updater succeeds whether or not a newer build existed, so the
+  // toast compares the version before and after instead of always claiming an
+  // upgrade.
+  const runSystemUpdate = useCallback(
+    async (agent: AcpAgentInfo) => {
+      if (busyActionRef.current.has(agent.agent_type)) return
+      busyActionRef.current.add(agent.agent_type)
+      setBusyBinaryAction((prev) => ({ ...prev, [agent.agent_type]: true }))
+      setRunningActionKind((prev) => ({
+        ...prev,
+        [agent.agent_type]: "upgrade_system",
+      }))
+      const actionLabel = t("actions.upgrade")
+      const previous = agent.installed_version
+      const taskId = randomUUID()
+      setStreamAgentType(agent.agent_type)
+      await installStream.start(taskId)
+      try {
+        const version = await acpUpdateSystemAgent(agent.agent_type, taskId)
+        setAgents((prev) =>
+          prev.map((item) =>
+            item.agent_type === agent.agent_type
+              ? { ...item, installed_version: version }
+              : item
+          )
+        )
+        await runPreflight(agent.agent_type)
+        if (version && version === previous) {
+          toast.success(
+            t("toasts.systemAgentAlreadyLatest", {
+              name: agent.name,
+              version,
+            })
+          )
+        } else {
+          toast.success(
+            t("toasts.agentActionCompleted", {
+              name: agent.name,
+              action: actionLabel,
+            }),
+            {
+              description: version
+                ? t("toasts.localVersion", { version })
+                : t("toasts.installCompletedVersionLater"),
+            }
+          )
+        }
+      } catch (err) {
+        const message = toErrorMessage(err)
+        toast.error(
+          t("toasts.agentActionFailed", {
+            name: agent.name,
+            action: actionLabel,
+          }),
+          { description: message }
+        )
+        throw err
+      } finally {
+        busyActionRef.current.delete(agent.agent_type)
+        setBusyBinaryAction((prev) => ({ ...prev, [agent.agent_type]: false }))
+        setRunningActionKind((prev) => ({
+          ...prev,
+          [agent.agent_type]: undefined,
+        }))
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [runPreflight, t, installStream.start]
+  )
+
   const handleFixAction = async (agent: AcpAgentInfo, action: UiFixAction) => {
     if (
       busyBinaryAction[agent.agent_type] ||
@@ -5738,6 +6004,10 @@ export function AcpAgentSettings() {
     }
     if (action.kind === "install_uv") {
       await runUvInstall(agent)
+      return
+    }
+    if (action.kind === "upgrade_system") {
+      await runSystemUpdate(agent)
       return
     }
     if (action.kind === "custom_install") {
@@ -5904,7 +6174,8 @@ export function AcpAgentSettings() {
         ) : fix.kind === "upgrade_binary" ||
           fix.kind === "upgrade_npx" ||
           fix.kind === "redownload_binary" ||
-          fix.kind === "upgrade_latest" ? (
+          fix.kind === "upgrade_latest" ||
+          fix.kind === "upgrade_system" ? (
           <Wrench className="h-3 w-3" />
         ) : fix.kind === "uninstall_binary" || fix.kind === "uninstall_npx" ? (
           <Trash2 className="h-3 w-3" />
@@ -8509,7 +8780,7 @@ export function AcpAgentSettings() {
                       {selectedAgent.name}
                     </h3>
                     <Badge variant="outline" className="shrink-0">
-                      {selectedAgent.distribution_type}
+                      {distributionLabel(selectedAgent.distribution_type)}
                     </Badge>
                     {/* Names the thing codeg actually installs, right next to
                         the vendor's name — so the split is visible even before
@@ -8597,8 +8868,8 @@ export function AcpAgentSettings() {
                         className={cn(
                           "inline-block h-4 w-4 rounded-full bg-background shadow-sm transition-transform",
                           selectedDraft.enabled
-                            ? "translate-x-4"
-                            : "translate-x-0.5"
+                            ? "translate-x-4 rtl:-translate-x-4"
+                            : "translate-x-0.5 rtl:-translate-x-0.5"
                         )}
                       />
                     </button>
@@ -9037,6 +9308,11 @@ export function AcpAgentSettings() {
                     <label className="text-xs font-medium">
                       {t("envVars")}
                     </label>
+                  )}
+                  {selectedAgent.agent_type === "zcode" && (
+                    <p className="text-2xs text-muted-foreground">
+                      {t("zcode.runtimeHint")}
+                    </p>
                   )}
                   {(selectedAgent.agent_type !== "codeg_agent" ||
                     codegEnvOpen) && (
@@ -11795,6 +12071,71 @@ supports_websockets = true`}
                       )
                     }
                   />
+                ) : selectedAgent.agent_type === "kiro" ? (
+                  <KiroConfigPanel
+                    agent={selectedAgent}
+                    saving={Boolean(savingEnv[selectedAgent.agent_type])}
+                    onSave={(env, enabled) =>
+                      persistEnv(
+                        selectedAgent.agent_type,
+                        enabled,
+                        envMapToText(env),
+                        selectedAgent.model_provider_id,
+                        // Both keys this panel owns, folded into the raw
+                        // editor's draft. The enable switch and the generic env
+                        // Save persist that draft WHOLESALE, so without this a
+                        // switch from trust-all back to ask would be silently
+                        // undone the next time either one fires. `undefined`
+                        // (the key field was cleared) deletes the line.
+                        {
+                          KIRO_API_KEY: env.KIRO_API_KEY,
+                          KIRO_TRUST_ALL_TOOLS: env.KIRO_TRUST_ALL_TOOLS,
+                        }
+                      )
+                    }
+                  />
+                ) : selectedAgent.agent_type === "trae" ? (
+                  <TraeConfigPanel
+                    agent={selectedAgent}
+                    saving={Boolean(savingEnv[selectedAgent.agent_type])}
+                    onSave={(env, enabled) =>
+                      persistEnv(
+                        selectedAgent.agent_type,
+                        enabled,
+                        envMapToText(env),
+                        selectedAgent.model_provider_id,
+                        // The two keys this panel owns, folded into the raw
+                        // editor's draft (see the Kiro panel above): the
+                        // enable switch and the generic env Save persist that
+                        // draft wholesale. `undefined` (a cleared field)
+                        // deletes the line.
+                        {
+                          [TRAE_PAT_ENV]: env[TRAE_PAT_ENV],
+                          [TRAE_HOST_ENV]: env[TRAE_HOST_ENV],
+                        }
+                      )
+                    }
+                  />
+                ) : selectedAgent.agent_type === "command_code" ? (
+                  <CommandCodeConfigPanel
+                    agent={selectedAgent}
+                    saving={Boolean(savingEnv[selectedAgent.agent_type])}
+                    onSave={(env, enabled) =>
+                      persistEnv(
+                        selectedAgent.agent_type,
+                        enabled,
+                        envMapToText(env),
+                        selectedAgent.model_provider_id,
+                        // The key this panel owns, folded into the raw
+                        // editor's draft like the TRAE CLI panel's above, so
+                        // the enable switch cannot bring back a cleared key.
+                        {
+                          [COMMAND_CODE_API_KEY_ENV]:
+                            env[COMMAND_CODE_API_KEY_ENV],
+                        }
+                      )
+                    }
+                  />
                 ) : selectedAgent.agent_type === "kimi_code" ? (
                   <KimiCodeConfigPanel
                     agent={selectedAgent}
@@ -12477,7 +12818,10 @@ supports_websockets = true`}
                       </Button>
                     </div>
                   </div>
-                ) : isCustomAgentType(selectedAgent.agent_type) ? (
+                ) : selectedAgent.agent_type ===
+                  "zcode" ? null : isCustomAgentType(
+                    selectedAgent.agent_type
+                  ) ? (
                   // A custom agent is driven purely by the ACP protocol: codeg
                   // knows nothing about its config file layout or auth model,
                   // so the generic "config management" editor below would be

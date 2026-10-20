@@ -31,7 +31,7 @@
 
 <table>
   <tr>
-    <td width="50%" valign="top">🧩 <strong>모든 에이전트를 하나의 인터페이스로</strong><br/>열여섯 개의 에이전트가 기본 내장되어 있고, ACP 에이전트라면 무엇이든 합류할 수 있습니다 — 모두 터미널이 아닌, 같은 구조화된 대화로 표시됩니다.</td>
+    <td width="50%" valign="top">🧩 <strong>모든 에이전트를 하나의 인터페이스로</strong><br/>스물 개의 에이전트가 기본 내장되어 있고, ACP 에이전트라면 무엇이든 합류할 수 있습니다 — 모두 터미널이 아닌, 같은 구조화된 대화로 표시됩니다.</td>
     <td width="50%" valign="top">🔎 <strong>에이전트를 넘나드는 세션</strong><br/>에이전트마다 디스크에 남겨 두는 기록을 가져와 검색하고 이어서 진행한 다음, 다른 에이전트에게 넘겨주세요.</td>
   </tr>
   <tr>
@@ -59,13 +59,6 @@
   </tr>
   <tr>
     <td align="center" width="220">
-      <a href="https://console.lqapi.xyz/sign-up?aff=KPy9" target="_blank"><img src="../images/lq-router.png" alt="LQ router" width="160" /></a><br/>
-      <strong><a href="https://console.lqapi.xyz/sign-up?aff=KPy9">LQ router</a></strong>
-    </td>
-    <td>본 프로젝트를 후원해 주신 LQ router 중계 서비스에 감사드립니다! LQ router는 전문 엔터프라이즈급 AI 중계 서비스로, 기업과 개인 개발자에게 안정적이고 효율적이며 저렴한 AI 모델 API 연동 서비스를 제공합니다. GPT, Claude, Grok, Gemini 등 주요 모델을 지원하며 GPT Pro 과금 배율은 최저 0.1배입니다. <a href="https://console.lqapi.xyz/sign-up?aff=KPy9">공식 웹사이트에서 그룹에 참여하면 1달러 체험 크레딧을 받을 수 있습니다</a>.</td>
-  </tr>
-  <tr>
-    <td align="center" width="220">
       <a href="https://go.apimart.ai/gh-codeg" target="_blank"><img src="../images/apimart-ai.png" alt="APIMart" width="200" /></a><br/>
       <strong><a href="https://go.apimart.ai/gh-codeg">APIMart</a></strong>
     </td>
@@ -84,10 +77,10 @@
   </tr>
   <tr>
     <td align="center" width="220">
-      <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG" target="_blank"><img src="../images/fluxion-ai.png" alt="Fluxion AI" width="160" /></a><br/>
-      <strong><a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">Fluxion AI</a></strong>
+      <a href="https://fluxionai.space/register?source=github&campaign=github-sidrune-codeg&promo=SDRCODEG" target="_blank"><img src="../images/sidrune-ai.png" alt="Sidrune AI" width="200" /></a><br/>
+      <strong><a href="https://fluxionai.space/register?source=github&campaign=github-sidrune-codeg&promo=SDRCODEG">Sidrune AI</a></strong>
     </td>
-    <td>본 프로젝트를 후원해 주신 Fluxion AI에 감사드립니다! Fluxion AI는 하나의 통합 API를 통해 GPT, Claude, Gemini를 비롯한 주요 AI 모델에 빠르고 안정적이며 비용 효율적으로 접근할 수 있게 해 줍니다. 신규 사용자는 <a href="https://fluxionai.space/register?source=github&campaign=github-codeg-202609&promo=CODEG">전용 링크</a>를 통해 $3의 API 크레딧을 받을 수 있습니다.</td>
+    <td>본 프로젝트를 후원해 주신 Sidrune AI에 감사드립니다! Sidrune AI는 하나의 API로 GPT, Claude 등 주요 AI 모델에 접근할 수 있게 해 줍니다. 신규 사용자는 <a href="https://fluxionai.space/register?source=github&campaign=github-sidrune-codeg&promo=SDRCODEG">전용 링크</a>에서 프로모션 코드 <code>SDRCODEG</code>로 가입하면 $3의 API 크레딧을 받을 수 있습니다.</td>
   </tr>
   <tr>
     <td align="center" width="220">
@@ -108,9 +101,9 @@
 
 ### 모든 에이전트를 하나의 인터페이스로
 
-열여섯 개의 에이전트가 기본 내장되어 있고, 그 밖의 ACP 에이전트도 공개 레지스트리나 자체 distribution JSON으로 합류할 수 있습니다. Codeg는 이들 모두와 Agent Client Protocol로 통신하므로, 눈을 가늘게 뜨고 들여다봐야 하는 터미널 대신 모두 같은 풍부한 대화 화면을 갖게 됩니다 — 도구 카드, 실시간 diff, 계획, 권한 요청까지.
+내장 에이전트 20개와 모든 ACP 에이전트를 한 화면에서. 도구 카드, 실시간 diff, 대화형 응답을 제공합니다.
 
-[문서 →](https://docs.codeg.app/guide/supported-agents) · [커스텀 에이전트 →](https://docs.codeg.app/guide/custom-agents)
+[문서 →](https://docs.codeg.app/guide/supported-agents) · [커스텀 에이전트 →](https://docs.codeg.app/guide/custom-agents) · [UI 렌더링 →](https://docs.codeg.app/guide/skills#cards-tables-and-charts-in-replies)
 
 </td>
 <td width="50%">
@@ -125,9 +118,9 @@
 
 ### 모든 세션을 검색할 수 있게
 
-Codeg는 에이전트 CLI마다 디스크에 남겨 두는 기록을 읽습니다. 클릭 한 번으로 가져오고, 전부 검색하고, 어떤 세션이든 멈춘 지점부터 이어가세요. 예전 세션을 `@`로 언급하면 지금 대화 중인 에이전트가 그 세션을 읽을 수 있습니다 — 다른 에이전트가 남긴 세션이라도요.
+기록을 가져오고 검색하고 이어서 대화하세요. `@`로 다른 에이전트와 세션을 공유하고 태그로 정리하세요.
 
-[문서 →](https://docs.codeg.app/guide/aggregation)
+[문서 →](https://docs.codeg.app/guide/aggregation) · [태그 →](https://docs.codeg.app/guide/workspace#tag-conversations)
 
 </td>
 <td width="50%">
@@ -142,7 +135,7 @@ Codeg는 에이전트 CLI마다 디스크에 남겨 두는 기록을 읽습니�
 
 ### 멀티 에이전트 협업
 
-`@`를 입력하고, 에이전트를 고르고, 보내세요. 언급된 에이전트는 저마다 독립 세션으로 나란히 실행되고, 그 출력은 지금 보고 있는 스레드로 실시간으로 흘러듭니다. Claude Code가 초안을 쓰는 동안 Codex가 검토하는 식으로요. 서브 에이전트는 일하는 동안 내용이 채워지는 카드로 나타납니다.
+`@`로 작업을 위임하세요. 여러 에이전트가 나란히 작업하고 진행 상황을 대화에 실시간으로 전합니다.
 
 [문서 →](https://docs.codeg.app/guide/multi-agent)
 
@@ -159,9 +152,9 @@ Codeg는 에이전트 CLI마다 디스크에 남겨 두는 기록을 읽습니�
 
 ### 무인으로 실행되는 할 일
 
-작업을 적어 두고 자리를 떠나세요. 할 일마다 전용 git 워크트리와 브랜치가 생기고, 지금 바로 또는 예약한 시간에 시작해 검토 칸에서 기다립니다. diff를 수락하면 에이전트가 반영하고, Codeg는 git을 확인한 뒤에야 완료로 처리합니다.
+독립된 워크트리에서 작업을 즉시 실행하거나 예약하세요. 에이전트가 작업하면 변경 사항을 검토하고 승인하세요.
 
-[문서 →](https://docs.codeg.app/guide/tasks)
+[문서 →](https://docs.codeg.app/guide/tasks) · [자동 처리 →](https://docs.codeg.app/guide/repository#let-it-pick-items-up-by-itself)
 
 </td>
 <td width="50%">
@@ -176,7 +169,7 @@ Codeg는 에이전트 CLI마다 디스크에 남겨 두는 기록을 읽습니�
 
 ### 무한 캔버스
 
-작업을 공간 위에 펼쳐 놓으세요. 대화, 파일, 터미널, 메모가 보드 위의 카드가 되어 폴더와 에이전트별로 묶이므로, 여러 에이전트가 나란히 실행되는 모습을 한눈에 볼 수 있습니다.
+대화, 파일, 터미널, 메모를 무한한 보드에 배치하세요. 모든 에이전트의 작업을 한눈에 볼 수 있습니다.
 
 [문서 →](https://docs.codeg.app/guide/canvas)
 
@@ -193,9 +186,9 @@ Codeg는 에이전트 CLI마다 디스크에 남겨 두는 기록을 읽습니�
 
 ### 데스크톱·서버·모바일·채팅
 
-Codeg를 데스크톱 앱으로, 어떤 브라우저에서든 여는 자체 호스팅 서버로, 또는 Docker 컨테이너 하나로 실행하세요. 네이티브 iPhone, iPad, Android 클라이언트, 그리고 Telegram, Lark, WeChat 채널이 에이전트를 늘 손 닿는 곳에 두는 동안, 파일과 세션은 내 컴퓨터에 그대로 남습니다.
+데스크톱, 서버, Docker, 모바일에서 사용하세요. Telegram, Lark, WeChat으로도 에이전트와 대화하세요.
 
-[문서 →](https://docs.codeg.app/getting-started/deployment) · [모바일 앱 →](https://docs.codeg.app/getting-started/installation#mobile-apps) · [채팅 채널 →](https://docs.codeg.app/guide/chat-channels)
+[문서 →](https://docs.codeg.app/getting-started/deployment) · [원격 워크스페이스 →](https://docs.codeg.app/guide/workspace#desktop-and-browser) · [모바일 앱 →](https://docs.codeg.app/getting-started/installation#mobile-apps) · [채팅 채널 →](https://docs.codeg.app/guide/chat-channels)
 
 </td>
 <td width="50%">
@@ -210,7 +203,7 @@ Codeg를 데스크톱 앱으로, 어떤 브라우저에서든 여는 자체 호�
 
 ### Office 문서와 과학 연구
 
-덱, 보고서, 워크북을 요청하고 진짜 `.pptx`, `.docx`, `.xlsx` 파일이 대화 옆에서 실시간으로 렌더링되는 것을 지켜보세요. 가설 생성, 실험 설계, 통계, 문헌 검색 같은 내장 연구 스킬은 어떤 에이전트와도 함께 작동합니다.
+Office 파일을 만들고 실시간으로 미리 보며 PDF도 열어 보세요. 연구 스킬은 모든 에이전트가 사용합니다.
 
 [문서 →](https://docs.codeg.app/guide/office) · [과학 연구 →](https://docs.codeg.app/guide/research)
 
@@ -227,7 +220,7 @@ Codeg를 데스크톱 앱으로, 어떤 브라우저에서든 여는 자체 호�
 
 ### 브라우저와 컴퓨터 사용
 
-데스크톱 앱에서는 링크가 파일 옆의 내장 브라우저에서 열립니다. 페이지, 요소, 스크린샷, 콘솔 오류를 에이전트에게 넘기거나, 공유한 페이지를 에이전트가 직접 조작하게 하세요. 미리 보기 단계의 기능으로, 공유한 창을 에이전트가 보고 조작하게 할 수도 있습니다 — 중지는 클릭 한 번이면 됩니다.
+데스크톱 브라우저에서 페이지와 오류를 공유하세요. 컴퓨터 사용(미리보기)으로 공유 창도 조작할 수 있습니다.
 
 [문서 →](https://docs.codeg.app/guide/browser) · [컴퓨터 사용 →](https://docs.codeg.app/guide/computer-use)
 
@@ -242,38 +235,45 @@ Codeg를 데스크톱 앱으로, 어떤 브라우저에서든 여는 자체 호�
 <tr>
 <td width="50%" valign="middle">
 
-### 엔지니어링의 전 과정
+### 명령줄과 CI
 
-에디터, 실시간 diff와 나란히 보기 diff, 3분할 머지 에디터를 갖춘 완전한 git 클라이언트, 클릭 한 번으로 만드는 워크트리, 내장 터미널, 화면 분할 — 모두 에이전트 바로 옆에서, 저장소 안의 진짜 파일을 다룹니다.
+`codeg-cli`로 스크립트나 CI에서 실행 중인 Codeg에 요청하세요. 응답이나 JSON 이벤트를 출력합니다.
 
-[문서 →](https://docs.codeg.app/guide/workspace) · [Git과 워크트리 →](https://docs.codeg.app/guide/git)
+[문서 →](https://docs.codeg.app/guide/command-line)
 
 </td>
-<td width="50%">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="../images/features/workspace-dark.gif" />
-  <img src="../images/features/workspace-light.gif" alt="엔지니어링의 전 과정" width="100%" />
-</picture>
+<td width="50%" valign="middle">
+
+```bash
+codeg-cli -a codex \
+  -p "Review the latest commit"
+
+git diff | codeg-cli -a codex \
+  -p "Review this diff"
+```
+
 </td>
 </tr>
 </table>
 
 **함께 들어 있는 기능:**
 
+- **[엔지니어링의 전 과정](https://docs.codeg.app/guide/workspace)** — 코드 편집기, 실시간 diff, [Git과 워크트리](https://docs.codeg.app/guide/git), 3패널 병합 편집기, 터미널, 분할 보기
 - **[리포지토리 패널](https://docs.codeg.app/guide/repository)** — GitHub, GitLab, Gitea, Forgejo의 이슈, 풀 리퀘스트, 검사 항목, 병합을 다루고, 어떤 이슈나 PR이든 할 일로 만들 수 있습니다
 - **[자동화](https://docs.codeg.app/guide/automations)** — 설정을 마친 입력창을 저장해 cron 일정에 따라 또는 필요할 때 헤드리스로 실행합니다
-- **[토큰 사용량](https://docs.codeg.app/guide/token-usage)** — 추이, 캐시 적중률, 활동 히트맵, 그리고 폴더·에이전트·모델·세션별 사용량
+- **[토큰 사용량](https://docs.codeg.app/guide/token-usage)** — 추이, 캐시 적중률, 활동 히트맵, 폴더·에이전트·모델·세션별 사용량, 그리고 API 정가 기준 예상 비용
 - **[분기와 끼어들기](https://docs.codeg.app/guide/workspace#follow-along-%E2%80%94-the-conversation)** — 지원하는 에이전트에서는 완료된 답변에서 대화를 분기하거나, 아직 실행 중인 턴에 메시지를 끼워 넣을 수 있습니다
 - **[스킬](https://docs.codeg.app/guide/skills) & [MCP](https://docs.codeg.app/guide/mcp)** — 에이전트별 스킬 팩, 로컬 MCP 스캔, 레지스트리 검색과 설치
 - **[프로젝트 부트](https://docs.codeg.app/guide/project-boot)** — 실시간 미리보기와 함께 새 프로젝트의 뼈대를 시각적으로 만듭니다
-- **[내 취향대로](https://docs.codeg.app/reference/settings/appearance)** — 토큰 단위로 색을 바꿀 수 있는 열두 가지 테마, 배경화면, 모서리 둥글기, 사용자 지정 CSS — 열 가지 인터페이스 언어 중 어느 언어로든
+- **[알림](https://docs.codeg.app/reference/settings/general#desktop-notifications)** — 턴이 끝나거나 에이전트가 나를 필요로 할 때 데스크톱 알림과 알림음, 깜박이는 작업 표시줄 버튼, 튀어 오르는 Dock 아이콘으로 알려 줍니다
+- **[내 취향대로](https://docs.codeg.app/reference/settings/appearance)** — 토큰 단위로 색을 바꿀 수 있는 열두 가지 테마, 배경화면, 모서리 둥글기, 채팅 너비, 사용자 지정 CSS, 데스크톱 펫 — 열 가지 인터페이스 언어 중 어느 언어로든
 - **[백업과 동기화](https://docs.codeg.app/reference/settings/system#backup-restore)** — 암호화된 백업, 그리고 파일이나 직접 운영하는 WebDAV 서버를 통한 컴퓨터 간 설정 동기화
 - **[URL 스킴](../../docs/url-scheme.md)** — `codeg://session/<id>`로 다른 앱에서 대화를 엽니다(데스크톱)
 - **그 밖에도** — 거의 모든 릴리스마다 새로운 것이 더해집니다. 전체 목록은 [릴리스 노트](https://github.com/spacering-net/codeg/releases)에 있습니다
 
 ## 🤖 지원 에이전트
 
-Codeg는 모든 에이전트와 [Agent Client Protocol](https://agentclientprotocol.com)로 통신하므로, 에이전트마다 같은 구조화된 인터페이스를 갖습니다. 열여섯 개가 기본 내장되어 있으며, 그중 대부분은 Codeg가 대신 설치하고, 버전을 고정하고, 업데이트합니다:
+Codeg는 모든 에이전트와 [Agent Client Protocol](https://agentclientprotocol.com)로 통신하므로, 에이전트마다 같은 구조화된 인터페이스를 갖습니다. 스물 개가 기본 내장되어 있으며, 그중 대부분은 Codeg가 대신 설치하고, 버전을 고정하고, 업데이트합니다:
 
 <p>
   <a href="https://www.anthropic.com/claude-code"><kbd><img src="../images/agents/claude-code.svg" alt="" width="16" valign="middle" /> Claude Code</kbd></a> &nbsp;
@@ -291,6 +291,10 @@ Codeg는 모든 에이전트와 [Agent Client Protocol](https://agentclientproto
   <a href="https://deepseek-harness.github.io/deepseek-harness/"><kbd><img src="../images/agents/deepseek-harness.svg" alt="" width="16" valign="middle" /> DeepSeek Harness</kbd></a> &nbsp;
   <a href="https://qoder.com"><kbd><picture><source media="(prefers-color-scheme: dark)" srcset="../images/agents/qoder-dark.svg" /><img src="../images/agents/qoder.svg" alt="" width="16" valign="middle" /></picture> Qoder</kbd></a> &nbsp;
   <a href="https://antigravity.google"><kbd><picture><source media="(prefers-color-scheme: dark)" srcset="../images/agents/google-antigravity-dark.svg" /><img src="../images/agents/google-antigravity.svg" alt="" width="16" valign="middle" /></picture> Google Antigravity</kbd></a> &nbsp;
+  <a href="https://kiro.dev/cli/"><kbd><img src="../images/agents/kiro.svg" alt="" width="16" valign="middle" /> Kiro CLI</kbd></a> &nbsp;
+  <a href="../agents/zcode.md"><kbd><img src="../images/agents/zcode.svg" alt="" width="16" valign="middle" /> ZCode</kbd></a> &nbsp;
+  <a href="https://docs.trae.cn/cli_about-trae-code-cli-2"><kbd><img src="../images/agents/trae.svg" alt="" width="16" valign="middle" /> TRAE CLI</kbd></a> &nbsp;
+  <a href="https://commandcode.ai"><kbd><img src="../images/agents/command-code.svg" alt="" width="16" valign="middle" /> Command Code</kbd></a> &nbsp;
   <kbd>Codeg Agent</kbd> &nbsp;
   <a href="https://docs.codeg.app/guide/custom-agents"><kbd>+ 모든 ACP 에이전트</kbd></a>
 </p>
@@ -320,6 +324,8 @@ $env:CODEG_STATIC_DIR="$env:LOCALAPPDATA\codeg-server\web"; codeg-server
 ```bash
 docker run -d -p 3080:3080 -v codeg-data:/data ghcr.io/spacering-net/codeg:latest
 ```
+
+어느 쪽이든 브라우저에서 `http://<host>:3080`을 열고, 서버가 시작할 때 출력하는 액세스 토큰을 입력하세요(컨테이너는 `docker logs`로 확인합니다). `CODEG_TOKEN`으로 직접 정할 수도 있습니다.
 
 **모바일** — [iOS 앱](https://apps.apple.com/app/codeg-client/id6785199071) 또는 [Android APK](https://github.com/xintaofei/codeg-android/releases/latest)를 설치한 뒤 데스크톱 앱의 **웹 서비스**나 직접 운영하는 `codeg-server`를 가리키게 하세요: 주소와 토큰만 넣으면 끝입니다. 연결 절차는 [모바일 앱](https://docs.codeg.app/getting-started/installation#mobile-apps) 참고.
 
@@ -363,6 +369,8 @@ Compose, 사전 빌드 바이너리, 소스 빌드, 제자리 업데이트는 [�
 - [Superpowers](https://github.com/obra/superpowers) — Codeg의 전문가 스킬 모듈을 지원하는 프로젝트
 - [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) — Codeg의 Office 문서 워크플로우를 지원하는 프로젝트
 - [scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) — Codeg의 과학 연구 스킬을 지원하는 프로젝트 (MIT 라이선스 서브셋)
+- [json-render](https://github.com/vercel-labs/json-render) — Codeg의 UI 렌더링(카드, 표, 차트)을 지원하는 프로젝트
+- [cua-driver](https://github.com/trycua/cua) — Codeg의 컴퓨터 사용을 지원하는 프로젝트
 
 ## 📜 라이선스
 

@@ -20,9 +20,9 @@ import {
   Pin,
   PinOff,
   CheckCircle2,
-  FolderX,
   Info,
   ChevronRight,
+  SquareTerminal,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
@@ -83,7 +83,9 @@ import {
   NewConversationTagDialog,
 } from "./conversation-tag-picker"
 import { AgentIcon } from "@/components/agent-icon"
+import { AssistantAvatar } from "@/components/assistants/assistant-avatar"
 import { useBranchChip, useResolvedTags } from "@/hooks/use-conversation-tags"
+import { useAssistant } from "@/stores/assistants-store"
 
 /**
  * Horizontal indent added per delegation-nesting level. Chosen so a child's
@@ -486,10 +488,17 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                       }}
                       aria-hidden
                     >
-                      <AgentIcon
-                        agentType={conversation.agent_type}
-                        className="h-[0.75rem] w-[0.75rem]"
-                      />
+                      {conversation.assistant_id != null ? (
+                        <SubsessionAssistantAvatar
+                          id={conversation.assistant_id}
+                          name={conversation.assistant_name ?? ""}
+                        />
+                      ) : (
+                        <AgentIcon
+                          agentType={conversation.agent_type}
+                          className="h-[0.75rem] w-[0.75rem]"
+                        />
+                      )}
                       <ConversationStatusDot
                         status={status}
                         size="sm"
@@ -525,24 +534,23 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                       size="xs"
                       className="relative -ml-[0.25rem] max-w-[calc(100%-3.875rem)] shrink overflow-hidden"
                     />
-                    {/* Re-parented out of a removed worktree: history loads fine,
-                    but "continue" may need a fresh session (the agent's files
-                    were keyed to the old path). Kept at the far end, with the
-                    row's other status marks. */}
-                    {conversation.origin_cwd ? (
+                    {/* Started by `codeg-cli`: told apart from the window's
+                    own, and found again with the Recent filter. */}
+                    {conversation.source === "cli" ? (
                       <span
                         className="ml-auto inline-flex shrink-0 items-center"
-                        title={tSidebar("worktreeRemovedBadge")}
+                        title={tSidebar("cliBadge")}
                       >
-                        <FolderX
+                        <SquareTerminal
                           className="h-3 w-3 text-muted-foreground/60"
                           aria-hidden
                         />
-                        <span className="sr-only">
-                          {tSidebar("worktreeRemovedBadge")}
-                        </span>
+                        <span className="sr-only">{tSidebar("cliBadge")}</span>
                       </span>
                     ) : null}
+                    {/* No mark for a conversation re-parented out of a removed
+                    worktree (`origin_cwd`): the row stays quiet about it, and
+                    the hover bubble names the original path instead. */}
                   </button>
 
                   {/* Expand/collapse affordance for delegation children. It overlays
@@ -911,3 +919,17 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
     </>
   )
 })
+
+/** A sub-session run as an assistant shows the assistant's avatar where the
+ *  agent icon goes: its current look from the store, or the generic assistant
+ *  glyph for a row the store does not hold. */
+function SubsessionAssistantAvatar({ id, name }: { id: number; name: string }) {
+  const assistant = useAssistant(id)
+  return (
+    <AssistantAvatar
+      avatar={assistant?.avatar ?? null}
+      name={assistant?.name ?? name}
+      size={14}
+    />
+  )
+}

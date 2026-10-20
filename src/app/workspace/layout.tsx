@@ -23,6 +23,7 @@ import {
   AppWorkspaceProvider,
   ConversationStatusEventBridge,
 } from "@/contexts/app-workspace-context"
+import { AssistantsSync } from "@/stores/assistants-store"
 import { ConversationTagsSync } from "@/stores/conversation-tags-store"
 import { ConversationTagsManagerHost } from "@/components/conversations/conversation-tags-manager"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -695,8 +696,19 @@ function MobileFolderWorkspaceShell({
     isOpen: auxOpen,
     restored: auxRestored,
     toggle: toggleAux,
+    setOpen: setAuxOpen,
   } = useAuxPanelContext()
   const { isOpen: terminalOpen, toggle: toggleTerminal } = useTerminalContext()
+
+  // A full-page route opened from inside the aux drawer — a work tab's "open
+  // full page", a repository row's task chip — would otherwise land UNDER the
+  // drawer, which on a phone covers nearly the whole screen. The desktop panel
+  // collapses for a route by itself (see FolderWorkspaceShell); here the drawer
+  // closes, and its toggle stays hidden until the conversations come back.
+  const { isConversations } = useWorkbenchRoute()
+  useEffect(() => {
+    if (!isConversations) setAuxOpen(false)
+  }, [isConversations, setAuxOpen])
 
   // Each of these drawers is a state toggle, not a route: without a history
   // entry behind them the back gesture falls through and unloads the whole
@@ -1514,6 +1526,7 @@ function WorkspaceLayoutInner({ children }: { children: React.ReactNode }) {
                     window; which tags a conversation carries rides on its
                     summary instead. */}
                 <ConversationTagsSync />
+                <AssistantsSync />
                 {/* The tag manager, opened from tag pickers, folder menus and
                     the sidebar's tag filter — all popovers or menus that
                     unmount as they close, so none can host it. */}

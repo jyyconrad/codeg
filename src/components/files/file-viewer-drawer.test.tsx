@@ -120,6 +120,9 @@ vi.mock("@/components/ai-elements/code-block", () => ({
 vi.mock("@/components/files/image-preview", () => ({
   ImagePreview: () => <div data-testid="image" />,
 }))
+vi.mock("@/components/files/pdf-preview", () => ({
+  PdfPreview: () => <div data-testid="pdf" />,
+}))
 vi.mock("@/components/files/office-preview", () => ({
   OfficePreview: ({ relPath }: { relPath: string | null }) => (
     <div data-testid="office" data-rel={relPath ?? ""} />
@@ -278,7 +281,12 @@ describe("FileViewerDrawer", () => {
     const imageId = buildFileTabId({ kind: "file", path: imagePath })
     mockOpenFilePreview.mockResolvedValue(imagePath)
     state.fileTabs = [
-      tab({ id: imageId, language: "image", path: imagePath, title: "photo.png" }),
+      tab({
+        id: imageId,
+        language: "image",
+        path: imagePath,
+        title: "photo.png",
+      }),
     ]
     await open({ path: imagePath, line: null })
     expect(screen.getByTestId("image")).toBeInTheDocument()
@@ -299,6 +307,20 @@ describe("FileViewerDrawer", () => {
       "data-rel",
       "letter.docx"
     )
+  })
+
+  it("routes image, PDF and office languages to their own renderers", async () => {
+    state.fileTabs = [tab({ language: "image" })]
+    await open({ path: ABS_PATH, line: null })
+    expect(screen.getByTestId("image")).toBeInTheDocument()
+
+    state.fileTabs = [tab({ language: "pdf" })]
+    await open({ path: ABS_PATH, line: null })
+    expect(screen.getByTestId("pdf")).toBeInTheDocument()
+
+    state.fileTabs = [tab({ language: "office" })]
+    await open({ path: ABS_PATH, line: null })
+    expect(screen.getByTestId("office")).toHaveAttribute("data-rel", "plan.md")
   })
 
   it("waits for content rather than showing an empty document", async () => {

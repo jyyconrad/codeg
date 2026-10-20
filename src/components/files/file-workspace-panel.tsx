@@ -29,6 +29,11 @@ import {
 import { BrowserTabView } from "@/components/browser/browser-tab-view"
 import { FilePreview } from "@/components/files/file-preview"
 import { shouldUseFilePreview } from "@/lib/file-preview-kind"
+import {
+  KeptOfficePreviews,
+  isOfficeFileTab,
+} from "@/components/files/kept-office-previews"
+import { PdfPreview } from "@/components/files/pdf-preview"
 import { DiffViewer } from "@/components/diff/diff-viewer"
 import { ImageDiffView } from "@/components/diff/image-diff-view"
 import { UnifiedDiffPreview } from "@/components/diff/unified-diff-preview"
@@ -757,7 +762,21 @@ function DiffFileList({
   )
 }
 
+/**
+ * The file column's content: the active tab's view (the body below), plus the
+ * office previews `KeptOfficePreviews` keeps mounted over the same box so that
+ * switching tabs never restarts one.
+ */
 export function FileWorkspacePanel() {
+  return (
+    <div className="relative h-full min-h-0">
+      <FileWorkspacePanelBody />
+      <KeptOfficePreviews />
+    </div>
+  )
+}
+
+function FileWorkspacePanelBody() {
   const t = useTranslations("Folder.fileWorkspacePanel")
   const { activeFileTab, fileTabs, pendingFileReveal, previewFileTabIds } =
     useWorkspaceFileTabs()
@@ -1896,6 +1915,19 @@ export function FileWorkspacePanel() {
         )}
       </div>
     )
+  }
+
+  // PDF.js. Preview-only like an image: the bytes are binary, there is no
+  // source view to toggle to.
+  if (isFileTab && activeFileTab && activeFileTab.language === "pdf") {
+    return <PdfPreview key={activeFileTab.id} tab={activeFileTab} />
+  }
+
+  // Office preview (.docx/.xlsx/.pptx → OfficeCLI watch → sandboxed iframe).
+  // Not rendered here: `KeptOfficePreviews`, beside this body, shows it and
+  // keeps it mounted while other tabs are in front.
+  if (activeFileTab && isOfficeFileTab(activeFileTab)) {
+    return null
   }
 
   if (isFilePreview && activeFileTab?.path) {

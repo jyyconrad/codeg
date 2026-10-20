@@ -359,6 +359,64 @@ async fn static_js_is_compressed_but_binary_download_is_not() {
     );
 }
 
+fn cache_control(resp: &axum_test::TestResponse) -> Option<String> {
+    resp.headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+#[tokio::test]
+async fn static_files_revalidate_except_fingerprinted_assets() {
+    let (server, _data, static_dir) = build_test_server().await;
+    let root = static_dir.path();
+    std::fs::write(root.join("index.html"), "<html>index</html>").expect("write index");
+    std::fs::write(root.join("workspace.html"), "<html>workspace</html>").expect("write workspace");
+    std::fs::write(root.join("manifest.json"), "{}").expect("write manifest");
+    std::fs::create_dir_all(root.join("_next/static/chunks")).expect("mkdir chunks");
+    std::fs::write(root.join("_next/static/chunks/app-1a2b.js"), "0").expect("write chunk");
+
+    // Same name in every release: a browser that kept one without asking
+    // again would open the previous release after the server was upgraded.
+    for path in ["/", "/workspace", "/manifest.json"] {
+        let resp = server.get(path).await;
+        assert_eq!(resp.status_code(), 200, "{path}");
+        assert_eq!(cache_control(&resp).as_deref(), Some("no-cache"), "{path}");
+    }
+
+    // A fingerprinted asset never changes under its name.
+    let chunk = server.get("/_next/static/chunks/app-1a2b.js").await;
+    assert_eq!(chunk.status_code(), 200);
+    assert_eq!(cache_control(&chunk), None);
+    // The index.html standing in for a missing one is still a document.
+    let missing = server.get("/_next/static/chunks/gone.js").await;
+    assert_eq!(missing.text(), "<html>index</html>");
+    assert_eq!(cache_control(&missing).as_deref(), Some("no-cache"));
+
+    // Revalidating keeps the copy: it is not modified, so nothing is resent.
+    let first = server.get("/").await;
+    let last_modified = first
+        .headers()
+        .get("last-modified")
+        .and_then(|v| v.to_str().ok())
+        .expect("last-modified")
+        .to_owned();
+    let again = server
+        .get("/")
+        .add_header("if-modified-since", last_modified)
+        .await;
+    assert_eq!(again.status_code(), 304);
+    assert_eq!(cache_control(&again).as_deref(), Some("no-cache"));
+
+    let api = server
+        .post("/api/health")
+        .add_header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .json(&json!({}))
+        .await;
+    assert_eq!(api.status_code(), 200);
+    assert_eq!(cache_control(&api), None, "the API is not a static file");
+}
+
 #[tokio::test]
 async fn get_folder_conversation_accepts_turn_window_params() {
     let (server, state, _data, _static) = build_test_server_with_state().await;
@@ -660,4 +718,120 @@ async fn a_server_that_shares_its_screen_answers_its_web_clients() {
         .await;
     assert_eq!(resp.status_code(), 200);
     assert_eq!(resp.json::<Value>(), json!({}));
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Assistants
+// ────────────────────────────────────────────────────────────────────────────
+
+fn assistant_draft(name: &str) -> Value {
+    json!({
+        "name": name,
+        "description": "Reviews diffs",
+        "avatar": { "kind": "monogram", "color": "violet" },
+        "agent_config": {
+            "agent_type": "codex",
+            "agent_options": { "config_values": { "model": "gpt-5.5" } },
+            "label_snapshot": {
+                "agent": "Codex CLI",
+                "mode": null,
+                "options": [
+                    { "id": "model", "kind": "select", "name": "Model", "value_label": "GPT-5.5" }
+                ]
+            }
+        },
+        "instructions": "Be terse.",
+        "enabled": true
+    })
+}
+
+#[tokio::test]
+async fn assistants_round_trip_over_http() {
+    let (server, _data, _static) = build_test_server().await;
+    let auth = format!("Bearer {TEST_TOKEN}");
+    let call = |path: &'static str, body: Value| {
+        server
+            .post(path)
+            .add_header("authorization", auth.clone())
+            .json(&body)
+    };
+
+    let resp = call("/api/assistant_list", json!({})).await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.json::<Value>(), json!([]));
+
+    let resp = call(
+        "/api/assistant_create",
+        json!({ "draft": assistant_draft("Reviewer") }),
+    )
+    .await;
+    assert_eq!(resp.status_code(), 200);
+    let a: Value = resp.json();
+    assert_eq!(a["name"], "Reviewer");
+    assert_eq!(a["revision"], 1);
+    assert_eq!(a["agent_type"], "codex");
+    assert!(a["deleted_at"].is_null());
+    let a_id = a["id"].as_i64().unwrap();
+
+    let resp = call(
+        "/api/assistant_create",
+        json!({ "draft": assistant_draft("Writer") }),
+    )
+    .await;
+    let b_id = resp.json::<Value>()["id"].as_i64().unwrap();
+
+    // A duplicate name is a conflict carrying its i18n key.
+    let resp = call(
+        "/api/assistant_create",
+        json!({ "draft": assistant_draft("writer") }),
+    )
+    .await;
+    assert_eq!(resp.status_code(), 409);
+    assert_eq!(resp.json::<Value>()["i18n_key"], "errors.duplicateName");
+
+    // An incomplete selection never lands.
+    let mut incomplete = assistant_draft("Other");
+    incomplete["agent_config"]["agent_options"]["config_values"] = json!({});
+    let resp = call("/api/assistant_create", json!({ "draft": incomplete })).await;
+    assert_eq!(resp.status_code(), 400);
+    assert_eq!(
+        resp.json::<Value>()["i18n_key"],
+        "errors.invalidAgentOptions"
+    );
+
+    let resp = call(
+        "/api/assistant_update",
+        json!({ "id": a_id, "patch": { "enabled": false } }),
+    )
+    .await;
+    assert_eq!(resp.status_code(), 200);
+    let updated: Value = resp.json();
+    assert_eq!(updated["enabled"], false);
+    assert_eq!(updated["revision"], 2);
+    assert_eq!(updated["instructions"], "Be terse.");
+
+    let resp = call("/api/assistant_reorder", json!({ "ids": [b_id, a_id] })).await;
+    assert_eq!(resp.status_code(), 200);
+    let moved: Value = resp.json();
+    assert_eq!(moved.as_array().unwrap().len(), 2);
+    assert_eq!(moved[0]["id"], b_id);
+
+    let resp = call("/api/assistant_delete", json!({ "id": a_id })).await;
+    assert_eq!(resp.status_code(), 200);
+    assert!(resp.json::<Value>()["deleted_at"].is_string());
+
+    let resp = call("/api/assistant_delete", json!({ "id": a_id })).await;
+    assert_eq!(resp.status_code(), 404);
+
+    // The list keeps the tombstone, in display order.
+    let resp = call("/api/assistant_list", json!({})).await;
+    let list: Value = resp.json();
+    let ids: Vec<i64> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, vec![b_id, a_id]);
+    assert!(list[1]["deleted_at"].is_string());
 }

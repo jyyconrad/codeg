@@ -10,7 +10,7 @@ use crate::db::entities::conversation::ConversationKind;
 use crate::db::entities::{conversation, folder};
 use crate::db::error::DbError;
 use crate::db::service::conversation_tag_service;
-use crate::models::{AgentType, DbConversationSummary};
+use crate::models::{AgentType, AssistantRunSnapshot, DbConversationSummary};
 
 pub async fn create(
     conn: &DatabaseConnection,
@@ -93,13 +93,24 @@ async fn create_inner(
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_default();
     let now = Utc::now();
-    let (parent_id, parent_tool_use_id, delegation_call_id) = match delegation {
+    let (parent_id, parent_tool_use_id, delegation_call_id, assistant) = match delegation {
         Some(link) => (
             Some(link.parent_conversation_id),
             Some(link.parent_tool_use_id),
             Some(link.delegation_call_id),
+            link.assistant,
         ),
-        None => (None, None, None),
+        None => (None, None, None, None),
+    };
+    let (assistant_id, assistant_snapshot) = match assistant {
+        Some(a) => (
+            Some(a.id),
+            Some(
+                serde_json::to_string(&a.snapshot)
+                    .map_err(|e| DbError::Migration(format!("assistant snapshot: {e}")))?,
+            ),
+        ),
+        None => (None, None),
     };
     let model = conversation::ActiveModel {
         id: NotSet,
@@ -122,6 +133,9 @@ async fn create_inner(
         pinned_at: Set(None),
         origin_cwd: Set(None),
         launch_mode: Set("acp".to_string()),
+        assistant_id: Set(assistant_id),
+        assistant_snapshot: Set(assistant_snapshot),
+        source: Set(None),
     };
     Ok(model.insert(conn).await?)
 }
@@ -322,6 +336,23 @@ pub async fn seed_model_if_empty(
 /// conversation id is not knowable to any client until that broadcast, so
 /// locking first makes an auto-title backfill on this row impossible rather
 /// than merely unlikely.
+/// Record where conversation `conversation_id` was started from (see
+/// `conversation::Model::source`). Written once, right after the row is
+/// created and before it is announced, so the first upsert carries it.
+pub async fn set_source(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+    source: &str,
+) -> Result<(), DbError> {
+    use sea_orm::sea_query::Expr;
+    conversation::Entity::update_many()
+        .col_expr(conversation::Column::Source, Expr::value(source))
+        .filter(conversation::Column::Id.eq(conversation_id))
+        .exec(conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn lock_title(conn: &DatabaseConnection, conversation_id: i32) -> Result<(), DbError> {
     use sea_orm::sea_query::Expr;
     conversation::Entity::update_many()
@@ -1240,6 +1271,9 @@ struct CarriedOverRow {
     updated_at: chrono::DateTime<Utc>,
     origin_cwd: Option<String>,
     launch_mode: String,
+    assistant_id: Option<i32>,
+    assistant_snapshot: Option<String>,
+    source: Option<String>,
 }
 
 impl CarriedOverRow {
@@ -1279,6 +1313,12 @@ impl CarriedOverRow {
             // history lookup for a re-parented conversation.
             origin_cwd: row.origin_cwd.clone(),
             launch_mode: row.launch_mode.clone(),
+            // Carried: the preserved history is what ran as that assistant,
+            // so it keeps drawing as it.
+            assistant_id: row.assistant_id,
+            assistant_snapshot: row.assistant_snapshot.clone(),
+            // Carried: the history was started where the conversation was.
+            source: row.source.clone(),
         }
     }
 
@@ -1309,6 +1349,9 @@ impl CarriedOverRow {
             pinned_at: Set(None),
             origin_cwd: Set(self.origin_cwd),
             launch_mode: Set(self.launch_mode),
+            assistant_id: Set(self.assistant_id),
+            assistant_snapshot: Set(self.assistant_snapshot),
+            source: Set(self.source),
         }
     }
 }
@@ -1485,6 +1528,12 @@ fn conv_to_summary(r: conversation::Model) -> DbConversationSummary {
         delegation_call_id: r.delegation_call_id,
         origin_cwd: r.origin_cwd,
         launch_mode: r.launch_mode,
+        assistant_name: r
+            .assistant_snapshot
+            .as_deref()
+            .and_then(AssistantRunSnapshot::name_from_json),
+        assistant_id: r.assistant_id,
+        source: r.source,
         // Backfilled by `fill_summary_extras`, like `child_count`.
         tag_ids: Vec::new(),
     }
@@ -1647,6 +1696,36 @@ pub async fn latest_top_level_in_folder(
         .order_by_desc(conversation::Column::Id)
         .one(conn)
         .await?)
+}
+
+/// The assistant a delegation child ran as, with the snapshot its row was
+/// written with. `None` for any row that is not an assistant child (or no
+/// row); `Some((id, None))` for an assistant child whose snapshot is missing or
+/// no longer parses — the caller must not mistake that for "no options".
+pub async fn get_assistant_run(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Option<(i32, Option<AssistantRunSnapshot>)>, DbError> {
+    let Some(row) = conversation::Entity::find_by_id(conversation_id)
+        .one(conn)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(assistant_id) = row.assistant_id else {
+        return Ok(None);
+    };
+    let snapshot = row.assistant_snapshot.as_deref().and_then(|raw| {
+        serde_json::from_str::<AssistantRunSnapshot>(raw)
+            .map_err(|e| {
+                tracing::warn!(
+                    "[conversation_service] conversation {conversation_id}: unreadable \
+                     assistant snapshot: {e}"
+                );
+            })
+            .ok()
+    });
+    Ok(Some((assistant_id, snapshot)))
 }
 
 pub async fn list_by_folder(
@@ -1828,6 +1907,7 @@ mod tests {
             parent_conversation_id: parent.id,
             parent_tool_use_id: "tu-1".into(),
             delegation_call_id: "call-1".into(),
+            assistant: None,
         };
         let child = create_with_delegation(
             conn,
@@ -1919,6 +1999,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-1".into(),
                 delegation_call_id: "call-1".into(),
+                assistant: None,
             }),
         )
         .await
@@ -1933,6 +2014,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-2".into(),
                 delegation_call_id: "call-2".into(),
+                assistant: None,
             }),
         )
         .await
@@ -1981,6 +2063,7 @@ mod tests {
             parent_conversation_id: child,
             parent_tool_use_id: "tu-2".into(),
             delegation_call_id: "call-2".into(),
+            assistant: None,
         };
         create_with_delegation(
             &db.conn,
@@ -3667,6 +3750,7 @@ mod tests {
                 parent_conversation_id: parent.id,
                 parent_tool_use_id: "tu-activity".into(),
                 delegation_call_id: "call-activity".into(),
+                assistant: None,
             }),
         )
         .await
@@ -3727,6 +3811,7 @@ mod tests {
                 parent_conversation_id: regular.id,
                 parent_tool_use_id: "tu-kind".into(),
                 delegation_call_id: "call-kind".into(),
+                assistant: None,
             }),
         )
         .await

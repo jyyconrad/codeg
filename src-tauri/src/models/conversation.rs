@@ -70,6 +70,19 @@ pub struct DbConversationSummary {
     pub origin_cwd: Option<String>,
     /// `acp` opens the transcript. `terminal` reopens the native CLI session.
     pub launch_mode: String,
+    /// Mirror of `conversation.assistant_id`: the assistant a delegation child
+    /// ran as. Absent on every other row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assistant_id: Option<i32>,
+    /// That assistant's name when the delegation started, out of the row's
+    /// `assistant_snapshot`. The UI prefers the assistant's current name and
+    /// falls back to this one when the assistant row is unknown to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assistant_name: Option<String>,
+    /// Mirror of `conversation.source`: `"cli"` for a conversation a
+    /// `codeg-cli` run started. Absent on every other row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// Ids of the tags on this conversation, ascending. Not stored on the row —
     /// backfilled from `conversation_tag_link` by one query over the returned
     /// set (`fill_summary_extras`), the same way `child_count` is. Omitted from

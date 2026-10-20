@@ -793,7 +793,6 @@ const ConversationTabView = memo(function ConversationTabView({
   useEffect(() => {
     isViewerRef.current = conn.isViewer
   }, [conn.isViewer])
-  const isConnecting = connStatus === "connecting"
   // The tab's connection is keyed by a stable tabId, but agent switching is
   // async — and for a not-installed target, connect()'s preflight throws BEFORE
   // it tears down the old connection. So `conn` can still describe the PREVIOUS
@@ -1719,6 +1718,16 @@ const ConversationTabView = memo(function ConversationTabView({
     [conn.connectionId, tAsyncTasks]
   )
 
+  /** Turn Claude Code's Remote Control off the way the user would: by sending
+   *  `/remote-control off`, which the adapter answers itself. */
+  const handleRemoteControlOff = useCallback(() => {
+    const command = "/remote-control off"
+    handleSend({
+      blocks: [{ type: "text", text: command }],
+      displayText: command,
+    })
+  }, [handleSend])
+
   const handleOpenAgentsSettings = useCallback(() => {
     openSettingsWindow("agents", { agentType: selectedAgent }).catch((err) => {
       console.error(
@@ -2338,6 +2347,9 @@ const ConversationTabView = memo(function ConversationTabView({
         detailError={detailError}
         acpLoadError={acpLoadError}
         hideEmptyState={!hasPersistedConversation || hasSentMessage}
+        // The conversation page's navigator, plan and sub-agents show in the
+        // Session Details side panel rather than over the messages.
+        insightsInSidebar
         onReload={canShowDetailErrorActions ? handleReloadDetail : undefined}
         onNewSession={
           canShowDetailErrorActions ? handleOpenNewSession : undefined
@@ -2499,6 +2511,13 @@ const ConversationTabView = memo(function ConversationTabView({
           ? handleStopAsyncTask
           : undefined
       }
+      remoteControl={connIsForOtherAgent ? null : conn.remoteControl}
+      onRemoteControlOff={
+        // Owners of a live connection only, like the stop above.
+        conn.connectionId !== null && !conn.isViewer
+          ? handleRemoteControlOff
+          : undefined
+      }
       pendingPermission={conn.pendingPermission}
       pendingQuestion={conn.pendingQuestion}
       pendingAskQuestion={conn.pendingAskQuestion}
@@ -2520,6 +2539,8 @@ const ConversationTabView = memo(function ConversationTabView({
       onConfigOptionChange={handleSetConfigOption}
       agentType={selectedAgent}
       availableCommands={connectionCommands}
+      // The previous agent's prediction is no use to the one just picked.
+      promptSuggestion={connIsForOtherAgent ? null : conn.promptSuggestion}
       attachmentTabId={tabId}
       draftStorageKey={draftStorageKey}
       hideInput={sessionTerminalMode || isWelcomeMode || Boolean(acpLoadError)}
@@ -2666,7 +2687,9 @@ const ConversationTabView = memo(function ConversationTabView({
                     setUsableAgentCount(agents.filter(isAvailableAgent).length)
                   }}
                   onOpenAgentsSettings={handleOpenAgentsSettings}
-                  disabled={isConnecting || dbConversationId != null}
+                  // Drafts remain switchable while connecting; saved
+                  // conversations retain the agent they were created with.
+                  disabled={dbConversationId != null}
                 />
               </div>
               {composerBlockedMessage ? (
@@ -2751,7 +2774,8 @@ const ConversationTabView = memo(function ConversationTabView({
                 setUsableAgentCount(agents.filter(isAvailableAgent).length)
               }}
               onOpenAgentsSettings={handleOpenAgentsSettings}
-              disabled={isConnecting || dbConversationId != null}
+              // Same draft/saved rule as the welcome-mode picker above.
+              disabled={dbConversationId != null}
             />
             {composerBlockedMessage ? (
               <div className="mt-2 flex w-full items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
@@ -3213,6 +3237,10 @@ export function ConversationDetailPanel() {
             tileTabRefs.current.delete(tab.id)
           }
         }}
+        // Tiled, everything below this wrapper is invisible to the row's
+        // scrollbar (a tile clips its content), so TileScrollContainer skips
+        // the layout read its observer would otherwise force per mutation.
+        data-tile-scroll-item=""
         style={canTileG ? { order: indexInGroup } : undefined}
         className={cn(
           canTileG

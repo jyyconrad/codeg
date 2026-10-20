@@ -521,14 +521,22 @@ async fn run_session(
                                 break;
                             }
                         }
-                        Some(ConnectionCommand::RespondPermission { request_id, option_id }) => {
+                        Some(ConnectionCommand::RespondPermission {
+                            request_id,
+                            option_id,
+                            origin,
+                        }) => {
                             if coordinator.resolve(&request_id, &option_id)
                                 || child_permission_coordinator.resolve(&request_id, &option_id)
                             {
                                 emit_with_state(
                                     &args.session_state,
                                     &args.emitter,
-                                    AcpEvent::PermissionResolved { request_id },
+                                    AcpEvent::PermissionResolved {
+                                        request_id,
+                                        option_id: Some(option_id),
+                                        origin: Some(origin),
+                                    },
                                 )
                                 .await;
                             }
@@ -643,6 +651,7 @@ async fn run_session(
                 artifacts_dir.clone(),
                 Arc::clone(&pending_continue),
                 Arc::clone(&session_memory),
+                Vec::new(),
             )
             .await
             {
@@ -695,12 +704,20 @@ async fn run_session(
                                 emit_with_state(
                                     &args.session_state,
                                     &args.emitter,
-                                    AcpEvent::PermissionResolved { request_id },
+                                    AcpEvent::PermissionResolved {
+                                        request_id,
+                                        option_id: None,
+                                        origin: None,
+                                    },
                                 )
                                 .await;
                             }
                         }
-                        Some(ConnectionCommand::Prompt { blocks, user_message }) => {
+                        Some(ConnectionCommand::Prompt {
+                            blocks,
+                            user_message,
+                            internal_suffix,
+                        }) => {
                             match start_prompt(
                                 &client,
                                 &preamble,
@@ -727,6 +744,7 @@ async fn run_session(
                                 artifacts_dir.clone(),
                                 Arc::clone(&pending_continue),
                                 Arc::clone(&session_memory),
+                                internal_suffix,
                             )
                             .await
                             {
@@ -743,14 +761,22 @@ async fn run_session(
                                 }
                             }
                         }
-                        Some(ConnectionCommand::RespondPermission { request_id, option_id }) => {
+                        Some(ConnectionCommand::RespondPermission {
+                            request_id,
+                            option_id,
+                            origin,
+                        }) => {
                             if coordinator.resolve(&request_id, &option_id)
                                 || child_permission_coordinator.resolve(&request_id, &option_id)
                             {
                                 emit_with_state(
                                     &args.session_state,
                                     &args.emitter,
-                                    AcpEvent::PermissionResolved { request_id },
+                                    AcpEvent::PermissionResolved {
+                                        request_id,
+                                        option_id: Some(option_id),
+                                        origin: Some(origin),
+                                    },
                                 )
                                 .await;
                             }
@@ -1047,6 +1073,7 @@ async fn start_prompt(
     artifacts_dir: std::path::PathBuf,
     pending_continue: Arc<Mutex<Option<String>>>,
     session_memory: Arc<SessionMemory>,
+    internal_suffix: Vec<PromptInputBlock>,
 ) -> Result<RunningTurn, String> {
     let inspected = inspect_native_prompt(&blocks);
     if let Some(reason) = inspected.reject_reason() {
@@ -1055,6 +1082,7 @@ async fn start_prompt(
     let text = inspected.text.clone();
     let mut model_blocks = blocks.clone();
     append_agent_routes(&mut model_blocks, companion.delegation_registered());
+    model_blocks.extend(internal_suffix);
     let prompt = assemble_native_prompt(&model_blocks);
 
     if let Some((message_id, blocks)) = user_message {
@@ -1391,7 +1419,16 @@ async fn settle_running(
     running.cancel.cancel();
     coordinator.cancel_current();
     for request_id in coordinator.drain_cancelled() {
-        emit_with_state(state, emitter, AcpEvent::PermissionResolved { request_id }).await;
+        emit_with_state(
+            state,
+            emitter,
+            AcpEvent::PermissionResolved {
+                request_id,
+                option_id: None,
+                origin: None,
+            },
+        )
+        .await;
     }
     if let Some(inj) = injection {
         inj.broker.cancel_by_parent_turn(connection_id).await;
@@ -1474,7 +1511,16 @@ async fn resolve_cancelled_permissions(
     emitter: &EventEmitter,
 ) {
     for request_id in coordinator.drain_cancelled() {
-        emit_with_state(state, emitter, AcpEvent::PermissionResolved { request_id }).await;
+        emit_with_state(
+            state,
+            emitter,
+            AcpEvent::PermissionResolved {
+                request_id,
+                option_id: None,
+                origin: None,
+            },
+        )
+        .await;
     }
 }
 
@@ -1599,30 +1645,210 @@ async fn handle_control_command(
         ConnectionCommand::SetConfigOption {
             config_id,
             value_id,
-        } => match config_id.as_str() {
-            MODEL_OPTION_ID => {
-                if in_turn {
-                    emit_with_state(
-                        &args.session_state,
-                        &args.emitter,
-                        AcpEvent::ConfigOptionRejected {
-                            config_id,
-                            option_name: "Model".into(),
-                            requested: value_id.clone(),
-                            actual: model_id.clone(),
-                            requested_value: value_id,
-                            actual_value: model_id.clone(),
-                        },
-                    )
-                    .await;
-                    return;
-                }
-                match resolve_session_model(
-                    &args.effective_config,
-                    &BTreeMap::from([(MODEL_OPTION_ID.into(), value_id.clone())]),
-                ) {
-                    Ok(next) => {
-                        *model_id = next;
+            reply,
+        } => {
+            let setter_outcome = async {
+                match config_id.as_str() {
+                    MODEL_OPTION_ID => {
+                        if in_turn {
+                            emit_with_state(
+                                &args.session_state,
+                                &args.emitter,
+                                AcpEvent::ConfigOptionRejected {
+                                    config_id,
+                                    option_name: "Model".into(),
+                                    requested: value_id.clone(),
+                                    actual: model_id.clone(),
+                                    requested_value: value_id,
+                                    actual_value: model_id.clone(),
+                                },
+                            )
+                            .await;
+                            return Err("Cannot change model during a turn".into());
+                        }
+                        match resolve_session_model(
+                            &args.effective_config,
+                            &BTreeMap::from([(MODEL_OPTION_ID.into(), value_id.clone())]),
+                        ) {
+                            Ok(next) => {
+                                *model_id = next;
+                                refresh_session_config(
+                                    args,
+                                    model_id,
+                                    thought_level,
+                                    session_mode,
+                                    permission,
+                                )
+                                .await;
+                                Ok(crate::acp::connection::SetterOutcome::Confirmed {
+                                    current: model_id.clone(),
+                                })
+                            }
+                            Err(_) => {
+                                let message = format!("rejected model `{value_id}`");
+                                emit_with_state(
+                                    &args.session_state,
+                                    &args.emitter,
+                                    AcpEvent::ConfigOptionRejected {
+                                        config_id,
+                                        option_name: "Model".into(),
+                                        requested: value_id.clone(),
+                                        actual: model_id.clone(),
+                                        requested_value: value_id,
+                                        actual_value: model_id.clone(),
+                                    },
+                                )
+                                .await;
+                                Err(message)
+                            }
+                        }
+                    }
+                    THOUGHT_LEVEL_OPTION_ID => {
+                        if in_turn {
+                            emit_with_state(
+                                &args.session_state,
+                                &args.emitter,
+                                AcpEvent::ConfigOptionRejected {
+                                    config_id,
+                                    option_name: "Thinking".into(),
+                                    requested: value_id.clone(),
+                                    actual: thought_level.clone(),
+                                    requested_value: value_id,
+                                    actual_value: thought_level.clone(),
+                                },
+                            )
+                            .await;
+                            return Err("Cannot change thinking during a turn".into());
+                        }
+                        match canonical_thought_level(&value_id) {
+                            Some(next) => {
+                                *thought_level = next;
+                                refresh_session_config(
+                                    args,
+                                    model_id,
+                                    thought_level,
+                                    session_mode,
+                                    permission,
+                                )
+                                .await;
+                                Ok(crate::acp::connection::SetterOutcome::Confirmed {
+                                    current: thought_level.clone(),
+                                })
+                            }
+                            None => {
+                                let message = format!("rejected thinking `{value_id}`");
+                                emit_with_state(
+                                    &args.session_state,
+                                    &args.emitter,
+                                    AcpEvent::ConfigOptionRejected {
+                                        config_id,
+                                        option_name: "Thinking".into(),
+                                        requested: value_id.clone(),
+                                        actual: thought_level.clone(),
+                                        requested_value: value_id,
+                                        actual_value: thought_level.clone(),
+                                    },
+                                )
+                                .await;
+                                Err(message)
+                            }
+                        }
+                    }
+                    PERMISSION_OPTION_ID => {
+                        if in_turn {
+                            emit_with_state(
+                                &args.session_state,
+                                &args.emitter,
+                                AcpEvent::ConfigOptionRejected {
+                                    config_id,
+                                    option_name: "Permission".into(),
+                                    requested: value_id.clone(),
+                                    actual: permission.clone(),
+                                    requested_value: value_id,
+                                    actual_value: permission.clone(),
+                                },
+                            )
+                            .await;
+                            return Err("Cannot change permission during a turn".into());
+                        }
+                        match canonical_permission(&value_id) {
+                            Some(next) => {
+                                *permission = next;
+                                refresh_session_config(
+                                    args,
+                                    model_id,
+                                    thought_level,
+                                    session_mode,
+                                    permission,
+                                )
+                                .await;
+                                Ok(crate::acp::connection::SetterOutcome::Confirmed {
+                                    current: permission.clone(),
+                                })
+                            }
+                            None => {
+                                let message = format!("rejected permission `{value_id}`");
+                                emit_with_state(
+                                    &args.session_state,
+                                    &args.emitter,
+                                    AcpEvent::ConfigOptionRejected {
+                                        config_id,
+                                        option_name: "Permission".into(),
+                                        requested: value_id.clone(),
+                                        actual: permission.clone(),
+                                        requested_value: value_id,
+                                        actual_value: permission.clone(),
+                                    },
+                                )
+                                .await;
+                                Err(message)
+                            }
+                        }
+                    }
+                    MODE_OPTION_ID => {
+                        if in_turn {
+                            let actual = session_mode.read().await.clone();
+                            emit_with_state(
+                                &args.session_state,
+                                &args.emitter,
+                                AcpEvent::ConfigOptionRejected {
+                                    config_id,
+                                    option_name: "Mode".into(),
+                                    requested: value_id.clone(),
+                                    actual: actual.clone(),
+                                    requested_value: value_id,
+                                    actual_value: actual,
+                                },
+                            )
+                            .await;
+                            return Err("Cannot change session mode during a turn".into());
+                        }
+                        let Some(mode) = mode::parse_mode(&value_id) else {
+                            let actual = session_mode.read().await.clone();
+                            let message = format!("rejected mode `{value_id}`");
+                            emit_with_state(
+                                &args.session_state,
+                                &args.emitter,
+                                AcpEvent::ConfigOptionRejected {
+                                    config_id,
+                                    option_name: "Mode".into(),
+                                    requested: value_id.clone(),
+                                    actual: actual.clone(),
+                                    requested_value: value_id,
+                                    actual_value: actual,
+                                },
+                            )
+                            .await;
+                            return Err(message);
+                        };
+                        mode::apply_mode(
+                            &args.session_state,
+                            &args.emitter,
+                            session_mode,
+                            artifacts_dir,
+                            mode,
+                        )
+                        .await;
                         refresh_session_config(
                             args,
                             model_id,
@@ -1631,150 +1857,64 @@ async fn handle_control_command(
                             permission,
                         )
                         .await;
+                        Ok(crate::acp::connection::SetterOutcome::Confirmed {
+                            current: mode.to_string(),
+                        })
                     }
-                    Err(_) => {
+                    _ => {
+                        let message = format!("Unsupported config option `{config_id}`");
                         emit_with_state(
                             &args.session_state,
                             &args.emitter,
-                            AcpEvent::ConfigOptionRejected {
-                                config_id,
-                                option_name: "Model".into(),
-                                requested: value_id.clone(),
-                                actual: model_id.clone(),
-                                requested_value: value_id,
-                                actual_value: model_id.clone(),
+                            AcpEvent::Error {
+                                message: message.clone(),
+                                agent_type: args.agent_type.to_string(),
+                                code: None,
+                                details: None,
+                                terminal: false,
                             },
                         )
                         .await;
+                        Err(message)
                     }
                 }
             }
-            THOUGHT_LEVEL_OPTION_ID => {
+            .await;
+            crate::acp::connection::send_setter_reply(reply, setter_outcome);
+        }
+        ConnectionCommand::SetMode { mode_id, reply } => {
+            let setter_outcome = async {
                 if in_turn {
+                    let message = "Cannot change session mode during a turn".to_string();
                     emit_with_state(
                         &args.session_state,
                         &args.emitter,
-                        AcpEvent::ConfigOptionRejected {
-                            config_id,
-                            option_name: "Thinking".into(),
-                            requested: value_id.clone(),
-                            actual: thought_level.clone(),
-                            requested_value: value_id,
-                            actual_value: thought_level.clone(),
+                        AcpEvent::Error {
+                            message: message.clone(),
+                            agent_type: args.agent_type.to_string(),
+                            code: None,
+                            details: None,
+                            terminal: false,
                         },
                     )
                     .await;
-                    return;
+                    return Err(message);
                 }
-                match canonical_thought_level(&value_id) {
-                    Some(next) => {
-                        *thought_level = next;
-                        refresh_session_config(
-                            args,
-                            model_id,
-                            thought_level,
-                            session_mode,
-                            permission,
-                        )
-                        .await;
-                    }
-                    None => {
-                        emit_with_state(
-                            &args.session_state,
-                            &args.emitter,
-                            AcpEvent::ConfigOptionRejected {
-                                config_id,
-                                option_name: "Thinking".into(),
-                                requested: value_id.clone(),
-                                actual: thought_level.clone(),
-                                requested_value: value_id,
-                                actual_value: thought_level.clone(),
-                            },
-                        )
-                        .await;
-                    }
-                }
-            }
-            PERMISSION_OPTION_ID => {
-                if in_turn {
+                let Some(mode) = mode::parse_mode(&mode_id) else {
+                    let message = format!("Unknown session mode `{mode_id}`");
                     emit_with_state(
                         &args.session_state,
                         &args.emitter,
-                        AcpEvent::ConfigOptionRejected {
-                            config_id,
-                            option_name: "Permission".into(),
-                            requested: value_id.clone(),
-                            actual: permission.clone(),
-                            requested_value: value_id,
-                            actual_value: permission.clone(),
+                        AcpEvent::Error {
+                            message: message.clone(),
+                            agent_type: args.agent_type.to_string(),
+                            code: None,
+                            details: None,
+                            terminal: false,
                         },
                     )
                     .await;
-                    return;
-                }
-                match canonical_permission(&value_id) {
-                    Some(next) => {
-                        *permission = next;
-                        refresh_session_config(
-                            args,
-                            model_id,
-                            thought_level,
-                            session_mode,
-                            permission,
-                        )
-                        .await;
-                    }
-                    None => {
-                        emit_with_state(
-                            &args.session_state,
-                            &args.emitter,
-                            AcpEvent::ConfigOptionRejected {
-                                config_id,
-                                option_name: "Permission".into(),
-                                requested: value_id.clone(),
-                                actual: permission.clone(),
-                                requested_value: value_id,
-                                actual_value: permission.clone(),
-                            },
-                        )
-                        .await;
-                    }
-                }
-            }
-            MODE_OPTION_ID => {
-                if in_turn {
-                    let actual = session_mode.read().await.clone();
-                    emit_with_state(
-                        &args.session_state,
-                        &args.emitter,
-                        AcpEvent::ConfigOptionRejected {
-                            config_id,
-                            option_name: "Mode".into(),
-                            requested: value_id.clone(),
-                            actual: actual.clone(),
-                            requested_value: value_id,
-                            actual_value: actual,
-                        },
-                    )
-                    .await;
-                    return;
-                }
-                let Some(mode) = mode::parse_mode(&value_id) else {
-                    let actual = session_mode.read().await.clone();
-                    emit_with_state(
-                        &args.session_state,
-                        &args.emitter,
-                        AcpEvent::ConfigOptionRejected {
-                            config_id,
-                            option_name: "Mode".into(),
-                            requested: value_id.clone(),
-                            actual: actual.clone(),
-                            requested_value: value_id,
-                            actual_value: actual,
-                        },
-                    )
-                    .await;
-                    return;
+                    return Err(message);
                 };
                 mode::apply_mode(
                     &args.session_state,
@@ -1786,62 +1926,12 @@ async fn handle_control_command(
                 .await;
                 refresh_session_config(args, model_id, thought_level, session_mode, permission)
                     .await;
+                Ok(crate::acp::connection::SetterOutcome::Confirmed {
+                    current: mode.to_string(),
+                })
             }
-            _ => {
-                emit_with_state(
-                    &args.session_state,
-                    &args.emitter,
-                    AcpEvent::Error {
-                        message: format!("Unsupported config option `{config_id}`"),
-                        agent_type: args.agent_type.to_string(),
-                        code: None,
-                        details: None,
-                        terminal: false,
-                    },
-                )
-                .await;
-            }
-        },
-        ConnectionCommand::SetMode { mode_id } => {
-            if in_turn {
-                emit_with_state(
-                    &args.session_state,
-                    &args.emitter,
-                    AcpEvent::Error {
-                        message: "Cannot change session mode during a turn".into(),
-                        agent_type: args.agent_type.to_string(),
-                        code: None,
-                        details: None,
-                        terminal: false,
-                    },
-                )
-                .await;
-                return;
-            }
-            let Some(mode) = mode::parse_mode(&mode_id) else {
-                emit_with_state(
-                    &args.session_state,
-                    &args.emitter,
-                    AcpEvent::Error {
-                        message: format!("Unknown session mode `{mode_id}`"),
-                        agent_type: args.agent_type.to_string(),
-                        code: None,
-                        details: None,
-                        terminal: false,
-                    },
-                )
-                .await;
-                return;
-            };
-            mode::apply_mode(
-                &args.session_state,
-                &args.emitter,
-                session_mode,
-                artifacts_dir,
-                mode,
-            )
             .await;
-            refresh_session_config(args, model_id, thought_level, session_mode, permission).await;
+            crate::acp::connection::send_setter_reply(reply, setter_outcome);
         }
         ConnectionCommand::GoalControl {
             reply: Some(reply), ..

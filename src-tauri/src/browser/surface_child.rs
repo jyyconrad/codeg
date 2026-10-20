@@ -43,6 +43,8 @@ use super::hooks;
 use super::policy::{self, BrowserPolicy};
 use super::profile;
 use super::registry::{BrowserRegistry, BrowserTab};
+#[cfg(target_os = "linux")]
+use super::shim::linux_child as shim;
 #[cfg(target_os = "macos")]
 use super::shim::macos as shim;
 #[cfg(target_os = "windows")]
@@ -52,8 +54,6 @@ use super::types::{
     Bounds, BrowserOpenRequestPayload, BrowserPopupPayload, BrowserTabState, ChannelKind,
     NavigationBlockReason, PopupPresentation, SurfaceKind, TabKind,
 };
-#[cfg(target_os = "linux")]
-use super::shim::linux_child as shim;
 
 thread_local! {
     static SURFACES: RefCell<HashMap<String, wry::WebView>> = RefCell::new(HashMap::new());
@@ -979,7 +979,12 @@ fn configure_child<'a>(
             };
             if !scheme_ok {
                 if policy::report_scheme_denial(&parsed, main_frame) {
-                    hooks::navigation_blocked(&nav_app, &nav_id, &url, NavigationBlockReason::Scheme);
+                    hooks::navigation_blocked(
+                        &nav_app,
+                        &nav_id,
+                        &url,
+                        NavigationBlockReason::Scheme,
+                    );
                 } else {
                     tracing::debug!("[browser] tab {nav_id} blocked frame navigation to {url}");
                 }
@@ -1065,22 +1070,29 @@ fn configure_child<'a>(
         ChildKind::Page => {
             #[cfg(not(target_os = "linux"))]
             let builder = builder
-            // The engine transfers the file; the host only decides where it
-            // may land (`downloads::requested` rewrites the path) and
-            // reports it.
-            .with_download_started_handler({
-                let app = app.clone();
-                let id = tab_id.to_string();
-                move |url, destination| super::downloads::requested(&app, &id, &url, destination)
-            })
-            .with_download_completed_handler({
-                let app = app.clone();
-                move |url: String, path, success| {
-                    super::downloads::finished(&app, &url, path, success)
-                }
-            });
-            builder.with_new_window_req_handler(new_window_handler(app.clone(), owner.clone(), tab_id.to_string(), profile.to_string()))
-        },
+                // The engine transfers the file; the host only decides where it
+                // may land (`downloads::requested` rewrites the path) and
+                // reports it.
+                .with_download_started_handler({
+                    let app = app.clone();
+                    let id = tab_id.to_string();
+                    move |url, destination| {
+                        super::downloads::requested(&app, &id, &url, destination)
+                    }
+                })
+                .with_download_completed_handler({
+                    let app = app.clone();
+                    move |url: String, path, success| {
+                        super::downloads::finished(&app, &url, path, success)
+                    }
+                });
+            builder.with_new_window_req_handler(new_window_handler(
+                app.clone(),
+                owner.clone(),
+                tab_id.to_string(),
+                profile.to_string(),
+            ))
+        }
         ChildKind::Document(grant) => builder
             // A document does not download and does not open windows: both
             // are refused and reported, and a web address a `window.open`

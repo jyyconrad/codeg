@@ -330,9 +330,7 @@ pub fn linux_handlers(app: &AppHandle, tab_id: &str) -> super::shim::linux::Down
     let tab_id = tab_id.to_string();
     let finished_app = app.clone();
     super::shim::linux::DownloadHandlers {
-        started: std::sync::Arc::new(move |url, path| {
-            requested(&started_app, &tab_id, url, path)
-        }),
+        started: std::sync::Arc::new(move |url, path| requested(&started_app, &tab_id, url, path)),
         finished: std::sync::Arc::new(move |url, destination, success| {
             finished(&finished_app, url, Some(destination.to_path_buf()), success)
         }),
@@ -421,6 +419,7 @@ fn reveal_command(path: &Path) -> std::process::Command {
     {
         let mut command = std::process::Command::new("xdg-open");
         command.arg(path.parent().unwrap_or(path));
+        crate::appimage_env::restore(&mut command);
         command
     }
 }

@@ -1,6 +1,7 @@
 pub mod acp;
 #[cfg(feature = "tauri-runtime")]
 pub mod app_update;
+pub mod assistants;
 pub mod automation;
 pub mod background;
 pub mod backup;
@@ -12,11 +13,16 @@ pub mod browser_tools;
 pub mod canvas;
 pub mod chat_authoring;
 pub mod chat_channel;
+/// The `codeg-cli` access switch (desktop; the server's is a web handler).
+#[cfg(feature = "tauri-runtime")]
+pub mod cli_access;
 /// Files-onto-the-OS-clipboard. Only the command itself is desktop-gated; the
 /// path validation and URI encoding stay compiled in every mode so their tests
 /// run without the tauri stack.
 pub mod clipboard;
 pub mod code_intel;
+/// The ✨ commit message generator (both runtimes).
+pub mod commit_message;
 /// Computer use: sharing windows, the helper, the agent reads — the desktop
 /// app's, and codeg-server's where it is let share the screen it runs on.
 pub mod computer;

@@ -610,6 +610,8 @@ mod tests {
             t: 2,
             k: kind,
             p: payload,
+
+            steer: false,
         })
         .unwrap()
     }
@@ -688,6 +690,8 @@ mod tests {
                 t: 1,
                 k: EntryKind::Prompt,
                 p: json!([{"type":"text","text":"do A then B"}]),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 2,
@@ -699,6 +703,8 @@ mod tests {
                     m.part_index = Some(0);
                     m
                 }),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 3,
@@ -710,11 +716,15 @@ mod tests {
                     &json!({"text":"A"}),
                     &a_start,
                 ),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 4,
                 k: EntryKind::Update,
                 p: tool_call_update_payload("call_a", "completed", &a_term),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 5,
@@ -726,11 +736,15 @@ mod tests {
                     &json!({"text":"B"}),
                     &b_pending,
                 ),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 6,
                 k: EntryKind::Update,
                 p: agent_message_chunk("", &commit),
+
+                steer: false,
             },
         ];
         hydrate_store("s1", &entries).expect("hydrate")
@@ -749,11 +763,15 @@ mod tests {
                 t: 1,
                 k: EntryKind::Prompt,
                 p: json!([{"type":"text","text":"write"}]),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 2,
                 k: EntryKind::Update,
                 p: tool_call_payload("call_u", "Write", "in_progress", &json!({}), &start),
+
+                steer: false,
             },
         ];
         let store = hydrate_store("s1", &entries).expect("hydrate");
@@ -782,11 +800,15 @@ mod tests {
                 t: 1,
                 k: EntryKind::Prompt,
                 p: json!([{"type":"text","text":"hi"}]),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 2,
                 k: EntryKind::Update,
                 p: payload,
+
+                steer: false,
             },
         ];
         let err = hydrate_store("s1", &entries).unwrap_err();
@@ -804,6 +826,8 @@ mod tests {
                 t: 1,
                 k: EntryKind::Prompt,
                 p: json!([{"type":"text","text":"hi"}]),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 2,
@@ -813,6 +837,8 @@ mod tests {
                     "toolCallId": "c1",
                     "title": "Write memory"
                 }),
+
+                steer: false,
             },
         ];
         assert!(hydrate_store("s1", &entries).is_err());
@@ -846,21 +872,29 @@ mod tests {
                 t: 1,
                 k: EntryKind::Prompt,
                 p: json!([{"type":"text","text":"try"}]),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 2,
                 k: EntryKind::Update,
                 p: tool_call_payload("call_r", "Write", "failed", &json!({}), &rejected),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 3,
                 k: EntryKind::Update,
                 p: tool_call_payload("call_e", "Write", "failed", &json!({}), &errored),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 4,
                 k: EntryKind::Update,
                 p: agent_message_chunk("", &commit),
+
+                steer: false,
             },
         ];
         let store = hydrate_store("s1", &entries).expect("hydrate");
@@ -945,21 +979,29 @@ mod tests {
                 t: 1,
                 k: EntryKind::Prompt,
                 p: json!([{"type":"text","text":"mix"}]),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 2,
                 k: EntryKind::Update,
                 p: agent_message_chunk("before ", &text_meta),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 3,
                 k: EntryKind::Update,
                 p: tool_call_payload("call_a", "echo", "completed", &json!({}), &call),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 4,
                 k: EntryKind::Update,
                 p: agent_message_chunk("after", &after),
+
+                steer: false,
             },
         ];
         let store = hydrate_store("s1", &entries).expect("hydrate");
@@ -982,16 +1024,22 @@ mod tests {
                 t: 1,
                 k: EntryKind::Prompt,
                 p: json!([{"type":"text","text":"first"}]),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 2,
                 k: EntryKind::Update,
                 p: compact_update_payload(&compact),
+
+                steer: false,
             },
             crate::acp_transcript::TranscriptEntry {
                 t: 3,
                 k: EntryKind::Prompt,
                 p: json!([{"type":"text","text":"second"}]),
+
+                steer: false,
             },
         ];
         let store = hydrate_store("s1", &entries).expect("hydrate");

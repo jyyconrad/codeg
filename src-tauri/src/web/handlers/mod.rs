@@ -1,5 +1,6 @@
 pub mod acp;
 pub mod app_update;
+pub mod assistants;
 pub mod automation;
 pub mod background;
 pub mod backup;
@@ -8,7 +9,9 @@ pub mod browser_tools;
 pub mod canvas;
 pub mod chat_authoring;
 pub mod chat_channel;
+pub mod cli_access;
 pub mod code_intel;
+pub mod commit_message;
 pub mod computer;
 pub mod computer_tools;
 pub mod config_sync;

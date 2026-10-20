@@ -20,7 +20,7 @@ use crate::parsers::{
     backfill_turn_durations, compute_session_stats, folder_name_from_path,
     infer_context_window_max_tokens, latest_turn_prompt_usage_tokens, merge_context_window_stats,
     relocate_orphaned_tool_results, resolve_patch_line_numbers, structurize_read_tool_output,
-    title_from_user_text, with_reported_context_percent, AgentParser, ParseError,
+    title_from_user_text, with_reported_context_percent, AgentEnv, AgentParser, ParseError,
 };
 
 /// Resolve Qoder's global config dir the way Qoder itself does.
@@ -57,10 +57,16 @@ use crate::parsers::{
 /// passes, and the `QODERCN_*` twin, which belongs to the separate `.qoder-cn`
 /// distribution rather than the `@qoder-ai/qodercli` package pinned here.
 pub(crate) fn resolve_qoder_config_dir() -> PathBuf {
+    resolve_qoder_config_dir_for_env(&AgentEnv::inherited())
+}
+
+/// [`resolve_qoder_config_dir`] for the Qoder launched with `env`.
+pub(crate) fn resolve_qoder_config_dir_for_env(env: &AgentEnv) -> PathBuf {
     resolve_qoder_config_dir_from(
-        std::env::var_os("QODER_CONFIG_DIR"),
-        std::env::var_os("QODER_CLI_HOME").or_else(|| std::env::var_os("GEMINI_CLI_HOME")),
-        std::env::var_os("QODER_CONFIG_DIR_NAME"),
+        env.var_os("QODER_CONFIG_DIR"),
+        env.var_os("QODER_CLI_HOME")
+            .or_else(|| env.var_os("GEMINI_CLI_HOME")),
+        env.var_os("QODER_CONFIG_DIR_NAME"),
         dirs::home_dir(),
     )
 }
@@ -156,8 +162,13 @@ pub struct QoderParser {
 
 impl QoderParser {
     pub fn new() -> Self {
+        Self::for_env(&AgentEnv::inherited())
+    }
+
+    /// The history of the Qoder launched with `env`.
+    pub fn for_env(env: &AgentEnv) -> Self {
         Self {
-            base_dir: resolve_qoder_config_dir().join("projects"),
+            base_dir: resolve_qoder_config_dir_for_env(env).join("projects"),
         }
     }
 
@@ -1222,7 +1233,8 @@ pub(crate) fn qoder_ask_envelope_from_recorded(recorded: &Value) -> Option<Strin
 
 /// The start and end of the sentence Qoder's `AskUserQuestion` returns once
 /// questions are answered (deobfuscated from the 1.1.67 bundle; the same
-/// strings ship in every release from 1.1.23 through 1.1.69).
+/// strings ship in every release from 1.1.23 through 1.1.69, and again in
+/// 1.1.72 and 1.1.73).
 const QODER_ANSWERED_PREFIX: &str = "Your questions have been answered: ";
 const QODER_ANSWERED_SUFFIX: &str = ". You can now continue with these answers in mind.";
 
@@ -1533,10 +1545,8 @@ fn attach_subagent_tool_calls(turns: &mut [MessageTurn], session_path: &Path) {
             else {
                 continue;
             };
-            let transcript = path.with_file_name(format!(
-                "{}.jsonl",
-                name.trim_end_matches(".meta.json")
-            ));
+            let transcript =
+                path.with_file_name(format!("{}.jsonl", name.trim_end_matches(".meta.json")));
             if transcript.exists() {
                 agents.push((
                     parent.to_string(),
@@ -1853,7 +1863,11 @@ mod tests {
     fn summary_model_ignores_a_blank_later_model() {
         let tmp = tempfile::tempdir().unwrap();
         const BLANK_MODEL_LINE: &str = r#"{"type":"assistant","uuid":"b2","timestamp":"2026-08-16T15:47:00.000Z","message":{"id":"chatcmpl-3","type":"message","role":"assistant","model":"","stop_reason":"end_turn","content":[{"type":"text","text":"third","citations":null}],"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":2}},"parentUuid":"a3","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"cli","version":"1.1.45","gitBranch":"main"}"#;
-        write_session(tmp.path(), "s1", &[USER_LINE, ANSWER_LINE, BLANK_MODEL_LINE]);
+        write_session(
+            tmp.path(),
+            "s1",
+            &[USER_LINE, ANSWER_LINE, BLANK_MODEL_LINE],
+        );
 
         let summaries = parser_in(tmp.path()).list_conversations().unwrap();
         assert_eq!(summaries[0].model.as_deref(), Some("qmodel_38max"));
@@ -1959,10 +1973,7 @@ mod tests {
         // The details dialog's total is the sum of the turns, sub-agent spend
         // included — one number for the dialog and the Token board.
         let stats = detail.session_stats.expect("session stats");
-        assert_eq!(
-            stats.total_tokens,
-            Some(5 + 2 + 5 + 1_000 + 34_000 + 300)
-        );
+        assert_eq!(stats.total_tokens, Some(5 + 2 + 5 + 1_000 + 34_000 + 300));
         // The board's side of that number: its per-turn facts are built from
         // turn usage, which is why the fold lands there and not only in the
         // session total.
@@ -2100,11 +2111,7 @@ mod tests {
     #[test]
     fn sub_agent_usage_does_not_touch_the_context_window() {
         let tmp = tempfile::tempdir().unwrap();
-        write_session(
-            tmp.path(),
-            "s1",
-            &[RUNTIME_CONFIG, USER_LINE, ANSWER_LINE],
-        );
+        write_session(tmp.path(), "s1", &[RUNTIME_CONFIG, USER_LINE, ANSWER_LINE]);
         // Control parse: no `subagents/` directory at all.
         let baseline = parser_in(tmp.path()).get_conversation("s1").unwrap();
         let baseline_stats = baseline.session_stats.clone().expect("baseline stats");
@@ -2132,7 +2139,11 @@ mod tests {
         let agent_use = r#"{"type":"assistant","uuid":"a9","timestamp":"2026-08-16T15:45:33.100Z","message":{"role":"assistant","model":"qmodel","stop_reason":"tool_use","content":[{"type":"tool_use","id":"call_agent1","name":"Agent","input":{"description":"读文件","subagent_type":"Explore"}}]},"parentUuid":"u1","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"acp","version":"1.1.67","gitBranch":"main"}"#;
         let agent_result = r#"{"type":"user","uuid":"u9","timestamp":"2026-08-16T15:45:39.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_agent1","content":"以下是文件前 60 行…"}]},"sourceToolAssistantUUID":"a9","promptId":"s1","toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"aExplore-abc123","description":"读文件"},"parentUuid":"a9","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"acp","version":"1.1.67","gitBranch":"main"}"#;
         let active_leaf = r#"{"type":"active-leaf","sessionId":"s1","leafUuid":"u9","explicit":false,"timestamp":1786895139000}"#;
-        let path = write_session(tmp.path(), "s1", &[USER_LINE, agent_use, agent_result, active_leaf]);
+        let path = write_session(
+            tmp.path(),
+            "s1",
+            &[USER_LINE, agent_use, agent_result, active_leaf],
+        );
 
         let sub = path.with_extension("").join("subagents");
         std::fs::create_dir_all(&sub).unwrap();
@@ -2197,7 +2208,11 @@ mod tests {
         let agent_use = r#"{"type":"assistant","uuid":"a9","timestamp":"2026-08-16T15:45:33.100Z","message":{"role":"assistant","model":"qmodel","stop_reason":"tool_use","content":[{"type":"tool_use","id":"call_agent1","name":"Agent","input":{"description":"调研","subagent_type":"Explore"}}]},"parentUuid":"u1","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"acp","version":"1.1.67","gitBranch":"main"}"#;
         let agent_result = r#"{"type":"user","uuid":"u9","timestamp":"2026-08-16T15:45:39.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_agent1","is_error":true,"content":"Error: tool execution produced no result"}]},"sourceToolAssistantUUID":"a9","promptId":"s1","toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"aExplore-abc123","description":"调研"},"parentUuid":"a9","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"acp","version":"1.1.67","gitBranch":"main"}"#;
         let active_leaf = r#"{"type":"active-leaf","sessionId":"s1","leafUuid":"u9","explicit":false,"timestamp":1786895139000}"#;
-        let path = write_session(tmp.path(), "s1", &[USER_LINE, agent_use, agent_result, active_leaf]);
+        let path = write_session(
+            tmp.path(),
+            "s1",
+            &[USER_LINE, agent_use, agent_result, active_leaf],
+        );
 
         let sub = path.with_extension("").join("subagents");
         std::fs::create_dir_all(&sub).unwrap();
@@ -2261,7 +2276,11 @@ mod tests {
         let agent_use = r#"{"type":"assistant","uuid":"a9","timestamp":"2026-08-16T15:45:33.100Z","message":{"role":"assistant","model":"qmodel","stop_reason":"tool_use","content":[{"type":"tool_use","id":"call_agent1","name":"Agent","input":{"description":"调研","subagent_type":"Explore"}}]},"parentUuid":"u1","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"acp","version":"1.1.67","gitBranch":"main"}"#;
         let agent_result = r#"{"type":"user","uuid":"u9","timestamp":"2026-08-16T15:45:39.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_agent1","content":"以下是文件前 60 行…"}]},"sourceToolAssistantUUID":"a9","promptId":"s1","toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"aExplore-abc123","description":"调研"},"parentUuid":"a9","isSidechain":false,"cwd":"/private/tmp/probe","sessionId":"s1","userType":"external","entrypoint":"acp","version":"1.1.67","gitBranch":"main"}"#;
         let active_leaf = r#"{"type":"active-leaf","sessionId":"s1","leafUuid":"u9","explicit":false,"timestamp":1786895139000}"#;
-        let path = write_session(tmp.path(), "s1", &[USER_LINE, agent_use, agent_result, active_leaf]);
+        let path = write_session(
+            tmp.path(),
+            "s1",
+            &[USER_LINE, agent_use, agent_result, active_leaf],
+        );
 
         let sub = path.with_extension("").join("subagents");
         std::fs::create_dir_all(&sub).unwrap();
@@ -2733,7 +2752,10 @@ mod tests {
 
         let detail = parser_in(tmp.path()).get_conversation("s2").unwrap();
         assert_eq!(detail.turns.len(), 2);
-        assert!(matches!(detail.turns[0].role, crate::models::TurnRole::User));
+        assert!(matches!(
+            detail.turns[0].role,
+            crate::models::TurnRole::User
+        ));
         assert_eq!(text_of(&detail.turns[0]), "hi");
         assert!(
             !detail
@@ -3514,6 +3536,43 @@ mod tests {
         assert!(
             QoderAskQuestion::list_from(Some(&serde_json::json!([{"header": "No text"}])))
                 .is_none()
+        );
+    }
+
+    /// #948: built with an agent's launch env, the parser reads where THAT
+    /// env puts the agent's files, not where codeg's own environment does.
+    #[test]
+    fn for_env_reads_the_config_dir_of_the_launch_env() {
+        let env = AgentEnv::with_overrides(&[("QODER_CONFIG_DIR", "/relocated/qoder")]);
+        assert_eq!(
+            QoderParser::for_env(&env).base_dir,
+            PathBuf::from("/relocated/qoder").join("projects")
+        );
+
+        // No config-dir override: the home keys, in order, and the dir name.
+        let env = AgentEnv::with_overrides(&[
+            ("QODER_CONFIG_DIR", ""),
+            ("QODER_CLI_HOME", "/relocated/qoder-home"),
+            ("GEMINI_CLI_HOME", "/relocated/unused"),
+            ("QODER_CONFIG_DIR_NAME", ".qoder-alt"),
+        ]);
+        assert_eq!(
+            QoderParser::for_env(&env).base_dir,
+            PathBuf::from("/relocated/qoder-home")
+                .join(".qoder-alt")
+                .join("projects")
+        );
+        let env = AgentEnv::with_overrides(&[
+            ("QODER_CONFIG_DIR", ""),
+            ("QODER_CLI_HOME", ""),
+            ("GEMINI_CLI_HOME", "/relocated/gemini-home"),
+            ("QODER_CONFIG_DIR_NAME", ""),
+        ]);
+        assert_eq!(
+            QoderParser::for_env(&env).base_dir,
+            PathBuf::from("/relocated/gemini-home")
+                .join(".qoder")
+                .join("projects")
         );
     }
 }

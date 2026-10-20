@@ -4813,7 +4813,10 @@ mod tests {
         assert_eq!(pick_surface(SurfaceChoice::Auto), SurfaceKind::Child);
         assert_eq!(pick_surface(SurfaceChoice::Child), SurfaceKind::Child);
         assert_eq!(pick_surface(SurfaceChoice::Window), SurfaceKind::Window);
-        assert_eq!(capabilities(&BrowserPolicy::default()).surface, Some(SurfaceKind::Child));
+        assert_eq!(
+            capabilities(&BrowserPolicy::default()).surface,
+            Some(SurfaceKind::Child)
+        );
     }
 
     /// The page channel travels with whatever surface can carry one — the

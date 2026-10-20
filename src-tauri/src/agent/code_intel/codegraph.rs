@@ -82,6 +82,8 @@ pub const CODEGRAPH_INIT_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub struct CodegraphRun {
     pub status: i32,
+    /// Captured for tests; production callers use `status` and `stderr`.
+    #[allow(dead_code)]
     pub stdout: String,
     pub stderr: String,
 }

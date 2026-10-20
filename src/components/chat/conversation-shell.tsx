@@ -16,11 +16,13 @@ import type {
   SessionFailureRecord,
   SessionModeInfo,
   AvailableCommandInfo,
+  RemoteControlInfo,
 } from "@/lib/types"
 import { ComposerStatusStrips } from "@/components/chat/composer-status-strips"
 import { AsyncTaskStrip } from "@/components/chat/async-task-strip"
 import { WorkflowProgressDockProvider } from "@/components/chat/workflow-progress-dock"
 import { WorkflowProgressOverlay } from "@/components/chat/workflow-progress-overlay"
+import { RemoteControlStrip } from "@/components/chat/remote-control-strip"
 import type {
   PendingPermission,
   PendingQuestion,
@@ -36,6 +38,7 @@ import { PermissionDialog } from "@/components/chat/permission-dialog"
 import { QuestionDialog } from "@/components/chat/question-dialog"
 import { AskQuestionCard } from "@/components/chat/ask-question-card"
 import { PlanApprovalCard } from "@/components/chat/plan-approval-card"
+import { MarkdownImageProvider } from "@/components/ai-elements/markdown-local-image"
 
 interface ConversationShellProps {
   status: ConnectionStatus | null
@@ -62,6 +65,12 @@ interface ConversationShellProps {
   onStopAsyncTask?: (taskId: string) => Promise<boolean>
   /** Canonical workflow runs. The progress strip filters to live ones. */
   workflows?: WorkflowRun[]
+  /** Claude Code's Remote Control while it is on; its strip shows the
+   *  session's link and QR code. Omit/`null` renders nothing. */
+  remoteControl?: RemoteControlInfo | null
+  /** Turns Remote Control off (sends `/remote-control off`). Omitted for
+   *  surfaces without a connection of their own — the button is then hidden. */
+  onRemoteControlOff?: () => void
   pendingPermission: PendingPermission | null
   pendingQuestion: PendingQuestion | null
   /** Awaiting-answer multiple-choice `ask_user_question`. */
@@ -92,6 +101,9 @@ interface ConversationShellProps {
   onConfigOptionChange?: (configId: string, valueId: string) => void
   agentType?: AgentType | null
   availableCommands?: AvailableCommandInfo[] | null
+  /** The prompt the agent predicts the user will send next; the empty
+   *  composer offers it (see `MessageInput.promptSuggestion`). */
+  promptSuggestion?: string | null
   attachmentTabId?: string | null
   /** Pass-through: see `MessageInput`. */
   folderPickerOverride?: ConversationFolderPickerOverride
@@ -172,6 +184,8 @@ export function ConversationShell({
   asyncTasks,
   onStopAsyncTask,
   workflows,
+  remoteControl,
+  onRemoteControlOff,
   pendingPermission,
   pendingQuestion,
   pendingAskQuestion,
@@ -194,6 +208,7 @@ export function ConversationShell({
   onConfigOptionChange,
   agentType,
   availableCommands,
+  promptSuggestion,
   attachmentTabId,
   folderPickerOverride,
   draftStorageKey,
@@ -237,6 +252,13 @@ export function ConversationShell({
           messages scroll under it — the stop button doesn't move out from under
           the pointer. The dock below is for things that come and go with the
           turn or the connection (`ComposerStatusStrips`). */}
+        {remoteControl && (
+          <RemoteControlStrip
+            remoteControl={remoteControl}
+            onTurnOff={onRemoteControlOff}
+            canTurnOff={status === "connected"}
+          />
+        )}
         {asyncTasks && asyncTasks.length > 0 && (
           <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
         )}
@@ -249,11 +271,16 @@ export function ConversationShell({
           {resizableWidth && <ChatWidthHandles />}
         </div>
 
-        <PermissionDialog
-          permission={pendingPermission}
-          onRespond={onRespondPermission}
-          agentType={agentType}
-        />
+        {/* Below the transcript, so outside its image scope: a request or a
+            plan names local images the way a reply does, against the same
+            folder. */}
+        <MarkdownImageProvider rootPath={defaultPath ?? null}>
+          <PermissionDialog
+            permission={pendingPermission}
+            onRespond={onRespondPermission}
+            agentType={agentType}
+          />
+        </MarkdownImageProvider>
 
         <QuestionDialog
           question={pendingQuestion}
@@ -264,24 +291,26 @@ export function ConversationShell({
           feedback list and input — like the permission/question dialogs — so it
           shrinks the message list instead of covering it, while staying aligned
           to the input width. */}
-      <div>
-        {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
-          <div className="mx-auto w-full chat-content-w px-4">
-            <AskQuestionCard
-              question={pendingAskQuestion}
-              onAnswer={onAnswerAskQuestion}
-            />
-          </div>
-        )}
-        {pendingPlanApproval && (
-          <div className="mx-auto w-full chat-content-w px-4">
-            {/* key on approval_id so the card always remounts (fresh in-flight /
-                feedback state) if the slot is ever reused for a new approval. */}
-              <PlanApprovalCard
-                key={pendingPlanApproval.approval_id}
-                approval={pendingPlanApproval}
-                onAnswer={onAnswerPlanApproval}
+        <div>
+          {pendingAskQuestion && pendingAskQuestion.questions.length > 0 && (
+            <div className="mx-auto w-full chat-content-w px-4">
+              <AskQuestionCard
+                question={pendingAskQuestion}
+                onAnswer={onAnswerAskQuestion}
               />
+            </div>
+          )}
+          {pendingPlanApproval && (
+            <div className="mx-auto w-full chat-content-w px-4">
+              {/* key on approval_id so the card always remounts (fresh in-flight /
+                feedback state) if the slot is ever reused for a new approval. */}
+              <MarkdownImageProvider rootPath={defaultPath ?? null}>
+                <PlanApprovalCard
+                  key={pendingPlanApproval.approval_id}
+                  approval={pendingPlanApproval}
+                  onAnswer={onAnswerPlanApproval}
+                />
+              </MarkdownImageProvider>
             </div>
           )}
 
@@ -292,7 +321,9 @@ export function ConversationShell({
           )}
 
           {!hideInput && feedbackList && (
-            <div className="mx-auto w-full chat-content-w px-4">{feedbackList}</div>
+            <div className="mx-auto w-full chat-content-w px-4">
+              {feedbackList}
+            </div>
           )}
 
           <div className="mx-auto w-full chat-content-w">
@@ -318,6 +349,7 @@ export function ConversationShell({
                 onConfigOptionChange={onConfigOptionChange}
                 agentType={agentType}
                 availableCommands={availableCommands}
+                promptSuggestion={promptSuggestion}
                 attachmentTabId={attachmentTabId}
                 folderPickerOverride={folderPickerOverride}
                 draftStorageKey={draftStorageKey}
@@ -344,6 +376,7 @@ export function ConversationShell({
                 onInjectConsumed={onInjectConsumed}
               />
             )}
+
           </div>
         </div>
       </div>

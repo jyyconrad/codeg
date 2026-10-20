@@ -5,12 +5,12 @@ use sea_orm::{
 
 use crate::db::entities::conversation;
 use crate::db::error::DbError;
-use crate::db::service::conversation_service;
+use crate::db::service::{agent_setting_service, conversation_service};
 use crate::models::{AgentType, ConversationSummary, ImportResult};
-use crate::parsers::{build_agent_parser, path_eq_for_matching, AgentParser};
+use crate::parsers::{build_agent_parser, path_eq_for_matching, AgentEnv, AgentEnvs, AgentParser};
 
 /// Every locally-parsable agent, in the canonical parser order.
-const ALL_PARSER_AGENTS: [AgentType; 16] = [
+const ALL_PARSER_AGENTS: [AgentType; 20] = [
     AgentType::ClaudeCode,
     AgentType::Codex,
     AgentType::OpenCode,
@@ -26,54 +26,73 @@ const ALL_PARSER_AGENTS: [AgentType; 16] = [
     AgentType::DeepSeek,
     AgentType::Qoder,
     AgentType::Antigravity,
+    AgentType::Kiro,
+    // Codeg-owned ACP history only; no scan of ZCode's native SQLite store.
+    AgentType::ZCode,
+    // Codeg-owned ACP history only; TRAE CLI's own rollouts are not read.
+    AgentType::Trae,
+    // Codeg-owned ACP history only; Command Code's own session trees are not
+    // read.
+    AgentType::CommandCode,
+    // Codeg Agent records ACP-native history, same as custom ACP agents.
     AgentType::CodegAgent,
 ];
 
-fn build_parser(agent_type: AgentType) -> Box<dyn AgentParser> {
-    build_agent_parser(agent_type)
+fn build_parser(agent_type: AgentType, env: &AgentEnv) -> Box<dyn AgentParser> {
+    build_agent_parser(agent_type, env)
 }
 
-/// List the given agents' local sessions — one `spawn_blocking` per parser so
-/// the filesystem walks run concurrently (each closure captures only the Copy
-/// `AgentType` and constructs its parser inside, since `dyn AgentParser` is
-/// not `Send`). `on_agent_done(agent, done, total, session_count)` fires once
-/// per parser (in the order of `agents`) so callers can surface scan progress.
-/// A parser error is logged and contributes zero sessions; the scan still
+/// List every local agent's sessions — one `spawn_blocking` per parser so the
+/// filesystem walks run concurrently (each closure captures the Copy
+/// `AgentType` and that agent's launch environment from `envs`, and constructs
+/// its parser inside, since `dyn AgentParser` is not `Send`). The environment
+/// is what finds a store the agent's settings relocated (`CLAUDE_CONFIG_DIR`,
+/// `CODEX_HOME`, …). `on_agent_done(agent, done, total, session_count)` fires once
+/// per parser (in fixed parser order) so callers can surface scan progress. A
+/// parser error is logged and contributes zero sessions; the scan still
 /// completes.
 ///
 /// Delegation children (`parent_id.is_some()`) are filtered out here: they are
 /// captured live by the delegation flow with their parent linkage, and
 /// `import_one` inserts new rows with `parent_id: None` — importing one from a
 /// parser listing would surface a sub-session as a root conversation.
+/// So are the sessions codeg ran itself to generate text
+/// ([`crate::acp::one_shot`]): they were never conversations, and are told
+/// apart by the directory they ran in.
 /// Duplicates are dropped by `(agent_type, id)`, matching
 /// `list_conversations_sync`.
-pub(crate) async fn collect_summaries_for_agents<F>(
-    agents: &[AgentType],
+pub(crate) async fn collect_local_summaries<F>(
+    envs: &AgentEnvs,
     mut on_agent_done: F,
 ) -> Vec<(AgentType, ConversationSummary)>
 where
     F: FnMut(AgentType, u32, u32, u32),
 {
-    let owned: Vec<AgentType> = agents.to_vec();
-    let total = owned.len() as u32;
-    let tasks: Vec<(AgentType, tokio::task::JoinHandle<Vec<ConversationSummary>>)> = owned
-        .into_iter()
-        .map(|at| {
-            (
-                at,
-                tokio::task::spawn_blocking(move || match build_parser(at).list_conversations() {
-                    Ok(convs) => convs,
-                    Err(e) => {
-                        tracing::error!("Error listing {} conversations: {}", at, e);
-                        Vec::new()
-                    }
-                }),
-            )
-        })
-        .collect();
+    let total = ALL_PARSER_AGENTS.len() as u32;
+
+    let tasks: Vec<(AgentType, tokio::task::JoinHandle<Vec<ConversationSummary>>)> =
+        ALL_PARSER_AGENTS
+            .into_iter()
+            .map(|at| {
+                let env = envs.get(at);
+                (
+                    at,
+                    tokio::task::spawn_blocking(move || {
+                        match build_parser(at, &env).list_conversations() {
+                            Ok(convs) => convs,
+                            Err(e) => {
+                                tracing::error!("Error listing {} conversations: {}", at, e);
+                                Vec::new()
+                            }
+                        }
+                    }),
+                )
+            })
+            .collect();
 
     let mut all: Vec<(AgentType, ConversationSummary)> = Vec::new();
     let mut seen: std::collections::HashSet<(AgentType, String)> = std::collections::HashSet::new();
+    let generated = crate::acp::one_shot::GenerationPaths::current();
     let mut done = 0u32;
     // Awaiting in agent order only affects callback ordering — all walks
     // already run concurrently on the blocking pool.
@@ -83,6 +102,12 @@ where
             Ok(convs) => {
                 for c in convs {
                     if c.parent_id.is_some() {
+                        continue;
+                    }
+                    if c.folder_path
+                        .as_deref()
+                        .is_some_and(|p| generated.contains(p))
+                    {
                         continue;
                     }
                     if seen.insert((at, c.id.clone())) {
@@ -97,16 +122,6 @@ where
         on_agent_done(at, done, total, count);
     }
     all
-}
-
-/// List every local agent's sessions — see [`collect_summaries_for_agents`].
-pub(crate) async fn collect_local_summaries<F>(
-    on_agent_done: F,
-) -> Vec<(AgentType, ConversationSummary)>
-where
-    F: FnMut(AgentType, u32, u32, u32),
-{
-    collect_summaries_for_agents(&ALL_PARSER_AGENTS, on_agent_done).await
 }
 
 /// What an import does when a parsed session already has a SOFT-DELETED row.
@@ -236,7 +251,8 @@ pub async fn import_local_conversations(
     folder_id: i32,
     folder_path: &str,
 ) -> Result<(ImportResult, Vec<i32>), DbError> {
-    let summaries = collect_local_summaries(|_, _, _, _| {}).await;
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    let summaries = collect_local_summaries(&envs, |_, _, _, _| {}).await;
     let matched: Vec<(AgentType, ConversationSummary)> = summaries
         .into_iter()
         .filter(|(_, c)| {
@@ -519,6 +535,9 @@ async fn import_one(
         pinned_at: Set(None),
         origin_cwd: Set(None),
         launch_mode: Set("acp".to_string()),
+        assistant_id: Set(None),
+        assistant_snapshot: Set(None),
+        source: Set(None),
     };
     conv.insert(conn).await?;
     Ok(ImportOutcome::Imported)
@@ -1002,6 +1021,9 @@ mod tests {
             pinned_at: Set(None),
             origin_cwd: Set(None),
             launch_mode: Set("acp".to_string()),
+            assistant_id: Set(None),
+            assistant_snapshot: Set(None),
+            source: Set(None),
         }
         .insert(&db.conn)
         .await
@@ -1301,6 +1323,9 @@ mod tests {
             pinned_at: Set(None),
             origin_cwd: Set(None),
             launch_mode: Set("acp".to_string()),
+            assistant_id: Set(None),
+            assistant_snapshot: Set(None),
+            source: Set(None),
         }
         .insert(&db.conn)
         .await

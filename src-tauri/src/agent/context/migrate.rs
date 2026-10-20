@@ -455,6 +455,7 @@ mod tests {
             t: 1,
             k: EntryKind::Prompt,
             p: json!([{"type": "text", "text": text}]),
+            steer: false,
         }
     }
 
@@ -463,6 +464,7 @@ mod tests {
             t: 1,
             k: EntryKind::Update,
             p: agent_message_chunk(text, &NativeMeta::v1()),
+            steer: false,
         }
     }
 
@@ -482,6 +484,7 @@ mod tests {
             t: 1,
             k: EntryKind::Update,
             p: agent_message_chunk("", &meta),
+            steer: false,
         }
     }
 
@@ -513,6 +516,7 @@ mod tests {
             t: 1,
             k: EntryKind::Update,
             p: tool_call_payload(id, title, "pending", &input, &meta),
+            steer: false,
         }
     }
 
@@ -529,6 +533,7 @@ mod tests {
             t: 1,
             k: EntryKind::Update,
             p: tool_call_update_payload(id, "completed", &meta),
+            steer: false,
         }
     }
 
@@ -735,6 +740,8 @@ mod tests {
                     "toolCallId": "c1",
                     "title": "Write memory"
                 }),
+
+                steer: false,
             },
         ];
         let err = migrate_transcript_entries("s1", &entries).unwrap_err();
@@ -773,11 +780,15 @@ mod tests {
                 t: 2,
                 k: EntryKind::Update,
                 p: tool_call_payload("call_c", "Run", "failed", &json!({}), &cancelled),
+
+                steer: false,
             },
             TranscriptEntry {
                 t: 3,
                 k: EntryKind::Update,
                 p: tool_call_update_payload("call_u", "failed", &unknown),
+
+                steer: false,
             },
         ];
         let out = migrate_transcript_entries("s1", &entries).expect("migrate");
@@ -832,6 +843,8 @@ mod tests {
                 t: 4,
                 k: EntryKind::Update,
                 p: compact_update_payload(&compact),
+
+                steer: false,
             },
             prompt("second"),
             text_chunk("two"),
@@ -877,6 +890,8 @@ mod tests {
                 t: 2,
                 k: EntryKind::Update,
                 p: stripped,
+
+                steer: false,
             },
             tool_started("c1", "write_mem", "Write memory", input.clone()),
             tool_terminal("c1", "write_mem", "wrote", ToolOutcome::Success, input),

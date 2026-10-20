@@ -5,6 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { DelegatedSubThread } from "./delegated-sub-thread"
 import enMessages from "@/i18n/messages/en.json"
 import type { DelegationBinding } from "@/contexts/delegation-context"
+import type { AssistantInfo } from "@/lib/types"
+import {
+  resetAssistantsStore,
+  useAssistantsStore,
+} from "@/stores/assistants-store"
 
 vi.mock("@/hooks/use-delegated-sub-session", () => ({
   useDelegatedSubSession: vi.fn(),
@@ -12,8 +17,9 @@ vi.mock("@/hooks/use-delegated-sub-session", () => ({
 
 // The slim card is a status + navigation affordance: it reads `binding` from
 // the delegation hook and the child's live `pendingPermission` from the
-// connections store (to badge "awaiting approval"). It renders no body and
-// answers no permission inline — so those are the only contexts to stub.
+// connections store (to badge "awaiting approval"). Its only body is the task
+// text it expands to, and it answers no permission inline — so those are the
+// only contexts to stub.
 let mockChildConnection: unknown = undefined
 
 vi.mock("@/contexts/acp-connections-context", async () => {
@@ -26,6 +32,7 @@ vi.mock("@/contexts/acp-connections-context", async () => {
       subscribeKey: () => () => {},
       getConnection: () => mockChildConnection,
       getConnectPending: () => undefined,
+      getConnectError: () => undefined,
       getActiveKey: () => null,
       subscribeActiveKey: () => () => {},
     }),
@@ -75,6 +82,8 @@ function bindingOf(overrides: Partial<DelegationBinding>): DelegationBinding {
     status: "running",
     task: null,
     taskId: null,
+    assistantId: null,
+    assistantName: null,
     ...overrides,
   }
 }
@@ -195,14 +204,19 @@ describe("DelegatedSubThread", () => {
     )
   })
 
-  it("shows the 'starting' badge (not 'running') and no button before the child binds", () => {
+  it("shows the 'starting' badge (not 'running') and no open button before the child binds", () => {
     const input = JSON.stringify({ agent_type: "codex", task: "set things up" })
     renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" input={input} />)
     expect(screen.getByText("starting")).toBeInTheDocument()
     expect(screen.queryByText("running")).not.toBeInTheDocument()
-    // No child conversation yet → no "Open conversation" button (and the card
-    // has no expand toggle at all under the slim design).
-    expect(screen.queryByRole("button")).not.toBeInTheDocument()
+    // No child conversation yet → no "Open conversation" button. The task is
+    // already known, so the row's only button is the toggle that expands it.
+    expect(
+      screen.queryByRole("button", { name: "Open conversation" })
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByRole("button")).toEqual([
+      screen.getByRole("button", { expanded: false }),
+    ])
     expect(screen.getByText("set things up")).toBeInTheDocument()
   })
 
@@ -350,6 +364,55 @@ describe("DelegatedSubThread", () => {
       screen.getByRole("button", { name: "Open conversation" })
     ).toBeInTheDocument()
   })
+
+  // Parked is parked, whatever the decision: the backend's `blocked_on` and
+  // the `get_delegation_status` row count all three, so this card must too or
+  // the two disagree about the same sub-agent.
+  it.each([
+    {
+      kind: "question",
+      pending: {
+        pendingAskQuestion: {
+          question_id: "q-1",
+          questions: [
+            {
+              id: "q",
+              question: "Which DB?",
+              header: "DB",
+              multi_select: false,
+              options: [],
+            },
+          ],
+          created_at: "2026-10-18T00:00:00Z",
+        },
+      },
+    },
+    {
+      kind: "plan approval",
+      pending: {
+        pendingPlanApproval: {
+          approval_id: "plan-1",
+          tool_call_id: "tc-1",
+          plan_markdown: "1. migrate",
+          created_at: "2026-10-18T00:00:00Z",
+        },
+      },
+    },
+  ])(
+    "badges 'awaiting approval' when the child is parked on a $kind",
+    ({ pending }) => {
+      mockedHook.mockReturnValue({
+        binding: bindingOf({ status: "running" }),
+        detail: null,
+        loading: false,
+        error: null,
+      })
+      mockChildConnection = { ...childConnWith(null), ...pending }
+      renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+      expect(screen.getByText("awaiting approval")).toBeInTheDocument()
+      expect(screen.queryByText("running")).not.toBeInTheDocument()
+    }
+  )
 
   it.each<{ shape: string; input: string; expectedTask: string }>([
     {
@@ -519,5 +582,388 @@ describe("DelegatedSubThread (async ack semantics)", () => {
       "data-conversation-id",
       "909"
     )
+  })
+})
+
+describe("DelegatedSubThread — assistant identity", () => {
+  const reviewer = (patch: Partial<AssistantInfo> = {}): AssistantInfo => ({
+    id: 3,
+    uid: "u-3",
+    name: "Reviewer",
+    description: "",
+    avatar: { kind: "emoji", emoji: "🦉", color: "teal" },
+    agent_type: "codex",
+    agent_options: { config_values: {} },
+    label_snapshot: { agent: "Codex", mode: null, options: [] },
+    instructions: "",
+    enabled: true,
+    sort_order: 1,
+    revision: 1,
+    created_at: "2026-10-16T00:00:00Z",
+    updated_at: "2026-10-16T00:00:00Z",
+    deleted_at: null,
+    ...patch,
+  })
+
+  beforeEach(() => {
+    resetAssistantsStore()
+    mockChildConnection = undefined
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+  })
+
+  const card = () => screen.getByTestId("delegated-sub-thread")
+
+  it("shows the assistant by its current name and avatar, then the agent it ran on", () => {
+    useAssistantsStore.getState().merge([reviewer()])
+    mockedHook.mockReturnValue({
+      binding: bindingOf({
+        assistantId: 3,
+        assistantName: "Old name",
+        agentType: "codex",
+      }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+    expect(card()).toHaveTextContent("Reviewer · Codex")
+    expect(card()).not.toHaveTextContent("Old name")
+    expect(card()).toHaveTextContent("🦉")
+  })
+
+  it("falls back to the name the delegation carried, then to the id", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ assistantId: 3, assistantName: "Planner" }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    const { unmount } = renderWithIntl(
+      <DelegatedSubThread parentToolUseId="pt-1" />
+    )
+    expect(card()).toHaveTextContent("Planner · Codex")
+    unmount()
+
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input="{}"
+        meta={{
+          "codeg.delegation": {
+            status: "completed",
+            agent_type: "codex",
+            assistant_id: 7,
+            child_conversation_id: 70,
+          },
+        }}
+      />
+    )
+    expect(card()).toHaveTextContent("Assistant #7 · Codex")
+  })
+
+  it("marks an assistant that has been deleted", () => {
+    useAssistantsStore
+      .getState()
+      .merge([reviewer({ deleted_at: "2026-10-16T01:00:00Z", revision: 2 })])
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ assistantId: 3, assistantName: "Reviewer" }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+    expect(card()).toHaveTextContent("Reviewer (deleted) · Codex")
+  })
+
+  it("never names the agent the call claims for an assistant", () => {
+    useAssistantsStore.getState().merge([reviewer()])
+    // The host filled in an agent_type; the backend ignores it — the
+    // assistant decides which agent runs.
+    const input = JSON.stringify({
+      assistant_id: 3,
+      agent_type: "gemini",
+      task: "review the diff",
+    })
+    const { rerender } = renderWithIntl(
+      <DelegatedSubThread parentToolUseId="pt-1" input={input} />
+    )
+    expect(card()).toHaveTextContent("Reviewer")
+    expect(card()).not.toHaveTextContent("Gemini")
+    expect(card()).not.toHaveTextContent("·")
+
+    // The broker's ack is the first evidence of the real agent.
+    rerender(
+      <NextIntlClientProvider locale="en" messages={enMessages}>
+        <DelegatedSubThread
+          parentToolUseId="pt-1"
+          input={input}
+          output={JSON.stringify({
+            task_id: "task-1",
+            status: "running",
+            agent_type: "codex",
+            assistant_id: 3,
+            assistant_name: "Reviewer",
+            child_conversation_id: 9,
+          })}
+        />
+      </NextIntlClientProvider>
+    )
+    expect(card()).toHaveTextContent("Reviewer · Codex")
+    expect(card()).not.toHaveTextContent("Gemini")
+  })
+
+  it("shows an agent delegation exactly as before", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ agentType: "codex" }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+    expect(card()).toHaveTextContent("Codex")
+    expect(card()).not.toHaveTextContent("·")
+    expect(card().querySelector('[data-slot="assistant-avatar"]')).toBeNull()
+  })
+})
+
+describe("DelegatedSubThread — refusals and names", () => {
+  beforeEach(() => {
+    resetAssistantsStore()
+    mockChildConnection = undefined
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+  })
+
+  it("names the refusal of a call no delegation ever started for", () => {
+    // Refused before anything ran: no binding and no meta — the report is
+    // the only place the code is.
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={JSON.stringify({ assistant_id: 3, task: "review" })}
+        output={JSON.stringify({
+          status: "failed",
+          error_code: "assistant_not_found",
+          message: "No assistant has id 3.",
+          assistant_id: 3,
+        })}
+        state="output-available"
+      />
+    )
+    expect(screen.getByText("assistant not found")).toBeInTheDocument()
+  })
+
+  it("keeps an agent's name untruncated, as before, and truncates an assistant's", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ agentType: "codex" }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    const { unmount } = renderWithIntl(
+      <DelegatedSubThread parentToolUseId="pt-1" />
+    )
+    const agentName = screen
+      .getAllByText("Codex")
+      .find((el) => el.classList.contains("font-semibold"))
+    expect(agentName).toBeDefined()
+    expect(agentName).not.toHaveClass("truncate")
+    unmount()
+
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ assistantId: 3, assistantName: "Reviewer" }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+    expect(screen.getByText(/^Reviewer/)).toHaveClass("truncate")
+  })
+})
+
+describe("DelegatedSubThread — expanding the task", () => {
+  beforeEach(() => {
+    resetAssistantsStore()
+    mockChildConnection = undefined
+    mockedHook.mockReturnValue({
+      binding: undefined,
+      detail: null,
+      loading: false,
+      error: null,
+    })
+  })
+
+  // More than the row's one clamped line can hold — it has line breaks, and
+  // the row only ever shows the first.
+  const TASK =
+    "Audit the sidebar width logic.\n\n1. Read sidebar-context.tsx\n2. Compare the Windows and macOS minimums"
+
+  const panel = () => screen.queryByTestId("delegation-card-panel")
+
+  it("expands the whole task from the row's left part, and folds it back", () => {
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={JSON.stringify({ agent_type: "codex", task: TASK })}
+      />
+    )
+    const toggle = screen.getByRole("button", { expanded: false })
+    // The left part carries the identity and the task's first line.
+    expect(toggle).toHaveTextContent("Codex")
+    expect(toggle).toHaveTextContent("Audit the sidebar width logic.")
+    expect(panel()).not.toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    expect(toggle).toHaveAttribute("aria-controls", panel()!.id)
+    // All of it, verbatim — line breaks included, nothing rendered as
+    // Markdown — the way the sub-agent's own transcript shows its kickoff.
+    expect(panel()!.textContent).toBe(TASK)
+    expect(panel()!.firstElementChild).toHaveClass("whitespace-pre-wrap")
+    // The row keeps its clamped first line above it (see the next test).
+    expect(toggle).toHaveTextContent("Codex")
+    expect(toggle).toHaveTextContent("Audit the sidebar width logic.")
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(toggle).not.toHaveAttribute("aria-controls")
+    expect(panel()).not.toBeInTheDocument()
+    expect(toggle).toHaveTextContent("Audit the sidebar width logic.")
+  })
+
+  it("leaves the row as it was while the panel is open, so nothing on it moves", () => {
+    // Dropping the task's first line while open took a line off the row: the
+    // avatar, name, badge and open button all shifted each time the panel
+    // opened or closed.
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ status: "running", task: TASK }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+    const toggle = screen.getByRole("button", { expanded: false })
+    const open = screen.getByRole("button", { name: "Open conversation" })
+    // Everything on the row but the chevron: its own and the toggle's classes
+    // (an open-only class there could hide the line too), the avatar, then the
+    // name, task id, badge and the task's first line, then the open button.
+    const row = () => [
+      toggle.parentElement!.className,
+      toggle.className,
+      ...Array.from(toggle.children, (el) => el.outerHTML).slice(0, -1),
+      open.outerHTML,
+    ]
+    const closed = row()
+    expect(closed.join("")).toContain("Audit the sidebar width logic.")
+
+    fireEvent.click(toggle)
+    expect(panel()).toBeInTheDocument()
+    expect(row()).toEqual(closed)
+    // Only the chevron turns, in a box of the same size.
+    expect(toggle.lastElementChild).toHaveClass("h-3.5", "w-3.5", "shrink-0")
+  })
+
+  it("keeps expanding the task and opening the conversation apart", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ status: "running", task: TASK }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+    const open = screen.getByRole("button", { name: "Open conversation" })
+    const toggle = screen.getByRole("button", { expanded: false })
+    // Siblings, never nested: buttons cannot nest, and each must do one thing.
+    expect(toggle).not.toContainElement(open)
+
+    fireEvent.click(open)
+    expect(screen.getByTestId("sub-agent-session-dialog")).toBeInTheDocument()
+    expect(panel()).not.toBeInTheDocument()
+
+    fireEvent.click(toggle)
+    expect(panel()!.textContent).toBe(TASK)
+  })
+
+  it("expands to the task, never to the child's result", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ status: "ok" }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={JSON.stringify({ agent_type: "codex", task: TASK })}
+        output={JSON.stringify({
+          kind: "ok",
+          text: "All good, the build passed.",
+          child_conversation_id: 99,
+        })}
+        state="output-available"
+      />
+    )
+    fireEvent.click(screen.getByRole("button", { expanded: false }))
+    expect(panel()!.textContent).toBe(TASK)
+    expect(
+      screen.queryByText(/All good, the build passed\./)
+    ).not.toBeInTheDocument()
+  })
+
+  it("lays the task out in its own direction, aligned to the window's", () => {
+    // English handed over in an Arabic window: laid out right-to-left, its
+    // full stops jumped to the far end and the clamp's ellipsis covered its
+    // first letter.
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={JSON.stringify({ agent_type: "codex", task: TASK })}
+      />
+    )
+    const toggle = screen.getByRole("button", { expanded: false })
+    const preview = toggle.querySelector('[dir="auto"]')
+    expect(preview).toHaveTextContent("Audit the sidebar width logic.")
+    expect(preview).toHaveClass("line-clamp-1", "text-left", "rtl:text-right")
+
+    fireEvent.click(toggle)
+    expect(panel()!.firstElementChild).toHaveAttribute("dir", "auto")
+  })
+
+  it("offers nothing to expand when no task is known", () => {
+    mockedHook.mockReturnValue({
+      binding: bindingOf({ status: "running", task: null }),
+      detail: null,
+      loading: false,
+      error: null,
+    })
+    renderWithIntl(<DelegatedSubThread parentToolUseId="pt-1" />)
+    expect(screen.getAllByRole("button")).toEqual([
+      screen.getByRole("button", { name: "Open conversation" }),
+    ])
+  })
+
+  it("treats a blank task as no task", () => {
+    renderWithIntl(
+      <DelegatedSubThread
+        parentToolUseId="pt-1"
+        input={JSON.stringify({ agent_type: "codex", task: "  \n " })}
+      />
+    )
+    expect(screen.queryByRole("button")).not.toBeInTheDocument()
   })
 })

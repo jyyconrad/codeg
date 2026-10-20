@@ -355,10 +355,7 @@ mod tests {
         assert_eq!(meta.total, 5);
         assert_eq!(meta.assistant_before, 2);
         assert_eq!(meta.user_before, 1);
-        assert_eq!(
-            meta.uncovered_prefix_max_ts,
-            Some(turns[2].timestamp)
-        );
+        assert_eq!(meta.uncovered_prefix_max_ts, Some(turns[2].timestamp));
 
         let full = window_meta(&turns, 0);
         assert_eq!(full.assistant_before, 0);

@@ -54,12 +54,12 @@
       "science": "Science",
       "office_tools": "Office Tools",
       "skill_packs": "Skill Packs",
-      "quick_messages": "Quick Messages",
-      "logs": "Runtime Logs",
-      "wiki": "Personal wiki",
       "collaboration": "Collaboration",
       "browser": "Browser Use",
-      "computer_use": "Computer Use"
+      "computer_use": "Computer Use",
+      "quick_messages": "Quick Messages",
+      "logs": "Runtime Logs",
+      "wiki": "Personal wiki"
     }
   },
   "CodeIntelligenceSettings": {
@@ -315,6 +315,21 @@
     "autostartDescription": "Opens automatically after you sign in to this computer.",
     "autostartSaveFailed": "Failed to save the launch-at-login setting: {message}",
     "autostartUnavailable": "Could not read the startup entry on this computer: {message}",
+    "cliAccessTitle": "Command-line access",
+    "cliAccessDescription": "Lets the codeg-cli command on this computer run prompts through Codeg — from scripts, CI jobs, or Codeg's own terminals. Only this computer can connect, with a key kept in a private file.",
+    "cliAccessEndpointFile": "Endpoint file:",
+    "cliAccessExample": "Try:",
+    "cliAccessOff": "Off: codeg-cli on this computer cannot reach Codeg.",
+    "cliAccessUnavailable": "Command-line access could not start: {message}",
+    "cliAccessSaveFailed": "Could not change command-line access: {message}",
+    "cliToolInstall": "Install command-line tool",
+    "cliToolInstalled": "{command} is on your PATH:",
+    "cliToolPackage": "{command} came with the package, on your PATH:",
+    "cliToolNotInstalled": "Put {command} on your PATH, so a terminal outside Codeg finds it.",
+    "cliToolConflict": "Left as it is: {message}",
+    "cliToolNote": "Note: {message}",
+    "cliToolInstalledToast": "{command} is on your PATH. Open a new terminal to use it.",
+    "cliToolInstallFailed": "Could not install the command-line tool: {message}",
     "proxyTitle": "Network Proxy",
     "proxyDescription": "When enabled, subsequent network requests prefer this proxy (including ACP chat, agent installation and Git remote operations).",
     "loadFailed": "Load failed: {message}",
@@ -333,6 +348,8 @@
     "appLanguage": "App language",
     "languageSaveSuccess": "Language settings saved",
     "languageSaveFailed": "Failed to save language settings: {message}",
+    "dataTitle": "Data & sync",
+    "dataDescription": "Configuration sync carries your settings between machines; backup packs up all of this machine's codeg data.",
     "updateTitle": "App Update",
     "versionTitle": "Software Update",
     "updateDescription": "Check the configured release source for newer versions and install directly when available.",
@@ -387,9 +404,7 @@
       "downloadFailed": "Failed to download update package. Please try again later.",
       "installFailed": "Failed to install update. Please close the app and try again.",
       "unknown": "Update failed. Please try again later."
-    },
-    "dataTitle": "Data & sync",
-    "dataDescription": "Configuration sync carries your settings between machines; backup packs up all of this machine's codeg data."
+    }
   },
   "VersionControlSettings": {
     "loading": "Loading...",
@@ -762,12 +777,12 @@
       "configJson": "MCP Config (JSON)",
       "draftTitle": "New MCP",
       "draftDescription": "Provide a Server ID and configuration to create a local MCP server.",
+      "suggestedLabel": "Start from a known server",
+      "suggestedChromeNote": "Fills the form with Google’s official chrome-devtools-mcp — the registry lists lookalikes under the same name, so this pins the real one. It drives a SEPARATE Chrome that codeg does not supervise: you get network and performance data the built-in browser tools do not offer, and none of their safeguards — no per-tab sharing, no activity strip, no approval per snippet. `npx` downloads the package from npm the first time it runs.",
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID (e.g. my-mcp)",
       "typeHint": "Supported types: stdio, http (aliases: streamable-http, streamableHttp), sse. env is only used by stdio; for remote MCPs use headers to carry auth tokens.",
-      "envOnRemoteWarning": "env detected on a remote MCP. Only stdio uses env; remote MCPs carry auth tokens via headers, so env will be ignored on save.",
-      "suggestedLabel": "Start from a known server",
-      "suggestedChromeNote": "Fills the form with Google’s official chrome-devtools-mcp — the registry lists lookalikes under the same name, so this pins the real one. It drives a SEPARATE Chrome that codeg does not supervise: you get network and performance data the built-in browser tools do not offer, and none of their safeguards — no per-tab sharing, no activity strip, no approval per snippet. `npx` downloads the package from npm the first time it runs."
+      "envOnRemoteWarning": "env detected on a remote MCP. Only stdio uses env; remote MCPs carry auth tokens via headers, so env will be ignored on save."
     },
     "market": {
       "selectMarketplace": "Select marketplace",
@@ -836,13 +851,105 @@
       "tabGeneral": "General",
       "tabAgentDefaults": "Agent defaults",
       "agentDefaultsDescription": "Per-agent overrides applied when Multi-Agent Collaboration spawns a subagent for a delegation call. Options shown here come from a live probe — what you pick is exactly what the agent will accept.",
+      "agentDefaultsAgentHint": "Options left on Default keep the agent's own value.",
+      "agentDefaultsDelegationOff": "Multi-Agent Collaboration is off. Turn it on to edit these defaults.",
       "probing": "Loading available options from the agent…",
       "probeFailed": "Failed to load options: {detail}",
       "retry": "Retry",
       "noConfigAvailable": "This agent has no configurable options.",
       "modeLabel": "Mode",
       "agentDefaultHint": "Agent default: {value}",
-      "defaultOptionLabel": "Default ({value})"
+      "defaultOptionLabel": "Default ({value})",
+      "overrideCount": "{count, plural, one {# override} other {# overrides}}",
+      "tabAssistants": "Assistants",
+      "booleanOn": "On",
+      "booleanOff": "Off",
+      "modelNotSwitched": "The agent didn't switch to the selected model, so these options may belong to another model.",
+      "unsavedChanges": "Unsaved changes",
+      "assistants": {
+        "description": "Assistants are delegation presets you can @-mention: an agent with every option picked, plus standing instructions. Delegating to one runs exactly that setup.",
+        "create": "New assistant",
+        "delegationOff": "Multi-Agent Collaboration is off, so assistants can't be delegated to for now.",
+        "delegationOffAction": "Go to {tab}",
+        "unsavedElsewhere": "{tabs} has unsaved changes.",
+        "unsavedGoBack": "Go back",
+        "loadFailed": "Failed to load assistants: {detail}",
+        "emptyTitle": "No assistants yet",
+        "empty": "Create one to give an agent a fixed setup and standing instructions you can @-mention in any conversation.",
+        "reorderFailed": "Failed to reorder assistants",
+        "saveFailed": "Failed to save the assistant",
+        "duplicated": "Created {name}",
+        "deleteFailed": "Failed to delete the assistant",
+        "deleteTitle": "Delete {name}?",
+        "deleteDescription": "It disappears from settings and the mention panel, and can no longer be delegated to. Delegation cards already in conversations keep showing it.",
+        "cancel": "Cancel",
+        "delete": "Delete",
+        "duplicate": "Duplicate",
+        "move": "Move {name}",
+        "enableAssistant": "Enable {name}",
+        "edit": "Edit {name}",
+        "more": "More actions for {name}",
+        "agentNotInstalled": "not installed",
+        "agentDisabled": "disabled",
+        "createTitle": "New assistant",
+        "editTitle": "Edit assistant",
+        "editorDescription": "Delegating to this assistant runs exactly the agent, options and standing instructions set here.",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Code reviewer",
+        "descriptionLabel": "Description",
+        "descriptionPlaceholder": "When to use this assistant",
+        "descriptionHint": "Shown in the mention panel, and given to the delegating agent so it knows when to pick this assistant.",
+        "agentLabel": "Agent",
+        "agentPlaceholder": "Select an agent",
+        "agentHint": "Every one of its options must be picked.",
+        "instructionsLabel": "Standing instructions",
+        "instructionsPlaceholder": "The role and working rules this assistant follows on every task",
+        "instructionsHint": "Handed to the agent with every delegated task. It is not shown in the sub-session's messages.",
+        "charCount": "{count} / {max}",
+        "save": "Save",
+        "createSubmit": "Create",
+        "pickAgentFirst": "Select an agent to see its options.",
+        "pickModelFirst": "Select a model to see the other options.",
+        "modelNotSwitched": "The agent didn't switch to this model, so its other options can't be read. Retry, or pick another model.",
+        "agentUnavailableHint": "This agent is disabled or not installed, so its options can't be checked. The saved options are shown below; pick another agent to change them.",
+        "optionsChanged": "{count, plural, one {The agent's options changed since this was saved — pick the marked option.} other {The agent's options changed since this was saved — pick the # marked options.}}",
+        "missingCount": "{count, plural, one {# option still to pick} other {# options still to pick}}",
+        "cannotSaveProbeFailed": "Can't save: the agent's options couldn't be loaded, so they can't be checked. Retry first.",
+        "cannotSaveModelNotSwitched": "Can't save: the agent didn't switch to the selected model. Retry, or pick another model.",
+        "cannotSaveStillLoading": "Still reading the agent's options…",
+        "savedOptions": "Saved options",
+        "savedNoOptions": "No options were saved for this agent.",
+        "required": "Required",
+        "selectPlaceholder": "Select",
+        "noValuesOffered": "No values offered",
+        "recommended": "Recommended",
+        "optionNew": "New",
+        "optionUnavailable": "Unavailable (was {value})",
+        "avatarChange": "Change avatar",
+        "avatarMonogram": "Letter",
+        "avatarEmoji": "Emoji",
+        "avatarImage": "Image",
+        "avatarMonogramHint": "The first character of the name.",
+        "avatarUseMonogram": "Use the letter",
+        "avatarEmojiPlaceholder": "Type or paste an emoji",
+        "avatarEmojiUse": "Use",
+        "avatarUpload": "Upload image",
+        "avatarUploadHint": "Cropped to a square and scaled down to 128×128.",
+        "avatarTooLarge": "This image is too large even after scaling down. Try another one.",
+        "avatarUnreadable": "This file couldn't be read as an image.",
+        "avatarColor": "Color",
+        "errors": {
+          "emptyName": "Give the assistant a name.",
+          "nameTooLong": "The name can be at most {max} characters.",
+          "duplicateName": "An assistant named “{name}” already exists.",
+          "descriptionTooLong": "The description can be at most {max} characters.",
+          "instructionsTooLong": "The instructions can be at most {max} characters.",
+          "invalidAvatar": "This avatar can't be used. Pick another one.",
+          "avatarTooLarge": "The avatar image is too large.",
+          "invalidAgentOptions": "The agent's options aren't complete. Reopen the assistant and pick every option.",
+          "notFound": "This assistant no longer exists."
+        }
+      }
     },
     "actions": {
       "dragSort": "Drag to reorder",
@@ -854,6 +961,7 @@
       "install": "Install",
       "upgrade": "Upgrade",
       "uninstall": "Uninstall",
+      "installGuide": "Install guide",
       "uninstalling": "Uninstalling...",
       "saveEnvVars": "Save environment variables",
       "saving": "Saving...",
@@ -950,7 +1058,11 @@
       "authNotInstalled": "cursor-agent is not installed",
       "authLoggedIn": "Logged in",
       "authNotLoggedIn": "Not logged in",
+      "authUnverified": "Signed in — credential not verified",
+      "authUnverifiedHint": "cursor-agent still has a login stored, but it could not be used against Cursor just now — usually an expired session. Sessions will fail with \"Authentication required\" until you sign in again; the CLI has no way to refresh a browser login on its own.",
+      "authUnverifiedHintApiKey": "cursor-agent has an API key stored, but Cursor rejected it just now — usually a revoked, expired, or mistyped key. Sessions will fail with \"Authentication required\" until you save a working key below.",
       "loginHint": "Run this in a terminal to sign in with your Cursor account (a browser window opens), then hit refresh:",
+      "loginHintRemote": "Run this on the codeg host where cursor-agent is installed, not on this machine, then hit refresh. That host usually has no browser to open, so run it with NO_OPEN_BROWSER=1 — it prints a sign-in URL for you to open in your own browser instead. For an unattended server, switch the method above to API key.",
       "apiKeyLabel": "Cursor API key",
       "apiKeyPlaceholder": "key from cursor.com/dashboard",
       "apiKeyHint": "CURSOR_API_KEY — a Cursor Dashboard account key, an alternative to browser login for headless/server machines. Not a third-party or OpenAI key.",
@@ -991,11 +1103,7 @@
       "modelPickerPlaceholder": "Search models…",
       "modelNoMatch": "No matching model",
       "modelsNeedAuth": "Sign in to load the model list.",
-      "modelDefaultBadge": "default",
-      "authUnverified": "Signed in — credential not verified",
-      "authUnverifiedHint": "cursor-agent still has a login stored, but it could not be used against Cursor just now — usually an expired session. Sessions will fail with \"Authentication required\" until you sign in again; the CLI has no way to refresh a browser login on its own.",
-      "authUnverifiedHintApiKey": "cursor-agent has an API key stored, but Cursor rejected it just now — usually a revoked, expired, or mistyped key. Sessions will fail with \"Authentication required\" until you save a working key below.",
-      "loginHintRemote": "Run this on the codeg host where cursor-agent is installed, not on this machine, then hit refresh. That host usually has no browser to open, so run it with NO_OPEN_BROWSER=1 — it prints a sign-in URL for you to open in your own browser instead. For an unattended server, switch the method above to API key."
+      "modelDefaultBadge": "default"
     },
     "qoder": {
       "configDescription": "Sign in to Qoder here. Everything else the CLI reads lives in one file — $QODER_CONFIG_DIR/settings.json (default ~/.qoder), shared with the qoder CLI — and is edited raw below. Model and reasoning effort are not here: Qoder reports them over ACP, so the composer's own selectors own them per session.",
@@ -1079,6 +1187,43 @@
       "tempReclaimConfirmBody": "This permanently deletes {size}. The system temp folder is shared with other applications, so check each path before confirming — anything still in use is skipped.",
       "tempReclaimConfirmAction": "Delete",
       "tempReclaimCancel": "Cancel"
+    },
+    "kiro": {
+      "configManagement": "Configuration",
+      "configDescription": "Kiro CLI keeps its sign-in, agents and MCP servers in ~/.kiro. Model, agent, thinking and effort are not here: Kiro reports them over ACP, so the composer's own selectors own them per session.",
+      "permissionsTitle": "Permissions",
+      "permissionModeLabel": "Permission mode",
+      "permissionModeAsk": "Ask before running tools (default)",
+      "permissionModeTrustAll": "Trust all tools (--trust-all-tools)",
+      "permissionModeAskHint": "Kiro sends each tool call that needs approval (shell commands, file writes, …) to you first. Read-only tools run without asking.",
+      "permissionModeTrustAllHint": "Sessions launch with --trust-all-tools: every tool call runs without a confirmation prompt, including shell commands and file writes. Takes effect for new sessions.",
+      "apiKeyLabel": "API key (optional)",
+      "apiKeyHint": "Passed to the CLI as KIRO_API_KEY. Leave empty to use the account you signed in with via kiro-cli login; an API key is only needed where no browser sign-in is possible (servers, Docker).",
+      "saveConfig": "Save Kiro Config"
+    },
+    "trae": {
+      "configManagement": "Configuration",
+      "configDescription": "TRAE CLI 2.0 is available to customers on the flagship TRAE Enterprise plan. Codeg runs the traecli you installed, which keeps its sign-in, skills and MCP servers in ~/.trae. Model, mode and reasoning effort are not here: TRAE CLI reports them over ACP, so the composer's own selectors own them per session.",
+      "signInTitle": "Sign in",
+      "signInHint": "Run this once in a terminal to sign in with your enterprise SSO. Sessions in Codeg reuse that login.",
+      "copyCommand": "Copy command",
+      "commandCopied": "Command copied",
+      "patLabel": "Personal access token (optional)",
+      "patHint": "For a machine where browser sign-in is not possible, such as a server or Docker install. Codeg passes it to TRAE CLI as TRAECLI_PERSONAL_ACCESS_TOKEN and signs in with it whenever a session starts. Leave empty to use the login from traecli login.",
+      "hostLabel": "Enterprise API URL (optional)",
+      "hostHint": "Only if your organization runs TRAE on its own domain. Passed as TRAECLI_HOST; leave empty for TRAE's own service.",
+      "saveConfig": "Save TRAE CLI Config"
+    },
+    "commandCode": {
+      "configManagement": "Configuration",
+      "configDescription": "Codeg runs the Command Code CLI from the command-code npm package, which keeps its sign-in, skills and MCP servers in ~/.commandcode. Model, mode and reasoning effort are not here: Command Code reports them over ACP, so the composer's own selectors own them per session.",
+      "signInTitle": "Sign in",
+      "signInHint": "Run this once in a terminal to sign in with your Command Code account. Sessions in Codeg reuse that login.",
+      "copyCommand": "Copy command",
+      "commandCopied": "Command copied",
+      "apiKeyLabel": "API key (optional)",
+      "apiKeyHint": "For a machine where browser sign-in is not possible, such as a server or Docker install. Passed to Command Code as COMMAND_CODE_API_KEY, which takes precedence over the login from command-code login. Leave empty to use that login.",
+      "saveConfig": "Save Command Code Config"
     },
     "deepseek": {
       "configManagement": "DeepSeek Harness Configuration",
@@ -1296,7 +1441,7 @@
         "defaultAgent": "Default agent",
         "defaultAgentHint": "Which primary agent a new session opens in. Falls back to build when empty or unknown.",
         "share": "Sharing",
-        "shareHint": "How a session may be published to a share link.",
+        "shareHint": "How a session may be published to a share link. OpenCode discontinued session sharing in 1.19.1, so this setting has no effect from that version on.",
         "shareManual": "Manual (on request)",
         "shareAuto": "Automatic (every new session)",
         "shareDisabled": "Disabled",
@@ -1572,14 +1717,28 @@
       "saveQoderConfigFailed": "Failed to save Qoder config",
       "antigravitySaved": "Antigravity config saved",
       "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
-      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config",
+      "kiroSaved": "Kiro config saved",
+      "saveKiroFailed": "Failed to save Kiro config",
+      "traeSaved": "TRAE CLI config saved",
+      "saveTraeFailed": "Failed to save TRAE CLI config",
+      "commandCodeSaved": "Command Code config saved",
+      "saveCommandCodeFailed": "Failed to save Command Code config",
+      "systemAgentAlreadyLatest": "{name} is already up to date ({version})"
+    },
+    "distribution": {
+      "system": "official installer"
     },
     "version": {
       "statusLabel": "Version Status",
       "notInstalled": "Not installed",
       "recommendedLocal": "Recommended: {recommendedVersion} · Local: {localVersion}",
       "localOnly": "Local: {localVersion}",
+      "localUndetected": "Local: version not detected",
       "localInstalled": "{versionText}. Installed.",
+      "systemInstalled": "{versionText}. Installed and updated by its own installer; Codeg launches it as-is.",
+      "systemInstalledUpdatable": "{versionText}. Installed with the official installer; Upgrade runs its own updater.",
+      "systemMissing": "Not found on this machine. Install it with the official installer, then refresh.",
       "platformUnsupported": "{versionText}. Current platform does not support this agent.",
       "uvxNotReady": "{versionText}. The uv runtime isn't installed — install it from the uv check below to use this agent.",
       "clickInstall": "{versionText}. Click Install on the right.",
@@ -1614,8 +1773,8 @@
       "noPlugins": "No plugins declared.",
       "status": {
         "installed": "Installed",
-        "missing": "Missing",
         "needs_migration": "Needs migration",
+        "missing": "Missing",
         "path": "Path plugin",
         "path_missing": "Path not found"
       },
@@ -1790,7 +1949,38 @@
       "compactSoftPercent": "Soft compact threshold (%)",
       "compactRecentTurns": "Keep recent turns",
       "maxTurns": "Max model turns"
+    },
+    "zcode": {
+      "adapterInfo": "Codeg runs {adapterPackage} as an ACP bridge. Install and sign in to official ZCode first; the bridge uses its runtime and existing configuration.",
+      "runtimeHint": "Install and sign in to official ZCode first. Codeg installs only the ACP bridge. Use ZCODE_BIN for the CLI entry and ZCODE_NODE for Node.js if detection fails. Manage models and credentials in ZCode."
     }
+  },
+  "AgentVocabulary": {
+    "deepseekModeDefault": "Normal",
+    "deepseekModeDefaultDescription": "Reads and edits files and runs commands directly to get the job done",
+    "deepseekModePlan": "Plan",
+    "deepseekModePlanDescription": "Investigates first and proposes a full plan for you to confirm before touching anything. This steers the model — the real boundary is still whatever File access allows.",
+    "deepseekOptionModel": "Model",
+    "deepseekOptionReasoning": "Reasoning effort",
+    "deepseekOptionReasoningDescription": "Higher is slower and costs more tokens, but steadier on hard problems",
+    "deepseekOptionSandbox": "File access",
+    "deepseekOptionSandboxDescription": "Commands and file tools share this one boundary",
+    "deepseekReasoningOff": "Off",
+    "deepseekReasoningOffDescription": "Answers directly with no reasoning; fastest",
+    "deepseekReasoningLow": "Low",
+    "deepseekReasoningLowDescription": "Reasons briefly; steadier than off, faster than high",
+    "deepseekReasoningHigh": "High",
+    "deepseekReasoningHighDescription": "Reasons before answering; the everyday coding default",
+    "deepseekReasoningMax": "Max",
+    "deepseekReasoningMaxDescription": "Reasons longer; steadier on hard problems, but slower and costs more tokens",
+    "deepseekSandboxReadOnly": "Read-only",
+    "deepseekSandboxReadOnlyDescription": "Runs under a read-only policy; switch access when a write is needed. Enforcement can be partial on some platforms.",
+    "deepseekSandboxWorkspaceWrite": "Workspace write",
+    "deepseekSandboxWorkspaceWriteDescription": "Writes are meant to stay inside the session workspace and the system temp directories; a call outside them asks for one-time approval. Enforcement can be partial on some platforms.",
+    "deepseekSandboxFullAccess": "Full access (no sandbox)",
+    "deepseekSandboxFullAccessDescription": "Applies no file restrictions at all. Choose it only when you understand the consequences.",
+    "deepseekPermissionAllowOnce": "Allow once",
+    "deepseekPermissionRejectOnce": "Reject"
   },
   "SettingsPages": {
     "agentsLoading": "Loading agent settings...",
@@ -1877,10 +2067,31 @@
     "protocolResponses": "Responses",
     "protocolAuto": "Auto"
   },
+  "CloseBehaviorSettings": {
+    "title": "Close Button Behavior",
+    "description": "Choose what the main window's close button does.",
+    "trayUnavailable": "This system has no usable tray, so the close button always exits codeg.",
+    "behaviorAsk": "Ask every time",
+    "behaviorMinimize": "Minimize to tray",
+    "behaviorExit": "Exit codeg",
+    "saveFailed": "Failed to save close behavior: {message}"
+  },
+  "CloseRequestDialog": {
+    "askTitle": "Close codeg?",
+    "askDescription": "codeg can keep running in the tray so agents and terminals stay alive, or exit completely.",
+    "confirmExitTitle": "Exit codeg?",
+    "confirmExitDescription": "Closing the window is set to exit codeg.",
+    "runningTerminals": "{count, plural, one {# terminal is still running and will be terminated on exit.} other {# terminals are still running and will be terminated on exit.}}",
+    "remember": "Remember my choice",
+    "cancel": "Cancel",
+    "minimize": "Minimize to tray",
+    "exit": "Exit codeg",
+    "actionFailed": "Action failed: {message}"
+  },
   "GeneralSettings": {
     "loading": "Loading...",
     "sectionTitle": "General",
-    "sectionDescription": "Centralized preferences for the default terminal, rendering acceleration, window close behavior, notifications and sounds, and multi-agent delegation.",
+    "sectionDescription": "Centralized preferences for the default terminal, rendering acceleration, the @ mention panel, window close behavior, notifications and sounds, and multi-agent delegation.",
     "terminalTitle": "Default Terminal",
     "terminalDescription": "Choose the shell codeg launches for new terminal tabs and for whole command lines an agent asks codeg to run. Agents with a shell of their own (Codex, Claude Code) run commands inside their own process, where this setting cannot reach them.",
     "terminalSystemDefault": "System default",
@@ -1913,6 +2124,19 @@
     "restartFailed": "Failed to restart: {message}",
     "loadFailed": "Load failed: {message}"
   },
+  "MentionPanelSettings": {
+    "title": "Mention panel",
+    "description": "Choose which tabs the @ panel in the composer shows, and drag them into the order you want. The panel opens on the first tab with matches. The Files tab is always shown.",
+    "tabsLabel": "Mention panel tabs",
+    "reset": "Reset",
+    "alwaysShown": "Always shown",
+    "moveTab": "Move “{name}”: drag, or press the up and down arrow keys",
+    "showTab": "Show the “{name}” tab"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "Collaboration",
+    "sectionDescription": "How agents work with each other, and which of codeg's own tools they can reach from inside a conversation."
+  },
   "LoginPage": {
     "documentTitle": "Login - codeg",
     "brand": "Codeg",
@@ -1929,6 +2153,50 @@
     "title": "Commit",
     "invalidFolderId": "Invalid folder ID",
     "loadingRepo": "Loading repository..."
+  },
+  "CommitMessageGeneration": {
+    "generate": "Generate a commit message",
+    "stop": "Stop generating ({seconds}s)",
+    "generating": "Writing a commit message… {seconds}s",
+    "noChanges": "No tracked changes to describe",
+    "selectFiles": "Select the files to describe",
+    "busyCommitting": "Committing…",
+    "settings": "Commit message settings",
+    "settingsMenuItem": "Commit message settings…",
+    "toasts": {
+      "failed": "Couldn't generate a commit message",
+      "openSettings": "Settings",
+      "autoCommitSkipped": "Not committed automatically: the changes moved while the message was being written. Check it, then commit."
+    },
+    "errors": {
+      "noChanges": "There are no changes to describe.",
+      "noAgent": "No agent to write it. Pick one in the commit message settings.",
+      "emptyAnswer": "The agent's answer had no commit message in it.",
+      "cancelled": "Generation was stopped."
+    },
+    "dialog": {
+      "title": "Commit message generation",
+      "description": "The generate button next to the commit box has an agent write a message for exactly what the commit will contain. It runs in a separate session that never appears in your session list, and anything it asks permission for is refused.",
+      "scope": "Scope",
+      "scopeGlobal": "All folders (global defaults)",
+      "scopeGlobalHint": "Folders without their own settings use these global defaults.",
+      "source": "Configuration",
+      "sourceGlobal": "Global defaults",
+      "sourceCustom": "Custom",
+      "sourceGlobalFollow": "Follows the global settings — changes there apply here automatically.",
+      "sourceCustomHint": "Saves this folder's own settings; it stops following the global defaults.",
+      "pinAgent": "Use a specific agent",
+      "pinAgentHint": "This agent writes every message, with the options below. A fast, inexpensive model is plenty for the job.",
+      "followSessionHint": "Off: the agent of the session you're looking at writes it, else the folder's default agent, with its default model.",
+      "autoCommit": "Commit automatically",
+      "autoCommitHint": "Commits as soon as the message is written. If the changes moved in the meantime, the message is only filled in, for you to check.",
+      "instructions": "Instructions",
+      "instructionsHint": "Added to every request, and followed over the built-in rules (such as matching the language of recent commits).",
+      "instructionsPlaceholder": "e.g. Write in Chinese. Use Conventional Commits. Explain why in the body.",
+      "save": "Save",
+      "cancel": "Cancel",
+      "loadFailed": "Couldn't load the settings"
+    }
   },
   "MergePage": {
     "title": "Resolve Conflicts",
@@ -2112,6 +2380,7 @@
       "statusUnreadCompletedBadge": "Unread completed",
       "statusUnreadFailedBadge": "Unread failed",
       "worktreeRemovedBadge": "Source worktree removed",
+      "cliBadge": "Started from the command line",
       "conversationCountUnit": "{count, plural, one {# conversation} other {# conversations}}",
       "emptyFolderHint": "No conversations",
       "noMatchingConversations": "No matching conversations",
@@ -2194,9 +2463,11 @@
         "dropToUngroup": "Drop here to remove from group"
       },
       "recentFilterAll": "All",
+      "recentFilterCli": "Command line",
       "recentFilterTitle": "Show in Recent: {filter}",
       "noRecentChats": "No recent chats",
       "noRecentFolders": "No recent folder conversations",
+      "noRecentCli": "No recent conversations from the command line",
       "recentFilterMenuLabel": "Show in Recent"
     },
     "conversation": {
@@ -2272,7 +2543,8 @@
       "updatedAt": "Updated",
       "none": "—",
       "copyField": "Copy {field}",
-      "copiedField": "Copied {field}"
+      "copiedField": "Copied {field}",
+      "assistant": "Assistant"
     },
     "conversationCard": {
       "untitledConversation": "Untitled conversation",
@@ -2371,8 +2643,8 @@
           "navigation": "Navigation",
           "more": "More"
         },
-        "showPet": "Show pet",
-        "browserTab": "Open browser tab"
+        "browserTab": "Open browser tab",
+        "showPet": "Show pet"
       },
       "mcp": {
         "title": "codeg-mcp service",
@@ -2425,7 +2697,10 @@
         "commits": "Commits"
       },
       "noFolderTitle": "No folder open",
-      "noFolderHint": "Open a folder to see its contents here"
+      "noFolderHint": "Open a folder to see its contents here",
+      "openFullPage": "Open full page",
+      "back": "Back",
+      "noAutomations": "No automations for this project yet"
     },
     "windowControls": {
       "minimizeWindow": "Minimize window",
@@ -2457,23 +2732,23 @@
     },
     "fileWorkspace": {
       "files": "Files",
-      "closeFileTab": "Close file tab",
-      "close": "Close",
-      "closeOthers": "Close Others",
-      "closeAll": "Close All",
-      "preview": "Preview",
-      "editSource": "Edit Source",
-      "maximize": "Maximize",
-      "restore": "Restore",
-      "emptyDirectory": "Empty folder",
       "newTab": "New tab",
       "newBrowserTab": "Browser tab",
       "openFile": "Open file…",
       "openFileTitle": "Open file",
       "localServices": "Local servers",
       "localServiceFromAgent": "Agent",
+      "closeFileTab": "Close file tab",
+      "close": "Close",
+      "closeOthers": "Close Others",
+      "closeAll": "Close All",
+      "preview": "Preview",
+      "editSource": "Edit Source",
       "openInSystemBrowser": "Open in system browser",
-      "more": "More"
+      "more": "More",
+      "maximize": "Maximize",
+      "restore": "Restore",
+      "emptyDirectory": "Empty folder"
     },
     "terminal": {
       "agentStatus": {
@@ -2605,6 +2880,22 @@
       "imageZoomIn": "Zoom in",
       "imageZoomOut": "Zoom out",
       "imageZoomReset": "Reset zoom",
+      "pdfDocument": "PDF document",
+      "pdfZoomIn": "Zoom in",
+      "pdfZoomOut": "Zoom out",
+      "pdfZoomReset": "Reset zoom",
+      "pdfFitWidth": "Fit to width",
+      "pdfPageNumber": "Page number",
+      "pdfFind": "Find in document",
+      "pdfFindPrevious": "Previous match",
+      "pdfFindNext": "Next match",
+      "pdfFindNoMatches": "No matches",
+      "pdfPasswordPrompt": "This PDF is password protected. Enter its password to open it.",
+      "pdfPasswordIncorrect": "Incorrect password. Try again.",
+      "pdfPassword": "Password",
+      "pdfPasswordSubmit": "Open",
+      "pdfInvalid": "This file is not a valid PDF, or it is damaged.",
+      "pdfLoadFailed": "Couldn't display this PDF: {message}",
       "htmlPreviewTitle": "HTML preview",
       "htmlPreviewTrust": "Enable scripts",
       "htmlPreviewTrustHint": "Run this file's scripts and allow network access. Enable only for files you trust.",
@@ -3047,6 +3338,11 @@
       "linkedFolder": "Linked folder",
       "moreActions": "More actions",
       "copyPath": "Copy path",
+      "copy": "Copy",
+      "copyRelativePath": "Relative path",
+      "copyAbsolutePath": "Absolute path",
+      "copyFileItself": "File",
+      "copyDirectoryItself": "Folder",
       "upload": "Upload files/folder",
       "download": "Download file",
       "downloadAsZip": "Download as ZIP",
@@ -3174,12 +3470,7 @@
         "descriptionWithTarget": "Rollback local changes for file \"{name}\"?",
         "descriptionFallback": "Rollback local changes for this file?"
       },
-      "terminalTitle": "Terminal · {name}",
-      "copy": "Copy",
-      "copyRelativePath": "Relative path",
-      "copyAbsolutePath": "Absolute path",
-      "copyFileItself": "File",
-      "copyDirectoryItself": "Folder"
+      "terminalTitle": "Terminal · {name}"
     },
     "commandDropdown": {
       "loading": "Loading...",
@@ -3262,6 +3553,7 @@
           "turnFailedMaxTurnRequests": "{agent} reached the maximum number of allowed requests for this turn.",
           "turnFailedUnknown": "{agent} ended the turn with an unrecognized stop reason.",
           "turnFailedAuthRequired": "{agent} needs you to sign in again before it can run this turn. Sign in from Settings, then send the message again.",
+          "agentAuthRequired": "{agent} could not start a session: it has no usable credential. Sign in again from Settings → Agents → {agent}, then reopen this conversation.",
           "agentRuntimeOutdated": "{agent} is too old for this version of Codeg. Update it, then reopen this conversation.",
           "grokModelSwitchIncompatibleAgent": "{agent} can't switch to that model in an existing conversation. Start a new session to use it.",
           "setModeFailed": "{agent} couldn't switch modes.",
@@ -3272,8 +3564,7 @@
           "turnFailedEmpty": "{agent} ended the turn without producing any response.",
           "turnFailedEmptyProtocol": "{agent} produced output that codeg could not parse — the agent version may not match the protocol.",
           "turnFailedEmptyMetadata": "{agent} sent only status updates this turn (plan / mode / usage) and no reply.",
-          "detailsInAlerts": "Open Alerts in the status bar and expand the details to see the agent's output.",
-          "agentAuthRequired": "{agent} could not start a session: it has no usable credential. Sign in again from Settings → Agents → {agent}, then reopen this conversation."
+          "detailsInAlerts": "Open Alerts in the status bar and expand the details to see the agent's output."
         },
         "unableReadAgentConfig": "Unable to read Agent config: {message}",
         "connectFailedTitle": "{agent} connection failed",
@@ -3281,6 +3572,7 @@
         "notificationTurnComplete": "{agent} has finished responding",
         "notificationError": "{agent} error: {message}",
         "notificationQuestion": "{agent} is waiting for your answer",
+        "notificationPlanApproval": "{agent} is waiting for you to approve its plan",
         "notificationErrorRedacted": "{agent} ran into an error",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
@@ -3302,12 +3594,12 @@
         "tasks": {
           "connectingTitle": "Connecting to {agent}",
           "connectingDescription": "Establishing connection",
+          "preparingTitle": "Preparing {agent} session",
+          "preparingDescription": "Reading the conversation history",
           "loadingSelectorsTitle": "Loading {agent} selectors",
           "loadingSelectorsDescription": "Fetching mode and session config options",
           "initSessionTitle": "Initializing {agent} session",
-          "initSessionDescription": "Creating session and loading configuration",
-          "preparingTitle": "Preparing {agent} session",
-          "preparingDescription": "Reading the conversation history"
+          "initSessionDescription": "Creating session and loading configuration"
         },
         "errors": {
           "connectionFailed": "Connection failed",
@@ -3330,6 +3622,7 @@
       },
       "messageInput": {
         "askAnything": "Ask anything...",
+        "promptSuggestion": "{suggestion} (Tab to use)",
         "removeAttachmentAria": "Remove {name}",
         "attachFiles": "Attach files",
         "attachLocalUpload": "Upload local file",
@@ -3360,6 +3653,11 @@
         "searchModel": "Search models...",
         "searchModelAria": "Search models",
         "modelListLabel": "Models",
+        "recommendedBadge": "Recommended",
+        "recommendedValue": "Recommended: {value}",
+        "searchOptions": "Search options...",
+        "searchOptionsAria": "Search options",
+        "noOptions": "No options found",
         "noModels": "No models found",
         "cancel": "Cancel",
         "send": "Send",
@@ -3391,7 +3689,7 @@
         "mentionGroupSession": "Sessions",
         "mentionGroupCommit": "Commits",
         "mentionGroupSkill": "Skills",
-        "recommendedBadge": "Recommended"
+        "mentionGroupAssistant": "Assistants"
       },
       "messageQueue": {
         "addToQueue": "Queue message",
@@ -3606,10 +3904,12 @@
         "downloadSvg": "Download as SVG",
         "downloadPng": "Download as PNG",
         "downloadMmd": "Download source (.mmd)",
+        "downloadPuml": "Download source (.puml)",
         "downloadFailed": "Could not save the diagram",
         "copySource": "Copy source",
         "copied": "Copied",
         "renderFailed": "Mermaid error: {message}",
+        "plantumlRenderFailed": "PlantUML error: {message}",
         "showSource": "Show source",
         "retry": "Retry"
       },
@@ -3637,6 +3937,8 @@
       "messageList": {
         "attachedResources": "Attached resources",
         "loading": "Loading...",
+        "loadBackgroundActivity": "Load background activity",
+        "workflowFollowUpLabel": "Codeg · Workflow result",
         "loadEarlier": "Load earlier messages",
         "loadingEarlier": "Loading earlier messages…",
         "error": "Error: {message}",
@@ -3688,8 +3990,6 @@
         "jumpToPreviousUserMessage": "Jump to user message",
         "showMore": "Show more",
         "showLess": "Show less",
-        "loadBackgroundActivity": "Load background activity",
-        "workflowFollowUpLabel": "Codeg · Workflow result",
         "resizeWidth": "Drag to resize the chat width · double-click to reset"
       },
       "liveTurnStats": {
@@ -3768,11 +4068,16 @@
             "child_max_turn_requests": "subagent request limit",
             "child_empty": "subagent no output",
             "child_auth_required": "subagent needs sign-in",
+            "child_rejected": "subagent rejected",
             "child_unknown": "subagent unknown error",
             "unknown": "unknown task",
-            "child_rejected": "subagent rejected"
+            "assistant_not_found": "assistant not found",
+            "assistants_unsupported": "needs restart",
+            "assistant_support_unknown": "no answer"
           }
-        }
+        },
+        "unknownAssistant": "Assistant #{id}",
+        "deletedAssistant": "(deleted)"
       },
       "contentParts": {
         "showingTailOutput": "Showing tail output while streaming for performance.",
@@ -3789,6 +4094,9 @@
         "offset": "Offset: {offset}",
         "limit": "Limit: {limit}",
         "pages": "Pages: {pages}",
+        "allowLarge": "Over size limit",
+        "readImageLoading": "Loading image…",
+        "readImageError": "Could not load the image",
         "mode": "Mode: {mode}",
         "cell": "Cell: {cell}",
         "shellSession": "Session {id}",
@@ -3974,13 +4282,19 @@
       },
       "messageNav": {
         "title": "Message navigation",
-        "collapse": "Collapse message navigation",
         "loadingEarlier": "Loading earlier messages…",
         "loadEarlier": "Load earlier messages",
         "collapsedSummary": "Messages {count}",
         "fileCount": "{count, plural, one {# file} other {# files}}",
         "remove": "Remove",
-        "noDiffDataAvailable": "No diff data available for {filePath}"
+        "noDiffDataAvailable": "No diff data available for {filePath}",
+        "subAgentCount": "{count, plural, one {# sub-agent} other {# sub-agents}}",
+        "showDiff": "Show the changes to {filePath}",
+        "hideDiff": "Hide the changes to {filePath}",
+        "openFile": "Open {filePath}",
+        "collapse": "Collapse message navigation",
+        "currentMessage": "Current message",
+        "scrollToCurrent": "Scroll to the current message (#{ordinal})"
       },
       "replyArtifacts": {
         "title": "Files changed",
@@ -4040,6 +4354,9 @@
         "setSessionTimer": "Wake in {seconds}s",
         "setSessionTimerNoSeconds": "Set session timer",
         "promptLabel": "Prompt",
+        "ackRecorded": "Recorded on the work task",
+        "ackNotRecorded": "Not recorded on the work task",
+        "ackNotRecordedWithReason": "Not recorded on the work task: {reason}",
         "verdict": {
           "success": "success",
           "needs_review": "needs review",
@@ -4146,6 +4463,7 @@
         "cardRunning": "Running in background",
         "cardLaunchedPending": "Launched in background",
         "cardCompleted": "Background task completed",
+        "cardInterim": "Background task: interim result",
         "cardFinishedWithStatus": "Background task finished ({status})",
         "cardResultPending": "Result not returned yet"
       },
@@ -4189,6 +4507,18 @@
           "failed": "Failed",
           "cancelled": "Cancelled"
         }
+      },
+      "remoteControl": {
+        "title": "Remote Control is on",
+        "open": "Open in browser",
+        "copy": "Copy link",
+        "copied": "Copied",
+        "qr": "QR code",
+        "qrLabel": "QR code for this session's Remote Control link",
+        "qrHint": "Scan with your phone to continue this session in the Claude app or on claude.ai/code.",
+        "noUrl": "Claude Code returned no link for this session",
+        "turnOff": "Turn off",
+        "turnOffBusy": "Available once Claude has finished"
       },
       "proposedPlan": {
         "title": "Proposed plan",
@@ -4414,6 +4744,14 @@
     "emptyDirectory": "This directory is empty",
     "errorLoadingDir": "Failed to load directory",
     "selectedCount": "{count} selected"
+  },
+  "BranchPicker": {
+    "searchPlaceholder": "Search branches…",
+    "none": "No branches",
+    "local": "Local",
+    "remote": "Remote",
+    "useCustom": "Use \"{query}\"",
+    "head": "HEAD"
   },
   "ChatChannelSettings": {
     "loading": "Loading...",
@@ -5112,6 +5450,7 @@
     "manage": "Manage remote workspace",
     "manageTitle": "Remote Workspace connections",
     "empty": "No remote connections",
+    "noMatches": "No matching remote connections",
     "searchPlaceholder": "Search remote workspaces",
     "orderFailed": "Failed to save remote workspace order",
     "dragSort": "Drag to sort",
@@ -5153,6 +5492,7 @@
       "restore": "Restore"
     },
     "export": {
+      "description": "Packs this machine's codeg data — the database and uploaded files — into one archive.",
       "includeExternal": "Include conversation content",
       "includeExternalHint": "Also archive agent CLI transcripts (Claude, Codex, Gemini, …). Increases size.",
       "passphrase": "Passphrase (optional)",
@@ -5172,10 +5512,10 @@
         "recoveredOnCopy": "recovered from a private copy — complete",
         "bareFileOnly": "archived without its write-ahead log — the newest messages may be missing",
         "notArchived": "not archived — it kept changing while being copied"
-      },
-      "description": "Packs this machine's codeg data — the database and uploaded files — into one archive."
+      }
     },
     "restore": {
+      "description": "Replaces this machine's codeg data with the contents of a backup archive.",
       "selectFile": "Select backup file",
       "passphrasePrompt": "This backup is encrypted. Enter its passphrase.",
       "unlock": "Unlock",
@@ -5227,8 +5567,7 @@
         "refusedHint": "They come from an older backup that stored a database and its write-ahead log separately, and the two cannot be proven to match. Your existing databases were left untouched — restore to a side folder to get the raw files.",
         "restartNow": "Restart now",
         "later": "Later"
-      },
-      "description": "Replaces this machine's codeg data with the contents of a backup archive."
+      }
     },
     "remoteUnsupported": "Backup & restore acts on the data of the machine running codeg. You're connected to a remote workspace — manage its backups from that server directly.",
     "progress": {
@@ -5243,6 +5582,108 @@
       "rollbackConfirmTitle": "Roll back to this snapshot?",
       "rollbackConfirmBody": "This replaces your current data with the snapshot, then restarts. The data being replaced is snapshotted first."
     }
+  },
+  "ConfigSyncSettings": {
+    "title": "Configuration sync",
+    "scopeTitle": "What gets synced",
+    "scopeIncludedTitle": "Included",
+    "scopeExcludedTitle": "Not included",
+    "scopeIncluded": {
+      "providers": "Model providers (with API keys)",
+      "agentSettings": "Agent settings",
+      "customAgents": "Custom agents",
+      "quickMessages": "Quick messages",
+      "taskTemplates": "Task templates",
+      "preferences": "App preferences (language, appearance, toggles)",
+      "assistants": "Assistants"
+    },
+    "scopeExcluded": {
+      "conversations": "Conversations and history",
+      "uploads": "Uploaded files and images",
+      "workspaces": "Workspace projects and paths",
+      "mcp": "MCP servers (owned by each CLI)",
+      "credentials": "Login credentials and tokens"
+    },
+    "fileTitle": "Configuration file",
+    "exportButton": "Export to file",
+    "importButton": "Import from file",
+    "fileHint": "Writes one JSON file you can carry to another machine. Importing adds or updates entries; existing ones that are missing from the file are kept.",
+    "webdavTitle": "WebDAV sync",
+    "webdavHint": "Upload the configuration snapshot to your own WebDAV server.",
+    "presetLabel": "Server",
+    "preset": {
+      "jianguoyun": "Jianguoyun",
+      "nextcloud": "Nextcloud",
+      "synology": "Synology NAS",
+      "custom": "Custom"
+    },
+    "presetHint": {
+      "jianguoyun": "Jianguoyun needs an app password created in Security settings, not your login password.",
+      "nextcloud": "Replace the domain and username, then use an app password from Settings → Security.",
+      "synology": "Enable WebDAV Server in DSM Package Center; default ports are 5005 (HTTP) and 5006 (HTTPS)."
+    },
+    "serverUrl": "Server URL",
+    "username": "Username",
+    "password": "Password",
+    "passwordKeep": "Leave empty to keep the saved password",
+    "passwordPlaceholder": "App password",
+    "remoteDir": "Remote folder",
+    "profile": "Profile",
+    "profileHint": "Machines that share a profile share one configuration. Use separate profiles to keep work and personal setups apart.",
+    "autoSyncLabel": "Upload automatically",
+    "autoSyncHint": "Checks periodically and uploads only when the configuration changed.",
+    "intervalLabel": "Check interval",
+    "intervalOption": "Every {minutes} minutes",
+    "saveButton": "Save",
+    "testButton": "Test connection",
+    "uploadButton": "Sync now",
+    "restoreButton": "Restore from remote",
+    "saved": "Sync settings saved",
+    "testSucceeded": "Connected to the WebDAV server",
+    "uploaded": "Configuration uploaded",
+    "exported": "Configuration exported",
+    "restored": "{count, plural, one {# entry applied} other {# entries applied}}",
+    "imported": "{count, plural, one {# entry applied} other {# entries applied}}",
+    "noRemoteSnapshot": "There is no configuration snapshot on the server yet",
+    "lastSyncAt": "Last synced {time}",
+    "neverSynced": "Not synced yet",
+    "lastError": "Last error: {message}",
+    "working": "Working…",
+    "plaintextWarning": "The snapshot is uploaded unencrypted and includes API keys, so use a WebDAV server only you can reach. The sync credentials themselves are never part of the snapshot.",
+    "importConfirmTitle": "Import configuration?",
+    "importConfirmBody": "Entries from this file will be added or updated on this machine. Existing entries that the file does not mention are kept.",
+    "restartHint": "Some changes — appearance, language, and the provider list — take effect after restarting codeg.",
+    "importConfirmAction": "Import",
+    "restoreConfirmTitle": "Restore from remote?",
+    "restoreConfirmBody": "The snapshot from {device}, taken {time}, will be applied to this machine. Existing entries that the snapshot does not mention are kept.",
+    "restoreConfirmAction": "Restore",
+    "cancel": "Cancel",
+    "emptySnapshot": "This snapshot contains no configuration entries.",
+    "domain": {
+      "modelProviders": "{count, plural, one {# model provider} other {# model providers}}",
+      "agentSettings": "{count, plural, one {# agent setting} other {# agent settings}}",
+      "customAgents": "{count, plural, one {# custom agent} other {# custom agents}}",
+      "quickMessages": "{count, plural, one {# quick message} other {# quick messages}}",
+      "taskTemplates": "{count, plural, one {# task template} other {# task templates}}",
+      "preferences": "{count, plural, one {# preference} other {# preferences}}",
+      "assistants": "{count, plural, one {# assistant} other {# assistants}}"
+    },
+    "rollbackTitle": "Undo an import",
+    "rollbackHint": "Every import and every restore saves what this machine looked like beforehand. The last ten are kept.",
+    "rollbackAction": "Undo",
+    "rollbackUnknownTime": "Unknown time",
+    "rollbackConfirmTitle": "Go back to this configuration?",
+    "rollbackConfirmBody": "This replaces the current configuration with the copy saved on {time}. The current one is saved first, so this is itself undoable.",
+    "rollbackConfirmAction": "Undo",
+    "rolledBack": "{count, plural, one {# entry restored} other {# entries restored}}",
+    "encryptLabel": "Encrypt the snapshot",
+    "encryptHint": "Protect the uploaded file with a passphrase. Every machine you sync needs the same one.",
+    "encryptedNotice": "The snapshot is encrypted with your passphrase before it is uploaded. If you lose the passphrase, the copy on the server cannot be recovered.",
+    "passphrase": "Passphrase",
+    "passphraseKeep": "Leave empty to keep the saved passphrase",
+    "passphrasePlaceholder": "Encryption passphrase",
+    "passphraseHint": "Kept in this machine's keychain and never uploaded. Enter the same passphrase on your other machines.",
+    "assistantsRenamed": "{count, plural, one {# assistant was renamed: one here already had its name.} other {# assistants were renamed: ones here already had their names.}}"
   },
   "backup": {
     "restore": {
@@ -5259,13 +5700,37 @@
       "cancelled": "The operation was cancelled."
     }
   },
+  "configSync": {
+    "error": {
+      "newerSchema": "This snapshot was created by a newer version of codeg (format {snapshotVersion}); this version understands up to format {appVersion}.",
+      "checksum": "The snapshot does not match its checksum and may be incomplete.",
+      "invalidSnapshot": "This file is not a valid codeg configuration snapshot.",
+      "noRemoteSnapshot": "There is no configuration snapshot on the server yet.",
+      "notConfigured": "Set up the WebDAV server before syncing.",
+      "unauthorized": "The WebDAV server rejected the username or password.",
+      "forbidden": "The WebDAV server denied access to this folder.",
+      "remotePath": "The remote folder or profile name is not valid.",
+      "quota": "The WebDAV server has no space left.",
+      "network": "Could not reach the WebDAV server.",
+      "server": "The WebDAV server returned an error ({status}).",
+      "passphraseRequired": "This snapshot is encrypted. Set the encryption passphrase before syncing.",
+      "badPassphrase": "The snapshot could not be decrypted. Check the passphrase — or the file may be damaged.",
+      "badDomain": "The {domain} section of this snapshot could not be read.",
+      "noRollback": "That saved configuration is no longer on this machine.",
+      "credentialsUnreadable": "Could not read the saved credentials. Unlock the system keychain, then try again.",
+      "notEncrypted": "The snapshot on the server is not encrypted, but encryption is turned on here. Upload from this device to replace it, or turn encryption off to use it."
+    }
+  },
   "WebConnection": {
     "disconnectedTitle": "Connection lost",
     "reconnectingDescription": "Trying to reconnect to the server. This usually recovers on its own within a few seconds.",
     "reconnectNow": "Reconnect now",
     "sessionExpiredTitle": "Session expired",
     "sessionExpiredDescription": "Your session is no longer valid. Please sign in again to continue.",
-    "goToLogin": "Go to login"
+    "goToLogin": "Go to login",
+    "versionChangedTitle": "The server is now running Codeg {version}",
+    "versionChangedDescription": "This page is still on {version}. Reload it to use the server's version.",
+    "reloadPage": "Reload"
   },
   "LiveFeedback": {
     "placeholder": "Send a note to {agent} while it works…",
@@ -5305,6 +5770,53 @@
     "saveFailed": "Failed to save tool settings",
     "loadFailed": "Failed to load: {detail}"
   },
+  "AgentTools": {
+    "delegation": {
+      "label": "Delegation",
+      "short": "Hand a task to another agent.",
+      "hint": "Lets an agent hand a self-contained sub-task to another agent, which runs in its own session and reports back. The rest of it — how deep delegations may nest, which agent runs them — is the section just above."
+    },
+    "feedback": {
+      "label": "Live Feedback",
+      "short": "Add notes mid-turn without interrupting.",
+      "hint": "Send notes and corrections to an agent while it's working. When the agent supports instant steering, your note is inserted into the running turn immediately; otherwise the agent gets a tool to check for your feedback — those agents typically only check when you mention it in your prompt, for example add \"check my live feedback regularly\" to your message."
+    },
+    "ask": {
+      "label": "Ask user question",
+      "short": "Let the agent ask you before it decides.",
+      "hint": "Let agents pause and ask you a multiple-choice question that appears above the conversation input box. The agent waits until you answer (or skip)."
+    },
+    "sessions": {
+      "label": "Get session info",
+      "short": "Look up past sessions and their results.",
+      "hint": "Let agents look up a session you reference in your message (a session badge) to read its title, agent, status, workspace, token usage, and recent messages."
+    },
+    "browser": {
+      "label": "Read and drive the built-in browser",
+      "short": "Open, read and act on pages in the built-in browser.",
+      "hint": "Lets an agent see which pages are open in the built-in browser, read the ones you share, and click and type on the ones you allow actions on. It can also open an address itself, point a tab somewhere else and close tabs. Off by default. Which page it may read is still yours to decide in that tab's toolbar — but note that with a standing sharing level set, a page the agent opens for itself is shared with it the moment that page loads. Turning this off takes effect at once, on agents already running too."
+    },
+    "browserEval": {
+      "label": "Run code in the built-in browser",
+      "short": "Run its own code on a page you shared — without asking, unless you ask it to.",
+      "hint": "Let agents run their own JavaScript on a page you’ve shared. Off by default, and needs the switch above. Turning it on means snippets run without asking, so this switch is where the decision is made; Settings → Built-in browser can put each snippet in front of you instead."
+    },
+    "computer": {
+      "label": "See and use your desktop's windows",
+      "short": "List apps and windows; read the ones you share, act on the ones you allow.",
+      "hint": "Lets an agent list the applications and windows on your desktop, read the windows you share with it — a screenshot, its contents, whether it shows what it expects — and click, type and press keys in the ones you share for acting. Nothing is readable until you share a window from the Computer use panel in the status bar, and nothing can be acted on unless you also let agents act on it; sharing ends when the window closes, after a while unused, or when you stop it, and Stop agents in that panel halts every agent at once. Input goes to the window in the background; for an action that will not go in the background, an agent may bring the window to the front, which you can switch off in Computer use settings. Desktop app only; on macOS it needs permissions granted to codeg-computer-helper. Preview."
+    },
+    "automations": {
+      "label": "Create automations",
+      "short": "Create and manage scheduled automations.",
+      "hint": "Save the conversation as an automation that runs on a schedule. Off by default — it goes on to start agents on its own."
+    },
+    "taskboard": {
+      "label": "Create to-do tasks",
+      "short": "Create and manage work tasks.",
+      "hint": "Queue a card on the to-do board from the conversation. Off by default — it writes app state."
+    }
+  },
   "DesktopNotificationSettings": {
     "title": "Desktop notifications",
     "description": "Raise an OS notification when an agent needs you. Configured per device — the same setting on another browser or machine is separate.",
@@ -5340,9 +5852,22 @@
     "hideBody": "Hide notification contents",
     "hideBodyHint": "Show a generic line instead of agent output. A notification centre keeps its payload outside the app, after the conversation is closed. The title still names the folder, so you can tell which window to go back to.",
     "eventsTitle": "Events",
-    "eventsHint": "Turn off any event that should not interrupt you. Repeats of the same event within a few seconds collapse into one notification.",
+    "eventsHint": "Turn off any event that should not interrupt you. Repeats of the same event within a few seconds collapse into one notification. Permission requests include plan approvals.",
     "eventBackgroundTask": "Background task",
     "eventWorkTask": "Work task"
+  },
+  "WindowAttentionSettings": {
+    "title": "Taskbar and Dock alerts",
+    "descriptionMac": "Bounce the Dock icon when an agent needs you while you are in another app.",
+    "descriptionWindows": "Flash the window's taskbar button when an agent needs you while the window is not focused.",
+    "descriptionLinux": "Mark the window as urgent when an agent needs you while it is not focused. How that shows depends on your desktop environment.",
+    "eventsTitle": "Events",
+    "eventsHintMac": "“Briefly” bounces the icon once. “Until you return” keeps it bouncing until you switch back to Codeg. Permission requests include plan approvals.",
+    "eventsHintWindows": "“Briefly” flashes the button a few times and leaves it highlighted. “Until you return” keeps it flashing until you switch back to the window. Permission requests include plan approvals.",
+    "eventsHintLinux": "Linux has a single urgency mark, so both levels keep the window marked until you switch back to it. Permission requests include plan approvals.",
+    "levelOff": "Off",
+    "levelInformational": "Briefly",
+    "levelCritical": "Until you return"
   },
   "NotificationSoundSettings": {
     "title": "Notification sounds",
@@ -5883,7 +6408,10 @@
     "branchLocal": "Local",
     "branchRemote": "Remote",
     "branchSearchPlaceholder": "Search branches…",
-    "branchNone": "No branches"
+    "branchNone": "No branches",
+    "booleanOn": "On",
+    "booleanOff": "Off",
+    "modelNotSwitched": "The agent didn't switch to the selected model, so these options may belong to another model."
   },
   "Tasks": {
     "title": "To-dos",
@@ -5902,6 +6430,10 @@
     "viewSwitchToList": "Switch to list view",
     "statusFilter": "Status",
     "statusFilterAll": "All statuses",
+    "searchPlaceholder": "Search tasks",
+    "clearSearch": "Clear search",
+    "searchEmptyColumn": "No matches",
+    "searchNoResults": "No tasks match “{query}”",
     "listEmpty": "No tasks match the current filters",
     "listColStatus": "Status",
     "listColTask": "Task",
@@ -5923,6 +6455,7 @@
     "statusFailed": "Failed",
     "statusCanceled": "Canceled",
     "statusInterrupted": "Interrupted",
+    "statusDeferred": "Deferred",
     "badgeCleanupFailed": "Cleanup failed",
     "badgeWorktreeKept": "Worktree kept",
     "badgeWorktreeRemoved": "Worktree removed",
@@ -5975,6 +6508,7 @@
     "actionFollowUp": "Follow up",
     "actionAddNote": "Add a note",
     "followUpSubmit": "Send",
+    "followUpDialogDescription": "Pick a scenario and say what you need — the agent picks the task back up in the same session, and the card moves to In progress.",
     "followUpIntentRevise": "Rework",
     "followUpIntentContinue": "Keep going",
     "followUpIntentQuestion": "Ask",
@@ -5987,6 +6521,8 @@
     "followUpPlaceholderRequeue": "Optional: why did you cancel it, and what should change this time?",
     "actionArchive": "Archive",
     "actionUnarchive": "Unarchive",
+    "actionDefer": "Handle later",
+    "actionUndefer": "Back to Needs you",
     "archiveAllDone": "Archive all",
     "dropToStart": "Release to start",
     "errorView": "View",
@@ -6014,6 +6550,10 @@
     "promptLabel": "Task description",
     "promptPlaceholder": "Describe the task for the agent — @ to reference files, / for commands",
     "folderPlaceholder": "Select a folder",
+    "baseBranch": "Base branch",
+    "baseBranchPlaceholder": "Current branch",
+    "baseBranchDefault": "Current branch when the task starts",
+    "baseBranchHint": "The task branches from here, and merging lands it back on this branch.",
     "agentInheritedHint": "Inherited from task settings — change it to override for this task",
     "agentNoDefaultHint": "No default agent in task settings — the selected agent will be saved with the task",
     "agentInheritedUnavailableHint": "{agent} from task settings isn't available — the selected agent will be saved with the task",
@@ -6131,6 +6671,10 @@
     "deleteWorktreeConfirmTitle": "Delete worktree?",
     "deleteWorktreeConfirmBody": "The worktree directory and its work branch are deleted for good. The task stays on the board, and its conversation moves to the project folder.",
     "eventCreated": "Created",
+    "eventCreatedAuto": "Created by auto-processing",
+    "eventAutoSchedule": "scheduled scan",
+    "eventAutoWebhook": "webhook",
+    "eventAutoManual": "manual scan",
     "eventStatusChanged": "Status changed",
     "eventConfigEffective": "Launch config",
     "eventInitCommand": "Init command",
@@ -6173,11 +6717,7 @@
     "deliverPrBackDeleteWorktree": "Delete the worktree after pushing",
     "deliverPrBackSubmit": "Push",
     "deliverPrBackDone": "Pushed to the pull request",
-    "deliverPrBackDoneMr": "Pushed to the merge request",
-    "baseBranch": "Base branch",
-    "baseBranchPlaceholder": "Current branch",
-    "baseBranchDefault": "Current branch when the task starts",
-    "baseBranchHint": "The task branches from here, and merging lands it back on this branch."
+    "deliverPrBackDoneMr": "Pushed to the merge request"
   },
   "CustomSkillsSettings": {
     "loading": "Loading custom skills…",
@@ -6683,9 +7223,9 @@
     "viewExisting": "View the existing task",
     "scenarioLabel": "How to handle it",
     "scenarioFix": "Fix / implement",
-    "scenarioFixHint": "The agent first confirms the problem is real in this worktree, then fixes it — if it cannot confirm it, it reports back instead of changing code.",
+    "scenarioFixHint": "The agent first judges whether the report holds up, and only then fixes it — if it doesn't (can't reproduce, works as designed, already fixed…), it changes nothing, stops early and hands its finding back to you to decide.",
     "scenarioPlanFirst": "Plan first",
-    "scenarioPlanFirstHint": "The agent confirms the problem is real, then delivers an implementation plan and stops — approve it by returning the task for implementation.",
+    "scenarioPlanFirstHint": "The agent first judges whether the report holds up, then delivers an implementation plan and stops — if it doesn't hold, it stops early with no plan and hands its finding back to you. Approve a plan by returning the task for implementation.",
     "scenarioReviewFix": "Review & fix",
     "scenarioReviewFixHint": "The agent first judges whether the approach itself holds up, and only then fixes problems on top — if it doesn't, it commits nothing and hands the review back to you to decide. Accepted fixes go back to the branch.",
     "scenarioReviewOnly": "Review only",
@@ -6712,6 +7252,79 @@
     "settingsPromptAllHint": "Sent with every task this panel creates, whatever the scenario.",
     "settingsPromptScenarioHint": "Sent only with tasks created for this scenario.",
     "settingsPromptPlaceholder": "e.g. Reply in English. Run the project's tests before you finish.",
+    "settingsSections": "Panel settings sections",
+    "settingsTabGeneral": "General",
+    "settingsTabAuto": "Auto-processing",
+    "autoIntro": "Turn matching issues and pull requests into tasks without pressing Start. Each item is picked up at most once — one that has ever had a task, even a task you deleted, is left alone.",
+    "autoGlobalNote": "These rules apply to every project folder that follows the global settings.",
+    "autoSchedule": "Scan on a schedule",
+    "autoScheduleHint": "Look through the repository for matching items at a fixed interval.",
+    "autoInterval": "Scan every",
+    "autoIntervalMinutes": "{count, plural, one {# minute} other {# minutes}}",
+    "autoIntervalHours": "{count, plural, one {# hour} other {# hours}}",
+    "autoWebhook": "Scan on webhook events",
+    "autoWebhookHint": "Scan as soon as the forge reports that an issue or pull request changed.",
+    "autoWebhookUrl": "Payload URL",
+    "autoWebhookUrlUnavailable": "The desktop app receives webhooks only while its web service is running — start it under Settings → Web service.",
+    "autoWebhookSecret": "Secret",
+    "autoWebhookSecretPending": "A secret is generated when you save.",
+    "autoWebhookShowSecret": "Show secret",
+    "autoWebhookHideSecret": "Hide secret",
+    "autoWebhookRegenerate": "Generate a new secret",
+    "autoWebhookSetup": "In the repository's webhook settings, enter this URL with content type application/json and this secret, and choose the issue and pull request events (on GitLab: Issues and Merge request events, with the secret as the secret token). The forge must be able to reach this address — if it can't, scan on a schedule instead.",
+    "autoCopy": "Copy",
+    "autoCopied": "Copied",
+    "autoIssues": "Issues",
+    "autoIssuesHint": "Pick up open issues.",
+    "autoPulls": "Pull / merge requests",
+    "autoPullsHint": "Pick up open pull or merge requests.",
+    "autoHandleWith": "Handle as",
+    "autoIssueScenario": "How automatic issue tasks are handled",
+    "autoPrScenario": "How automatic pull / merge request tasks are handled",
+    "autoSkipDrafts": "Skip drafts until they are ready",
+    "autoIncludeExisting": "Include items that were already open",
+    "autoIncludeExistingHint": "Off: only items opened or updated after auto-processing is switched on are picked up. Label an older item to pull it in.",
+    "autoIncludeExistingOnHint": "Every open item that matches is picked up, including ones opened before auto-processing was switched on.",
+    "autoSinceHint": "Off: only items opened or updated since {time}, when auto-processing was switched on, are picked up. Label an older item to pull it in.",
+    "autoRulesHint": "Patterns ignore case, and * matches anything: area/* is every label starting with area/, *[bot] every bot account. An item must pass every list that has entries, and the “never” lists always win. Empty lists don't filter.",
+    "autoIncludeLabels": "Only items with one of these labels",
+    "autoExcludeLabels": "Never items with any of these labels",
+    "autoIncludeAuthors": "Only items opened by",
+    "autoExcludeAuthors": "Never items opened by",
+    "autoLabelPlaceholder": "Label or pattern, then Enter",
+    "autoAuthorPlaceholder": "Username or pattern, then Enter",
+    "autoRemovePattern": "Remove {pattern}",
+    "autoAutoStart": "Start right away",
+    "autoAutoStartHint": "Queue each new task at once — your task settings' concurrency limit decides when it runs. Off: it waits in To-do.",
+    "autoWriteback": "Comment the outcome back",
+    "autoWritebackHint": "When the task finishes, post the same short status comment the trigger dialog's switch posts.",
+    "autoActivity": "Activity",
+    "autoScanNow": "Scan now",
+    "autoScanNowOff": "Switch a trigger on and save to scan.",
+    "autoScanNowDirty": "Save first — a scan uses the saved rules.",
+    "autoStatusUnavailable": "Another codeg process runs the task board for this data directory, so auto-processing runs there, not here.",
+    "autoStatusNever": "Not scanned yet.",
+    "autoStatusScanning": "Scanning…",
+    "autoStatusLast": "Last scan {time} ({trigger}):",
+    "autoStatusCounts": "{examined} listed · {matched} matched · {handled} already had a task · {created} created.",
+    "autoStatusError": "Last scan {time} ({trigger}) stopped: {error}",
+    "autoStatusCreated": "New tasks: {items}",
+    "autoStatusSkipped": "Passed over: {list}",
+    "autoStatusFailed": "Could not create: {items}",
+    "autoStatusStartFailed": "Created but not started: {error}",
+    "autoStatusTruncated": "The listing was cut short — the next scan reads the same window again.",
+    "autoStatusNext": "Next scheduled scan: {time}",
+    "autoStatusDelivery": "Last webhook delivery: {time}",
+    "autoTriggerSchedule": "scheduled",
+    "autoTriggerWebhook": "webhook",
+    "autoTriggerManual": "manual",
+    "autoSkipKind": "other kind",
+    "autoSkipNotOpen": "not open",
+    "autoSkipDraft": "draft",
+    "autoSkipExcludedLabel": "excluded label",
+    "autoSkipExcludedAuthor": "excluded author",
+    "autoSkipMissingLabel": "no matching label",
+    "autoSkipAuthorNotIncluded": "author not listed",
     "save": "Save"
   },
   "Canvas": {
@@ -7513,233 +8126,6 @@
         "available": "Source file exists",
         "missing": "Source file is missing"
       }
-    }
-  },
-  "AgentVocabulary": {
-    "deepseekModeDefault": "Normal",
-    "deepseekModeDefaultDescription": "Reads and edits files and runs commands directly to get the job done",
-    "deepseekModePlan": "Plan",
-    "deepseekModePlanDescription": "Investigates first and proposes a full plan for you to confirm before touching anything. This steers the model — the real boundary is still whatever File access allows.",
-    "deepseekOptionModel": "Model",
-    "deepseekOptionReasoning": "Reasoning effort",
-    "deepseekOptionReasoningDescription": "Higher is slower and costs more tokens, but steadier on hard problems",
-    "deepseekOptionSandbox": "File access",
-    "deepseekOptionSandboxDescription": "Commands and file tools share this one boundary",
-    "deepseekReasoningOff": "Off",
-    "deepseekReasoningOffDescription": "Answers directly with no reasoning; fastest",
-    "deepseekReasoningLow": "Low",
-    "deepseekReasoningLowDescription": "Reasons briefly; steadier than off, faster than high",
-    "deepseekReasoningHigh": "High",
-    "deepseekReasoningHighDescription": "Reasons before answering; the everyday coding default",
-    "deepseekReasoningMax": "Max",
-    "deepseekReasoningMaxDescription": "Reasons longer; steadier on hard problems, but slower and costs more tokens",
-    "deepseekSandboxReadOnly": "Read-only",
-    "deepseekSandboxReadOnlyDescription": "Runs under a read-only policy; switch access when a write is needed. Enforcement can be partial on some platforms.",
-    "deepseekSandboxWorkspaceWrite": "Workspace write",
-    "deepseekSandboxWorkspaceWriteDescription": "Writes are meant to stay inside the session workspace and the system temp directories; a call outside them asks for one-time approval. Enforcement can be partial on some platforms.",
-    "deepseekSandboxFullAccess": "Full access (no sandbox)",
-    "deepseekSandboxFullAccessDescription": "Applies no file restrictions at all. Choose it only when you understand the consequences.",
-    "deepseekPermissionAllowOnce": "Allow once",
-    "deepseekPermissionRejectOnce": "Reject"
-  },
-  "CloseBehaviorSettings": {
-    "title": "Close Button Behavior",
-    "description": "Choose what the main window's close button does.",
-    "trayUnavailable": "This system has no usable tray, so the close button always exits codeg.",
-    "behaviorAsk": "Ask every time",
-    "behaviorMinimize": "Minimize to tray",
-    "behaviorExit": "Exit codeg",
-    "saveFailed": "Failed to save close behavior: {message}"
-  },
-  "CloseRequestDialog": {
-    "askTitle": "Close codeg?",
-    "askDescription": "codeg can keep running in the tray so agents and terminals stay alive, or exit completely.",
-    "confirmExitTitle": "Exit codeg?",
-    "confirmExitDescription": "Closing the window is set to exit codeg.",
-    "runningTerminals": "{count, plural, one {# terminal is still running and will be terminated on exit.} other {# terminals are still running and will be terminated on exit.}}",
-    "remember": "Remember my choice",
-    "cancel": "Cancel",
-    "minimize": "Minimize to tray",
-    "exit": "Exit codeg",
-    "actionFailed": "Action failed: {message}"
-  },
-  "CollaborationSettings": {
-    "sectionTitle": "Collaboration",
-    "sectionDescription": "How agents work with each other, and which of codeg's own tools they can reach from inside a conversation."
-  },
-  "BranchPicker": {
-    "searchPlaceholder": "Search branches…",
-    "none": "No branches",
-    "local": "Local",
-    "remote": "Remote",
-    "useCustom": "Use \"{query}\"",
-    "head": "HEAD"
-  },
-  "ConfigSyncSettings": {
-    "title": "Configuration sync",
-    "scopeTitle": "What gets synced",
-    "scopeIncludedTitle": "Included",
-    "scopeExcludedTitle": "Not included",
-    "scopeIncluded": {
-      "providers": "Model providers (with API keys)",
-      "agentSettings": "Agent settings",
-      "customAgents": "Custom agents",
-      "quickMessages": "Quick messages",
-      "taskTemplates": "Task templates",
-      "preferences": "App preferences (language, appearance, toggles)"
-    },
-    "scopeExcluded": {
-      "conversations": "Conversations and history",
-      "uploads": "Uploaded files and images",
-      "workspaces": "Workspace projects and paths",
-      "mcp": "MCP servers (owned by each CLI)",
-      "credentials": "Login credentials and tokens"
-    },
-    "fileTitle": "Configuration file",
-    "exportButton": "Export to file",
-    "importButton": "Import from file",
-    "fileHint": "Writes one JSON file you can carry to another machine. Importing adds or updates entries; existing ones that are missing from the file are kept.",
-    "webdavTitle": "WebDAV sync",
-    "webdavHint": "Upload the configuration snapshot to your own WebDAV server.",
-    "presetLabel": "Server",
-    "preset": {
-      "jianguoyun": "Jianguoyun",
-      "nextcloud": "Nextcloud",
-      "synology": "Synology NAS",
-      "custom": "Custom"
-    },
-    "presetHint": {
-      "jianguoyun": "Jianguoyun needs an app password created in Security settings, not your login password.",
-      "nextcloud": "Replace the domain and username, then use an app password from Settings → Security.",
-      "synology": "Enable WebDAV Server in DSM Package Center; default ports are 5005 (HTTP) and 5006 (HTTPS)."
-    },
-    "serverUrl": "Server URL",
-    "username": "Username",
-    "password": "Password",
-    "passwordKeep": "Leave empty to keep the saved password",
-    "passwordPlaceholder": "App password",
-    "remoteDir": "Remote folder",
-    "profile": "Profile",
-    "profileHint": "Machines that share a profile share one configuration. Use separate profiles to keep work and personal setups apart.",
-    "autoSyncLabel": "Upload automatically",
-    "autoSyncHint": "Checks periodically and uploads only when the configuration changed.",
-    "intervalLabel": "Check interval",
-    "intervalOption": "Every {minutes} minutes",
-    "saveButton": "Save",
-    "testButton": "Test connection",
-    "uploadButton": "Sync now",
-    "restoreButton": "Restore from remote",
-    "saved": "Sync settings saved",
-    "testSucceeded": "Connected to the WebDAV server",
-    "uploaded": "Configuration uploaded",
-    "exported": "Configuration exported",
-    "restored": "{count, plural, one {# entry applied} other {# entries applied}}",
-    "imported": "{count, plural, one {# entry applied} other {# entries applied}}",
-    "noRemoteSnapshot": "There is no configuration snapshot on the server yet",
-    "lastSyncAt": "Last synced {time}",
-    "neverSynced": "Not synced yet",
-    "lastError": "Last error: {message}",
-    "working": "Working…",
-    "plaintextWarning": "The snapshot is uploaded unencrypted and includes API keys, so use a WebDAV server only you can reach. The sync credentials themselves are never part of the snapshot.",
-    "importConfirmTitle": "Import configuration?",
-    "importConfirmBody": "Entries from this file will be added or updated on this machine. Existing entries that the file does not mention are kept.",
-    "restartHint": "Some changes — appearance, language, and the provider list — take effect after restarting codeg.",
-    "importConfirmAction": "Import",
-    "restoreConfirmTitle": "Restore from remote?",
-    "restoreConfirmBody": "The snapshot from {device}, taken {time}, will be applied to this machine. Existing entries that the snapshot does not mention are kept.",
-    "restoreConfirmAction": "Restore",
-    "cancel": "Cancel",
-    "emptySnapshot": "This snapshot contains no configuration entries.",
-    "domain": {
-      "modelProviders": "{count, plural, one {# model provider} other {# model providers}}",
-      "agentSettings": "{count, plural, one {# agent setting} other {# agent settings}}",
-      "customAgents": "{count, plural, one {# custom agent} other {# custom agents}}",
-      "quickMessages": "{count, plural, one {# quick message} other {# quick messages}}",
-      "taskTemplates": "{count, plural, one {# task template} other {# task templates}}",
-      "preferences": "{count, plural, one {# preference} other {# preferences}}"
-    },
-    "rollbackTitle": "Undo an import",
-    "rollbackHint": "Every import and every restore saves what this machine looked like beforehand. The last ten are kept.",
-    "rollbackAction": "Undo",
-    "rollbackUnknownTime": "Unknown time",
-    "rollbackConfirmTitle": "Go back to this configuration?",
-    "rollbackConfirmBody": "This replaces the current configuration with the copy saved on {time}. The current one is saved first, so this is itself undoable.",
-    "rollbackConfirmAction": "Undo",
-    "rolledBack": "{count, plural, one {# entry restored} other {# entries restored}}",
-    "encryptLabel": "Encrypt the snapshot",
-    "encryptHint": "Protect the uploaded file with a passphrase. Every machine you sync needs the same one.",
-    "encryptedNotice": "The snapshot is encrypted with your passphrase before it is uploaded. If you lose the passphrase, the copy on the server cannot be recovered.",
-    "passphrase": "Passphrase",
-    "passphraseKeep": "Leave empty to keep the saved passphrase",
-    "passphrasePlaceholder": "Encryption passphrase",
-    "passphraseHint": "Kept in this machine's keychain and never uploaded. Enter the same passphrase on your other machines."
-  },
-  "configSync": {
-    "error": {
-      "newerSchema": "This snapshot was created by a newer version of codeg (format {snapshotVersion}); this version understands up to format {appVersion}.",
-      "checksum": "The snapshot does not match its checksum and may be incomplete.",
-      "invalidSnapshot": "This file is not a valid codeg configuration snapshot.",
-      "noRemoteSnapshot": "There is no configuration snapshot on the server yet.",
-      "notConfigured": "Set up the WebDAV server before syncing.",
-      "unauthorized": "The WebDAV server rejected the username or password.",
-      "forbidden": "The WebDAV server denied access to this folder.",
-      "remotePath": "The remote folder or profile name is not valid.",
-      "quota": "The WebDAV server has no space left.",
-      "network": "Could not reach the WebDAV server.",
-      "server": "The WebDAV server returned an error ({status}).",
-      "passphraseRequired": "This snapshot is encrypted. Set the encryption passphrase before syncing.",
-      "badPassphrase": "The snapshot could not be decrypted. Check the passphrase — or the file may be damaged.",
-      "badDomain": "The {domain} section of this snapshot could not be read.",
-      "noRollback": "That saved configuration is no longer on this machine.",
-      "credentialsUnreadable": "Could not read the saved credentials. Unlock the system keychain, then try again.",
-      "notEncrypted": "The snapshot on the server is not encrypted, but encryption is turned on here. Upload from this device to replace it, or turn encryption off to use it."
-    }
-  },
-  "AgentTools": {
-    "delegation": {
-      "label": "Delegation",
-      "short": "Hand a task to another agent.",
-      "hint": "Lets an agent hand a self-contained sub-task to another agent, which runs in its own session and reports back. The rest of it — how deep delegations may nest, which agent runs them — is the section just above."
-    },
-    "feedback": {
-      "label": "Live Feedback",
-      "short": "Add notes mid-turn without interrupting.",
-      "hint": "Send notes and corrections to an agent while it's working. When the agent supports instant steering, your note is inserted into the running turn immediately; otherwise the agent gets a tool to check for your feedback — those agents typically only check when you mention it in your prompt, for example add \"check my live feedback regularly\" to your message."
-    },
-    "ask": {
-      "label": "Ask user question",
-      "short": "Let the agent ask you before it decides.",
-      "hint": "Let agents pause and ask you a multiple-choice question that appears above the conversation input box. The agent waits until you answer (or skip)."
-    },
-    "sessions": {
-      "label": "Get session info",
-      "short": "Look up past sessions and their results.",
-      "hint": "Let agents look up a session you reference in your message (a session badge) to read its title, agent, status, workspace, token usage, and recent messages."
-    },
-    "browser": {
-      "label": "Read and drive the built-in browser",
-      "short": "Open, read and act on pages in the built-in browser.",
-      "hint": "Lets an agent see which pages are open in the built-in browser, read the ones you share, and click and type on the ones you allow actions on. It can also open an address itself, point a tab somewhere else and close tabs. Off by default. Which page it may read is still yours to decide in that tab's toolbar — but note that with a standing sharing level set, a page the agent opens for itself is shared with it the moment that page loads. Turning this off takes effect at once, on agents already running too."
-    },
-    "browserEval": {
-      "label": "Run code in the built-in browser",
-      "short": "Run its own code on a page you shared — without asking, unless you ask it to.",
-      "hint": "Let agents run their own JavaScript on a page you’ve shared. Off by default, and needs the switch above. Turning it on means snippets run without asking, so this switch is where the decision is made; Settings → Built-in browser can put each snippet in front of you instead."
-    },
-    "computer": {
-      "label": "See and use your desktop's windows",
-      "short": "List apps and windows; read the ones you share, act on the ones you allow.",
-      "hint": "Lets an agent list the applications and windows on your desktop, read the windows you share with it — a screenshot, its contents, whether it shows what it expects — and click, type and press keys in the ones you share for acting. Nothing is readable until you share a window from the Computer use panel in the status bar, and nothing can be acted on unless you also let agents act on it; sharing ends when the window closes, after a while unused, or when you stop it, and Stop agents in that panel halts every agent at once. Input goes to the window in the background; for an action that will not go in the background, an agent may bring the window to the front, which you can switch off in Computer use settings. Desktop app only; on macOS it needs permissions granted to codeg-computer-helper. Preview."
-    },
-    "automations": {
-      "label": "Create automations",
-      "short": "Create and manage scheduled automations.",
-      "hint": "Save the conversation as an automation that runs on a schedule. Off by default — it goes on to start agents on its own."
-    },
-    "taskboard": {
-      "label": "Create to-do tasks",
-      "short": "Create and manage work tasks.",
-      "hint": "Queue a card on the to-do board from the conversation. Off by default — it writes app state."
     }
   },
   "Browser": {

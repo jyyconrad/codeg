@@ -290,7 +290,10 @@ enum ProbeSurface {
     /// Linux, and Windows without the embedded surface: a window that is
     /// never shown, in the profile's own context (on Linux the one its
     /// embedded tabs share too).
-    #[cfg(not(any(target_os = "macos", all(target_os = "windows", feature = "browser-child"))))]
+    #[cfg(not(any(
+        target_os = "macos",
+        all(target_os = "windows", feature = "browser-child")
+    )))]
     Window(tauri::WebviewWindow),
 }
 

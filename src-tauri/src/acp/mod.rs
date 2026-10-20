@@ -11,6 +11,7 @@ pub mod codex_catalog_source;
 pub mod codex_context;
 pub mod codex_goal;
 pub mod codex_model_catalog;
+pub mod command_code;
 pub mod computer_tools;
 pub mod connection;
 pub mod cursor_acp_retry_compat;
@@ -31,6 +32,7 @@ pub mod lifecycle;
 pub mod manager;
 pub mod native_config;
 pub mod native_shutdown;
+pub mod one_shot;
 pub mod opencode_catalog;
 pub mod opencode_launch;
 pub mod opencode_plugins;
@@ -41,6 +43,7 @@ pub mod prompt_hydration;
 pub mod question;
 pub mod registry;
 pub mod remote_registry;
+pub mod result_tool;
 pub mod run_settled;
 pub mod scratch_dir;
 pub mod service_error;
@@ -51,10 +54,12 @@ pub mod session_title;
 pub mod stderr_tail;
 pub mod temp_reclaim;
 pub mod terminal_runtime;
+pub mod trae;
 pub mod types;
 pub mod work_task_tools;
 pub mod workflow_adapt;
 pub mod workflow_follow_up;
+pub mod zcode;
 
 pub use idle_sweep::{idle_sweep_task, idle_timeout_from_env, SWEEP_INTERVAL_SECS};
 pub use internal_bus::{EventBusMetrics, EventBusMetricsSnapshot, InternalEventBus};
@@ -84,14 +89,17 @@ pub use types::{
 /// sidebar on every restart. The second is codeg#500, where the split is the
 /// whole point.
 ///
-/// Empty — and free — for agents whose history lives in their own store.
-/// Custom ACP agents and Codeg Agent share the host transcript, so a forgotten
-/// session can still carry earlier turns forward through `continues_from`.
+/// Empty for agents whose history lives in their own store.
+/// Codeg Agent and custom ACP agents record a host transcript
+/// ([`AgentType::records_host_transcript`](crate::models::AgentType::records_host_transcript));
+/// ZCode, TRAE CLI and Command Code use Codeg transcripts
+/// ([`AgentType::uses_acp_transcript`](crate::models::AgentType::uses_acp_transcript)).
+/// A forgotten session of any of those can still carry earlier turns forward.
 pub fn continued_session_ids(
     agent_type: crate::models::AgentType,
     session_id: &str,
 ) -> Vec<String> {
-    if !agent_type.records_host_transcript() {
+    if !(agent_type.records_host_transcript() || agent_type.uses_acp_transcript()) {
         return Vec::new();
     }
     crate::acp_transcript::continuation_ancestors(registry::registry_id_for(agent_type), session_id)

@@ -673,7 +673,21 @@ pub enum AcpEvent {
     /// keeping the pet pinned on `Waiting` through whatever work the agent
     /// does after the approval (which, for ExitPlanMode, is the entire
     /// implementation phase).
-    PermissionResolved { request_id: String },
+    PermissionResolved {
+        request_id: String,
+        /// The option that took effect, when the request was ANSWERED. `None`
+        /// when the agent withdrew it or the connection drained it — then no
+        /// option took effect. Omitted from the wire when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        option_id: Option<String>,
+        /// Who gave that answer. The first answer wins (a later one to the same
+        /// request is a no-op), so this is the only place that can say whose
+        /// answer it was: comparing options cannot tell a person's pick from a
+        /// policy that submitted the same one a moment later. `None` exactly
+        /// when `option_id` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<PermissionAnswerOrigin>,
+    },
     /// Turn completed
     TurnComplete {
         session_id: String,
@@ -924,6 +938,30 @@ pub enum AcpEvent {
     AvailableCommands { commands: Vec<AvailableCommandInfo> },
     /// Session usage/context window updated during conversation
     UsageUpdate { used: u64, size: u64 },
+    /// The prompt the agent predicts the user will send next, which the
+    /// composer offers as gray text while it is empty (Tab fills it in, nothing
+    /// is sent). `None` clears the one held. Read from claude-agent-acp
+    /// 0.92.0's `session_info_update._meta.promptSuggestions` (see
+    /// `connection::prompt_suggestion_update`).
+    ///
+    /// Current state, not an event: `SessionState::apply_event` keeps the last
+    /// one so a client that attaches between turns offers it too, and a new
+    /// prompt clears it there and in the frontend reducer alike.
+    PromptSuggestion {
+        #[serde(default)]
+        text: Option<String>,
+    },
+    /// Claude Code's Remote Control turned on (`Some`) or off (`None`) for the
+    /// session, read from claude-agent-acp's reply to a `/remote-control`
+    /// prompt (0.93.0; see `connection::remote_control_reply`).
+    ///
+    /// Current state, not an event: `SessionState::apply_event` keeps it for
+    /// the snapshot, and while it is on the idle sweeps leave the connection
+    /// alone, since disconnecting would end the remote session with the CLI.
+    RemoteControl {
+        #[serde(default)]
+        remote_control: Option<RemoteControlInfo>,
+    },
     /// Out-of-turn activity surfaced from the agent's own session transcript
     /// by the background watcher (`acp::background_watch`; Claude-only today).
     /// Covers everything that happens OUTSIDE a codeg-driven prompt turn:
@@ -973,6 +1011,13 @@ pub enum AcpEvent {
         /// `task_id=<id>` — so the live card can label the delegation before
         /// the ack text lands on the tool output.
         task_id: String,
+        /// The assistant the child runs as (its id, and its name when the task
+        /// started); absent for a plain agent delegation. `agent_type` is then
+        /// the assistant's agent — the one actually running.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assistant_id: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assistant_name: Option<String>,
     },
     /// The child sub-session has finished (or errored / timed out / been
     /// canceled). The MCP tool_result has been delivered to the parent agent.
@@ -988,6 +1033,12 @@ pub enum AcpEvent {
         /// hardcoded default. Mirrors `DelegationStarted.agent_type`.
         agent_type: crate::models::agent::AgentType,
         result: DelegationResultSummary,
+        /// Mirrors `DelegationStarted`'s assistant identity, for the same
+        /// missed-start reason as `agent_type`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assistant_id: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assistant_name: Option<String>,
     },
     /// A human submitted a prompt from the Codeg conversation UI (desktop or
     /// web). Synthetic, notification-only event: it mutates no `SessionState`
@@ -1117,6 +1168,12 @@ pub struct BackgroundSettledInfo {
     /// parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<String>,
+    /// The notification says the task will notify again
+    /// ([`crate::parsers::claude::task_notification_is_interim`]): the task is
+    /// still alive, so it stays in the watcher's outstanding count, the card
+    /// reads its result as interim, and no "finished" notification is raised.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interim: bool,
 }
 
 /// Which settings surface drifted, so the frontend can word the
@@ -1558,6 +1615,44 @@ pub struct PermissionOptionInfo {
     pub meta: Option<serde_json::Value>,
 }
 
+impl PermissionOptionInfo {
+    /// The option that lets this one call through: the `allow_once` one.
+    /// For answers given away from the card — a chat channel's `/approve` and
+    /// its auto-approve — where nobody sees which option gets picked.
+    ///
+    /// Found by the kind `connection.rs` normalized, never by position: an
+    /// adapter orders its options as it sees fit, and claude-agent-acp 0.91.0
+    /// leads with the rejection for a call the Claude CLI marks `defaultToNo`.
+    /// Never an `allow_always` either: it writes a standing rule into the
+    /// user's own agent settings (as `codeg_ask_auto_allow_option` declines
+    /// to). `None` when the request offers no such option — leave it to the
+    /// card.
+    pub fn allow_once_in(options: &[Self]) -> Option<&Self> {
+        options.iter().find(|o| o.kind == "allow_once")
+    }
+
+    /// The option that turns this one call away: the `reject_once` one — not
+    /// a `reject_always`, which writes a standing rule just the same. As
+    /// [`Self::allow_once_in`].
+    pub fn reject_once_in(options: &[Self]) -> Option<&Self> {
+        options.iter().find(|o| o.kind == "reject_once")
+    }
+}
+
+/// Who answered a permission request. It travels WITH the answer to the
+/// connection, which reports it on [`AcpEvent::PermissionResolved`] for the
+/// answer that took effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PermissionAnswerOrigin {
+    /// A person, on the permission card in a Codeg window (desktop or web).
+    User,
+    /// A chat channel: its `/approve` / `/deny` commands or its auto-approve.
+    ChatChannel,
+    /// The permission policy of a headless `codeg-cli` run.
+    CliPolicy { run_id: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionModeInfo {
     pub id: String,
@@ -1666,6 +1761,25 @@ pub struct GrokModelCatalog {
     pub specs: std::collections::HashMap<String, GrokModelSpec>,
 }
 
+/// Kiro CLI's reasoning-effort state, from `_kiro.dev/metadata.reasoning`:
+/// `{"support": "alwaysOn" | "toggleable" | "unavailable", "effort"?: "high",
+/// "effortLevels": ["low", …, "max"]}` (verified against 2.24.1). `support`
+/// describes thinking, not effort, so only `effortLevels` is read; `effort` is
+/// absent until one is set in the session. Backend-internal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KiroReasoning {
+    /// Levels the CURRENT model accepts; empty when it takes none.
+    pub levels: Vec<String>,
+    /// The level the session runs at, when Kiro reports one.
+    pub current: Option<String>,
+    /// Whether the current model's thinking can be switched on and off
+    /// (`support: "toggleable"`; `alwaysOn` and `unavailable` models cannot).
+    pub thinking_toggleable: bool,
+    /// Whether thinking is on (`thinkingEnabled`), when Kiro reports it — only
+    /// once it has been set, in the session or as the model's saved default.
+    pub thinking: Option<bool>,
+}
+
 /// Read-only snapshot of the modes + config_options an agent advertises
 /// when it opens a new session. Used by `ConnectionManager::probe_agent_options`
 /// to give the delegation settings UI an authoritative view of what an
@@ -1697,6 +1811,16 @@ pub struct AgentOptionsSnapshot {
     /// `None` when the agent advertised nothing within the probe window.
     #[serde(default)]
     pub prompt_capabilities: Option<PromptCapabilitiesInfo>,
+    /// The options the caller asked the probe to set that the probe session
+    /// did not end up holding — rejected, skipped as withdrawn, or no longer
+    /// listed. An editor that probed for a chosen model reads `model` here as
+    /// "these options are the OTHER model's": the probe still succeeds, and
+    /// the applied options' `current_value` is deliberately rewritten to the
+    /// agent's own pick (see `report_agent_chosen_values`), so nothing else in
+    /// the snapshot can tell. Always serialized, empty included, so a missing
+    /// field can only mean a backend that predates it.
+    #[serde(default)]
+    pub unapplied_config_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1791,6 +1915,16 @@ pub struct AcpAgentInfo {
     /// "the adapter isn't installed" instead of "the agent isn't", without
     /// hardcoding a second copy of the agent list frontend-side.
     pub is_acp_adapter: bool,
+    /// The vendor's install page for an agent codeg does not install itself
+    /// (`AgentDistribution::System`, i.e. `distribution_type == "system"`):
+    /// the Settings page links it where other agents get an Install button.
+    /// `None` for every agent codeg installs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_url: Option<String>,
+    /// Whether that install can be upgraded from the Settings page through the
+    /// vendor's own updater (`acp_update_system_agent`). Always `false` for
+    /// agents codeg installs itself — they upgrade through their own actions.
+    pub supports_self_update: bool,
     /// For custom agents, where the definition came from (`registry` |
     /// `manual`); `None` for built-ins. A manual definition's
     /// `registry_version` is user-typed, so the version-status display shows
@@ -2310,6 +2444,17 @@ pub struct AvailableCommandInfo {
     pub input_hint: Option<String>,
 }
 
+/// Claude Code's Remote Control for a session that has it on: the session can
+/// be continued from claude.ai/code or the Claude app on a phone for as long as
+/// the CLI process runs (see `AcpEvent::RemoteControl`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteControlInfo {
+    /// The remote session's claude.ai/code URL, absent when Claude Code turned
+    /// Remote Control on without returning one.
+    #[serde(default)]
+    pub session_url: Option<String>,
+}
+
 /// Internal reply shape from the connection loop back to `manager.fork_session`
 /// — protocol-only, before any DB writes. The manager combines this with the
 /// freshly-created sibling row id to produce the wire-level `ForkResultInfo`.
@@ -2710,5 +2855,62 @@ mod envelope_tests {
             "resource": {"blob": "QUJD", "mimeType": "image/png"}
         }))
         .is_some());
+    }
+}
+
+#[cfg(test)]
+mod permission_option_tests {
+    use super::*;
+
+    fn option(option_id: &str, kind: &str) -> PermissionOptionInfo {
+        PermissionOptionInfo {
+            option_id: option_id.into(),
+            name: option_id.into(),
+            kind: kind.into(),
+            meta: None,
+        }
+    }
+
+    fn id(option: Option<&PermissionOptionInfo>) -> Option<&str> {
+        option.map(|o| o.option_id.as_str())
+    }
+
+    #[test]
+    fn one_time_options_are_found_by_kind_whatever_the_order() {
+        // claude-agent-acp 0.91.0's two orders: approvals first, and the
+        // rejection first for a call the Claude CLI marks `defaultToNo`.
+        let approvals_first = [
+            option("allow-once", "allow_once"),
+            option("allow-with-updates", "allow_always"),
+            option("reject", "reject_once"),
+        ];
+        let rejection_first = [
+            option("reject", "reject_once"),
+            option("allow-once", "allow_once"),
+            option("allow-with-updates", "allow_always"),
+        ];
+        for options in [&approvals_first[..], &rejection_first[..]] {
+            assert_eq!(
+                id(PermissionOptionInfo::allow_once_in(options)),
+                Some("allow-once")
+            );
+            assert_eq!(
+                id(PermissionOptionInfo::reject_once_in(options)),
+                Some("reject")
+            );
+        }
+    }
+
+    #[test]
+    fn a_standing_option_never_stands_in_for_a_one_time_one() {
+        let standing = [
+            option("always", "allow_always"),
+            option("never", "reject_always"),
+            option("other", "unknown"),
+        ];
+        assert_eq!(id(PermissionOptionInfo::allow_once_in(&standing)), None);
+        assert_eq!(id(PermissionOptionInfo::reject_once_in(&standing)), None);
+        assert_eq!(id(PermissionOptionInfo::allow_once_in(&[])), None);
+        assert_eq!(id(PermissionOptionInfo::reject_once_in(&[])), None);
     }
 }

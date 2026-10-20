@@ -9,10 +9,12 @@
 //! owned window is a fallback that the host does not hold the webview of, and
 //! `platform` answers the same calls by saying so.
 
-use tauri::webview::PageLoadEvent;
 #[cfg(not(target_os = "linux"))]
 use tauri::webview::DownloadEvent;
-use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::webview::PageLoadEvent;
+use tauri::{
+    AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+};
 
 #[cfg(not(target_os = "linux"))]
 use super::downloads;
@@ -56,14 +58,24 @@ pub fn create(
         );
         platform::run_on_main(app, move || {
             build(
-                &app_handle, &owner, &tab_id, &label, &title, background, devtools, &profile, None,
+                &app_handle,
+                &owner,
+                &tab_id,
+                &label,
+                &title,
+                background,
+                devtools,
+                &profile,
+                None,
             )
         })
         .map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?
     }
     #[cfg(not(target_os = "linux"))]
     {
-        build(app, owner, tab_id, label, title, background, devtools, profile, None)
+        build(
+            app, owner, tab_id, label, title, background, devtools, profile, None,
+        )
     }
 }
 
@@ -136,7 +148,12 @@ fn in_profile<'a>(
     ),
     allow(dead_code)
 )]
-pub fn open_probe(app: &AppHandle, label: &str, profile: &str, url: Url) -> tauri::Result<WebviewWindow> {
+pub fn open_probe(
+    app: &AppHandle,
+    label: &str,
+    profile: &str,
+    url: Url,
+) -> tauri::Result<WebviewWindow> {
     #[cfg(target_os = "linux")]
     {
         let handle = app.clone();
@@ -150,7 +167,12 @@ pub fn open_probe(app: &AppHandle, label: &str, profile: &str, url: Url) -> taur
     }
 }
 
-fn build_probe(app: &AppHandle, label: &str, profile: &str, url: Url) -> tauri::Result<WebviewWindow> {
+fn build_probe(
+    app: &AppHandle,
+    label: &str,
+    profile: &str,
+    url: Url,
+) -> tauri::Result<WebviewWindow> {
     let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title("codeg")
         .visible(false)
@@ -199,7 +221,12 @@ fn build(
                     // one, because a page must not be able to put `data:` in
                     // the address bar by asking for it as a navigation.
                     if policy::report_scheme_denial(url, true) {
-                        hooks::navigation_blocked(&app, &tab_id, url.as_str(), NavigationBlockReason::Scheme);
+                        hooks::navigation_blocked(
+                            &app,
+                            &tab_id,
+                            url.as_str(),
+                            NavigationBlockReason::Scheme,
+                        );
                     }
                     return false;
                 }
@@ -240,22 +267,23 @@ fn build(
         });
     #[cfg(not(target_os = "linux"))]
     let builder = builder.on_download({
-            let app = app.clone();
-            let tab_id = tab_id.to_string();
-            move |_webview, event| match event {
-                DownloadEvent::Requested { url, destination } => {
-                    downloads::requested(&app, &tab_id, url.as_str(), destination)
-                }
-                DownloadEvent::Finished { url, path, success } => {
-                    downloads::finished(&app, url.as_str(), path, success);
-                    true
-                }
-                // `DownloadEvent` is non-exhaustive: a variant added upstream
-                // must not silently become "allowed".
-                _ => false,
+        let app = app.clone();
+        let tab_id = tab_id.to_string();
+        move |_webview, event| match event {
+            DownloadEvent::Requested { url, destination } => {
+                downloads::requested(&app, &tab_id, url.as_str(), destination)
             }
-        });
-    let builder = builder.disable_drag_drop_handler()
+            DownloadEvent::Finished { url, path, success } => {
+                downloads::finished(&app, url.as_str(), path, success);
+                true
+            }
+            // `DownloadEvent` is non-exhaustive: a variant added upstream
+            // must not silently become "allowed".
+            _ => false,
+        }
+    });
+    let builder = builder
+        .disable_drag_drop_handler()
         .zoom_hotkeys_enabled(true)
         .browser_extensions_enabled(false);
     // The same identity the embedded tabs start with. An owned window keeps it
@@ -484,7 +512,9 @@ mod platform {
     /// profile-removal command has closed all of their tabs.
     pub fn forget_profile_context(app: &AppHandle, profile: &str) -> Result<(), SurfaceError> {
         let profile = profile.to_string();
-        run_on_main(app, move || super::super::shim::linux_context::forget(&profile))
+        run_on_main(app, move || {
+            super::super::shim::linux_context::forget(&profile)
+        })
     }
 
     /// Build the new window from the one that asked for it.

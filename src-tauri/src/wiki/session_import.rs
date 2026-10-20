@@ -10,7 +10,7 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppCommandError;
-use crate::db::service::import_service;
+use crate::db::service::{agent_setting_service, import_service};
 use crate::document_extract::MAX_NORMALIZED_CHARS;
 use crate::models::{AgentType, ContentBlock, ConversationDetail, SelectedSessionKey, TurnRole};
 use crate::parsers::build_agent_parser;
@@ -220,7 +220,8 @@ pub async fn import_local_sessions(
     if request_id.is_empty() {
         return Err(AppCommandError::invalid_input("request_id is required"));
     }
-    let summaries = import_service::collect_local_summaries(|_, _, _, _| {}).await;
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    let summaries = import_service::collect_local_summaries(&envs, |_, _, _, _| {}).await;
     let selected: Vec<(AgentType, String)> = if params.all {
         summaries
             .iter()
@@ -283,7 +284,8 @@ pub async fn import_directory(
     let files = discover_import_files(&root, MAX_DIRECTORY_FILES)?;
     let mut result = import_directory_files(conn, &root, files, &request_id).await;
 
-    let summaries = import_service::collect_local_summaries(|_, _, _, _| {}).await;
+    let envs = agent_setting_service::load_agent_envs(conn).await;
+    let summaries = import_service::collect_local_summaries(&envs, |_, _, _, _| {}).await;
     let mut session_n = 0usize;
     for (agent, summary) in summaries {
         let Some(folder) = summary.folder_path.as_deref() else {
@@ -445,11 +447,13 @@ async fn import_one_session(
     external_id: &str,
 ) -> Result<crate::db::service::wiki_service::WikiImportResult, AppCommandError> {
     let external = external_id.to_string();
-    let detail =
-        tokio::task::spawn_blocking(move || build_agent_parser(agent).get_conversation(&external))
-            .await
-            .map_err(|e| AppCommandError::io_error(e.to_string()))?
-            .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
+    let env = agent_setting_service::load_agent_env(conn, agent).await;
+    let detail = tokio::task::spawn_blocking(move || {
+        build_agent_parser(agent, &env).get_conversation(&external)
+    })
+    .await
+    .map_err(|e| AppCommandError::io_error(e.to_string()))?
+    .map_err(|e| AppCommandError::invalid_input(e.to_string()))?;
     let title = detail
         .summary
         .title

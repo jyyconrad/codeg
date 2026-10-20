@@ -914,6 +914,60 @@ describe("buildVersionCheck", () => {
     expect(check?.message).toContain("Already latest")
     expect(check?.fixes.some((fix) => fix.kind === "upgrade_npx")).toBe(false)
   })
+
+  // Cursor publishes several builds a day under one date. A pin that moves to
+  // a later build of the same day must still reach installs of the earlier
+  // one: connect launches whatever build is cached and never downloads, so
+  // Upgrade here is the only way the pinned build arrives.
+  const cursor = (installed: string) =>
+    makeAgent({
+      agent_type: "cursor" as AgentType,
+      distribution_type: "binary",
+      registry_version: "2026.10.14-941492e",
+      installed_version: installed,
+    })
+
+  it("offers the pinned build to an install of another build of that day", () => {
+    const check = buildVersionCheck(cursor("2026.10.14-0f9edde"))
+    expect(check?.status).toBe("warn")
+    expect(check?.message).toContain("Upgrade available")
+    expect(check?.fixes.some((fix) => fix.kind === "upgrade_binary")).toBe(true)
+  })
+
+  it("reads Already latest for the pinned build itself", () => {
+    for (const installed of [
+      "2026.10.14-941492e",
+      // The raw first line of a system install's `--version`.
+      "cursor-agent 2026.10.14-941492e",
+    ]) {
+      const check = buildVersionCheck(cursor(installed))
+      expect(check?.status).toBe("pass")
+      expect(check?.message).toContain("Already latest")
+    }
+  })
+
+  it("keeps ordering builds of different days by date", () => {
+    const behind = buildVersionCheck(cursor("2026.10.01-14929f9"))
+    expect(behind?.message).toContain("Upgrade available")
+    const ahead = buildVersionCheck(cursor("2026.10.15-1234567"))
+    expect(ahead?.status).toBe("pass")
+    expect(ahead?.message).toContain("Already latest")
+  })
+
+  // Only a suffix on both sides names two builds: a probe that reports build
+  // metadata the pin does not carry is not evidence of a different build.
+  it("does not read a suffix on one side alone as another build", () => {
+    const check = buildVersionCheck(
+      makeAgent({
+        agent_type: "gemini" as AgentType,
+        distribution_type: "npx",
+        registry_version: "0.57.0",
+        installed_version: "0.57.0+e5f1a2c",
+      })
+    )
+    expect(check?.status).toBe("pass")
+    expect(check?.message).toContain("Already latest")
+  })
 })
 
 describe("compareReleaseVersion", () => {
@@ -1177,6 +1231,118 @@ describe("unreviewed latest release in Version Status", () => {
     expect(versionCard()?.footerFixes?.map((fix) => fix.kind)).toEqual([
       "custom_install",
     ])
+  })
+
+  // A system agent (Kiro CLI) is installed and updated by its own installer:
+  // the card reports what was found and never offers install/upgrade/
+  // uninstall, which the backend would refuse.
+  it("reports a found system agent without any install action", () => {
+    const check = buildVersionCheck(
+      makeAgent({
+        agent_type: "kiro" as AgentType,
+        distribution_type: "system",
+        registry_version: null,
+        installed_version: "2.24.1",
+        install_url: "https://kiro.dev/docs/getting-started/installation/",
+      })
+    )
+    expect(check?.status).toBe("pass")
+    expect(check?.message).toContain("own installer")
+    expect(check?.fixes).toEqual([])
+  })
+
+  // With a vendor updater, the found install gets an Upgrade that runs it —
+  // still no install, uninstall or custom version.
+  it("offers the vendor updater as Upgrade when the agent has one", () => {
+    const check = buildVersionCheck(
+      makeAgent({
+        agent_type: "kiro" as AgentType,
+        distribution_type: "system",
+        registry_version: null,
+        installed_version: "2.24.1",
+        supports_self_update: true,
+      })
+    )
+    expect(check?.status).toBe("pass")
+    expect(check?.message).toContain("its own updater")
+    expect(check?.fixes.map((fix) => fix.kind)).toEqual(["upgrade_system"])
+  })
+
+  it("points a missing system agent at its install guide", () => {
+    const url = "https://kiro.dev/docs/getting-started/installation/"
+    const check = buildVersionCheck(
+      makeAgent({
+        agent_type: "kiro" as AgentType,
+        distribution_type: "system",
+        registry_version: null,
+        installed_version: null,
+        install_url: url,
+      })
+    )
+    expect(check?.status).toBe("fail")
+    expect(check?.fixes).toHaveLength(1)
+    expect(check?.fixes[0]).toMatchObject({ kind: "open_url", payload: url })
+  })
+})
+
+describe("getAgentChecks for a system agent", () => {
+  const url = "https://kiro.dev/docs/getting-started/installation/"
+  const kiro = (installed_version: string | null) =>
+    makeAgent({
+      agent_type: "kiro" as AgentType,
+      distribution_type: "system",
+      registry_version: null,
+      installed_version,
+      install_url: url,
+      supports_self_update: true,
+    })
+  const preflight = (status: "pass" | "fail"): { result: PreflightResult } => ({
+    result: {
+      agent_type: "kiro" as AgentType,
+      agent_name: "Kiro CLI",
+      passed: status === "pass",
+      checks: [
+        {
+          check_id: "system_cli",
+          label: "kiro-cli",
+          status,
+          message: "",
+          fixes: [],
+        },
+      ],
+      adapter: null,
+    },
+  })
+  const versionCard = (checks: ReturnType<typeof getAgentChecks>) =>
+    checks.find((c) => c.check_id === "version_status")
+
+  // The preflight resolves the binary a launch runs; `--version` coming back
+  // empty (a probe that timed out right after an update) does not make the
+  // CLI missing, and Upgrade stays on offer.
+  it("keeps a found CLI installed when its version could not be read", () => {
+    const card = versionCard(getAgentChecks(kiro(null), preflight("pass")))
+    expect(card?.status).toBe("pass")
+    expect(card?.message).toContain("its own updater")
+    expect(card?.fixes.map((fix) => fix.kind)).toEqual(["upgrade_system"])
+  })
+
+  // A version left over from before the CLI was removed must not offer an
+  // Upgrade the backend can only refuse.
+  it("reports a CLI the preflight could not find as missing", () => {
+    const card = versionCard(getAgentChecks(kiro("2.24.1"), preflight("fail")))
+    expect(card?.status).toBe("fail")
+    expect(card?.fixes).toEqual([
+      expect.objectContaining({ kind: "open_url", payload: url }),
+    ])
+  })
+
+  it("goes by the version until the preflight has answered", () => {
+    expect(versionCard(getAgentChecks(kiro("2.24.1"), undefined))?.status).toBe(
+      "pass"
+    )
+    expect(versionCard(getAgentChecks(kiro(null), undefined))?.status).toBe(
+      "fail"
+    )
   })
 })
 
@@ -2596,6 +2762,68 @@ describe("important env keys", () => {
   })
 })
 
+describe("Kiro env keys", () => {
+  // KIRO_API_KEY is the only env Kiro CLI reads for sign-in; there is no
+  // endpoint or model variable, so only the key field is offered.
+  it("offers only the API key, under the name Kiro reads", () => {
+    expect(importantEnvKeysByAgent("kiro" as AgentType)).toEqual({
+      apiBaseUrl: [],
+      apiKey: ["KIRO_API_KEY"],
+      model: [],
+    })
+    expect(importantFieldsFor("kiro" as AgentType)).toEqual({
+      apiBaseUrl: false,
+      apiKey: true,
+      model: false,
+    })
+    expect(
+      patchEnvByImportantKey("kiro" as AgentType, "", "apiKey", "ksk_1")
+    ).toBe("KIRO_API_KEY=ksk_1")
+  })
+})
+
+describe("TRAE CLI env keys", () => {
+  // TRAE CLI's sign-in for a browser-less machine is its personal access
+  // token, and `TRAECLI_HOST` points it at an enterprise's own deployment;
+  // the model is chosen over ACP, so there is no model variable.
+  it("offers the token and the API URL under the names TRAE CLI reads", () => {
+    expect(importantEnvKeysByAgent("trae" as AgentType)).toEqual({
+      apiBaseUrl: ["TRAECLI_HOST"],
+      apiKey: ["TRAECLI_PERSONAL_ACCESS_TOKEN"],
+      model: [],
+    })
+    expect(importantFieldsFor("trae" as AgentType)).toEqual({
+      apiBaseUrl: true,
+      apiKey: true,
+      model: false,
+    })
+    expect(
+      patchEnvByImportantKey("trae" as AgentType, "", "apiKey", "pat_1")
+    ).toBe("TRAECLI_PERSONAL_ACCESS_TOKEN=pat_1")
+  })
+})
+
+describe("Command Code env keys", () => {
+  // Command Code's sign-in for a browser-less machine is the API key it reads
+  // ahead of its stored login; it talks only to its own service and the model
+  // is chosen over ACP, so there is no endpoint or model variable.
+  it("offers only the API key, under the name Command Code reads", () => {
+    expect(importantEnvKeysByAgent("command_code" as AgentType)).toEqual({
+      apiBaseUrl: [],
+      apiKey: ["COMMAND_CODE_API_KEY"],
+      model: [],
+    })
+    expect(importantFieldsFor("command_code" as AgentType)).toEqual({
+      apiBaseUrl: false,
+      apiKey: true,
+      model: false,
+    })
+    expect(
+      patchEnvByImportantKey("command_code" as AgentType, "", "apiKey", "k_1")
+    ).toBe("COMMAND_CODE_API_KEY=k_1")
+  })
+})
+
 describe("codex ACP preset disclosures", () => {
   // Every claim the panel makes about the seeded approval preset is only true
   // when a preset is actually seeded. `default_permissions` shadowing means
@@ -2621,5 +2849,40 @@ describe("codex ACP preset disclosures", () => {
       expect(showsCodexReadOnlyAcpWarning(mode, false)).toBe(false)
       expect(showsCodexReadOnlyAcpWarning(mode, true)).toBe(false)
     }
+  })
+})
+
+describe("ZCode runtime configuration", () => {
+  it("keeps provider credentials in the official runtime", () => {
+    expect(importantFieldsFor("zcode")).toEqual({
+      apiBaseUrl: false,
+      apiKey: false,
+      model: false,
+    })
+    const env =
+      "ZCODE_BIN=C:/My ZCode/zcode.cjs\nZCODE_NODE=C:/My Node/node.exe"
+    expect(patchEnvByImportantKey("zcode", env, "apiKey", "unused")).toBe(env)
+  })
+
+  it("explains that the official CLI is required even when the adapter is installed", () => {
+    const adapter: AdapterInfo = {
+      adapter_package: "zcode-acp-server@0.69.2",
+      adapter_cmd: "zcode-acp-server",
+      adapter_installed: true,
+      native_cmd: "zcode",
+      native_label: "ZCode CLI",
+      native_path: null,
+      native_required: true,
+      shared_config_dir: "~/.zcode",
+      docs_url: "https://github.com/william0wang/zcode-acp",
+    }
+    const check = buildAcpAdapterCheck(adapter)
+    expect(check?.status).toBe("warn")
+    expect(check?.message).toContain("Install and sign in")
+    expect(check?.message).not.toContain("not required")
+    expect(
+      buildAcpAdapterCheck({ ...adapter, native_path: "C:/ZCode/zcode.cjs" })
+        ?.status
+    ).toBe("pass")
   })
 })

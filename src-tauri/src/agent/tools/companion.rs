@@ -388,6 +388,7 @@ async fn call_delegate(
         working_dir,
         requested_working_dir,
         external_handle: Some(handle.clone()),
+        assistant: None,
     };
     let broker = Arc::clone(&runtime.injection.broker);
     let mut start = tokio::spawn({
@@ -422,6 +423,8 @@ fn json_canceled(message: &str) -> crate::acp::delegation::types::DelegationTask
         message: Some(message.into()),
         duration_ms: None,
         blocked_on: None,
+        assistant_id: None,
+        assistant_name: None,
     }
 }
 
@@ -1170,6 +1173,8 @@ mod tests {
             computer: true,
             computer_launch: true,
             computer_clipboard: true,
+
+            result: false,
         };
         let defs = load_companion_defs(features, &[], &[]).unwrap();
         let json_names: Vec<&str> = all
@@ -1205,6 +1210,8 @@ mod tests {
             computer: false,
             computer_launch: false,
             computer_clipboard: false,
+
+            result: false,
         };
         assert!(load_companion_defs(none, &[], &[]).unwrap().is_empty());
 
@@ -1253,6 +1260,8 @@ mod tests {
             computer: false,
             computer_launch: false,
             computer_clipboard: false,
+
+            result: false,
         };
         let names: Vec<_> = load_companion_defs(delegation_off, &[], &[])
             .unwrap()

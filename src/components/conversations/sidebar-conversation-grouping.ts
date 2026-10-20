@@ -17,10 +17,11 @@ import {
 // shows before its "show more" row, and how many each click adds. Recent
 // re-lists what Folders / Chat already show, so an unbounded one pushes every
 // section below it off the screen; folders and Chat have the same problem once
-// a workspace accumulates sessions. Lives here (not in the list component)
-// because `buildRows` needs it to tell an untouched first page from an
-// expanded one.
-export const RECENT_PAGE_SIZE = 15
+// a workspace accumulates sessions. Ten rows is the page — a glance-able
+// "where was I" list — and the same step each "show more" adds. Lives here
+// (not in the list component) because `buildRows` needs it to tell an untouched
+// first page from an expanded one.
+export const RECENT_PAGE_SIZE = 10
 
 /**
  * Slice `items` to `limit` and report how many remain plus whether folding
@@ -320,8 +321,9 @@ export function selectChatConversationsWithReuse(
  *   by `kind` instead.
  * - Sorted by `sortMode` (not always `updated_at`) so the row order agrees with
  *   the timestamp each card actually shows.
- * - `filter` optionally narrows the mix to chats only or folder sessions only;
- *   the default (`"all"`) is the section's whole point.
+ * - `filter` optionally narrows the mix to chats only, folder sessions only,
+ *   or the conversations `codeg-cli` started; the default (`"all"`) is the
+ *   section's whole point.
  *
  * `prev` is the array returned last call (threaded via a ref by the caller).
  */
@@ -343,6 +345,7 @@ export function selectRecentConversationsWithReuse(
     // the Chat and Folders sections use, so the two views always agree.
     if (filter === "chats" && !isChat) continue
     if (filter === "folders" && isChat) continue
+    if (filter === "cli" && conv.source !== "cli") continue
     next.push(conv)
   }
   next.sort(

@@ -682,9 +682,7 @@ impl LaunchMode {
 fn reported_agent_error(payload: &AcpEvent) -> Option<String> {
     match payload {
         AcpEvent::Error { message, .. } => first_nonempty([Some(message.as_str())]),
-        AcpEvent::SessionFailure { record }
-            if record.severity == "error" && !record.resolved =>
-        {
+        AcpEvent::SessionFailure { record } if record.severity == "error" && !record.resolved => {
             first_nonempty([Some(record.title.as_str()), record.details.as_deref()])
         }
         AcpEvent::ToolCall {
@@ -2830,7 +2828,7 @@ impl TaskEngine {
                 self.track_request(&env.connection_id, format!("p:{request_id}"), true)
                     .await;
             }
-            AcpEvent::PermissionResolved { request_id } => {
+            AcpEvent::PermissionResolved { request_id, .. } => {
                 self.track_request(&env.connection_id, format!("p:{request_id}"), false)
                     .await;
             }
@@ -6337,6 +6335,13 @@ fn auto_merge_candidate(
     if task.pending_merge.is_some() {
         return false;
     }
+    // Put aside to handle later: the user postponed exactly the decision an
+    // unattended landing would make for them. Same "column present" predicate
+    // as `begin_merge`'s authoritative `DeferredAt IS NULL`, for the same
+    // reason as the queue check above.
+    if task.deferred_at.is_some() {
+        return false;
+    }
     if task.files_changed == Some(0) {
         return false;
     }
@@ -7881,6 +7886,14 @@ mod tests {
         assert!(!auto_merge_candidate(&task, &settings));
         task.pending_merge = None;
 
+        // Put aside to handle later: the user postponed this very decision.
+        // Flipping only the mark (the row is a candidate on every other gate)
+        // proves it is what blocks, and clearing it that nothing else does.
+        task.deferred_at = Some(chrono::Utc::now());
+        assert!(!auto_merge_candidate(&task, &settings));
+        task.deferred_at = None;
+        assert!(auto_merge_candidate(&task, &settings));
+
         // Only review is mergeable.
         task.status = WorkTaskStatus::Running;
         assert!(!auto_merge_candidate(&task, &settings));
@@ -8006,6 +8019,7 @@ mod tests {
             preflight: None,
             archived_at: None,
             scheduled_at: None,
+            deferred_at: None,
             source_kind: None,
             source_key: None,
             source_meta: None,
@@ -9551,14 +9565,10 @@ mod tests {
     /// the upstream message, and an empty turn must fail with it.
     #[tokio::test]
     async fn a_session_failure_then_end_turn_fails_with_the_upstream_message() {
-        const MESSAGE: &str =
-            "Assistant tool call function.arguments must be valid JSON.";
+        const MESSAGE: &str = "Assistant tool call function.arguments must be valid JSON.";
         let (engine, task_id) = running_task().await;
         engine
-            .on_event(&env(
-                PARENT_CONN,
-                session_failure("error", MESSAGE, false),
-            ))
+            .on_event(&env(PARENT_CONN, session_failure("error", MESSAGE, false)))
             .await;
         engine
             .on_event(&turn_complete_envelope(PARENT_CONN, 1, "end_turn"))
@@ -9669,8 +9679,7 @@ mod tests {
     /// own, and an empty `end_turn` still fails with that message.
     #[tokio::test]
     async fn a_work_turn_error_after_compaction_still_fails_the_task() {
-        const MESSAGE: &str =
-            "Assistant tool call function.arguments must be valid JSON.";
+        const MESSAGE: &str = "Assistant tool call function.arguments must be valid JSON.";
         let (engine, task_id) = running_task().await;
         engine.turn_signals.lock().await.insert(
             PARENT_CONN.into(),
@@ -9731,8 +9740,7 @@ mod tests {
     /// drop the recorded error.
     #[tokio::test]
     async fn recorded_agent_error_survives_a_missing_settle_snapshot() {
-        const MESSAGE: &str =
-            "Assistant tool call function.arguments must be valid JSON.";
+        const MESSAGE: &str = "Assistant tool call function.arguments must be valid JSON.";
         let (engine, task_id) = running_task().await;
         assert!(
             engine.snapshot_diff_stats(task_id).await.is_none(),
@@ -9770,8 +9778,7 @@ mod tests {
     /// turn added that diff, so the recorded error is kept.
     #[tokio::test]
     async fn recorded_agent_error_survives_a_missing_prompt_snapshot() {
-        const MESSAGE: &str =
-            "Assistant tool call function.arguments must be valid JSON.";
+        const MESSAGE: &str = "Assistant tool call function.arguments must be valid JSON.";
         let (engine, task_id) = running_task().await;
         let repo = tiny_repo().await;
         attach_worktree(&engine, task_id, &repo).await;
@@ -9831,11 +9838,9 @@ mod tests {
     }
 
     async fn attach_worktree(engine: &TaskEngine, task_id: i32, repo: &TinyRepo) {
-        let wt_id = crate::db::test_helpers::seed_folder(
-            &engine.db,
-            repo.path.to_str().expect("utf8"),
-        )
-        .await;
+        let wt_id =
+            crate::db::test_helpers::seed_folder(&engine.db, repo.path.to_str().expect("utf8"))
+                .await;
         let mut update: crate::db::entities::work_task::ActiveModel =
             work_task_service::get_model(&engine.db.conn, task_id)
                 .await
@@ -9848,8 +9853,7 @@ mod tests {
             .expect("attach worktree");
     }
 
-    const UPSTREAM_400: &str =
-        "Assistant tool call function.arguments must be valid JSON.";
+    const UPSTREAM_400: &str = "Assistant tool call function.arguments must be valid JSON.";
 
     async fn fail_turn_with_upstream_error(engine: &Arc<TaskEngine>) {
         engine
@@ -9888,12 +9892,11 @@ mod tests {
                 .expect("task row");
             assert_eq!(task.status, WorkTaskStatus::Failed);
             assert_eq!(task.failure_reason.as_deref(), Some("agent_error"));
-            assert!(
-                task.last_error
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("function.arguments must be valid JSON")
-            );
+            assert!(task
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("function.arguments must be valid JSON"));
         }
 
         // Changed snapshot: the turn produced a diff, so the error does not
@@ -9904,10 +9907,7 @@ mod tests {
             attach_worktree(&engine, task_id, &repo).await;
             std::fs::write(repo.path.join("b.txt"), "two\n").expect("dirty");
             let stats = engine.snapshot_diff_stats(task_id).await;
-            assert!(
-                stats.is_some_and(|s| s != (0, 0, 0)),
-                "got {stats:?}"
-            );
+            assert!(stats.is_some_and(|s| s != (0, 0, 0)), "got {stats:?}");
             engine.turn_signals.lock().await.insert(
                 PARENT_CONN.into(),
                 TurnSignal {
@@ -9945,11 +9945,7 @@ mod tests {
                 EventEmitter::Noop,
             )
             .await;
-        let state = engine
-            .manager
-            .get_state(PARENT_CONN)
-            .await
-            .expect("state");
+        let state = engine.manager.get_state(PARENT_CONN).await.expect("state");
         state.write().await.last_assistant_text = Some("landed the fix".into());
         engine.turn_signals.lock().await.insert(
             PARENT_CONN.into(),
@@ -9977,17 +9973,15 @@ mod tests {
             .await
             .expect("task row")
             .run_seq;
-        assert!(
-            work_task_service::set_verdict(
-                &engine.db.conn,
-                task_id,
-                run_seq,
-                "blocked",
-                Some("gave up"),
-            )
-            .await
-            .expect("set verdict")
-        );
+        assert!(work_task_service::set_verdict(
+            &engine.db.conn,
+            task_id,
+            run_seq,
+            "blocked",
+            Some("gave up"),
+        )
+        .await
+        .expect("set verdict"));
         fail_turn_with_upstream_error(&engine).await;
         let task = work_task_service::get_model(&engine.db.conn, task_id)
             .await
@@ -10566,6 +10560,8 @@ mod tests {
                 agent_type: AgentType::Codex,
                 task_preview: "run the tests".into(),
                 task_id: "task-1".into(),
+                assistant_id: None,
+                assistant_name: None,
             },
         )
     }
@@ -10583,6 +10579,8 @@ mod tests {
                     duration_ms: 0,
                     text_preview: None,
                 },
+                assistant_id: None,
+                assistant_name: None,
             },
         )
     }
@@ -10620,6 +10618,8 @@ mod tests {
                 CHILD_CONN,
                 AcpEvent::PermissionResolved {
                     request_id: "r1".into(),
+                    option_id: None,
+                    origin: None,
                 },
             ))
             .await;
@@ -10673,6 +10673,8 @@ mod tests {
                 CHILD_CONN,
                 AcpEvent::PermissionResolved {
                     request_id: "r1".into(),
+                    option_id: None,
+                    origin: None,
                 },
             ))
             .await;
@@ -10687,6 +10689,8 @@ mod tests {
                 PARENT_CONN,
                 AcpEvent::PermissionResolved {
                     request_id: "r1".into(),
+                    option_id: None,
+                    origin: None,
                 },
             ))
             .await;
@@ -10744,6 +10748,8 @@ mod tests {
                 CHILD_CONN,
                 AcpEvent::PermissionResolved {
                     request_id: "r1".into(),
+                    option_id: None,
+                    origin: None,
                 },
             ))
             .await;

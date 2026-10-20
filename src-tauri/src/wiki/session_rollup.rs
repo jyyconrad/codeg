@@ -161,7 +161,7 @@ async fn ensure_local_session_raw(
     {
         return Ok(existing.id);
     }
-    let body = export_conversation_transcript(conv)?;
+    let body = export_conversation_transcript(conn, conv).await?;
     if body.trim().is_empty() {
         return Err(DbError::Validation(
             "local-session export produced no text".into(),
@@ -261,7 +261,8 @@ pub fn render_local_session_raw(
     (yaml, hash)
 }
 
-fn export_conversation_transcript(
+async fn export_conversation_transcript(
+    conn: &DatabaseConnection,
     conv: &crate::db::entities::conversation::Model,
 ) -> Result<String, DbError> {
     let Some(external_id) = conv
@@ -280,7 +281,8 @@ fn export_conversation_transcript(
             conv.agent_type
         )));
     };
-    let detail = crate::parsers::build_agent_parser(agent)
+    let env = crate::db::service::agent_setting_service::load_agent_env(conn, agent).await;
+    let detail = crate::parsers::build_agent_parser(agent, &env)
         .get_conversation(external_id)
         .map_err(|e| DbError::Validation(format!("export local session: {e}")))?;
     let md = session_export_markdown(&detail);
@@ -572,8 +574,9 @@ async fn local_session_material(
         WikiLlmError::SourceReadFailed(format!("unknown agent type {agent_type}"))
     })?;
     let source_id = source.id.clone();
+    let env = crate::db::service::agent_setting_service::load_agent_env(conn, agent).await;
     let markdown = tokio::task::spawn_blocking(move || {
-        let detail = crate::parsers::build_agent_parser(agent)
+        let detail = crate::parsers::build_agent_parser(agent, &env)
             .get_conversation(&session_id)
             .map_err(|error| match error {
                 crate::parsers::ParseError::ConversationNotFound(_) => {

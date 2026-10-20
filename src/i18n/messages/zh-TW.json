@@ -54,12 +54,12 @@
       "science": "科學研究",
       "office_tools": "辦公工具",
       "skill_packs": "技能包",
-      "quick_messages": "快捷訊息",
-      "logs": "執行日誌",
-      "wiki": "個人 Wiki",
       "collaboration": "協作",
       "browser": "瀏覽器操作",
-      "computer_use": "電腦操作"
+      "computer_use": "電腦操作",
+      "quick_messages": "快捷訊息",
+      "logs": "執行日誌",
+      "wiki": "個人 Wiki"
     }
   },
   "CodeIntelligenceSettings": {
@@ -315,6 +315,21 @@
     "autostartDescription": "登入這台電腦後自動啟動，不必每次手動開啟。",
     "autostartSaveFailed": "開機自動啟動設定儲存失敗：{message}",
     "autostartUnavailable": "無法讀取本機的開機自動啟動狀態：{message}",
+    "cliAccessTitle": "命令列存取",
+    "cliAccessDescription": "允許本機的 codeg-cli 指令透過 Codeg 執行提示詞，用於指令碼、CI 工作或 Codeg 內建的終端機。只有本機能連線，金鑰保存在私有檔案中。",
+    "cliAccessEndpointFile": "探索檔案：",
+    "cliAccessExample": "範例：",
+    "cliAccessOff": "已關閉：本機的 codeg-cli 無法連線到 Codeg。",
+    "cliAccessUnavailable": "命令列存取無法啟動：{message}",
+    "cliAccessSaveFailed": "無法變更命令列存取：{message}",
+    "cliToolInstall": "安裝命令列工具",
+    "cliToolInstalled": "{command} 已在 PATH 上：",
+    "cliToolPackage": "{command} 隨安裝套件提供，已在 PATH 上：",
+    "cliToolNotInstalled": "把 {command} 放到 PATH 上，Codeg 以外的終端機也能找到它。",
+    "cliToolConflict": "保持不變：{message}",
+    "cliToolNote": "注意：{message}",
+    "cliToolInstalledToast": "{command} 已在 PATH 上。開啟新的終端機即可使用。",
+    "cliToolInstallFailed": "無法安裝命令列工具：{message}",
     "proxyTitle": "網路代理",
     "proxyDescription": "啟用後，後續網路請求將優先走該代理（包含 ACP 對話、Agent 安裝、Git 遠端操作等）。",
     "loadFailed": "載入失敗：{message}",
@@ -333,6 +348,8 @@
     "appLanguage": "應用語言",
     "languageSaveSuccess": "語言設定已儲存",
     "languageSaveFailed": "語言設定儲存失敗：{message}",
+    "dataTitle": "資料與同步",
+    "dataDescription": "「設定同步」在裝置之間搬運設定；「備份」打包這台裝置上的全部 codeg 資料。",
     "updateTitle": "應用升級",
     "versionTitle": "軟體更新",
     "updateDescription": "點擊檢查後會從設定的發佈來源拉取最新版本資訊，有新版本時可直接下載並安裝。",
@@ -387,9 +404,7 @@
       "downloadFailed": "下載更新包失敗，請稍後再試。",
       "installFailed": "安裝更新失敗，請關閉應用後重試。",
       "unknown": "更新失敗，請稍後再試。"
-    },
-    "dataTitle": "資料與同步",
-    "dataDescription": "「設定同步」在裝置之間搬運設定；「備份」打包這台裝置上的全部 codeg 資料。"
+    }
   },
   "VersionControlSettings": {
     "loading": "載入中...",
@@ -762,12 +777,12 @@
       "configJson": "MCP 配置(JSON)",
       "draftTitle": "新建 MCP",
       "draftDescription": "填寫 Server ID 與設定以建立本地 MCP 伺服器。",
+      "suggestedLabel": "從一個已知的伺服器開始",
+      "suggestedChromeNote": "把表單填成 Google 官方的 chrome-devtools-mcp——registry 裡有同名的仿冒套件，這裡釘死的是真的那個。它驅動的是**另一個** Chrome，codeg 管不到：你會拿到內建瀏覽器工具沒有的網路與效能資料，也拿不到它們的那套防護——沒有按分頁分享、沒有活動列、沒有逐段程式碼確認。`npx` 會在第一次執行時從 npm 下載這個套件。",
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID（例如：my-mcp）",
       "typeHint": "支援類型：stdio、http（別名 streamable-http、streamableHttp）、sse。env 僅適用於 stdio；遠端 MCP 請透過 headers 欄位傳遞認證 token。",
-      "envOnRemoteWarning": "偵測到遠端 MCP 設定中包含 env 欄位。env 僅 stdio 類型使用，遠端 MCP 應透過 headers 攜帶認證資訊，env 欄位儲存時會被忽略。",
-      "suggestedLabel": "從一個已知的伺服器開始",
-      "suggestedChromeNote": "把表單填成 Google 官方的 chrome-devtools-mcp——registry 裡有同名的仿冒套件，這裡釘死的是真的那個。它驅動的是**另一個** Chrome，codeg 管不到：你會拿到內建瀏覽器工具沒有的網路與效能資料，也拿不到它們的那套防護——沒有按分頁分享、沒有活動列、沒有逐段程式碼確認。`npx` 會在第一次執行時從 npm 下載這個套件。"
+      "envOnRemoteWarning": "偵測到遠端 MCP 設定中包含 env 欄位。env 僅 stdio 類型使用，遠端 MCP 應透過 headers 攜帶認證資訊，env 欄位儲存時會被忽略。"
     },
     "market": {
       "selectMarketplace": "選擇市場",
@@ -836,13 +851,105 @@
       "tabGeneral": "一般",
       "tabAgentDefaults": "子智慧體設定",
       "agentDefaultsDescription": "多智慧體協同在為委派呼叫啟動子智慧體時使用這些覆寫項。下方選項透過即時探測取得，所選即所用。",
+      "agentDefaultsAgentHint": "保持「預設」的選項沿用智慧體自己的設定。",
+      "agentDefaultsDelegationOff": "多智慧體協同已關閉，開啟後才能修改這些設定。",
       "probing": "正在載入該智慧體的可用設定項…",
       "probeFailed": "載入設定項失敗：{detail}",
       "retry": "重試",
       "noConfigAvailable": "該智慧體沒有可設定項。",
       "modeLabel": "模式",
       "agentDefaultHint": "智慧體預設：{value}",
-      "defaultOptionLabel": "預設（{value}）"
+      "defaultOptionLabel": "預設（{value}）",
+      "overrideCount": "已自訂 {count} 項",
+      "tabAssistants": "助手設定",
+      "booleanOn": "開啟",
+      "booleanOff": "關閉",
+      "modelNotSwitched": "智慧體沒有切換到所選模型，下面的選項可能屬於另一個模型。",
+      "unsavedChanges": "有未儲存的修改",
+      "assistants": {
+        "description": "助手是可以被 @ 的委派預設：一個智慧體、選定的每一項選項，加上常駐指令。委派給助手時，就按這套設定執行。",
+        "create": "新增助手",
+        "delegationOff": "多智慧體協同已關閉，助手暫時無法被委派。",
+        "delegationOffAction": "前往「{tab}」",
+        "unsavedElsewhere": "{tabs}有未儲存的修改。",
+        "unsavedGoBack": "返回",
+        "loadFailed": "載入助手失敗：{detail}",
+        "emptyTitle": "還沒有助手",
+        "empty": "新增一個，給智慧體一套固定的設定和常駐指令，在任何對話裡都能 @ 它。",
+        "reorderFailed": "調整助手順序失敗",
+        "saveFailed": "儲存助手失敗",
+        "duplicated": "已建立 {name}",
+        "deleteFailed": "刪除助手失敗",
+        "deleteTitle": "刪除 {name}？",
+        "deleteDescription": "它會從設定和提及面板中消失，也無法再被委派。對話裡已有的委派卡片仍會顯示它。",
+        "cancel": "取消",
+        "delete": "刪除",
+        "duplicate": "建立副本",
+        "move": "移動 {name}",
+        "enableAssistant": "啟用 {name}",
+        "edit": "編輯 {name}",
+        "more": "{name} 的更多操作",
+        "agentNotInstalled": "未安裝",
+        "agentDisabled": "已停用",
+        "createTitle": "新增助手",
+        "editTitle": "編輯助手",
+        "editorDescription": "委派給這個助手時，就按這裡設定的智慧體、選項和常駐指令執行。",
+        "nameLabel": "名稱",
+        "namePlaceholder": "例如：程式碼審查員",
+        "descriptionLabel": "簡介",
+        "descriptionPlaceholder": "什麼時候用這個助手",
+        "descriptionHint": "顯示在提及面板中，也會告訴發起委派的智慧體什麼時候該選這個助手。",
+        "agentLabel": "智慧體",
+        "agentPlaceholder": "選擇智慧體",
+        "agentHint": "它的每一項選項都要選定。",
+        "instructionsLabel": "常駐指令",
+        "instructionsPlaceholder": "這個助手每次接任務時都要遵守的角色和工作要求",
+        "instructionsHint": "每次委派時隨任務一起交給智慧體，不會顯示在子對話的訊息裡。",
+        "charCount": "{count} / {max}",
+        "save": "儲存",
+        "createSubmit": "建立",
+        "pickAgentFirst": "先選擇智慧體，再選它的選項。",
+        "pickModelFirst": "選擇模型後顯示其餘選項。",
+        "modelNotSwitched": "智慧體沒有切換到這個模型，讀不到它的其餘選項。可以重試，也可以換一個模型。",
+        "agentUnavailableHint": "這個智慧體已停用或未安裝，無法核對它的選項。下面是存著的選項；改選別的智慧體才能修改。",
+        "optionsChanged": "智慧體的選項有變化，請補選標出的 {count} 項。",
+        "missingCount": "還有 {count} 項未選",
+        "cannotSaveProbeFailed": "無法儲存：讀不到智慧體的選項，無法確認每一項都已選定。請先重試。",
+        "cannotSaveModelNotSwitched": "無法儲存：智慧體沒有切換到所選模型。請重試，或換一個模型。",
+        "cannotSaveStillLoading": "正在讀取智慧體的選項…",
+        "savedOptions": "存著的選項",
+        "savedNoOptions": "這個智慧體沒有存任何選項。",
+        "required": "必填",
+        "selectPlaceholder": "請選擇",
+        "noValuesOffered": "沒有可選值",
+        "recommended": "推薦",
+        "optionNew": "新增",
+        "optionUnavailable": "不可用（原為 {value}）",
+        "avatarChange": "更換頭像",
+        "avatarMonogram": "字母",
+        "avatarEmoji": "Emoji",
+        "avatarImage": "圖片",
+        "avatarMonogramHint": "取名稱的第一個字。",
+        "avatarUseMonogram": "使用字母",
+        "avatarEmojiPlaceholder": "輸入或貼上 emoji",
+        "avatarEmojiUse": "使用",
+        "avatarUpload": "上傳圖片",
+        "avatarUploadHint": "會置中裁成正方形，並縮小到 128×128。",
+        "avatarTooLarge": "這張圖片縮小之後仍然太大，請換一張。",
+        "avatarUnreadable": "無法把這個檔案讀成圖片。",
+        "avatarColor": "顏色",
+        "errors": {
+          "emptyName": "請填寫助手名稱。",
+          "nameTooLong": "名稱最多 {max} 個字。",
+          "duplicateName": "已經有一個名為「{name}」的助手。",
+          "descriptionTooLong": "簡介最多 {max} 個字。",
+          "instructionsTooLong": "常駐指令最多 {max} 個字。",
+          "invalidAvatar": "這個頭像不能用，請換一個。",
+          "avatarTooLarge": "頭像圖片太大。",
+          "invalidAgentOptions": "智慧體的選項沒有選齊。請重新開啟助手，把每一項都選上。",
+          "notFound": "這個助手已經不存在了。"
+        }
+      }
     },
     "actions": {
       "dragSort": "拖拽排序",
@@ -854,6 +961,7 @@
       "install": "安裝",
       "upgrade": "升級",
       "uninstall": "卸載",
+      "installGuide": "安裝指南",
       "uninstalling": "卸載中...",
       "saveEnvVars": "儲存環境變數",
       "saving": "儲存中...",
@@ -950,7 +1058,11 @@
       "authNotInstalled": "cursor-agent 未安裝",
       "authLoggedIn": "已登入",
       "authNotLoggedIn": "未登入",
+      "authUnverified": "已登入（憑證未通過驗證）",
+      "authUnverifiedHint": "cursor-agent 仍存有登入憑證，但剛才無法用它存取 Cursor——通常是登入已過期。在重新登入之前，工作階段都會顯示「Authentication required」；此 CLI 無法自行更新瀏覽器登入。",
+      "authUnverifiedHintApiKey": "cursor-agent 裡存了 API Key，但 Cursor 剛剛拒絕了它——通常是金鑰已撤銷、已過期或填錯。在下方儲存一個可用的金鑰之前，工作階段都會以「Authentication required」失敗。",
       "loginHint": "在終端機執行以下指令登入 Cursor 帳號（會開啟瀏覽器），完成後點重新整理：",
+      "loginHintRemote": "請在安裝了 cursor-agent 的 codeg 主機上執行，而不是本機，完成後點重新整理。該主機通常沒有可開啟的瀏覽器，所以要帶上 NO_OPEN_BROWSER=1 執行——它會改為印出一個登入連結，你在自己的瀏覽器開啟即可。無人值守的伺服器請把上方的方式改為 API Key。",
       "apiKeyLabel": "Cursor API 金鑰",
       "apiKeyPlaceholder": "在 cursor.com/dashboard 取得",
       "apiKeyHint": "CURSOR_API_KEY —— Cursor Dashboard 的帳號金鑰，在無頭/伺服器環境下取代瀏覽器登入。不是第三方或 OpenAI 金鑰。",
@@ -991,11 +1103,7 @@
       "modelPickerPlaceholder": "搜尋模型…",
       "modelNoMatch": "沒有相符的模型",
       "modelsNeedAuth": "登入後載入模型清單。",
-      "modelDefaultBadge": "預設",
-      "authUnverified": "已登入（憑證未通過驗證）",
-      "authUnverifiedHint": "cursor-agent 仍存有登入憑證，但剛才無法用它存取 Cursor——通常是登入已過期。在重新登入之前，工作階段都會顯示「Authentication required」；此 CLI 無法自行更新瀏覽器登入。",
-      "authUnverifiedHintApiKey": "cursor-agent 裡存了 API Key，但 Cursor 剛剛拒絕了它——通常是金鑰已撤銷、已過期或填錯。在下方儲存一個可用的金鑰之前，工作階段都會以「Authentication required」失敗。",
-      "loginHintRemote": "請在安裝了 cursor-agent 的 codeg 主機上執行，而不是本機，完成後點重新整理。該主機通常沒有可開啟的瀏覽器，所以要帶上 NO_OPEN_BROWSER=1 執行——它會改為印出一個登入連結，你在自己的瀏覽器開啟即可。無人值守的伺服器請把上方的方式改為 API Key。"
+      "modelDefaultBadge": "預設"
     },
     "qoder": {
       "configDescription": "在此登入 Qoder 帳號。CLI 讀取的其餘設定全部集中在一個檔案裡——$QODER_CONFIG_DIR/settings.json（預設 ~/.qoder，與 qoder CLI 共用），請在下方按原文編輯。模型與推理強度不在這裡：Qoder 透過 ACP 回報它們，由輸入框的選擇器逐次決定。",
@@ -1079,6 +1187,43 @@
       "tempReclaimConfirmBody": "將永久刪除 {size}。系統暫存目錄與其他應用共用，確認前請先核對每條路徑；仍在使用中的項目會被略過。",
       "tempReclaimConfirmAction": "刪除",
       "tempReclaimCancel": "取消"
+    },
+    "kiro": {
+      "configManagement": "設定管理",
+      "configDescription": "Kiro CLI 的登入狀態、agent 與 MCP 伺服器都保存在 ~/.kiro。模型、agent、thinking 與思考等級不在這裡：Kiro 透過 ACP 回報它們，由輸入框的選擇器按工作階段管理。",
+      "permissionsTitle": "權限",
+      "permissionModeLabel": "權限模式",
+      "permissionModeAsk": "執行工具前詢問（預設）",
+      "permissionModeTrustAll": "信任所有工具（--trust-all-tools）",
+      "permissionModeAskHint": "需要確認的工具呼叫（執行指令、寫入檔案等）會先交給你確認；唯讀工具直接執行。",
+      "permissionModeTrustAllHint": "以 --trust-all-tools 啟動工作階段：所有工具呼叫都不再跳出確認，包括執行指令與寫入檔案。對新工作階段生效。",
+      "apiKeyLabel": "API Key（選填）",
+      "apiKeyHint": "以 KIRO_API_KEY 傳給 CLI。留空則使用 kiro-cli login 登入的帳號；只有無法用瀏覽器登入的環境（伺服器、Docker）才需要 API Key。",
+      "saveConfig": "儲存 Kiro 設定"
+    },
+    "trae": {
+      "configManagement": "設定管理",
+      "configDescription": "TRAE CLI 2.0 僅開放給 TRAE 企業版旗艦版方案的客戶。Codeg 執行你安裝的 traecli，它把登入狀態、技能和 MCP 伺服器儲存在 ~/.trae 中。模型、模式和推理強度不在這裡設定：TRAE CLI 會透過 ACP 回報它們，由輸入框內建的選擇器依工作階段管理。",
+      "signInTitle": "登入",
+      "signInHint": "在終端機中執行一次下面的命令，用企業 SSO 登入。Codeg 裡的工作階段會沿用這次登入。",
+      "copyCommand": "複製命令",
+      "commandCopied": "命令已複製",
+      "patLabel": "個人存取權杖（選填）",
+      "patHint": "適用於無法用瀏覽器登入的機器，例如伺服器或 Docker 部署。Codeg 會以 TRAECLI_PERSONAL_ACCESS_TOKEN 傳給 TRAE CLI，並在每次啟動工作階段時用它登入。留空則使用 traecli login 的登入。",
+      "hostLabel": "企業 API 位址（選填）",
+      "hostHint": "僅當你的組織在自有網域上部署 TRAE 時填寫。以 TRAECLI_HOST 傳入；留空則使用 TRAE 官方服務。",
+      "saveConfig": "儲存 TRAE CLI 設定"
+    },
+    "commandCode": {
+      "configManagement": "設定管理",
+      "configDescription": "Codeg 執行 command-code npm 套件提供的 Command Code CLI，它把登入狀態、技能和 MCP 伺服器儲存在 ~/.commandcode 中。模型、模式和推理強度不在這裡設定：Command Code 會透過 ACP 回報它們，由輸入框內建的選擇器依工作階段管理。",
+      "signInTitle": "登入",
+      "signInHint": "在終端機中執行一次下面的命令，登入你的 Command Code 帳號。Codeg 裡的工作階段會沿用這次登入。",
+      "copyCommand": "複製命令",
+      "commandCopied": "命令已複製",
+      "apiKeyLabel": "API 金鑰（選填）",
+      "apiKeyHint": "適用於無法用瀏覽器登入的機器，例如伺服器或 Docker 部署。以 COMMAND_CODE_API_KEY 傳給 Command Code，優先於 command-code login 的登入。留空則使用那次登入。",
+      "saveConfig": "儲存 Command Code 設定"
     },
     "deepseek": {
       "configManagement": "DeepSeek Harness 設定",
@@ -1296,7 +1441,7 @@
         "defaultAgent": "預設智慧體",
         "defaultAgentHint": "新工作階段使用哪個主要智慧體。留空或名稱無效時回落到 build。",
         "share": "工作階段分享",
-        "shareHint": "工作階段是否可以發佈成分享連結。",
+        "shareHint": "工作階段是否可以發佈成分享連結。OpenCode 已在 1.19.1 停止工作階段分享，從該版本起此項不再生效。",
         "shareManual": "手動（需要時才分享）",
         "shareAuto": "自動（每個新工作階段都分享）",
         "shareDisabled": "停用",
@@ -1572,14 +1717,28 @@
       "saveQoderConfigFailed": "儲存 Qoder 設定失敗",
       "antigravitySaved": "已保存 Antigravity 配置",
       "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
-      "saveAntigravityConfigFailed": "保存 Antigravity 配置失败"
+      "saveAntigravityConfigFailed": "保存 Antigravity 配置失败",
+      "kiroSaved": "Kiro 設定已儲存",
+      "saveKiroFailed": "儲存 Kiro 設定失敗",
+      "traeSaved": "TRAE CLI 設定已儲存",
+      "saveTraeFailed": "儲存 TRAE CLI 設定失敗",
+      "commandCodeSaved": "Command Code 設定已儲存",
+      "saveCommandCodeFailed": "儲存 Command Code 設定失敗",
+      "systemAgentAlreadyLatest": "{name} 已是最新版本（{version}）"
+    },
+    "distribution": {
+      "system": "官方安裝"
     },
     "version": {
       "statusLabel": "版本狀態",
       "notInstalled": "未安裝",
       "recommendedLocal": "建議：{recommendedVersion} · 本地：{localVersion}",
       "localOnly": "本機：{localVersion}",
+      "localUndetected": "本機：未偵測到版本",
       "localInstalled": "{versionText}。已安裝。",
+      "systemInstalled": "{versionText}。由其官方安裝程式安裝與更新，Codeg 直接啟動這份安裝。",
+      "systemInstalledUpdatable": "{versionText}。透過官方安裝程式安裝；點擊「升級」會執行它內建的更新程式。",
+      "systemMissing": "本機未找到。請用官方安裝程式安裝後再重新整理。",
       "platformUnsupported": "{versionText}。目前平台不支援該 Agent。",
       "uvxNotReady": "{versionText}。uv 執行階段未安裝——請在下方 uv 預檢項中安裝後再使用該 Agent。",
       "clickInstall": "{versionText}。請點擊右側安裝。",
@@ -1614,8 +1773,8 @@
       "noPlugins": "opencode.json 中未宣告任何外掛",
       "status": {
         "installed": "已安裝",
-        "missing": "未安裝",
         "needs_migration": "需要遷移",
+        "missing": "未安裝",
         "path": "路徑外掛",
         "path_missing": "路徑不存在"
       },
@@ -1790,7 +1949,38 @@
       "compactSoftPercent": "軟壓縮閾值（%）",
       "compactRecentTurns": "保留最近輪次",
       "maxTurns": "最大模型輪次"
+    },
+    "zcode": {
+      "adapterInfo": "Codeg 透過 {adapterPackage} 橋接 ACP。請先安裝並登入官方 ZCode；橋接器使用其執行環境與現有設定。",
+      "runtimeHint": "請先安裝並登入官方 ZCode，Codeg 僅安裝 ACP 橋接器。自動偵測失敗時，可用 ZCODE_BIN 指定 CLI 入口、ZCODE_NODE 指定 Node.js。模型與憑證在 ZCode 中管理。"
     }
+  },
+  "AgentVocabulary": {
+    "deepseekModeDefault": "常規",
+    "deepseekModeDefaultDescription": "直接讀寫檔案、執行命令完成任務",
+    "deepseekModePlan": "計畫",
+    "deepseekModePlanDescription": "先調查再提出完整方案，經你確認後才動手；這只是對模型的引導，實際邊界仍由「檔案權限」決定。",
+    "deepseekOptionModel": "模型",
+    "deepseekOptionReasoning": "推理檔位",
+    "deepseekOptionReasoningDescription": "越高越慢越耗 token，難題更穩",
+    "deepseekOptionSandbox": "檔案權限",
+    "deepseekOptionSandboxDescription": "命令與檔案工具共用這一條邊界",
+    "deepseekReasoningOff": "關閉",
+    "deepseekReasoningOffDescription": "不做推理，直接作答；最快",
+    "deepseekReasoningLow": "低",
+    "deepseekReasoningLowDescription": "略作推理；比關閉穩，比高檔快",
+    "deepseekReasoningHigh": "高",
+    "deepseekReasoningHighDescription": "推理後作答；日常編碼的預設檔",
+    "deepseekReasoningMax": "最高",
+    "deepseekReasoningMaxDescription": "推理更久；難題更穩，但較慢且更耗 token",
+    "deepseekSandboxReadOnly": "唯讀",
+    "deepseekSandboxReadOnlyDescription": "依唯讀策略執行；需要寫入時切換權限。部分平台上只是部分強制。",
+    "deepseekSandboxWorkspaceWrite": "可寫工作區",
+    "deepseekSandboxWorkspaceWriteDescription": "寫入意在限制於工作階段工作區與系統暫存目錄；越界的呼叫會請求單次授權。部分平台上只是部分強制。",
+    "deepseekSandboxFullAccess": "完全開放（無沙箱）",
+    "deepseekSandboxFullAccessDescription": "不施加任何檔案限制。僅在你清楚後果時選擇。",
+    "deepseekPermissionAllowOnce": "允許本次",
+    "deepseekPermissionRejectOnce": "拒絕"
   },
   "SettingsPages": {
     "agentsLoading": "載入 Agent 設定中...",
@@ -1877,10 +2067,31 @@
     "protocolResponses": "Responses",
     "protocolAuto": "自動"
   },
+  "CloseBehaviorSettings": {
+    "title": "關閉按鈕行為",
+    "description": "選擇點擊主視窗關閉按鈕時的行為。",
+    "trayUnavailable": "目前系統沒有可用的系統匣，關閉按鈕將一律結束 codeg。",
+    "behaviorAsk": "每次詢問",
+    "behaviorMinimize": "最小化到系統匣",
+    "behaviorExit": "結束 codeg",
+    "saveFailed": "儲存關閉行為失敗：{message}"
+  },
+  "CloseRequestDialog": {
+    "askTitle": "要關閉 codeg 嗎？",
+    "askDescription": "codeg 可以最小化到系統匣繼續執行，讓智能體與終端機保持運作；也可以完全結束。",
+    "confirmExitTitle": "要結束 codeg 嗎？",
+    "confirmExitDescription": "目前設定為：關閉視窗即結束 codeg。",
+    "runningTerminals": "還有 {count} 個終端機正在執行，結束後會全部中止。",
+    "remember": "記住我的選擇",
+    "cancel": "取消",
+    "minimize": "最小化到系統匣",
+    "exit": "結束 codeg",
+    "actionFailed": "操作失敗：{message}"
+  },
   "GeneralSettings": {
     "loading": "載入中...",
     "sectionTitle": "一般",
-    "sectionDescription": "集中管理預設終端機、渲染加速、關閉行為、通知與提示音以及多智能體協同等通用偏好。",
+    "sectionDescription": "集中管理預設終端機、渲染加速、@ 提及面板、關閉行為、通知與提示音以及多智能體協同等通用偏好。",
     "terminalTitle": "預設終端",
     "terminalDescription": "選擇 codeg 開啟新終端分頁、以及代智慧代理執行整條命令列時使用的 Shell。自帶 Shell 的智慧代理（如 Codex、Claude Code）會在自己的行程內執行命令，不受此設定影響。",
     "terminalSystemDefault": "系統預設",
@@ -1913,6 +2124,19 @@
     "restartFailed": "重新啟動失敗：{message}",
     "loadFailed": "載入失敗：{message}"
   },
+  "MentionPanelSettings": {
+    "title": "提及面板",
+    "description": "選擇輸入框中 @ 提及面板顯示哪些分頁，並拖曳調整它們的順序。面板開啟時會定位到第一個有符合結果的分頁。「檔案」分頁一律顯示。",
+    "tabsLabel": "提及面板分頁",
+    "reset": "還原預設",
+    "alwaysShown": "一律顯示",
+    "moveTab": "移動「{name}」：拖曳，或按上下方向鍵",
+    "showTab": "顯示「{name}」分頁"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "協作",
+    "sectionDescription": "智能體之間如何協同，以及它們能在對話中動用 codeg 的哪些工具。"
+  },
   "LoginPage": {
     "documentTitle": "登入 - codeg",
     "brand": "Codeg",
@@ -1929,6 +2153,50 @@
     "title": "提交程式碼",
     "invalidFolderId": "無效的 folderId",
     "loadingRepo": "正在載入倉庫..."
+  },
+  "CommitMessageGeneration": {
+    "generate": "產生提交訊息",
+    "stop": "停止產生（{seconds} 秒）",
+    "generating": "正在產生提交訊息… {seconds} 秒",
+    "noChanges": "沒有可描述的已追蹤變更",
+    "selectFiles": "請先勾選要提交的檔案",
+    "busyCommitting": "正在提交…",
+    "settings": "提交訊息產生設定",
+    "settingsMenuItem": "提交訊息產生設定…",
+    "toasts": {
+      "failed": "無法產生提交訊息",
+      "openSettings": "設定",
+      "autoCommitSkipped": "未自動提交：產生期間變更有變化，請檢查提交訊息後再提交。"
+    },
+    "errors": {
+      "noChanges": "沒有可描述的變更。",
+      "noAgent": "沒有可用的 agent，請在提交訊息產生設定中選擇一個。",
+      "emptyAnswer": "agent 的回覆中沒有提交訊息。",
+      "cancelled": "已停止產生。"
+    },
+    "dialog": {
+      "title": "提交訊息產生",
+      "description": "提交框旁的產生按鈕會讓 agent 依這次提交的實際內容撰寫提交訊息。產生過程在獨立的會話中進行，不會出現在會話清單中；它申請的任何權限都會被拒絕。",
+      "scope": "套用範圍",
+      "scopeGlobal": "全部資料夾（全域預設）",
+      "scopeGlobalHint": "未單獨設定的資料夾將使用這份全域預設。",
+      "source": "設定來源",
+      "sourceGlobal": "使用全域預設",
+      "sourceCustom": "單獨設定",
+      "sourceGlobalFollow": "跟隨全域設定，全域變更會自動生效。",
+      "sourceCustomHint": "為此資料夾儲存獨立設定，不再跟隨全域預設。",
+      "pinAgent": "指定 agent",
+      "pinAgentHint": "每則提交訊息都由這個 agent 依下方選項撰寫。選擇快速又便宜的模型就足夠了。",
+      "followSessionHint": "關閉時由目前正在檢視的會話的 agent 撰寫；沒有會話時使用資料夾的預設 agent，皆採用其預設模型。",
+      "autoCommit": "產生後自動提交",
+      "autoCommitHint": "提交訊息寫好後立即提交；如果產生期間變更有變化，只填入提交框，留給你檢查。",
+      "instructions": "附加說明",
+      "instructionsHint": "每次產生都會附上，並優先於內建規則（例如沿用最近提交的語言）。",
+      "instructionsPlaceholder": "例如：用中文撰寫；遵循 Conventional Commits；在內文說明原因。",
+      "save": "儲存",
+      "cancel": "取消",
+      "loadFailed": "無法讀取設定"
+    }
   },
   "MergePage": {
     "title": "解決衝突",
@@ -2112,6 +2380,7 @@
       "statusUnreadCompletedBadge": "未查看的已完成",
       "statusUnreadFailedBadge": "未查看的異常",
       "worktreeRemovedBadge": "來源 worktree 已刪除",
+      "cliBadge": "從命令列啟動",
       "conversationCountUnit": "{count} 條",
       "emptyFolderHint": "暫無對話",
       "noMatchingConversations": "找不到符合的對話",
@@ -2194,9 +2463,11 @@
         "dropToUngroup": "拖到這裡可移出分組"
       },
       "recentFilterAll": "全部",
+      "recentFilterCli": "命令列",
       "recentFilterTitle": "最近顯示：{filter}",
       "noRecentChats": "沒有最近的聊天",
       "noRecentFolders": "沒有最近的資料夾對話",
+      "noRecentCli": "沒有最近從命令列啟動的對話",
       "recentFilterMenuLabel": "最近顯示"
     },
     "conversation": {
@@ -2272,7 +2543,8 @@
       "updatedAt": "更新時間",
       "none": "—",
       "copyField": "複製{field}",
-      "copiedField": "已複製{field}"
+      "copiedField": "已複製{field}",
+      "assistant": "助手"
     },
     "conversationCard": {
       "untitledConversation": "未命名會話",
@@ -2371,8 +2643,8 @@
           "navigation": "選單導覽",
           "more": "更多"
         },
-        "showPet": "顯示寵物",
-        "browserTab": "開啟瀏覽器"
+        "browserTab": "開啟瀏覽器",
+        "showPet": "顯示寵物"
       },
       "mcp": {
         "title": "codeg-mcp 服務",
@@ -2425,7 +2697,10 @@
         "commits": "提交"
       },
       "noFolderTitle": "尚無開啟的資料夾",
-      "noFolderHint": "開啟一個資料夾後可在此查看"
+      "noFolderHint": "開啟一個資料夾後可在此查看",
+      "openFullPage": "在完整頁面中開啟",
+      "back": "返回",
+      "noAutomations": "此專案還沒有自動化"
     },
     "windowControls": {
       "minimizeWindow": "最小化視窗",
@@ -2457,23 +2732,23 @@
     },
     "fileWorkspace": {
       "files": "檔案",
-      "closeFileTab": "關閉檔案分頁",
-      "close": "關閉",
-      "closeOthers": "關閉其它",
-      "closeAll": "關閉所有",
-      "preview": "預覽",
-      "editSource": "編輯原始碼",
-      "maximize": "最大化",
-      "restore": "還原",
-      "emptyDirectory": "空目錄",
       "newTab": "新增分頁",
       "newBrowserTab": "瀏覽器分頁",
       "openFile": "開啟檔案…",
       "openFileTitle": "開啟檔案",
       "localServices": "本機服務",
       "localServiceFromAgent": "智慧代理",
+      "closeFileTab": "關閉檔案分頁",
+      "close": "關閉",
+      "closeOthers": "關閉其它",
+      "closeAll": "關閉所有",
+      "preview": "預覽",
+      "editSource": "編輯原始碼",
       "openInSystemBrowser": "在系統瀏覽器中開啟",
-      "more": "更多"
+      "more": "更多",
+      "maximize": "最大化",
+      "restore": "還原",
+      "emptyDirectory": "空目錄"
     },
     "terminal": {
       "agentStatus": {
@@ -2605,6 +2880,22 @@
       "imageZoomIn": "放大",
       "imageZoomOut": "縮小",
       "imageZoomReset": "重設縮放",
+      "pdfDocument": "PDF 文件",
+      "pdfZoomIn": "放大",
+      "pdfZoomOut": "縮小",
+      "pdfZoomReset": "重設縮放",
+      "pdfFitWidth": "符合寬度",
+      "pdfPageNumber": "頁碼",
+      "pdfFind": "在文件中尋找",
+      "pdfFindPrevious": "上一個相符項目",
+      "pdfFindNext": "下一個相符項目",
+      "pdfFindNoMatches": "無相符項目",
+      "pdfPasswordPrompt": "此 PDF 受密碼保護，請輸入密碼以開啟。",
+      "pdfPasswordIncorrect": "密碼錯誤，請再試一次。",
+      "pdfPassword": "密碼",
+      "pdfPasswordSubmit": "開啟",
+      "pdfInvalid": "此檔案不是有效的 PDF，或已損毀。",
+      "pdfLoadFailed": "無法顯示此 PDF：{message}",
       "htmlPreviewTitle": "HTML 預覽",
       "htmlPreviewTrust": "執行指令碼",
       "htmlPreviewTrustHint": "執行此檔案的指令碼並允許網路存取。僅對信任的檔案啟用。",
@@ -3047,6 +3338,11 @@
       "linkedFolder": "已連結的資料夾",
       "moreActions": "更多操作",
       "copyPath": "複製路徑",
+      "copy": "複製",
+      "copyRelativePath": "相對路徑",
+      "copyAbsolutePath": "絕對路徑",
+      "copyFileItself": "檔案本身",
+      "copyDirectoryItself": "資料夾本身",
       "upload": "上傳檔案/目錄",
       "download": "下載檔案",
       "downloadAsZip": "下載為 ZIP",
@@ -3174,12 +3470,7 @@
         "descriptionWithTarget": "確定回滾檔案 \"{name}\" 的本地修改嗎？",
         "descriptionFallback": "確定回滾該檔案的本地修改嗎？"
       },
-      "terminalTitle": "終端 · {name}",
-      "copy": "複製",
-      "copyRelativePath": "相對路徑",
-      "copyAbsolutePath": "絕對路徑",
-      "copyFileItself": "檔案本身",
-      "copyDirectoryItself": "資料夾本身"
+      "terminalTitle": "終端 · {name}"
     },
     "commandDropdown": {
       "loading": "載入中...",
@@ -3262,6 +3553,7 @@
           "turnFailedMaxTurnRequests": "{agent} 已達到此輪回覆允許的最大請求次數。",
           "turnFailedUnknown": "{agent} 以未知的停止原因結束了此輪回覆。",
           "turnFailedAuthRequired": "{agent} 需要你重新登入後才能執行本輪回覆。請在設定中登入，然後重新傳送這則訊息。",
+          "agentAuthRequired": "{agent} 無法建立工作階段：沒有可用的登入憑證。請在 設定 → 智能體 → {agent} 中重新登入，然後重新開啟此對話。",
           "agentRuntimeOutdated": "{agent} 版本過舊，無法搭配目前版本的 Codeg 使用。請更新後重新開啟此對話。",
           "grokModelSwitchIncompatibleAgent": "{agent} 無法在既有對話中切換到該模型，請新建工作階段以使用它。",
           "setModeFailed": "{agent} 切換模式失敗。",
@@ -3272,8 +3564,7 @@
           "turnFailedEmpty": "{agent} 此輪沒有產生任何回覆就結束了。",
           "turnFailedEmptyProtocol": "{agent} 此輪的輸出 codeg 無法解析，可能是代理版本與協定不相符。",
           "turnFailedEmptyMetadata": "{agent} 此輪只收到狀態更新（計畫 / 模式 / 用量），沒有收到任何回覆。",
-          "detailsInAlerts": "在狀態列的「警示」中展開詳情，即可查看代理輸出。",
-          "agentAuthRequired": "{agent} 無法建立工作階段：沒有可用的登入憑證。請在 設定 → 智能體 → {agent} 中重新登入，然後重新開啟此對話。"
+          "detailsInAlerts": "在狀態列的「警示」中展開詳情，即可查看代理輸出。"
         },
         "unableReadAgentConfig": "無法讀取 Agent 設定：{message}",
         "connectFailedTitle": "{agent} 連線失敗",
@@ -3281,6 +3572,7 @@
         "notificationTurnComplete": "{agent} 已完成回應",
         "notificationError": "{agent} 錯誤：{message}",
         "notificationQuestion": "{agent} 正在等你回答",
+        "notificationPlanApproval": "{agent} 正在等你核准計畫",
         "notificationErrorRedacted": "{agent} 遇到錯誤",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
@@ -3302,12 +3594,12 @@
         "tasks": {
           "connectingTitle": "正在連線 {agent}",
           "connectingDescription": "正在建立連線",
+          "preparingTitle": "正在準備 {agent} 會話",
+          "preparingDescription": "正在讀取歷史會話記錄",
           "loadingSelectorsTitle": "正在載入 {agent} 選擇項",
           "loadingSelectorsDescription": "正在取得模式與會話設定選項",
           "initSessionTitle": "正在初始化 {agent} 會話",
-          "initSessionDescription": "正在建立會話並載入設定",
-          "preparingTitle": "正在準備 {agent} 會話",
-          "preparingDescription": "正在讀取歷史會話記錄"
+          "initSessionDescription": "正在建立會話並載入設定"
         },
         "errors": {
           "connectionFailed": "連線失敗",
@@ -3330,6 +3622,7 @@
       },
       "messageInput": {
         "askAnything": "請開始輸入...",
+        "promptSuggestion": "{suggestion}（按 Tab 填入）",
         "removeAttachmentAria": "移除 {name}",
         "attachFiles": "附加檔案",
         "addActions": "新增",
@@ -3358,6 +3651,11 @@
         "searchModel": "搜尋模型...",
         "searchModelAria": "搜尋模型",
         "modelListLabel": "模型",
+        "recommendedBadge": "推薦",
+        "recommendedValue": "推薦：{value}",
+        "searchOptions": "搜尋選項...",
+        "searchOptionsAria": "搜尋選項",
+        "noOptions": "找不到選項",
         "noModels": "找不到模型",
         "cancel": "取消",
         "send": "傳送",
@@ -3391,7 +3689,7 @@
         "mentionGroupSession": "工作階段",
         "mentionGroupCommit": "提交",
         "mentionGroupSkill": "技能",
-        "recommendedBadge": "推薦"
+        "mentionGroupAssistant": "助手"
       },
       "messageQueue": {
         "addToQueue": "加入佇列",
@@ -3606,10 +3904,12 @@
         "downloadSvg": "下載為 SVG",
         "downloadPng": "下載為 PNG",
         "downloadMmd": "下載原始碼（.mmd）",
+        "downloadPuml": "下載原始碼（.puml）",
         "downloadFailed": "圖表儲存失敗",
         "copySource": "複製原始碼",
         "copied": "已複製",
         "renderFailed": "Mermaid 錯誤：{message}",
+        "plantumlRenderFailed": "PlantUML 錯誤：{message}",
         "showSource": "檢視原始碼",
         "retry": "重試"
       },
@@ -3637,6 +3937,8 @@
       "messageList": {
         "attachedResources": "附加資源",
         "loading": "載入中...",
+        "loadBackgroundActivity": "載入背景活動",
+        "workflowFollowUpLabel": "Codeg · Workflow 結果",
         "loadEarlier": "載入更早的訊息",
         "loadingEarlier": "正在載入更早的訊息…",
         "error": "錯誤：{message}",
@@ -3688,8 +3990,6 @@
         "jumpToPreviousUserMessage": "跳轉到上一條使用者訊息",
         "showMore": "展開",
         "showLess": "收合",
-        "loadBackgroundActivity": "載入背景活動",
-        "workflowFollowUpLabel": "Codeg · Workflow 結果",
         "resizeWidth": "拖曳調整聊天區域寬度 · 雙擊恢復預設"
       },
       "liveTurnStats": {
@@ -3768,11 +4068,16 @@
             "child_max_turn_requests": "子代理超出請求上限",
             "child_empty": "子代理無回應",
             "child_auth_required": "子智慧體需登入",
+            "child_rejected": "子代理拒絕該請求",
             "child_unknown": "子代理未知錯誤",
             "unknown": "未知任務",
-            "child_rejected": "子代理拒絕該請求"
+            "assistant_not_found": "助手不存在",
+            "assistants_unsupported": "需要重新啟動",
+            "assistant_support_unknown": "未回應"
           }
-        }
+        },
+        "unknownAssistant": "助手 #{id}",
+        "deletedAssistant": "（已刪除）"
       },
       "contentParts": {
         "showingTailOutput": "為確保效能，串流輸出時僅顯示尾端內容。",
@@ -3789,6 +4094,9 @@
         "offset": "位移：{offset}",
         "limit": "限制：{limit}",
         "pages": "頁碼：{pages}",
+        "allowLarge": "超出大小限制",
+        "readImageLoading": "正在載入圖片…",
+        "readImageError": "無法載入圖片",
         "mode": "模式：{mode}",
         "cell": "儲存格：{cell}",
         "shellSession": "工作階段 {id}",
@@ -3974,13 +4282,19 @@
       },
       "messageNav": {
         "title": "訊息導覽",
-        "collapse": "收合訊息導覽",
         "loadingEarlier": "正在載入更早的訊息…",
         "loadEarlier": "載入更早的訊息",
         "collapsedSummary": "訊息 {count}",
         "fileCount": "{count} 個檔案",
         "remove": "移除",
-        "noDiffDataAvailable": "找不到 {filePath} 的差異資料"
+        "noDiffDataAvailable": "找不到 {filePath} 的差異資料",
+        "subAgentCount": "{count} 個子智能體",
+        "showDiff": "展開 {filePath} 的變更",
+        "hideDiff": "收合 {filePath} 的變更",
+        "openFile": "開啟 {filePath}",
+        "collapse": "收合訊息導覽",
+        "currentMessage": "目前訊息",
+        "scrollToCurrent": "捲動到目前訊息（#{ordinal}）"
       },
       "replyArtifacts": {
         "title": "變更檔案",
@@ -4040,6 +4354,9 @@
         "setSessionTimer": "{seconds} 秒後喚醒",
         "setSessionTimerNoSeconds": "設定工作階段定時器",
         "promptLabel": "指令",
+        "ackRecorded": "已記錄到待辦任務",
+        "ackNotRecorded": "未記錄到待辦任務",
+        "ackNotRecordedWithReason": "未記錄到待辦任務：{reason}",
         "verdict": {
           "success": "成功",
           "needs_review": "待複核",
@@ -4146,6 +4463,7 @@
         "cardRunning": "背景執行中",
         "cardLaunchedPending": "已啟動背景任務",
         "cardCompleted": "背景任務已完成",
+        "cardInterim": "背景任務：階段性結果",
         "cardFinishedWithStatus": "背景任務已結束（{status}）",
         "cardResultPending": "結果尚未返回"
       },
@@ -4189,6 +4507,18 @@
           "failed": "失敗",
           "cancelled": "已取消"
         }
+      },
+      "remoteControl": {
+        "title": "遠端控制已開啟",
+        "open": "在瀏覽器中開啟",
+        "copy": "複製連結",
+        "copied": "已複製",
+        "qr": "QR 碼",
+        "qrLabel": "本會話遠端控制連結的 QR 碼",
+        "qrHint": "用手機掃描，在 Claude App 或 claude.ai/code 上繼續本會話。",
+        "noUrl": "Claude Code 沒有傳回本會話的連結",
+        "turnOff": "關閉",
+        "turnOffBusy": "Claude 完成目前工作後可用"
       },
       "proposedPlan": {
         "title": "計劃提案",
@@ -5096,42 +5426,43 @@
   "RemoteWorkspace": {
     "openLocalWorkspace": "開啟本地工作區",
     "openLocalFailed": "無法開啟本地工作區",
-    "openRemoteWorkspace": "Open remote workspace",
-    "manage": "Manage remote workspace",
-    "manageTitle": "Remote Workspace connections",
-    "empty": "No remote connections",
-    "searchPlaceholder": "Search remote workspaces",
-    "orderFailed": "Failed to save remote workspace order",
-    "dragSort": "Drag to sort",
-    "dragSortConnection": "Drag to sort {name}",
-    "newConnection": "New connection",
-    "loading": "Loading",
-    "loadingConnection": "Loading remote connection",
-    "name": "Name",
-    "baseUrl": "Service URL",
-    "token": "Access token",
+    "openRemoteWorkspace": "開啟遠端工作區",
+    "manage": "管理遠端工作區",
+    "manageTitle": "遠端工作區連線",
+    "empty": "尚無遠端連線",
+    "noMatches": "沒有符合的遠端連線",
+    "searchPlaceholder": "搜尋遠端工作區",
+    "orderFailed": "無法儲存遠端工作區的排序",
+    "dragSort": "拖拽排序",
+    "dragSortConnection": "拖拽排序 {name}",
+    "newConnection": "新增連線",
+    "loading": "載入中",
+    "loadingConnection": "正在載入遠端連線",
+    "name": "名稱",
+    "baseUrl": "服務位址",
+    "token": "存取 Token",
     "customHeaders": "自訂請求標頭",
     "customHeaderName": "標頭名稱",
     "customHeaderValue": "標頭值",
     "addCustomHeader": "新增標頭",
     "removeCustomHeader": "移除標頭",
-    "save": "Save",
-    "delete": "Delete",
+    "save": "儲存",
+    "delete": "刪除",
     "confirmDelete": {
-      "title": "Delete remote connection?",
-      "message": "This will remove \"{name}\" from this device. This action cannot be undone.",
-      "cancel": "Cancel",
-      "confirm": "Delete"
+      "title": "要刪除遠端連線嗎？",
+      "message": "這會從此裝置移除「{name}」，此操作無法復原。",
+      "cancel": "取消",
+      "confirm": "刪除"
     },
-    "saved": "Remote connection saved.",
-    "deleted": "Remote connection deleted.",
-    "loadFailed": "Failed to load remote connections",
-    "saveFailed": "Failed to save remote connection",
-    "deleteFailed": "Failed to delete remote connection",
-    "openFailed": "Failed to open remote workspace",
+    "saved": "遠端連線已儲存。",
+    "deleted": "遠端連線已刪除。",
+    "loadFailed": "無法載入遠端連線",
+    "saveFailed": "無法儲存遠端連線",
+    "deleteFailed": "無法刪除遠端連線",
+    "openFailed": "無法開啟遠端工作區",
     "restoreFailed": "無法重新開啟遠端工作區「{name}」",
-    "connectionLoadFailed": "Failed to load remote connection: {message}",
-    "connectionExpired": "Remote connection \"{name}\" is expired. Update its token and reload this window."
+    "connectionLoadFailed": "無法載入遠端連線：{message}",
+    "connectionExpired": "遠端連線「{name}」已失效。請更新它的 Token，然後重新載入此視窗。"
   },
   "ServerFileBrowser": {
     "title": "選擇伺服器檔案",
@@ -5145,6 +5476,14 @@
     "errorLoadingDir": "載入目錄失敗",
     "selectedCount": "已選 {count} 項"
   },
+  "BranchPicker": {
+    "searchPlaceholder": "搜尋分支…",
+    "none": "無分支",
+    "local": "本機",
+    "remote": "遠端",
+    "useCustom": "使用「{query}」",
+    "head": "HEAD"
+  },
   "BackupSettings": {
     "title": "備份與還原",
     "description": "匯出一份可攜的 codeg 資料備份，或從備份還原。",
@@ -5153,6 +5492,7 @@
       "restore": "還原"
     },
     "export": {
+      "description": "把這台裝置的 codeg 資料（資料庫與上傳檔案）打包成一個封存檔。",
       "includeExternal": "包含對話內容",
       "includeExternalHint": "一併打包各 CLI 的對話記錄（Claude、Codex、Gemini 等），體積更大。",
       "passphrase": "通行碼（選填）",
@@ -5172,10 +5512,10 @@
         "recoveredOnCopy": "已在私有副本上復原——內容完整",
         "bareFileOnly": "未包含預寫日誌——最新的訊息可能缺失",
         "notArchived": "未納入備份——複製期間它一直在變動"
-      },
-      "description": "把這台裝置的 codeg 資料（資料庫與上傳檔案）打包成一個封存檔。"
+      }
     },
     "restore": {
+      "description": "用備份封存檔中的內容取代這台裝置目前的 codeg 資料。",
       "selectFile": "選擇備份檔案",
       "passphrasePrompt": "此備份已加密，請輸入其通行碼。",
       "unlock": "解鎖",
@@ -5227,8 +5567,7 @@
         "refusedHint": "它們來自舊版備份，資料庫與其預寫日誌是分開儲存的，無法證明兩者相符。你現有的資料庫未被更動——選擇還原到旁路資料夾即可取得原始檔案。",
         "restartNow": "立即重新啟動",
         "later": "稍後"
-      },
-      "description": "用備份封存檔中的內容取代這台裝置目前的 codeg 資料。"
+      }
     },
     "remoteUnsupported": "備份與還原作用於執行 codeg 的那台機器上的資料。你目前連線的是遠端工作區——請直接在該伺服器上管理其備份。",
     "progress": {
@@ -5243,6 +5582,108 @@
       "rollbackConfirmTitle": "回復到這份快照？",
       "rollbackConfirmBody": "這會用該快照取代目前資料並重新啟動。被取代的資料會先建立快照。"
     }
+  },
+  "ConfigSyncSettings": {
+    "title": "設定同步",
+    "scopeTitle": "同步範圍",
+    "scopeIncludedTitle": "包含",
+    "scopeExcludedTitle": "不包含",
+    "scopeIncluded": {
+      "providers": "模型服務商（含 API 金鑰）",
+      "agentSettings": "智慧體設定",
+      "customAgents": "自訂智慧體",
+      "quickMessages": "快捷訊息",
+      "taskTemplates": "任務範本",
+      "preferences": "應用偏好（語言、外觀、開關）",
+      "assistants": "助手"
+    },
+    "scopeExcluded": {
+      "conversations": "對話紀錄與歷史",
+      "uploads": "上傳的檔案與圖片",
+      "workspaces": "工作區專案與路徑",
+      "mcp": "MCP 伺服器（由各 CLI 自行管理）",
+      "credentials": "登入憑證與金鑰"
+    },
+    "fileTitle": "設定檔",
+    "exportButton": "匯出至檔案",
+    "importButton": "從檔案匯入",
+    "fileHint": "匯出為單一 JSON 檔案，可複製到另一台裝置。匯入時依項目新增或更新，檔案中沒有的本機項目會保留。",
+    "webdavTitle": "WebDAV 同步",
+    "webdavHint": "將設定快照上傳到你自己的 WebDAV 伺服器。",
+    "presetLabel": "服務商",
+    "preset": {
+      "jianguoyun": "堅果雲",
+      "nextcloud": "Nextcloud",
+      "synology": "群暉 NAS",
+      "custom": "自訂"
+    },
+    "presetHint": {
+      "jianguoyun": "堅果雲需要在「安全選項」裡產生應用密碼，不能用登入密碼。",
+      "nextcloud": "把網域和使用者名稱換成你自己的，密碼用「設定 → 安全」裡產生的應用密碼。",
+      "synology": "需要在 DSM 套件中心安裝並啟用 WebDAV Server，預設埠 5005（HTTP）/ 5006（HTTPS）。"
+    },
+    "serverUrl": "伺服器位址",
+    "username": "使用者名稱",
+    "password": "密碼",
+    "passwordKeep": "留空則沿用已儲存的密碼",
+    "passwordPlaceholder": "應用密碼",
+    "remoteDir": "遠端目錄",
+    "profile": "設定集",
+    "profileHint": "使用相同設定集的裝置共用同一份設定；要區分工作與個人環境時可以分開命名。",
+    "autoSyncLabel": "自動上傳",
+    "autoSyncHint": "定期檢查，僅在設定改變時上傳。",
+    "intervalLabel": "檢查間隔",
+    "intervalOption": "每 {minutes} 分鐘",
+    "saveButton": "儲存",
+    "testButton": "測試連線",
+    "uploadButton": "立即同步",
+    "restoreButton": "從遠端還原",
+    "saved": "同步設定已儲存",
+    "testSucceeded": "已成功連線 WebDAV 伺服器",
+    "uploaded": "設定已上傳",
+    "exported": "設定已匯出",
+    "restored": "已套用 {count} 項設定",
+    "imported": "已套用 {count} 項設定",
+    "noRemoteSnapshot": "伺服器上還沒有設定快照",
+    "lastSyncAt": "上次同步：{time}",
+    "neverSynced": "尚未同步",
+    "lastError": "上次錯誤：{message}",
+    "working": "處理中…",
+    "plaintextWarning": "快照以明文上傳且包含 API 金鑰，請只使用只有你能存取的 WebDAV 伺服器。同步憑證本身不會寫入快照。",
+    "importConfirmTitle": "匯入設定？",
+    "importConfirmBody": "檔案中的項目將在本機新增或更新，檔案未涉及的本機項目會保留。",
+    "restartHint": "部分變更（外觀、語言、服務商列表）需要重新啟動 codeg 後才會生效。",
+    "importConfirmAction": "匯入",
+    "restoreConfirmTitle": "從遠端還原？",
+    "restoreConfirmBody": "將把 {device} 於 {time} 上傳的快照套用到本機，快照未涉及的本機項目會保留。",
+    "restoreConfirmAction": "還原",
+    "cancel": "取消",
+    "emptySnapshot": "這份快照裡沒有任何設定項目。",
+    "domain": {
+      "modelProviders": "{count} 個模型服務商",
+      "agentSettings": "{count} 項智能體設定",
+      "customAgents": "{count} 個自訂智能體",
+      "quickMessages": "{count} 則快捷訊息",
+      "taskTemplates": "{count} 個任務範本",
+      "preferences": "{count} 項應用偏好",
+      "assistants": "{count} 個助手"
+    },
+    "rollbackTitle": "復原匯入",
+    "rollbackHint": "每次匯入與每次還原前，都會先保存這台裝置當時的設定，最近十份會保留下來。",
+    "rollbackAction": "復原",
+    "rollbackUnknownTime": "時間不明",
+    "rollbackConfirmTitle": "回到這份設定？",
+    "rollbackConfirmBody": "這會用 {time} 保存的那份副本取代目前的設定。目前的設定會先被保存，所以這一步同樣可以復原。",
+    "rollbackConfirmAction": "復原",
+    "rolledBack": "已還原 {count} 項設定",
+    "encryptLabel": "加密快照",
+    "encryptHint": "用通行密語保護上傳的檔案。參與同步的每台裝置都要使用同一組。",
+    "encryptedNotice": "快照會先用你的通行密語加密再上傳。一旦遺失，伺服器上的副本將無法復原。",
+    "passphrase": "通行密語",
+    "passphraseKeep": "留空則沿用已保存的通行密語",
+    "passphrasePlaceholder": "加密通行密語",
+    "passphraseHint": "只保存在這台裝置的鑰匙圈中，不會上傳。請在你的其他裝置上輸入同一組。",
+    "assistantsRenamed": "有 {count} 個助手與本機已有的助手重名，已自動改名。"
   },
   "backup": {
     "restore": {
@@ -5259,13 +5700,37 @@
       "cancelled": "操作已取消。"
     }
   },
+  "configSync": {
+    "error": {
+      "newerSchema": "這份快照由更新版本的 codeg 建立（格式 {snapshotVersion}），目前版本最高支援格式 {appVersion}。",
+      "checksum": "快照與校驗值不符，可能不完整。",
+      "invalidSnapshot": "這不是有效的 codeg 設定快照檔案。",
+      "noRemoteSnapshot": "伺服器上還沒有設定快照。",
+      "notConfigured": "請先完成 WebDAV 伺服器設定再同步。",
+      "unauthorized": "WebDAV 伺服器拒絕了該使用者名稱或密碼。",
+      "forbidden": "WebDAV 伺服器拒絕存取該目錄。",
+      "remotePath": "遠端目錄或設定集名稱無效。",
+      "quota": "WebDAV 伺服器已無可用空間。",
+      "network": "無法連線到 WebDAV 伺服器。",
+      "server": "WebDAV 伺服器回傳錯誤（{status}）。",
+      "passphraseRequired": "該快照已加密，請先設定加密通行密語再同步。",
+      "badPassphrase": "無法解密該快照。請檢查通行密語，也可能是檔案已損毀。",
+      "badDomain": "無法讀取該快照中的 {domain} 部分。",
+      "noRollback": "這台裝置上已經沒有那份保存的設定了。",
+      "credentialsUnreadable": "無法讀取已儲存的憑證。請解鎖系統鑰匙圈後重試。",
+      "notEncrypted": "伺服器上的快照未加密，但本機已開啟加密。請從本機上傳以取代它，或關閉加密後再使用。"
+    }
+  },
   "WebConnection": {
     "disconnectedTitle": "連線已中斷",
     "reconnectingDescription": "正在嘗試重新連線伺服器，通常會在幾秒內自動恢復。",
     "reconnectNow": "立即重新連線",
     "sessionExpiredTitle": "工作階段已過期",
     "sessionExpiredDescription": "登入狀態已失效，請重新登入以繼續。",
-    "goToLogin": "前往登入"
+    "goToLogin": "前往登入",
+    "versionChangedTitle": "伺服器已執行 Codeg {version}",
+    "versionChangedDescription": "此頁面仍是 {version}，重新整理後即可使用伺服器上的版本。",
+    "reloadPage": "重新整理"
   },
   "LiveFeedback": {
     "placeholder": "在 {agent} 工作時給它留言…",
@@ -5305,6 +5770,53 @@
     "saveFailed": "儲存工具設定失敗",
     "loadFailed": "載入失敗：{detail}"
   },
+  "AgentTools": {
+    "delegation": {
+      "label": "多代理委派",
+      "short": "把任務交給另一個代理處理。",
+      "hint": "允許代理把一個自洽的子任務交給另一個代理，後者在自己的工作階段裡跑完再回報。其餘設定——最多能巢狀幾層、由哪個代理來跑——在上面那一節。"
+    },
+    "feedback": {
+      "label": "即時回饋",
+      "short": "回合進行中補充說明，不打斷執行。",
+      "hint": "在智慧代理工作時向它傳送備註與修正。支援即時插入的代理會立刻在目前回合中看到你的備註；其他代理則透過檢查回饋的工具讀取——這類代理通常只有在提示中提到時才會檢查，例如在訊息中加上「定期檢查我的即時回饋」。"
+    },
+    "ask": {
+      "label": "向使用者提問",
+      "short": "讓代理拿不準時先問你。",
+      "hint": "允許智能體暫停並向你提出多選問題，問題會顯示在對話輸入框上方。智能體會一直等待，直到你作答（或略過）。"
+    },
+    "sessions": {
+      "label": "取得工作階段資訊",
+      "short": "查詢歷史工作階段及其結果。",
+      "hint": "允許智慧代理查詢你在訊息中提及的工作階段（工作階段徽章），讀取其標題、代理、狀態、工作區、Token 用量與最近訊息。"
+    },
+    "browser": {
+      "label": "讀取和操作內建瀏覽器",
+      "short": "開啟、讀取並操作內建瀏覽器裡的頁面。",
+      "hint": "允許代理看到內建瀏覽器裡開著哪些頁面、讀取你共享的那些，並在你允許操作的頁面上點擊和輸入；它也可以自己開啟一個網址、把分頁指向別處、關閉分頁。預設關閉。讀哪一頁仍然是你在那個分頁的工具列上單獨做的決定——但請注意：只要設了預設共享層級，代理自己開啟的頁面一載入就會按那個層級共享給它。關閉這個開關立即生效，正在執行的代理也一樣。"
+    },
+    "browserEval": {
+      "label": "在內建瀏覽器中執行程式碼",
+      "short": "在你共享的頁面上執行它自己寫的程式碼，預設不詢問。",
+      "hint": "允許智慧代理在你分享的頁面上執行它自己寫的 JavaScript。預設關閉，而且需要先開啟上面那個開關。開啟它就意味著程式碼不經詢問直接執行，所以決定權就在這個開關上；如果想逐段過目，可在「設定 → 內建瀏覽器」裡改成每次都問你。"
+    },
+    "computer": {
+      "label": "查看和操作桌面視窗",
+      "short": "列出應用程式和視窗，讀取你分享的視窗，操作你允許的視窗。",
+      "hint": "讓智慧體列出桌面上的應用程式和視窗，讀取你分享給它的視窗——截圖、視窗內容，以及是否已出現預期的狀態——並在你允許操作的視窗裡點擊、輸入和按鍵。在你從狀態列的「電腦操作」面板分享某個視窗之前，任何視窗都不可讀；除非你還允許操作，否則任何視窗都不能被操作。視窗關閉、閒置一段時間或你停止分享時，分享即結束；面板中的「停止智慧體」會立即停下所有智慧體。輸入在背景送達視窗；遇到背景收不到輸入的應用程式，智慧體可以把視窗切到前景完成操作，可在電腦操作設定中關閉。僅限桌面版；在 macOS 上需要為 codeg-computer-helper 授予權限。預覽功能。"
+    },
+    "automations": {
+      "label": "建立自動化",
+      "short": "建立和管理定時自動化。",
+      "hint": "把對話儲存為按排程執行的自動化。預設關閉——它之後會自行啟動代理。"
+    },
+    "taskboard": {
+      "label": "建立待辦任務",
+      "short": "建立和管理工作任務。",
+      "hint": "從對話中往待辦看板排一張任務卡。預設關閉——它會寫入應用程式狀態。"
+    }
+  },
   "DesktopNotificationSettings": {
     "title": "桌面通知",
     "description": "智慧體需要你時彈出系統通知。設定只對目前裝置生效，其他瀏覽器或電腦上是獨立的。",
@@ -5340,9 +5852,22 @@
     "hideBody": "隱藏通知內容",
     "hideBodyHint": "用一句通用文案代替智慧體輸出。通知中心會把內容保留在應用之外，對話關掉了也還在。標題仍會顯示資料夾名稱，好讓你知道該回到哪個視窗。",
     "eventsTitle": "事件",
-    "eventsHint": "關掉不想被打斷的事件。同一事件在數秒內重複觸發時只通知一次。",
+    "eventsHint": "關掉不想被打斷的事件。同一事件在數秒內重複觸發時只通知一次。權限請求包含計畫核准。",
     "eventBackgroundTask": "背景任務",
     "eventWorkTask": "待辦任務"
+  },
+  "WindowAttentionSettings": {
+    "title": "工作列 / Dock 提醒",
+    "descriptionMac": "你在其他應用程式中時，智慧體需要你就讓 Dock 圖示跳動。",
+    "descriptionWindows": "視窗未取得焦點時，智慧體需要你就讓它的工作列按鈕閃爍。",
+    "descriptionLinux": "視窗未取得焦點時，智慧體需要你就把它標記為緊急。實際效果取決於桌面環境。",
+    "eventsTitle": "事件",
+    "eventsHintMac": "「短暫」讓圖示跳一下；「直到切回」會一直跳，直到你切回 Codeg。權限請求包含計畫核准。",
+    "eventsHintWindows": "「短暫」閃爍幾下後保持醒目；「直到切回」會一直閃爍，直到你切回視窗。權限請求包含計畫核准。",
+    "eventsHintLinux": "Linux 只有一種緊急標記，兩檔效果相同：視窗會一直帶著標記，直到你切回。權限請求包含計畫核准。",
+    "levelOff": "關閉",
+    "levelInformational": "短暫",
+    "levelCritical": "直到切回"
   },
   "NotificationSoundSettings": {
     "title": "提示音",
@@ -5883,7 +6408,10 @@
     "branchLocal": "本機",
     "branchRemote": "遠端",
     "branchSearchPlaceholder": "搜尋分支…",
-    "branchNone": "無分支"
+    "branchNone": "無分支",
+    "booleanOn": "開啟",
+    "booleanOff": "關閉",
+    "modelNotSwitched": "智慧體沒有切換到所選模型，下面的選項可能屬於另一個模型。"
   },
   "Tasks": {
     "title": "待辦任務",
@@ -5902,6 +6430,10 @@
     "viewSwitchToList": "切換到清單檢視",
     "statusFilter": "狀態",
     "statusFilterAll": "全部狀態",
+    "searchPlaceholder": "搜尋任務",
+    "clearSearch": "清除搜尋",
+    "searchEmptyColumn": "沒有符合項目",
+    "searchNoResults": "沒有與「{query}」相符的任務",
     "listEmpty": "沒有符合目前篩選條件的任務",
     "listColStatus": "狀態",
     "listColTask": "任務",
@@ -5923,6 +6455,7 @@
     "statusFailed": "失敗",
     "statusCanceled": "已取消",
     "statusInterrupted": "已中斷",
+    "statusDeferred": "以後處理",
     "badgeCleanupFailed": "清理失敗",
     "badgeWorktreeKept": "保留 worktree",
     "badgeWorktreeRemoved": "Worktree 已刪除",
@@ -5975,6 +6508,7 @@
     "actionFollowUp": "繼續處理",
     "actionAddNote": "補充說明",
     "followUpSubmit": "傳送",
+    "followUpDialogDescription": "選個情境並寫下要求，agent 會在同一個工作階段接著處理這個任務，卡片隨即回到進行中。",
     "followUpIntentRevise": "修改返工",
     "followUpIntentContinue": "繼續推進",
     "followUpIntentQuestion": "提問答疑",
@@ -5987,6 +6521,8 @@
     "followUpPlaceholderRequeue": "選填：當時為什麼取消？這次要注意什麼？",
     "actionArchive": "封存",
     "actionUnarchive": "取消封存",
+    "actionDefer": "以後處理",
+    "actionUndefer": "移回等你處理",
     "archiveAllDone": "全部封存",
     "dropToStart": "放開即開始執行",
     "errorView": "檢視",
@@ -6014,6 +6550,10 @@
     "promptLabel": "任務描述",
     "promptPlaceholder": "向 agent 描述任務——輸入 @ 可引用檔案，/ 可喚起指令",
     "folderPlaceholder": "選擇資料夾",
+    "baseBranch": "基準分支",
+    "baseBranchPlaceholder": "目前分支",
+    "baseBranchDefault": "任務開始時的目前分支",
+    "baseBranchHint": "任務從該分支拉出工作樹，合併時也會落回該分支。",
     "agentInheritedHint": "繼承自任務設定，修改後僅對本任務生效",
     "agentNoDefaultHint": "任務設定中沒有預設 agent，目前選取的 agent 將隨任務儲存",
     "agentInheritedUnavailableHint": "任務設定中的 {agent} 無法使用，目前選取的 agent 將隨任務儲存",
@@ -6131,6 +6671,10 @@
     "deleteWorktreeConfirmTitle": "刪除 worktree？",
     "deleteWorktreeConfirmBody": "worktree 目錄及其工作分支將被徹底刪除。任務仍留在看板上，其會話會移到專案資料夾下。",
     "eventCreated": "已建立",
+    "eventCreatedAuto": "由自動處理建立",
+    "eventAutoSchedule": "定時掃描",
+    "eventAutoWebhook": "Webhook",
+    "eventAutoManual": "手動掃描",
     "eventStatusChanged": "狀態變更",
     "eventConfigEffective": "啟動配置",
     "eventInitCommand": "初始化命令",
@@ -6173,11 +6717,7 @@
     "deliverPrBackDeleteWorktree": "推回後刪除 worktree",
     "deliverPrBackSubmit": "推送",
     "deliverPrBackDone": "已推回 PR",
-    "deliverPrBackDoneMr": "已推回合併請求",
-    "baseBranch": "基準分支",
-    "baseBranchPlaceholder": "目前分支",
-    "baseBranchDefault": "任務開始時的目前分支",
-    "baseBranchHint": "任務從該分支拉出工作樹，合併時也會落回該分支。"
+    "deliverPrBackDoneMr": "已推回合併請求"
   },
   "CustomSkillsSettings": {
     "loading": "正在載入自訂技能…",
@@ -6683,9 +7223,9 @@
     "viewExisting": "檢視既有任務",
     "scenarioLabel": "處理方式",
     "scenarioFix": "直接修復 / 實作",
-    "scenarioFixHint": "智慧體先在工作樹裡確認問題真實存在，再動手修復；確認不了就如實回報，不會硬改程式碼。",
+    "scenarioFixHint": "智慧體先判斷報告是否屬實，屬實才動手修復；不屬實（無法重現、依設計如此、已修復……）就提前終止、不改任何程式碼，帶著結論回來等你處理。",
     "scenarioPlanFirst": "先出方案",
-    "scenarioPlanFirstHint": "先確認問題真實存在，再產出實作方案就停——你確認後退回任務，於同一工作樹實作。",
+    "scenarioPlanFirstHint": "智慧體先判斷報告是否屬實，屬實才產出實作方案並停下；不屬實就提前終止、不出方案，帶著結論回來等你處理。方案確認後退回任務，於同一工作樹實作。",
     "scenarioReviewFix": "審查並修復",
     "scenarioReviewFixHint": "智慧體先判斷方案本身是否合理，合理才在其上修復問題；不合理就不提交任何程式碼，帶著審查回來等你處理。驗收後修復提交推回原分支。",
     "scenarioReviewOnly": "僅審查",
@@ -6712,6 +7252,79 @@
     "settingsPromptAllHint": "這個面板建立的每個任務都會帶上，不分情境。",
     "settingsPromptScenarioHint": "只有這個情境建立的任務才會帶上。",
     "settingsPromptPlaceholder": "例如：用繁體中文回覆；完成前先跑一次專案的測試。",
+    "settingsSections": "面板設定分區",
+    "settingsTabGeneral": "一般",
+    "settingsTabAuto": "自動處理",
+    "autoIntro": "無需點擊開始，自動把符合的 Issue 和 PR 轉成任務。每個項目最多處理一次——只要它有過任務（即使已被你刪除），就不會再被處理。",
+    "autoGlobalNote": "這些規則適用於所有跟隨全域設定的專案資料夾。",
+    "autoSchedule": "定時掃描",
+    "autoScheduleHint": "按固定間隔掃描儲存庫中符合規則的項目。",
+    "autoInterval": "掃描間隔",
+    "autoIntervalMinutes": "{count, plural, other {# 分鐘}}",
+    "autoIntervalHours": "{count, plural, other {# 小時}}",
+    "autoWebhook": "事件觸發（Webhook）",
+    "autoWebhookHint": "儲存庫平台通知有 Issue 或 PR 變更時立即掃描。",
+    "autoWebhookUrl": "Payload URL",
+    "autoWebhookUrlUnavailable": "桌面版只有在 Web 服務執行時才能接收 Webhook——請先在 設定 → Web 服務 中啟動。",
+    "autoWebhookSecret": "密鑰",
+    "autoWebhookSecretPending": "儲存時會自動產生密鑰。",
+    "autoWebhookShowSecret": "顯示密鑰",
+    "autoWebhookHideSecret": "隱藏密鑰",
+    "autoWebhookRegenerate": "重新產生密鑰",
+    "autoWebhookSetup": "在儲存庫的 Webhook 設定中填入上方的 URL，內容類型選 application/json，填入此密鑰，並勾選 Issue 和 PR 相關事件（GitLab：勾選 Issues 與 Merge request 事件，密鑰填在 Secret token）。儲存庫平台必須能連到該位址——連不到時請改用定時掃描。",
+    "autoCopy": "複製",
+    "autoCopied": "已複製",
+    "autoIssues": "Issue",
+    "autoIssuesHint": "處理未關閉的 Issue。",
+    "autoPulls": "PR / MR",
+    "autoPullsHint": "處理未關閉的 Pull / Merge Request。",
+    "autoHandleWith": "處理方式",
+    "autoIssueScenario": "自動處理 Issue 時的處理方式",
+    "autoPrScenario": "自動處理 PR / MR 時的處理方式",
+    "autoSkipDrafts": "略過草稿，等它就緒再處理",
+    "autoIncludeExisting": "包含開啟前已存在的項目",
+    "autoIncludeExistingHint": "關閉時：只處理開啟自動處理之後新建或有更新的項目。想處理舊項目，替它加個標籤即可。",
+    "autoIncludeExistingOnHint": "所有符合規則的未關閉項目都會被處理，包括開啟自動處理之前就已存在的。",
+    "autoSinceHint": "關閉時：只處理 {time}（開啟自動處理時）之後新建或有更新的項目。想處理舊項目，替它加個標籤即可。",
+    "autoRulesHint": "規則不分大小寫，* 符合任意字元：area/* 表示所有以 area/ 開頭的標籤，*[bot] 表示所有機器人帳號。項目必須通過每一個已填寫的清單，「不處理」清單永遠優先；留空的清單不做篩選。",
+    "autoIncludeLabels": "只處理帶有這些標籤之一的項目",
+    "autoExcludeLabels": "不處理帶有這些標籤的項目",
+    "autoIncludeAuthors": "只處理這些人建立的項目",
+    "autoExcludeAuthors": "不處理這些人建立的項目",
+    "autoLabelPlaceholder": "輸入標籤或模式，按 Enter 新增",
+    "autoAuthorPlaceholder": "輸入使用者名稱或模式，按 Enter 新增",
+    "autoRemovePattern": "移除 {pattern}",
+    "autoAutoStart": "立即開始",
+    "autoAutoStartHint": "新任務建立後立即排隊，何時執行由任務設定的並行上限決定。關閉時：任務留在待辦中。",
+    "autoWriteback": "完成後回寫留言",
+    "autoWritebackHint": "任務完成時，在項目下發布與發起對話框「回寫留言」開關相同的簡短狀態留言。",
+    "autoActivity": "執行情況",
+    "autoScanNow": "立即掃描",
+    "autoScanNowOff": "開啟一種觸發方式並儲存後才能掃描。",
+    "autoScanNowDirty": "請先儲存——掃描使用的是已儲存的規則。",
+    "autoStatusUnavailable": "此資料目錄的任務看板由另一個 codeg 處理程序執行，自動處理也在那裡執行，不在這裡。",
+    "autoStatusNever": "尚未掃描。",
+    "autoStatusScanning": "掃描中…",
+    "autoStatusLast": "上次掃描 {time}（{trigger}）：",
+    "autoStatusCounts": "列出 {examined} · 符合 {matched} · 已有任務 {handled} · 新建 {created}。",
+    "autoStatusError": "上次掃描 {time}（{trigger}）中止：{error}",
+    "autoStatusCreated": "新任務：{items}",
+    "autoStatusSkipped": "略過：{list}",
+    "autoStatusFailed": "無法建立：{items}",
+    "autoStatusStartFailed": "已建立但未開始：{error}",
+    "autoStatusTruncated": "清單被截斷——下次掃描會重新讀取同一時間範圍。",
+    "autoStatusNext": "下次定時掃描：{time}",
+    "autoStatusDelivery": "最近一次 Webhook 推送：{time}",
+    "autoTriggerSchedule": "定時",
+    "autoTriggerWebhook": "Webhook",
+    "autoTriggerManual": "手動",
+    "autoSkipKind": "類型不符",
+    "autoSkipNotOpen": "未開啟",
+    "autoSkipDraft": "草稿",
+    "autoSkipExcludedLabel": "標籤被排除",
+    "autoSkipExcludedAuthor": "作者被排除",
+    "autoSkipMissingLabel": "無符合標籤",
+    "autoSkipAuthorNotIncluded": "作者不在名單",
     "save": "儲存"
   },
   "Canvas": {
@@ -7513,233 +8126,6 @@
         "available": "來源檔案存在",
         "missing": "來源檔案已遺失"
       }
-    }
-  },
-  "AgentVocabulary": {
-    "deepseekModeDefault": "常規",
-    "deepseekModeDefaultDescription": "直接讀寫檔案、執行命令完成任務",
-    "deepseekModePlan": "計畫",
-    "deepseekModePlanDescription": "先調查再提出完整方案，經你確認後才動手；這只是對模型的引導，實際邊界仍由「檔案權限」決定。",
-    "deepseekOptionModel": "模型",
-    "deepseekOptionReasoning": "推理檔位",
-    "deepseekOptionReasoningDescription": "越高越慢越耗 token，難題更穩",
-    "deepseekOptionSandbox": "檔案權限",
-    "deepseekOptionSandboxDescription": "命令與檔案工具共用這一條邊界",
-    "deepseekReasoningOff": "關閉",
-    "deepseekReasoningOffDescription": "不做推理，直接作答；最快",
-    "deepseekReasoningLow": "低",
-    "deepseekReasoningLowDescription": "略作推理；比關閉穩，比高檔快",
-    "deepseekReasoningHigh": "高",
-    "deepseekReasoningHighDescription": "推理後作答；日常編碼的預設檔",
-    "deepseekReasoningMax": "最高",
-    "deepseekReasoningMaxDescription": "推理更久；難題更穩，但較慢且更耗 token",
-    "deepseekSandboxReadOnly": "唯讀",
-    "deepseekSandboxReadOnlyDescription": "依唯讀策略執行；需要寫入時切換權限。部分平台上只是部分強制。",
-    "deepseekSandboxWorkspaceWrite": "可寫工作區",
-    "deepseekSandboxWorkspaceWriteDescription": "寫入意在限制於工作階段工作區與系統暫存目錄；越界的呼叫會請求單次授權。部分平台上只是部分強制。",
-    "deepseekSandboxFullAccess": "完全開放（無沙箱）",
-    "deepseekSandboxFullAccessDescription": "不施加任何檔案限制。僅在你清楚後果時選擇。",
-    "deepseekPermissionAllowOnce": "允許本次",
-    "deepseekPermissionRejectOnce": "拒絕"
-  },
-  "CloseBehaviorSettings": {
-    "title": "關閉按鈕行為",
-    "description": "選擇點擊主視窗關閉按鈕時的行為。",
-    "trayUnavailable": "目前系統沒有可用的系統匣，關閉按鈕將一律結束 codeg。",
-    "behaviorAsk": "每次詢問",
-    "behaviorMinimize": "最小化到系統匣",
-    "behaviorExit": "結束 codeg",
-    "saveFailed": "儲存關閉行為失敗：{message}"
-  },
-  "CloseRequestDialog": {
-    "askTitle": "要關閉 codeg 嗎？",
-    "askDescription": "codeg 可以最小化到系統匣繼續執行，讓智能體與終端機保持運作；也可以完全結束。",
-    "confirmExitTitle": "要結束 codeg 嗎？",
-    "confirmExitDescription": "目前設定為：關閉視窗即結束 codeg。",
-    "runningTerminals": "還有 {count} 個終端機正在執行，結束後會全部中止。",
-    "remember": "記住我的選擇",
-    "cancel": "取消",
-    "minimize": "最小化到系統匣",
-    "exit": "結束 codeg",
-    "actionFailed": "操作失敗：{message}"
-  },
-  "CollaborationSettings": {
-    "sectionTitle": "協作",
-    "sectionDescription": "智能體之間如何協同，以及它們能在對話中動用 codeg 的哪些工具。"
-  },
-  "BranchPicker": {
-    "searchPlaceholder": "搜尋分支…",
-    "none": "無分支",
-    "local": "本機",
-    "remote": "遠端",
-    "useCustom": "使用「{query}」",
-    "head": "HEAD"
-  },
-  "ConfigSyncSettings": {
-    "title": "設定同步",
-    "scopeTitle": "同步範圍",
-    "scopeIncludedTitle": "包含",
-    "scopeExcludedTitle": "不包含",
-    "scopeIncluded": {
-      "providers": "模型服務商（含 API 金鑰）",
-      "agentSettings": "智慧體設定",
-      "customAgents": "自訂智慧體",
-      "quickMessages": "快捷訊息",
-      "taskTemplates": "任務範本",
-      "preferences": "應用偏好（語言、外觀、開關）"
-    },
-    "scopeExcluded": {
-      "conversations": "對話紀錄與歷史",
-      "uploads": "上傳的檔案與圖片",
-      "workspaces": "工作區專案與路徑",
-      "mcp": "MCP 伺服器（由各 CLI 自行管理）",
-      "credentials": "登入憑證與金鑰"
-    },
-    "fileTitle": "設定檔",
-    "exportButton": "匯出至檔案",
-    "importButton": "從檔案匯入",
-    "fileHint": "匯出為單一 JSON 檔案，可複製到另一台裝置。匯入時依項目新增或更新，檔案中沒有的本機項目會保留。",
-    "webdavTitle": "WebDAV 同步",
-    "webdavHint": "將設定快照上傳到你自己的 WebDAV 伺服器。",
-    "presetLabel": "服務商",
-    "preset": {
-      "jianguoyun": "堅果雲",
-      "nextcloud": "Nextcloud",
-      "synology": "群暉 NAS",
-      "custom": "自訂"
-    },
-    "presetHint": {
-      "jianguoyun": "堅果雲需要在「安全選項」裡產生應用密碼，不能用登入密碼。",
-      "nextcloud": "把網域和使用者名稱換成你自己的，密碼用「設定 → 安全」裡產生的應用密碼。",
-      "synology": "需要在 DSM 套件中心安裝並啟用 WebDAV Server，預設埠 5005（HTTP）/ 5006（HTTPS）。"
-    },
-    "serverUrl": "伺服器位址",
-    "username": "使用者名稱",
-    "password": "密碼",
-    "passwordKeep": "留空則沿用已儲存的密碼",
-    "passwordPlaceholder": "應用密碼",
-    "remoteDir": "遠端目錄",
-    "profile": "設定集",
-    "profileHint": "使用相同設定集的裝置共用同一份設定；要區分工作與個人環境時可以分開命名。",
-    "autoSyncLabel": "自動上傳",
-    "autoSyncHint": "定期檢查，僅在設定改變時上傳。",
-    "intervalLabel": "檢查間隔",
-    "intervalOption": "每 {minutes} 分鐘",
-    "saveButton": "儲存",
-    "testButton": "測試連線",
-    "uploadButton": "立即同步",
-    "restoreButton": "從遠端還原",
-    "saved": "同步設定已儲存",
-    "testSucceeded": "已成功連線 WebDAV 伺服器",
-    "uploaded": "設定已上傳",
-    "exported": "設定已匯出",
-    "restored": "已套用 {count} 項設定",
-    "imported": "已套用 {count} 項設定",
-    "noRemoteSnapshot": "伺服器上還沒有設定快照",
-    "lastSyncAt": "上次同步：{time}",
-    "neverSynced": "尚未同步",
-    "lastError": "上次錯誤：{message}",
-    "working": "處理中…",
-    "plaintextWarning": "快照以明文上傳且包含 API 金鑰，請只使用只有你能存取的 WebDAV 伺服器。同步憑證本身不會寫入快照。",
-    "importConfirmTitle": "匯入設定？",
-    "importConfirmBody": "檔案中的項目將在本機新增或更新，檔案未涉及的本機項目會保留。",
-    "restartHint": "部分變更（外觀、語言、服務商列表）需要重新啟動 codeg 後才會生效。",
-    "importConfirmAction": "匯入",
-    "restoreConfirmTitle": "從遠端還原？",
-    "restoreConfirmBody": "將把 {device} 於 {time} 上傳的快照套用到本機，快照未涉及的本機項目會保留。",
-    "restoreConfirmAction": "還原",
-    "cancel": "取消",
-    "emptySnapshot": "這份快照裡沒有任何設定項目。",
-    "domain": {
-      "modelProviders": "{count} 個模型服務商",
-      "agentSettings": "{count} 項智能體設定",
-      "customAgents": "{count} 個自訂智能體",
-      "quickMessages": "{count} 則快捷訊息",
-      "taskTemplates": "{count} 個任務範本",
-      "preferences": "{count} 項應用偏好"
-    },
-    "rollbackTitle": "復原匯入",
-    "rollbackHint": "每次匯入與每次還原前，都會先保存這台裝置當時的設定，最近十份會保留下來。",
-    "rollbackAction": "復原",
-    "rollbackUnknownTime": "時間不明",
-    "rollbackConfirmTitle": "回到這份設定？",
-    "rollbackConfirmBody": "這會用 {time} 保存的那份副本取代目前的設定。目前的設定會先被保存，所以這一步同樣可以復原。",
-    "rollbackConfirmAction": "復原",
-    "rolledBack": "已還原 {count} 項設定",
-    "encryptLabel": "加密快照",
-    "encryptHint": "用通行密語保護上傳的檔案。參與同步的每台裝置都要使用同一組。",
-    "encryptedNotice": "快照會先用你的通行密語加密再上傳。一旦遺失，伺服器上的副本將無法復原。",
-    "passphrase": "通行密語",
-    "passphraseKeep": "留空則沿用已保存的通行密語",
-    "passphrasePlaceholder": "加密通行密語",
-    "passphraseHint": "只保存在這台裝置的鑰匙圈中，不會上傳。請在你的其他裝置上輸入同一組。"
-  },
-  "configSync": {
-    "error": {
-      "newerSchema": "這份快照由更新版本的 codeg 建立（格式 {snapshotVersion}），目前版本最高支援格式 {appVersion}。",
-      "checksum": "快照與校驗值不符，可能不完整。",
-      "invalidSnapshot": "這不是有效的 codeg 設定快照檔案。",
-      "noRemoteSnapshot": "伺服器上還沒有設定快照。",
-      "notConfigured": "請先完成 WebDAV 伺服器設定再同步。",
-      "unauthorized": "WebDAV 伺服器拒絕了該使用者名稱或密碼。",
-      "forbidden": "WebDAV 伺服器拒絕存取該目錄。",
-      "remotePath": "遠端目錄或設定集名稱無效。",
-      "quota": "WebDAV 伺服器已無可用空間。",
-      "network": "無法連線到 WebDAV 伺服器。",
-      "server": "WebDAV 伺服器回傳錯誤（{status}）。",
-      "passphraseRequired": "該快照已加密，請先設定加密通行密語再同步。",
-      "badPassphrase": "無法解密該快照。請檢查通行密語，也可能是檔案已損毀。",
-      "badDomain": "無法讀取該快照中的 {domain} 部分。",
-      "noRollback": "這台裝置上已經沒有那份保存的設定了。",
-      "credentialsUnreadable": "無法讀取已儲存的憑證。請解鎖系統鑰匙圈後重試。",
-      "notEncrypted": "伺服器上的快照未加密，但本機已開啟加密。請從本機上傳以取代它，或關閉加密後再使用。"
-    }
-  },
-  "AgentTools": {
-    "delegation": {
-      "label": "多代理委派",
-      "short": "把任務交給另一個代理處理。",
-      "hint": "允許代理把一個自洽的子任務交給另一個代理，後者在自己的工作階段裡跑完再回報。其餘設定——最多能巢狀幾層、由哪個代理來跑——在上面那一節。"
-    },
-    "feedback": {
-      "label": "即時回饋",
-      "short": "回合進行中補充說明，不打斷執行。",
-      "hint": "在智慧代理工作時向它傳送備註與修正。支援即時插入的代理會立刻在目前回合中看到你的備註；其他代理則透過檢查回饋的工具讀取——這類代理通常只有在提示中提到時才會檢查，例如在訊息中加上「定期檢查我的即時回饋」。"
-    },
-    "ask": {
-      "label": "向使用者提問",
-      "short": "讓代理拿不準時先問你。",
-      "hint": "允許智能體暫停並向你提出多選問題，問題會顯示在對話輸入框上方。智能體會一直等待，直到你作答（或略過）。"
-    },
-    "sessions": {
-      "label": "取得工作階段資訊",
-      "short": "查詢歷史工作階段及其結果。",
-      "hint": "允許智慧代理查詢你在訊息中提及的工作階段（工作階段徽章），讀取其標題、代理、狀態、工作區、Token 用量與最近訊息。"
-    },
-    "browser": {
-      "label": "讀取和操作內建瀏覽器",
-      "short": "開啟、讀取並操作內建瀏覽器裡的頁面。",
-      "hint": "允許代理看到內建瀏覽器裡開著哪些頁面、讀取你共享的那些，並在你允許操作的頁面上點擊和輸入；它也可以自己開啟一個網址、把分頁指向別處、關閉分頁。預設關閉。讀哪一頁仍然是你在那個分頁的工具列上單獨做的決定——但請注意：只要設了預設共享層級，代理自己開啟的頁面一載入就會按那個層級共享給它。關閉這個開關立即生效，正在執行的代理也一樣。"
-    },
-    "browserEval": {
-      "label": "在內建瀏覽器中執行程式碼",
-      "short": "在你共享的頁面上執行它自己寫的程式碼，預設不詢問。",
-      "hint": "允許智慧代理在你分享的頁面上執行它自己寫的 JavaScript。預設關閉，而且需要先開啟上面那個開關。開啟它就意味著程式碼不經詢問直接執行，所以決定權就在這個開關上；如果想逐段過目，可在「設定 → 內建瀏覽器」裡改成每次都問你。"
-    },
-    "computer": {
-      "label": "查看和操作桌面視窗",
-      "short": "列出應用程式和視窗，讀取你分享的視窗，操作你允許的視窗。",
-      "hint": "讓智慧體列出桌面上的應用程式和視窗，讀取你分享給它的視窗——截圖、視窗內容，以及是否已出現預期的狀態——並在你允許操作的視窗裡點擊、輸入和按鍵。在你從狀態列的「電腦操作」面板分享某個視窗之前，任何視窗都不可讀；除非你還允許操作，否則任何視窗都不能被操作。視窗關閉、閒置一段時間或你停止分享時，分享即結束；面板中的「停止智慧體」會立即停下所有智慧體。輸入在背景送達視窗；遇到背景收不到輸入的應用程式，智慧體可以把視窗切到前景完成操作，可在電腦操作設定中關閉。僅限桌面版；在 macOS 上需要為 codeg-computer-helper 授予權限。預覽功能。"
-    },
-    "automations": {
-      "label": "建立自動化",
-      "short": "建立和管理定時自動化。",
-      "hint": "把對話儲存為按排程執行的自動化。預設關閉——它之後會自行啟動代理。"
-    },
-    "taskboard": {
-      "label": "建立待辦任務",
-      "short": "建立和管理工作任務。",
-      "hint": "從對話中往待辦看板排一張任務卡。預設關閉——它會寫入應用程式狀態。"
     }
   },
   "Browser": {

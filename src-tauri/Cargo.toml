@@ -1,6 +1,6 @@
 [package]
 name = "codeg"
-version = "0.35.1"
+version = "0.38.0"
 description = "Agent Code Generation App"
 authors = ["feitao"]
 edition = "2021"
@@ -43,9 +43,9 @@ tauri-runtime = [
 # `ConnectionManager::insert_test_connection`, parser `with_base_dir`, the
 # `db::test_helpers` module) for integration tests in `tests/*.rs`. Without
 # this feature the items are physically uncompiled in release builds. It
-# also builds the three standalone binaries below, so the test and lint runs
+# also builds the four standalone binaries below, so the test and lint runs
 # cover them.
-test-utils = ["computer-helper", "server-bin", "mcp-bin"]
+test-utils = ["computer-helper", "server-bin", "mcp-bin", "cli-bin"]
 # The `codeg-computer-helper` binary. Off unless asked for: the Tauri CLI puts
 # every binary target whose features are on into a bundle, and the copy
 # `tauri build` would compile is not the helper that ships. That is the one
@@ -56,6 +56,10 @@ computer-helper = ["dep:x11rb"]
 # desktop app serves its web interface from its own process and has no use
 # for a second server, so it must not ship one (70–90 MB) in its bundle.
 server-bin = []
+# The `codeg-cli` binary: the headless client of a running codeg (`codeg-cli
+# run …`). Off unless asked for, like the other sidecars: the copy that ships
+# in the desktop bundle is the one `prepare-sidecars` builds.
+cli-bin = ["dep:clap"]
 # The `codeg-mcp` binary, likewise: the companion that ships is the sidecar
 # `prepare-sidecars` builds without the desktop features, and the copy `tauri
 # build` would compile — with them, WebKit and all — would replace it in the
@@ -95,6 +99,14 @@ name = "codeg-mcp"
 path = "src/bin/codeg_mcp.rs"
 required-features = ["mcp-bin"]
 
+# The command-line client: a thin HTTP client of a running desktop app or
+# codeg-server. Built only with `cli-bin` (and, for the real thing, without the
+# default features).
+[[bin]]
+name = "codeg-cli"
+path = "src/bin/codeg_cli.rs"
+required-features = ["cli-bin"]
+
 # The computer-use executor: holds the OS permissions (macOS TCC) in place of
 # codeg, and runs the pinned cua-driver as its child. No Tauri: it is launched
 # by the desktop app and serves only it. Built only with `computer-helper`.
@@ -127,18 +139,27 @@ tauri-build = { version = "2", features = [], optional = true }
 # app's window builders sets one. Turn that off by giving them
 # `.devtools(cfg!(debug_assertions))`, not by taking this feature away — the
 # browser tabs need it.
-# `tauri build` refuses to package when this crate and `@tauri-apps/api`
-# differ in major.minor. `~2.12` keeps `cargo update` inside that release.
-tauri = { version = "~2.12", features = ["macos-private-api", "tray-icon", "devtools"], optional = true }
+# No `macos-private-api`: since tauri 2.12.1 the transparent windows (the pet
+# and its panel, computer use's strip and marker) need neither it nor
+# `macOSPrivateApi`, and `tauri build` drops it when the config does not ask.
+# `~` keeps each crate on the same minor as its `@tauri-apps/plugin-*` package.
+# `tauri build` refuses to package when those minors differ.
+tauri = { version = "~2.12", features = ["tray-icon", "devtools"], optional = true }
 # Only for its `wry` re-export (version-locked to the runtime tauri uses).
 tauri-runtime-wry = { version = "~2.12", optional = true, default-features = false }
-# Same major.minor as `@tauri-apps/plugin-opener` / `plugin-dialog`.
-# A newer opener (2.7) still satisfies `version = "2"` and fails the check.
-tauri-plugin-opener = { version = "~2.6", optional = true }
+tauri-plugin-opener = { version = "~2.7", optional = true }
 tauri-plugin-dialog = { version = "~2.8", optional = true }
 async-trait = "0.1"
+# `codeg-cli`'s argument parser (feature `cli-bin`).
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The JSON Schema a `codeg-cli --output-schema` run's result is checked against
+# (drafts 4 to 2020-12). Rather than `jsonschema`: it brings three small crates
+# this tree lacks, where `jsonschema` brings a dozen and turns on serde_json's
+# `float_roundtrip` for everything; and its patterns run on the `regex` crate,
+# in linear time.
+boon = "0.6"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 # Host IANA zone name (e.g. `Asia/Shanghai`) — chrono only exposes the offset.
@@ -229,6 +250,11 @@ http = "1"
 percent-encoding = "2"
 http-body = "1"
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+# Direct deps (already in the graph via reqwest) so a remote workspace's
+# WebSockets dial through the TCP connector its HTTP requests use, Happy
+# Eyeballs included — see `remote_proxy::connect_remote_ws`.
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+tower-service = "0.3"
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["io", "rt", "compat"] }
 # LSP client loop + types. Pin lsp-types to the version async-lsp 0.2.4
@@ -242,10 +268,16 @@ qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg", "gif"] }
 include_dir = "0.7"
 sha2 = "0.10"
+# HMAC-SHA256 over a forge webhook's body (GitHub / Gitea signatures) with a
+# constant-time check. Already in the lock tree as a transitive dependency.
+hmac = "0.12"
 aes-gcm = { version = "0.10", features = ["stream"] }
 argon2 = "0.5"
 tempfile = "3"
-minisign-verify = "0.2"
+# The line tauri-plugin-updater verifies with, so the server's self-update
+# (`update::verify`) accepts exactly the signatures the desktop updater does —
+# 0.3 rejects a non-canonical Ed25519 `S`.
+minisign-verify = "0.3"
 semver = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "registry", "std"] }
@@ -262,12 +294,13 @@ bcrypt = "0.16"
 x509-parser = "0.16"
 rustls-pemfile = "2"
 pbkdf2 = "0.12"
-hmac = "0.12"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-# Same major.minor as the matching `@tauri-apps/plugin-*` packages.
+# `requireSignedVersion` (tauri.conf.json) needs updater 2.12 or later.
+# 2.14 matches `@tauri-apps/plugin-updater`. `~` stops a later minor from
+# drifting away from the JS package.
 tauri-plugin-window-state = { version = "~2.5", optional = true }
-tauri-plugin-updater = { version = "~2.13", optional = true }
+tauri-plugin-updater = { version = "~2.14", optional = true }
 tauri-plugin-process = { version = "~2.4", optional = true }
 tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
@@ -297,7 +330,7 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_StationsAndDesktops", "Win32_UI_Shell"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_System_Threading", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_StationsAndDesktops", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_System_Registry"] }
 junction = "1"
 # Built-in browser Windows shim (isolated world over CDP, world-scoped eval,
 # snapshots, find, history, the sign-in identity, the subframe fence, and the

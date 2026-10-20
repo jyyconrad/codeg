@@ -203,6 +203,10 @@ pub fn host_wake_policy(agent_type: AgentType) -> HostWakePolicy {
         | AgentType::DeepSeek
         | AgentType::Qoder
         | AgentType::Antigravity
+        | AgentType::Kiro
+        | AgentType::ZCode
+        | AgentType::Trae
+        | AgentType::CommandCode
         | AgentType::CodegAgent
         | AgentType::Custom(_) => HostWakePolicy::Skip,
     }

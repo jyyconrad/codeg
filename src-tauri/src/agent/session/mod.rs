@@ -451,6 +451,8 @@ mod tests {
             .send(ConnectionCommand::SetConfigOption {
                 config_id: "thought_level".into(),
                 value_id: "high".into(),
+
+                reply: None,
             })
             .await
             .expect("set thought");
@@ -475,6 +477,8 @@ mod tests {
                     text: "say ok".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -505,6 +509,8 @@ mod tests {
         h.cmd_tx
             .send(ConnectionCommand::SetMode {
                 mode_id: "plan".into(),
+
+                reply: None,
             })
             .await
             .expect("set mode");
@@ -519,6 +525,8 @@ mod tests {
                     text: "plan please".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -559,6 +567,8 @@ mod tests {
                     text: "say hello".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -587,6 +597,8 @@ mod tests {
                     text: "hang please".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -665,6 +677,8 @@ mod tests {
                     text: "continue".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -736,6 +750,8 @@ mod tests {
             .send(ConnectionCommand::SetConfigOption {
                 config_id: "model".into(),
                 value_id: "small".into(),
+
+                reply: None,
             })
             .await
             .unwrap();
@@ -745,6 +761,8 @@ mod tests {
                     text: "continue after model switch".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .unwrap();
@@ -835,6 +853,8 @@ mod tests {
                     text: "delegate".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -849,6 +869,8 @@ mod tests {
             .send(ConnectionCommand::RespondPermission {
                 request_id,
                 option_id: "allow-once".into(),
+
+                origin: crate::acp::types::PermissionAnswerOrigin::User,
             })
             .await
             .expect("allow delegation");
@@ -878,6 +900,8 @@ mod tests {
             .send(ConnectionCommand::RespondPermission {
                 request_id,
                 option_id: "allow-once".into(),
+
+                origin: crate::acp::types::PermissionAnswerOrigin::User,
             })
             .await
             .expect("allow child write");
@@ -924,6 +948,8 @@ mod tests {
                     text: "hang".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -940,6 +966,8 @@ mod tests {
             let _ = h.cmd_tx.try_send(ConnectionCommand::Prompt {
                 blocks: vec![PromptInputBlock::Text { text: "x".into() }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             });
         }
         h.shutdown.signal_shutdown();
@@ -1015,6 +1043,8 @@ mod tests {
                     text: "use echo".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -1044,6 +1074,8 @@ mod tests {
                     text: "use echo again".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("second prompt");
@@ -1059,6 +1091,8 @@ mod tests {
             .send(ConnectionCommand::RespondPermission {
                 request_id,
                 option_id: "allow-once".into(),
+
+                origin: crate::acp::types::PermissionAnswerOrigin::User,
             })
             .await
             .expect("allow");
@@ -1088,6 +1122,8 @@ mod tests {
                     },
                 ],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -1128,6 +1164,8 @@ mod tests {
                     uri: None,
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -1179,6 +1217,8 @@ mod tests {
                         text: "say ok".into(),
                     }],
                     user_message: None,
+
+                    internal_suffix: Vec::new(),
                 })
                 .await
                 .expect("prompt");
@@ -1234,6 +1274,8 @@ mod tests {
                     text: "say hello".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -1279,6 +1321,8 @@ mod tests {
                     text: "first".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt");
@@ -1322,6 +1366,8 @@ mod tests {
                     text: "edited first".into(),
                 }],
                 user_message: None,
+
+                internal_suffix: Vec::new(),
             })
             .await
             .expect("prompt after rewind");

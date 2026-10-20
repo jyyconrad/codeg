@@ -54,12 +54,12 @@
       "science": "Ciência",
       "office_tools": "Ferramentas de escritório",
       "skill_packs": "Pacotes de habilidades",
-      "quick_messages": "Mensagens rápidas",
-      "logs": "Registros de execução",
-      "wiki": "Wiki pessoal",
       "collaboration": "Colaboração",
       "browser": "Uso do navegador",
-      "computer_use": "Uso do computador"
+      "computer_use": "Uso do computador",
+      "quick_messages": "Mensagens rápidas",
+      "logs": "Registros de execução",
+      "wiki": "Wiki pessoal"
     }
   },
   "CodeIntelligenceSettings": {
@@ -315,6 +315,21 @@
     "autostartDescription": "Abre automaticamente depois de você entrar neste computador.",
     "autostartSaveFailed": "Falha ao salvar as configurações de início automático: {message}",
     "autostartUnavailable": "Não foi possível ler o registro de inicialização deste computador: {message}",
+    "cliAccessTitle": "Acesso por linha de comando",
+    "cliAccessDescription": "Permite que o comando codeg-cli deste computador execute prompts pelo Codeg: em scripts, jobs de CI ou nos terminais do próprio Codeg. Só este computador pode se conectar, com uma chave guardada em um arquivo privado.",
+    "cliAccessEndpointFile": "Arquivo de conexão:",
+    "cliAccessExample": "Exemplo:",
+    "cliAccessOff": "Desativado: o codeg-cli deste computador não consegue acessar o Codeg.",
+    "cliAccessUnavailable": "Não foi possível iniciar o acesso por linha de comando: {message}",
+    "cliAccessSaveFailed": "Não foi possível alterar o acesso por linha de comando: {message}",
+    "cliToolInstall": "Instalar a ferramenta de linha de comando",
+    "cliToolInstalled": "{command} está no seu PATH:",
+    "cliToolPackage": "{command} veio com o pacote e está no seu PATH:",
+    "cliToolNotInstalled": "Coloque {command} no seu PATH para que um terminal fora do Codeg o encontre.",
+    "cliToolConflict": "Deixado como estava: {message}",
+    "cliToolNote": "Observação: {message}",
+    "cliToolInstalledToast": "{command} está no seu PATH. Abra um novo terminal para usá-lo.",
+    "cliToolInstallFailed": "Não foi possível instalar a ferramenta de linha de comando: {message}",
     "proxyTitle": "Proxy de rede",
     "proxyDescription": "Quando ativado, as solicitações de rede seguintes priorizam este proxy (incluindo chat ACP, instalação de agentes e operações remotas do Git).",
     "loadFailed": "Falha ao carregar: {message}",
@@ -333,6 +348,8 @@
     "appLanguage": "Idioma do app",
     "languageSaveSuccess": "As configurações de idioma foram salvas",
     "languageSaveFailed": "Falha ao salvar as configurações de idioma: {message}",
+    "dataTitle": "Dados e sincronização",
+    "dataDescription": "A sincronização de configuração leva seus ajustes de uma máquina para outra; o backup empacota todos os dados do codeg desta máquina.",
     "updateTitle": "Atualização do app",
     "versionTitle": "Atualização de software",
     "updateDescription": "Verifique versões mais novas na fonte de releases configurada e instale diretamente quando disponíveis.",
@@ -387,9 +404,7 @@
       "downloadFailed": "Falha ao baixar o pacote de atualização. Tente novamente mais tarde.",
       "installFailed": "Falha ao instalar a atualização. Feche o app e tente novamente.",
       "unknown": "Falha na atualização. Tente novamente mais tarde."
-    },
-    "dataTitle": "Dados e sincronização",
-    "dataDescription": "A sincronização de configuração leva seus ajustes de uma máquina para outra; o backup empacota todos os dados do codeg desta máquina."
+    }
   },
   "VersionControlSettings": {
     "loading": "Carregando...",
@@ -762,12 +777,12 @@
       "configJson": "Configuração MCP (JSON)",
       "draftTitle": "Novo MCP",
       "draftDescription": "Informe um Server ID e a configuração para criar um servidor MCP local.",
+      "suggestedLabel": "Começar a partir de um servidor conhecido",
+      "suggestedChromeNote": "Preenche o formulário com o chrome-devtools-mcp oficial do Google — o registro lista imitações com o mesmo nome, e isto fixa o verdadeiro. Ele controla um Chrome SEPARADO que o codeg não supervisiona: você ganha dados de rede e desempenho que as ferramentas do navegador integrado não oferecem, e nenhuma das proteções delas — sem compartilhamento por aba, sem barra de atividade, sem aprovação por trecho. O `npx` baixa o pacote do npm na primeira execução.",
       "serverIdLabel": "Server ID",
       "serverIdPlaceholder": "Server ID (ex.: my-mcp)",
       "typeHint": "Tipos suportados: stdio, http (aliases: streamable-http, streamableHttp), sse. env só é usado por stdio; para MCPs remotos use headers para transportar tokens de autenticação.",
-      "envOnRemoteWarning": "env detectado em um MCP remoto. Apenas stdio usa env; MCPs remotos transportam tokens de autenticação via headers, portanto env será ignorado ao salvar.",
-      "suggestedLabel": "Começar a partir de um servidor conhecido",
-      "suggestedChromeNote": "Preenche o formulário com o chrome-devtools-mcp oficial do Google — o registro lista imitações com o mesmo nome, e isto fixa o verdadeiro. Ele controla um Chrome SEPARADO que o codeg não supervisiona: você ganha dados de rede e desempenho que as ferramentas do navegador integrado não oferecem, e nenhuma das proteções delas — sem compartilhamento por aba, sem barra de atividade, sem aprovação por trecho. O `npx` baixa o pacote do npm na primeira execução."
+      "envOnRemoteWarning": "env detectado em um MCP remoto. Apenas stdio usa env; MCPs remotos transportam tokens de autenticação via headers, portanto env será ignorado ao salvar."
     },
     "market": {
       "selectMarketplace": "Selecionar marketplace",
@@ -836,13 +851,105 @@
       "tabGeneral": "Geral",
       "tabAgentDefaults": "Padrões do subagente",
       "agentDefaultsDescription": "Substituições por agente aplicadas quando a Colaboração multiagente inicia um subagente para uma chamada de delegação. As opções mostradas vêm de uma sondagem ao vivo: o que você escolhe é exatamente o que o agente aceitará.",
+      "agentDefaultsAgentHint": "As opções deixadas em Padrão mantêm o valor do próprio agente.",
+      "agentDefaultsDelegationOff": "A colaboração multiagente está desativada. Ative-a para editar estes padrões.",
       "probing": "Carregando opções disponíveis do agente…",
       "probeFailed": "Falha ao carregar opções: {detail}",
       "retry": "Tentar novamente",
       "noConfigAvailable": "Este agente não possui opções configuráveis.",
       "modeLabel": "Modo",
       "agentDefaultHint": "Padrão do agente: {value}",
-      "defaultOptionLabel": "Padrão ({value})"
+      "defaultOptionLabel": "Padrão ({value})",
+      "overrideCount": "{count, plural, one {# substituição} other {# substituições}}",
+      "tabAssistants": "Assistentes",
+      "booleanOn": "Ativado",
+      "booleanOff": "Desativado",
+      "modelNotSwitched": "O agente não mudou para o modelo selecionado, então estas opções podem ser de outro modelo.",
+      "unsavedChanges": "Alterações não salvas",
+      "assistants": {
+        "description": "Assistentes são predefinições de delegação que você pode mencionar com @: um agente com todas as opções escolhidas e instruções permanentes. Delegar a um deles executa exatamente essa configuração.",
+        "create": "Novo assistente",
+        "delegationOff": "A colaboração multiagente está desativada, então por enquanto não é possível delegar a assistentes.",
+        "delegationOffAction": "Ir para {tab}",
+        "unsavedElsewhere": "{tabs} tem alterações não salvas.",
+        "unsavedGoBack": "Voltar",
+        "loadFailed": "Falha ao carregar assistentes: {detail}",
+        "emptyTitle": "Ainda não há assistentes",
+        "empty": "Crie um para dar a um agente uma configuração fixa e instruções permanentes que você pode mencionar com @ em qualquer conversa.",
+        "reorderFailed": "Falha ao reordenar assistentes",
+        "saveFailed": "Falha ao salvar o assistente",
+        "duplicated": "{name} criado",
+        "deleteFailed": "Falha ao excluir o assistente",
+        "deleteTitle": "Excluir {name}?",
+        "deleteDescription": "Ele some das configurações e do painel de menções e não poderá mais receber delegações. Os cartões de delegação já existentes nas conversas continuam a exibi-lo.",
+        "cancel": "Cancelar",
+        "delete": "Excluir",
+        "duplicate": "Duplicar",
+        "move": "Mover {name}",
+        "enableAssistant": "Ativar {name}",
+        "edit": "Editar {name}",
+        "more": "Mais ações para {name}",
+        "agentNotInstalled": "não instalado",
+        "agentDisabled": "desativado",
+        "createTitle": "Novo assistente",
+        "editTitle": "Editar assistente",
+        "editorDescription": "Delegar a este assistente executa exatamente o agente, as opções e as instruções permanentes definidos aqui.",
+        "nameLabel": "Nome",
+        "namePlaceholder": "ex.: Revisor de código",
+        "descriptionLabel": "Descrição",
+        "descriptionPlaceholder": "Quando usar este assistente",
+        "descriptionHint": "Aparece no painel de menções e é passada ao agente que delega, para que saiba quando escolher este assistente.",
+        "agentLabel": "Agente",
+        "agentPlaceholder": "Escolha um agente",
+        "agentHint": "Cada uma de suas opções precisa ser escolhida.",
+        "instructionsLabel": "Instruções permanentes",
+        "instructionsPlaceholder": "O papel e as regras de trabalho que este assistente segue em cada tarefa",
+        "instructionsHint": "Entregues ao agente com cada tarefa delegada. Não aparecem nas mensagens da subsessão.",
+        "charCount": "{count} / {max}",
+        "save": "Salvar",
+        "createSubmit": "Criar",
+        "pickAgentFirst": "Escolha um agente para ver suas opções.",
+        "pickModelFirst": "Escolha um modelo para ver as demais opções.",
+        "modelNotSwitched": "O agente não mudou para este modelo, então não é possível ler as demais opções. Tente de novo ou escolha outro modelo.",
+        "agentUnavailableHint": "Este agente está desativado ou não instalado, então suas opções não podem ser verificadas. As opções salvas aparecem abaixo; escolha outro agente para alterá-las.",
+        "optionsChanged": "{count, plural, one {As opções do agente mudaram desde que foi salvo: escolha a opção marcada.} other {As opções do agente mudaram desde que foi salvo: escolha as # opções marcadas.}}",
+        "missingCount": "{count, plural, one {Falta escolher # opção} other {Faltam escolher # opções}}",
+        "cannotSaveProbeFailed": "Não é possível salvar: as opções do agente não puderam ser carregadas para verificação. Tente de novo primeiro.",
+        "cannotSaveModelNotSwitched": "Não é possível salvar: o agente não mudou para o modelo selecionado. Tente de novo ou escolha outro modelo.",
+        "cannotSaveStillLoading": "Ainda lendo as opções do agente…",
+        "savedOptions": "Opções salvas",
+        "savedNoOptions": "Nenhuma opção foi salva para este agente.",
+        "required": "Obrigatório",
+        "selectPlaceholder": "Escolha",
+        "noValuesOffered": "Nenhum valor disponível",
+        "recommended": "Recomendado",
+        "optionNew": "Nova",
+        "optionUnavailable": "Indisponível (era {value})",
+        "avatarChange": "Alterar avatar",
+        "avatarMonogram": "Letra",
+        "avatarEmoji": "Emoji",
+        "avatarImage": "Imagem",
+        "avatarMonogramHint": "O primeiro caractere do nome.",
+        "avatarUseMonogram": "Usar a letra",
+        "avatarEmojiPlaceholder": "Digite ou cole um emoji",
+        "avatarEmojiUse": "Usar",
+        "avatarUpload": "Enviar imagem",
+        "avatarUploadHint": "Recortada em quadrado e reduzida para 128×128.",
+        "avatarTooLarge": "A imagem continua grande demais mesmo reduzida. Tente outra.",
+        "avatarUnreadable": "Não foi possível ler este arquivo como imagem.",
+        "avatarColor": "Cor",
+        "errors": {
+          "emptyName": "Dê um nome ao assistente.",
+          "nameTooLong": "O nome pode ter no máximo {max} caracteres.",
+          "duplicateName": "Já existe um assistente chamado “{name}”.",
+          "descriptionTooLong": "A descrição pode ter no máximo {max} caracteres.",
+          "instructionsTooLong": "As instruções podem ter no máximo {max} caracteres.",
+          "invalidAvatar": "Este avatar não pode ser usado. Escolha outro.",
+          "avatarTooLarge": "A imagem do avatar é grande demais.",
+          "invalidAgentOptions": "As opções do agente estão incompletas. Abra o assistente de novo e escolha todas.",
+          "notFound": "Este assistente não existe mais."
+        }
+      }
     },
     "actions": {
       "dragSort": "Arraste para reordenar",
@@ -854,6 +961,7 @@
       "install": "Instalar",
       "upgrade": "Atualizar",
       "uninstall": "Desinstalar",
+      "installGuide": "Guia de instalação",
       "uninstalling": "Desinstalando...",
       "saveEnvVars": "Salvar variáveis de ambiente",
       "saving": "Salvando...",
@@ -950,7 +1058,11 @@
       "authNotInstalled": "cursor-agent não está instalado",
       "authLoggedIn": "Conectado",
       "authNotLoggedIn": "Não conectado",
+      "authUnverified": "Sessão iniciada — credencial não verificada",
+      "authUnverifiedHint": "O cursor-agent ainda guarda um início de sessão, mas não foi possível usá-lo no Cursor agora — normalmente a sessão expirou. As sessões vão falhar com «Authentication required» até iniciares sessão de novo; a CLI não consegue renovar sozinha um início de sessão pelo navegador.",
+      "authUnverifiedHintApiKey": "O cursor-agent tem uma chave de API salva, mas o Cursor acabou de recusá-la — normalmente uma chave revogada, expirada ou digitada errado. As sessões falharão com \"Authentication required\" até você salvar uma chave válida abaixo.",
       "loginHint": "Execute isto em um terminal para entrar na sua conta Cursor (uma janela do navegador abre) e depois clique em atualizar:",
+      "loginHintRemote": "Execute isto no host do codeg onde o cursor-agent está instalado, não nesta máquina, e depois clique em atualizar. Esse host normalmente não tem navegador para abrir, então execute com NO_OPEN_BROWSER=1 — assim ele imprime uma URL de login para você abrir no seu próprio navegador. Para um servidor sem supervisão, troque o método acima para chave de API.",
       "apiKeyLabel": "Chave de API do Cursor",
       "apiKeyPlaceholder": "chave de cursor.com/dashboard",
       "apiKeyHint": "CURSOR_API_KEY — uma chave de conta do painel do Cursor, alternativa ao login pelo navegador para máquinas headless ou servidores. Não é uma chave de terceiros nem da OpenAI.",
@@ -991,11 +1103,7 @@
       "modelPickerPlaceholder": "Pesquisar modelos…",
       "modelNoMatch": "Nenhum modelo correspondente",
       "modelsNeedAuth": "Faça login para carregar a lista de modelos.",
-      "modelDefaultBadge": "padrão",
-      "authUnverified": "Sessão iniciada — credencial não verificada",
-      "authUnverifiedHint": "O cursor-agent ainda guarda um início de sessão, mas não foi possível usá-lo no Cursor agora — normalmente a sessão expirou. As sessões vão falhar com «Authentication required» até iniciares sessão de novo; a CLI não consegue renovar sozinha um início de sessão pelo navegador.",
-      "authUnverifiedHintApiKey": "O cursor-agent tem uma chave de API salva, mas o Cursor acabou de recusá-la — normalmente uma chave revogada, expirada ou digitada errado. As sessões falharão com \"Authentication required\" até você salvar uma chave válida abaixo.",
-      "loginHintRemote": "Execute isto no host do codeg onde o cursor-agent está instalado, não nesta máquina, e depois clique em atualizar. Esse host normalmente não tem navegador para abrir, então execute com NO_OPEN_BROWSER=1 — assim ele imprime uma URL de login para você abrir no seu próprio navegador. Para um servidor sem supervisão, troque o método acima para chave de API."
+      "modelDefaultBadge": "padrão"
     },
     "qoder": {
       "configDescription": "Faça login no Qoder aqui. Todo o resto que a CLI lê fica em um único arquivo — $QODER_CONFIG_DIR/settings.json (padrão ~/.qoder), compartilhado com a CLI do qoder — e é editado literalmente abaixo. Modelo e esforço de raciocínio não ficam aqui: o Qoder os anuncia via ACP, então os seletores do compositor decidem por sessão.",
@@ -1079,6 +1187,43 @@
       "tempReclaimConfirmBody": "Isto exclui permanentemente {size}. A pasta temporária do sistema é compartilhada com outros aplicativos, então confira cada caminho antes de confirmar; o que ainda estiver em uso é ignorado.",
       "tempReclaimConfirmAction": "Excluir",
       "tempReclaimCancel": "Cancelar"
+    },
+    "kiro": {
+      "configManagement": "Configuração",
+      "configDescription": "O Kiro CLI guarda o login, os agentes e os servidores MCP em ~/.kiro. Modelo, agente, raciocínio e esforço não ficam aqui: o Kiro os informa via ACP, então os seletores do compositor os gerenciam por sessão.",
+      "permissionsTitle": "Permissões",
+      "permissionModeLabel": "Modo de permissão",
+      "permissionModeAsk": "Perguntar antes de executar ferramentas (padrão)",
+      "permissionModeTrustAll": "Confiar em todas as ferramentas (--trust-all-tools)",
+      "permissionModeAskHint": "O Kiro envia a você primeiro cada chamada que precisa de aprovação (comandos, gravação de arquivos, …). Ferramentas somente leitura rodam sem perguntar.",
+      "permissionModeTrustAllHint": "As sessões iniciam com --trust-all-tools: toda chamada de ferramenta roda sem confirmação, inclusive comandos e gravação de arquivos. Vale para novas sessões.",
+      "apiKeyLabel": "Chave de API (opcional)",
+      "apiKeyHint": "Passada à CLI como KIRO_API_KEY. Deixe vazia para usar a conta conectada via kiro-cli login; só é necessária onde não há login pelo navegador (servidores, Docker).",
+      "saveConfig": "Salvar configuração do Kiro"
+    },
+    "trae": {
+      "configManagement": "Configuração",
+      "configDescription": "O TRAE CLI 2.0 está disponível apenas para clientes do plano principal do TRAE Enterprise. O Codeg executa o traecli que você instalou, que guarda o login, as skills e os servidores MCP em ~/.trae. Modelo, modo e esforço de raciocínio não ficam aqui: o TRAE CLI os informa via ACP, então os seletores do compositor os gerenciam em cada sessão.",
+      "signInTitle": "Entrar",
+      "signInHint": "Execute isto uma vez em um terminal para entrar com o SSO da sua empresa. As sessões do Codeg reutilizam esse login.",
+      "copyCommand": "Copiar comando",
+      "commandCopied": "Comando copiado",
+      "patLabel": "Token de acesso pessoal (opcional)",
+      "patHint": "Para uma máquina em que não é possível entrar pelo navegador, como um servidor ou uma instalação Docker. O Codeg o passa ao TRAE CLI como TRAECLI_PERSONAL_ACCESS_TOKEN e entra com ele sempre que uma sessão começa. Deixe vazio para usar o login do traecli login.",
+      "hostLabel": "URL da API corporativa (opcional)",
+      "hostHint": "Somente se a sua organização executa o TRAE em um domínio próprio. É passada como TRAECLI_HOST; deixe vazia para usar o serviço do TRAE.",
+      "saveConfig": "Salvar configuração do TRAE CLI"
+    },
+    "commandCode": {
+      "configManagement": "Configuração",
+      "configDescription": "O Codeg executa a CLI do Command Code do pacote npm command-code, que guarda o login, as skills e os servidores MCP em ~/.commandcode. Modelo, modo e esforço de raciocínio não ficam aqui: o Command Code os informa via ACP, então os seletores do compositor os gerenciam em cada sessão.",
+      "signInTitle": "Entrar",
+      "signInHint": "Execute isto uma vez em um terminal para entrar com sua conta do Command Code. As sessões do Codeg reutilizam esse login.",
+      "copyCommand": "Copiar comando",
+      "commandCopied": "Comando copiado",
+      "apiKeyLabel": "Chave de API (opcional)",
+      "apiKeyHint": "Para uma máquina em que não é possível entrar pelo navegador, como um servidor ou uma instalação Docker. Passada ao Command Code como COMMAND_CODE_API_KEY, que tem prioridade sobre o login do command-code login. Deixe vazia para usar esse login.",
+      "saveConfig": "Salvar configuração do Command Code"
     },
     "deepseek": {
       "configManagement": "Configuração do DeepSeek Harness",
@@ -1296,7 +1441,7 @@
         "defaultAgent": "Agente padrão",
         "defaultAgentHint": "Com qual agente principal uma nova sessão abre. Vazio ou desconhecido volta para build.",
         "share": "Compartilhamento",
-        "shareHint": "Se uma sessão pode ser publicada como link compartilhado.",
+        "shareHint": "Se uma sessão pode ser publicada como link compartilhado. O OpenCode descontinuou o compartilhamento de sessões na versão 1.19.1, então esta configuração não tem efeito a partir dessa versão.",
         "shareManual": "Manual (somente quando pedido)",
         "shareAuto": "Automático (toda sessão nova)",
         "shareDisabled": "Desativado",
@@ -1572,14 +1717,28 @@
       "saveQoderConfigFailed": "Falha ao salvar a configuração do Qoder",
       "antigravitySaved": "Antigravity config saved",
       "antigravitySyncSkipped": "Saved, but Antigravity's settings.json was left alone",
-      "saveAntigravityConfigFailed": "Failed to save Antigravity config"
+      "saveAntigravityConfigFailed": "Failed to save Antigravity config",
+      "kiroSaved": "Configuração do Kiro salva",
+      "saveKiroFailed": "Falha ao salvar a configuração do Kiro",
+      "traeSaved": "Configuração do TRAE CLI salva",
+      "saveTraeFailed": "Falha ao salvar a configuração do TRAE CLI",
+      "commandCodeSaved": "Configuração do Command Code salva",
+      "saveCommandCodeFailed": "Falha ao salvar a configuração do Command Code",
+      "systemAgentAlreadyLatest": "{name} já está atualizado ({version})"
+    },
+    "distribution": {
+      "system": "instalador oficial"
     },
     "version": {
       "statusLabel": "Status da versão",
       "notInstalled": "Não instalado",
       "recommendedLocal": "Recomendada: {recommendedVersion} · Local: {localVersion}",
       "localOnly": "Local: {localVersion}",
+      "localUndetected": "Local: versão não detectada",
       "localInstalled": "{versionText}. Instalado.",
+      "systemInstalled": "{versionText}. Instalado e atualizado pelo próprio instalador; o Codeg o executa como está.",
+      "systemInstalledUpdatable": "{versionText}. Instalado com o instalador oficial; Atualizar executa o próprio atualizador.",
+      "systemMissing": "Não encontrado nesta máquina. Instale com o instalador oficial e depois atualize.",
       "platformUnsupported": "{versionText}. A plataforma atual não suporta este agente.",
       "uvxNotReady": "{versionText}. O runtime do uv não está instalado — instale-o na verificação do uv abaixo para usar este agente.",
       "clickInstall": "{versionText}. Clique em Instalar à direita.",
@@ -1614,8 +1773,8 @@
       "noPlugins": "Nenhum plugin declarado em opencode.json",
       "status": {
         "installed": "Instalado",
-        "missing": "Não instalado",
         "needs_migration": "Requer migração",
+        "missing": "Não instalado",
         "path": "Plugin por caminho",
         "path_missing": "Caminho não encontrado"
       },
@@ -1790,7 +1949,38 @@
       "compactSoftPercent": "Limite suave de compactação (%)",
       "compactRecentTurns": "Manter turnos recentes",
       "maxTurns": "Máx. de turnos do modelo"
+    },
+    "zcode": {
+      "adapterInfo": "O Codeg executa {adapterPackage} como ponte ACP. Instale o ZCode e entre na sua conta primeiro; são usados o ambiente e a configuração existentes.",
+      "runtimeHint": "Instale o ZCode e entre na sua conta primeiro. O Codeg instala apenas a ponte ACP. Se a detecção falhar, indique a entrada CLI com ZCODE_BIN e o Node.js com ZCODE_NODE. Gerencie modelos e credenciais no ZCode."
     }
+  },
+  "AgentVocabulary": {
+    "deepseekModeDefault": "Normal",
+    "deepseekModeDefaultDescription": "Lê e edita arquivos e executa comandos diretamente para concluir a tarefa",
+    "deepseekModePlan": "Plano",
+    "deepseekModePlanDescription": "Investiga primeiro e apresenta um plano completo para você confirmar antes de agir. Isso orienta o modelo; o limite real continua sendo o do acesso a arquivos.",
+    "deepseekOptionModel": "Modelo",
+    "deepseekOptionReasoning": "Esforço de raciocínio",
+    "deepseekOptionReasoningDescription": "Quanto maior, mais lento e mais tokens consome, mas é mais estável em problemas difíceis",
+    "deepseekOptionSandbox": "Acesso a arquivos",
+    "deepseekOptionSandboxDescription": "Comandos e ferramentas de arquivo compartilham este único limite",
+    "deepseekReasoningOff": "Desligado",
+    "deepseekReasoningOffDescription": "Responde direto, sem raciocinar; o mais rápido",
+    "deepseekReasoningLow": "Baixo",
+    "deepseekReasoningLowDescription": "Raciocina brevemente; mais estável que desligado, mais rápido que alto",
+    "deepseekReasoningHigh": "Alto",
+    "deepseekReasoningHighDescription": "Raciocina antes de responder; o padrão para o dia a dia",
+    "deepseekReasoningMax": "Máximo",
+    "deepseekReasoningMaxDescription": "Raciocina por mais tempo; mais estável em problemas difíceis, porém mais lento e mais caro",
+    "deepseekSandboxReadOnly": "Somente leitura",
+    "deepseekSandboxReadOnlyDescription": "Executa com uma política somente de leitura; troque o acesso quando precisar gravar. Em algumas plataformas a aplicação é apenas parcial.",
+    "deepseekSandboxWorkspaceWrite": "Escrita no espaço de trabalho",
+    "deepseekSandboxWorkspaceWriteDescription": "As gravações devem ficar dentro do espaço de trabalho da sessão e dos diretórios temporários do sistema; uma chamada fora deles pede autorização pontual. Em algumas plataformas a aplicação é apenas parcial.",
+    "deepseekSandboxFullAccess": "Acesso total (sem sandbox)",
+    "deepseekSandboxFullAccessDescription": "Não aplica nenhuma restrição de arquivos. Escolha apenas se entender as consequências.",
+    "deepseekPermissionAllowOnce": "Permitir uma vez",
+    "deepseekPermissionRejectOnce": "Recusar"
   },
   "SettingsPages": {
     "agentsLoading": "Carregando configurações de agentes...",
@@ -1877,10 +2067,31 @@
     "protocolResponses": "Responses",
     "protocolAuto": "Auto"
   },
+  "CloseBehaviorSettings": {
+    "title": "Comportamento do botão Fechar",
+    "description": "Escolha o que o botão Fechar da janela principal faz.",
+    "trayUnavailable": "Este sistema não tem uma bandeja utilizável, portanto o botão Fechar sempre encerra o codeg.",
+    "behaviorAsk": "Perguntar sempre",
+    "behaviorMinimize": "Minimizar para a bandeja",
+    "behaviorExit": "Sair do codeg",
+    "saveFailed": "Falha ao salvar o comportamento de fechamento: {message}"
+  },
+  "CloseRequestDialog": {
+    "askTitle": "Fechar o codeg?",
+    "askDescription": "O codeg pode continuar em execução na bandeja para manter agentes e terminais ativos, ou encerrar por completo.",
+    "confirmExitTitle": "Sair do codeg?",
+    "confirmExitDescription": "Fechar a janela está configurado para encerrar o codeg.",
+    "runningTerminals": "{count, plural, one {# terminal ainda está em execução e será encerrado ao sair.} other {# terminais ainda estão em execução e serão encerrados ao sair.}}",
+    "remember": "Lembrar minha escolha",
+    "cancel": "Cancelar",
+    "minimize": "Minimizar para a bandeja",
+    "exit": "Sair do codeg",
+    "actionFailed": "Falha na ação: {message}"
+  },
   "GeneralSettings": {
     "loading": "Carregando...",
     "sectionTitle": "Geral",
-    "sectionDescription": "Preferências centralizadas para o terminal padrão, aceleração de renderização, comportamento ao fechar a janela, notificações, sons e delegação multi-agente.",
+    "sectionDescription": "Preferências centralizadas para o terminal padrão, aceleração de renderização, painel de menções @, comportamento ao fechar a janela, notificações, sons e delegação multi-agente.",
     "terminalTitle": "Terminal padrão",
     "terminalDescription": "Escolha o shell que o codeg inicia para novas abas de terminal e para linhas de comando inteiras que um agente pede para executar. Agentes com shell próprio (Codex, Claude Code) executam os comandos dentro do próprio processo, então esta configuração não os alcança.",
     "terminalSystemDefault": "Padrão do sistema",
@@ -1913,6 +2124,19 @@
     "restartFailed": "Falha ao reiniciar: {message}",
     "loadFailed": "Falha ao carregar: {message}"
   },
+  "MentionPanelSettings": {
+    "title": "Painel de menções",
+    "description": "Escolha quais abas o painel @ do campo de entrada mostra e arraste-as para a ordem que preferir. O painel abre na primeira aba com resultados. A aba Arquivos é sempre exibida.",
+    "tabsLabel": "Abas do painel de menções",
+    "reset": "Redefinir",
+    "alwaysShown": "Sempre exibida",
+    "moveTab": "Mover “{name}”: arraste ou pressione as setas para cima e para baixo",
+    "showTab": "Mostrar a aba “{name}”"
+  },
+  "CollaborationSettings": {
+    "sectionTitle": "Colaboração",
+    "sectionDescription": "Como os agentes colaboram entre si e quais ferramentas do próprio codeg eles podem acessar dentro de uma conversa."
+  },
   "LoginPage": {
     "documentTitle": "Entrar - codeg",
     "brand": "Codeg",
@@ -1929,6 +2153,50 @@
     "title": "Confirmar",
     "invalidFolderId": "ID de pasta inválido",
     "loadingRepo": "Carregando repositório..."
+  },
+  "CommitMessageGeneration": {
+    "generate": "Gerar mensagem de commit",
+    "stop": "Parar a geração ({seconds} s)",
+    "generating": "Escrevendo a mensagem de commit… {seconds} s",
+    "noChanges": "Nenhuma alteração rastreada para descrever",
+    "selectFiles": "Selecione os arquivos a descrever",
+    "busyCommitting": "Fazendo commit…",
+    "settings": "Configurações de mensagens de commit",
+    "settingsMenuItem": "Configurações de mensagens de commit…",
+    "toasts": {
+      "failed": "Não foi possível gerar a mensagem de commit",
+      "openSettings": "Configurações",
+      "autoCommitSkipped": "Commit automático não feito: as alterações mudaram enquanto a mensagem era escrita. Confira-a e faça o commit."
+    },
+    "errors": {
+      "noChanges": "Não há alterações para descrever.",
+      "noAgent": "Nenhum agente para escrevê-la. Escolha um nas configurações de mensagens de commit.",
+      "emptyAnswer": "A resposta do agente não trazia nenhuma mensagem de commit.",
+      "cancelled": "A geração foi interrompida."
+    },
+    "dialog": {
+      "title": "Geração de mensagens de commit",
+      "description": "O botão de gerar ao lado da caixa de commit faz um agente escrever uma mensagem para exatamente o que o commit vai conter. Isso roda em uma sessão separada que nunca aparece na sua lista de sessões, e qualquer permissão que ele peça é recusada.",
+      "scope": "Escopo",
+      "scopeGlobal": "Todas as pastas (padrões globais)",
+      "scopeGlobalHint": "Pastas sem configurações próprias usam estes padrões globais.",
+      "source": "Origem da configuração",
+      "sourceGlobal": "Padrões globais",
+      "sourceCustom": "Personalizada",
+      "sourceGlobalFollow": "Segue as configurações globais — mudanças lá se aplicam aqui automaticamente.",
+      "sourceCustomHint": "Salva configurações próprias desta pasta, que deixa de seguir os padrões globais.",
+      "pinAgent": "Usar um agente específico",
+      "pinAgentHint": "Este agente escreve todas as mensagens, com as opções abaixo. Um modelo rápido e barato é suficiente para a tarefa.",
+      "followSessionHint": "Desativado: quem escreve é o agente da sessão que você está vendo ou, se não houver, o agente padrão da pasta, com o modelo padrão dele.",
+      "autoCommit": "Fazer commit automaticamente",
+      "autoCommitHint": "Faz o commit assim que a mensagem fica pronta. Se as alterações mudaram nesse meio-tempo, a mensagem só é preenchida, para você conferir.",
+      "instructions": "Instruções",
+      "instructionsHint": "Anexadas a cada pedido e com prioridade sobre as regras embutidas (como seguir o idioma dos commits recentes).",
+      "instructionsPlaceholder": "ex.: Escrever em português. Seguir Conventional Commits. Explicar o porquê no corpo.",
+      "save": "Salvar",
+      "cancel": "Cancelar",
+      "loadFailed": "Não foi possível carregar as configurações"
+    }
   },
   "MergePage": {
     "title": "Resolver conflitos",
@@ -2112,6 +2380,7 @@
       "statusUnreadCompletedBadge": "Concluído não visto",
       "statusUnreadFailedBadge": "Falha não vista",
       "worktreeRemovedBadge": "Worktree de origem removida",
+      "cliBadge": "Iniciada pela linha de comando",
       "conversationCountUnit": "{count, plural, one {# conversa} other {# conversas}}",
       "emptyFolderHint": "Sem conversas",
       "noMatchingConversations": "Nenhuma conversa correspondente",
@@ -2194,9 +2463,11 @@
         "dropToUngroup": "Solte aqui para remover do grupo"
       },
       "recentFilterAll": "Tudo",
+      "recentFilterCli": "Linha de comando",
       "recentFilterTitle": "Mostrar em Recentes: {filter}",
       "noRecentChats": "Nenhum chat recente",
       "noRecentFolders": "Nenhuma conversa de pasta recente",
+      "noRecentCli": "Nenhuma conversa recente da linha de comando",
       "recentFilterMenuLabel": "Mostrar em Recentes"
     },
     "conversation": {
@@ -2272,7 +2543,8 @@
       "updatedAt": "Atualizado",
       "none": "—",
       "copyField": "Copiar {field}",
-      "copiedField": "{field} copiado"
+      "copiedField": "{field} copiado",
+      "assistant": "Assistente"
     },
     "conversationCard": {
       "untitledConversation": "Conversa sem título",
@@ -2371,8 +2643,8 @@
           "navigation": "Navegação",
           "more": "Mais"
         },
-        "showPet": "Mostrar pet",
-        "browserTab": "Abrir aba do navegador"
+        "browserTab": "Abrir aba do navegador",
+        "showPet": "Mostrar pet"
       },
       "mcp": {
         "title": "Serviço codeg-mcp",
@@ -2425,7 +2697,10 @@
         "commits": "Confirmações"
       },
       "noFolderTitle": "Nenhuma pasta aberta",
-      "noFolderHint": "Abra uma pasta para ver seu conteúdo aqui"
+      "noFolderHint": "Abra uma pasta para ver seu conteúdo aqui",
+      "openFullPage": "Abrir em página inteira",
+      "back": "Voltar",
+      "noAutomations": "Este projeto ainda não tem automações"
     },
     "windowControls": {
       "minimizeWindow": "Minimizar janela",
@@ -2457,23 +2732,23 @@
     },
     "fileWorkspace": {
       "files": "Arquivos",
-      "closeFileTab": "Fechar aba de arquivo",
-      "close": "Fechar",
-      "closeOthers": "Fechar outros",
-      "closeAll": "Fechar tudo",
-      "preview": "Visualizar",
-      "editSource": "Editar fonte",
-      "maximize": "Maximizar",
-      "restore": "Restaurar",
-      "emptyDirectory": "Pasta vazia",
       "newTab": "Nova aba",
       "newBrowserTab": "Aba do navegador",
       "openFile": "Abrir arquivo…",
       "openFileTitle": "Abrir arquivo",
       "localServices": "Servidores locais",
       "localServiceFromAgent": "Agente",
+      "closeFileTab": "Fechar aba de arquivo",
+      "close": "Fechar",
+      "closeOthers": "Fechar outros",
+      "closeAll": "Fechar tudo",
+      "preview": "Visualizar",
+      "editSource": "Editar fonte",
       "openInSystemBrowser": "Abrir no navegador do sistema",
-      "more": "Mais"
+      "more": "Mais",
+      "maximize": "Maximizar",
+      "restore": "Restaurar",
+      "emptyDirectory": "Pasta vazia"
     },
     "terminal": {
       "agentStatus": {
@@ -2605,6 +2880,22 @@
       "imageZoomIn": "Ampliar",
       "imageZoomOut": "Reduzir",
       "imageZoomReset": "Redefinir zoom",
+      "pdfDocument": "Documento PDF",
+      "pdfZoomIn": "Ampliar",
+      "pdfZoomOut": "Reduzir",
+      "pdfZoomReset": "Redefinir zoom",
+      "pdfFitWidth": "Ajustar à largura",
+      "pdfPageNumber": "Número da página",
+      "pdfFind": "Localizar no documento",
+      "pdfFindPrevious": "Ocorrência anterior",
+      "pdfFindNext": "Próxima ocorrência",
+      "pdfFindNoMatches": "Nenhuma ocorrência",
+      "pdfPasswordPrompt": "Este PDF está protegido por senha. Digite a senha para abri-lo.",
+      "pdfPasswordIncorrect": "Senha incorreta. Tente novamente.",
+      "pdfPassword": "Senha",
+      "pdfPasswordSubmit": "Abrir",
+      "pdfInvalid": "Este arquivo não é um PDF válido ou está danificado.",
+      "pdfLoadFailed": "Não foi possível exibir este PDF: {message}",
       "htmlPreviewTitle": "Visualização HTML",
       "htmlPreviewTrust": "Ativar scripts",
       "htmlPreviewTrustHint": "Executa os scripts deste arquivo e permite acesso à rede. Ative apenas para arquivos confiáveis.",
@@ -3047,6 +3338,11 @@
       "linkedFolder": "Pasta vinculada",
       "moreActions": "Mais ações",
       "copyPath": "Copiar caminho",
+      "copy": "Copiar",
+      "copyRelativePath": "Caminho relativo",
+      "copyAbsolutePath": "Caminho absoluto",
+      "copyFileItself": "Arquivo",
+      "copyDirectoryItself": "Pasta",
       "upload": "Enviar arquivos/pasta",
       "download": "Baixar arquivo",
       "downloadAsZip": "Baixar como ZIP",
@@ -3174,12 +3470,7 @@
         "descriptionWithTarget": "Reverter alterações locais do arquivo \"{name}\"?",
         "descriptionFallback": "Reverter alterações locais deste arquivo?"
       },
-      "terminalTitle": "Console · {name}",
-      "copy": "Copiar",
-      "copyRelativePath": "Caminho relativo",
-      "copyAbsolutePath": "Caminho absoluto",
-      "copyFileItself": "Arquivo",
-      "copyDirectoryItself": "Pasta"
+      "terminalTitle": "Console · {name}"
     },
     "commandDropdown": {
       "loading": "Carregando...",
@@ -3262,6 +3553,7 @@
           "turnFailedMaxTurnRequests": "{agent} atingiu o número máximo de solicitações permitidas para este turno.",
           "turnFailedUnknown": "{agent} encerrou o turno com um motivo de parada desconhecido.",
           "turnFailedAuthRequired": "O {agent} precisa que você entre novamente antes de executar este turno. Faça login nas Configurações e envie a mensagem de novo.",
+          "agentAuthRequired": "O {agent} não conseguiu iniciar uma sessão: não tem credenciais utilizáveis. Inicia sessão de novo em Definições → Agentes → {agent} e reabre esta conversa.",
           "agentRuntimeOutdated": "O {agent} é antigo demais para esta versão do Codeg. Atualiza-o e reabre esta conversa.",
           "grokModelSwitchIncompatibleAgent": "{agent} não pode mudar para esse modelo em uma conversa existente. Inicie uma nova sessão para usá-lo.",
           "setModeFailed": "{agent} não conseguiu mudar de modo.",
@@ -3272,8 +3564,7 @@
           "turnFailedEmpty": "{agent} encerrou o turno sem produzir nenhuma resposta.",
           "turnFailedEmptyProtocol": "{agent} produziu uma saída que o codeg não conseguiu analisar — a versão do agente pode não corresponder ao protocolo.",
           "turnFailedEmptyMetadata": "{agent} enviou apenas atualizações de status neste turno (plano / modo / uso) e nenhuma resposta.",
-          "detailsInAlerts": "Abra os alertas na barra de status e expanda os detalhes para ver a saída do agente.",
-          "agentAuthRequired": "O {agent} não conseguiu iniciar uma sessão: não tem credenciais utilizáveis. Inicia sessão de novo em Definições → Agentes → {agent} e reabre esta conversa."
+          "detailsInAlerts": "Abra os alertas na barra de status e expanda os detalhes para ver a saída do agente."
         },
         "unableReadAgentConfig": "Não foi possível ler a configuração do agente: {message}",
         "connectFailedTitle": "Falha na conexão de {agent}",
@@ -3281,6 +3572,7 @@
         "notificationTurnComplete": "{agent} terminou de responder",
         "notificationError": "{agent} erro: {message}",
         "notificationQuestion": "{agent} está aguardando sua resposta",
+        "notificationPlanApproval": "{agent} está aguardando você aprovar o plano",
         "notificationErrorRedacted": "{agent} encontrou um erro",
         "claudeApiRetry": {
           "fallbackError": "authentication_failed",
@@ -3302,12 +3594,12 @@
         "tasks": {
           "connectingTitle": "Conectando a {agent}",
           "connectingDescription": "Estabelecendo conexão",
+          "preparingTitle": "Preparando a sessão de {agent}",
+          "preparingDescription": "Lendo o histórico da conversa",
           "loadingSelectorsTitle": "Carregando seletores de {agent}",
           "loadingSelectorsDescription": "Buscando opções de modo e configuração de sessão",
           "initSessionTitle": "Initializing {agent} session",
-          "initSessionDescription": "Creating session and loading configuration",
-          "preparingTitle": "Preparando a sessão de {agent}",
-          "preparingDescription": "Lendo o histórico da conversa"
+          "initSessionDescription": "Creating session and loading configuration"
         },
         "errors": {
           "connectionFailed": "Falha na conexão",
@@ -3330,6 +3622,7 @@
       },
       "messageInput": {
         "askAnything": "Pergunte qualquer coisa...",
+        "promptSuggestion": "{suggestion} (Tab para usar)",
         "removeAttachmentAria": "Remover {name}",
         "attachFiles": "Anexar arquivos",
         "addActions": "Adicionar",
@@ -3358,6 +3651,11 @@
         "searchModel": "Buscar modelos...",
         "searchModelAria": "Buscar modelos",
         "modelListLabel": "Modelos",
+        "recommendedBadge": "Recomendado",
+        "recommendedValue": "Recomendado: {value}",
+        "searchOptions": "Buscar opções...",
+        "searchOptionsAria": "Buscar opções",
+        "noOptions": "Nenhuma opção encontrada",
         "noModels": "Nenhum modelo encontrado",
         "cancel": "Cancelar",
         "send": "Enviar",
@@ -3391,7 +3689,7 @@
         "mentionGroupSession": "Sessões",
         "mentionGroupCommit": "Commits",
         "mentionGroupSkill": "Habilidades",
-        "recommendedBadge": "Recomendado"
+        "mentionGroupAssistant": "Assistentes"
       },
       "messageQueue": {
         "addToQueue": "Adicionar à fila",
@@ -3606,10 +3904,12 @@
         "downloadSvg": "Baixar como SVG",
         "downloadPng": "Baixar como PNG",
         "downloadMmd": "Baixar o código-fonte (.mmd)",
+        "downloadPuml": "Baixar o código-fonte (.puml)",
         "downloadFailed": "Não foi possível salvar o diagrama",
         "copySource": "Copiar o código-fonte",
         "copied": "Copiado",
         "renderFailed": "Erro do Mermaid: {message}",
+        "plantumlRenderFailed": "Erro do PlantUML: {message}",
         "showSource": "Ver o código-fonte",
         "retry": "Tentar novamente"
       },
@@ -3637,6 +3937,8 @@
       "messageList": {
         "attachedResources": "Recursos anexados",
         "loading": "Carregando...",
+        "loadBackgroundActivity": "Carregar atividade em segundo plano",
+        "workflowFollowUpLabel": "Codeg · Resultado do workflow",
         "loadEarlier": "Carregar mensagens anteriores",
         "loadingEarlier": "Carregando mensagens anteriores…",
         "error": "Erro: {message}",
@@ -3688,8 +3990,6 @@
         "jumpToPreviousUserMessage": "Ir para a mensagem do usuário",
         "showMore": "Mostrar mais",
         "showLess": "Mostrar menos",
-        "loadBackgroundActivity": "Carregar atividade em segundo plano",
-        "workflowFollowUpLabel": "Codeg · Resultado do workflow",
         "resizeWidth": "Arraste para ajustar a largura do chat · clique duas vezes para redefinir"
       },
       "liveTurnStats": {
@@ -3768,11 +4068,16 @@
             "child_max_turn_requests": "subagente: limite de solicitações",
             "child_empty": "subagente sem saída",
             "child_auth_required": "subagente exige login",
+            "child_rejected": "subagente rejeitou o pedido",
             "child_unknown": "subagente: erro",
             "unknown": "tarefa desconhecida",
-            "child_rejected": "subagente rejeitou o pedido"
+            "assistant_not_found": "assistente não encontrado",
+            "assistants_unsupported": "requer reinício",
+            "assistant_support_unknown": "sem resposta"
           }
-        }
+        },
+        "unknownAssistant": "Assistente #{id}",
+        "deletedAssistant": "(excluído)"
       },
       "contentParts": {
         "showingTailOutput": "Mostrando a saída final durante o streaming para melhor desempenho.",
@@ -3789,6 +4094,9 @@
         "offset": "Deslocamento: {offset}",
         "limit": "Limite: {limit}",
         "pages": "Páginas: {pages}",
+        "allowLarge": "Além do limite de tamanho",
+        "readImageLoading": "Carregando imagem…",
+        "readImageError": "Não foi possível carregar a imagem",
         "mode": "Modo: {mode}",
         "cell": "Célula: {cell}",
         "shellSession": "Sessão {id}",
@@ -3974,13 +4282,19 @@
       },
       "messageNav": {
         "title": "Navegação de mensagens",
-        "collapse": "Recolher navegação de mensagens",
         "loadingEarlier": "Carregando mensagens anteriores…",
         "loadEarlier": "Carregar mensagens anteriores",
         "collapsedSummary": "Mensagens {count}",
         "fileCount": "{count, plural, one {# arquivo} other {# arquivos}}",
         "remove": "Remover",
-        "noDiffDataAvailable": "Nenhum dado de diff disponível para {filePath}"
+        "noDiffDataAvailable": "Nenhum dado de diff disponível para {filePath}",
+        "subAgentCount": "{count, plural, one {# subagente} other {# subagentes}}",
+        "showDiff": "Mostrar as alterações de {filePath}",
+        "hideDiff": "Ocultar as alterações de {filePath}",
+        "openFile": "Abrir {filePath}",
+        "collapse": "Recolher navegação de mensagens",
+        "currentMessage": "Mensagem atual",
+        "scrollToCurrent": "Rolar até a mensagem atual (#{ordinal})"
       },
       "replyArtifacts": {
         "title": "Arquivos alterados",
@@ -4040,6 +4354,9 @@
         "setSessionTimer": "Acordar em {seconds}s",
         "setSessionTimerNoSeconds": "Definir temporizador da sessão",
         "promptLabel": "Instrução",
+        "ackRecorded": "Registrado na tarefa de trabalho",
+        "ackNotRecorded": "Não registrado na tarefa de trabalho",
+        "ackNotRecordedWithReason": "Não registrado na tarefa de trabalho: {reason}",
         "verdict": {
           "success": "sucesso",
           "needs_review": "requer revisão",
@@ -4146,6 +4463,7 @@
         "cardRunning": "Executando em segundo plano",
         "cardLaunchedPending": "Tarefa iniciada em segundo plano",
         "cardCompleted": "Tarefa em segundo plano concluída",
+        "cardInterim": "Tarefa em segundo plano: resultado provisório",
         "cardFinishedWithStatus": "Tarefa em segundo plano encerrada ({status})",
         "cardResultPending": "Resultado ainda não retornou"
       },
@@ -4189,6 +4507,18 @@
           "failed": "Falhou",
           "cancelled": "Cancelado"
         }
+      },
+      "remoteControl": {
+        "title": "Controle remoto ativado",
+        "open": "Abrir no navegador",
+        "copy": "Copiar link",
+        "copied": "Copiado",
+        "qr": "Código QR",
+        "qrLabel": "Código QR do link de controle remoto desta sessão",
+        "qrHint": "Escaneie com o celular para continuar esta sessão no app do Claude ou em claude.ai/code.",
+        "noUrl": "O Claude Code não retornou nenhum link para esta sessão",
+        "turnOff": "Desativar",
+        "turnOffBusy": "Disponível quando o Claude terminar"
       },
       "proposedPlan": {
         "title": "Plano proposto",
@@ -5096,42 +5426,43 @@
   "RemoteWorkspace": {
     "openLocalWorkspace": "Abrir espaço de trabalho local",
     "openLocalFailed": "Não foi possível abrir o espaço de trabalho local",
-    "openRemoteWorkspace": "Open remote workspace",
-    "manage": "Manage remote workspace",
-    "manageTitle": "Remote Workspace connections",
-    "empty": "No remote connections",
-    "searchPlaceholder": "Search remote workspaces",
-    "orderFailed": "Failed to save remote workspace order",
-    "dragSort": "Drag to sort",
-    "dragSortConnection": "Drag to sort {name}",
-    "newConnection": "New connection",
-    "loading": "Loading",
-    "loadingConnection": "Loading remote connection",
-    "name": "Name",
-    "baseUrl": "Service URL",
-    "token": "Access token",
+    "openRemoteWorkspace": "Abrir espaço de trabalho remoto",
+    "manage": "Gerenciar espaço de trabalho remoto",
+    "manageTitle": "Conexões com espaços de trabalho remotos",
+    "empty": "Nenhuma conexão remota",
+    "noMatches": "Nenhuma conexão remota correspondente",
+    "searchPlaceholder": "Pesquisar espaços de trabalho remotos",
+    "orderFailed": "Não foi possível salvar a ordem dos espaços de trabalho remotos",
+    "dragSort": "Arraste para reordenar",
+    "dragSortConnection": "Arraste para reordenar {name}",
+    "newConnection": "Nova conexão",
+    "loading": "Carregando",
+    "loadingConnection": "Carregando a conexão remota",
+    "name": "Nome",
+    "baseUrl": "URL do serviço",
+    "token": "Token de acesso",
     "customHeaders": "Cabeçalhos personalizados",
     "customHeaderName": "Nome do cabeçalho",
     "customHeaderValue": "Valor do cabeçalho",
     "addCustomHeader": "Adicionar cabeçalho",
     "removeCustomHeader": "Remover cabeçalho",
-    "save": "Save",
-    "delete": "Delete",
+    "save": "Salvar",
+    "delete": "Excluir",
     "confirmDelete": {
-      "title": "Delete remote connection?",
-      "message": "This will remove \"{name}\" from this device. This action cannot be undone.",
-      "cancel": "Cancel",
-      "confirm": "Delete"
+      "title": "Excluir a conexão remota?",
+      "message": "Isso removerá \"{name}\" deste dispositivo. Esta ação não pode ser desfeita.",
+      "cancel": "Cancelar",
+      "confirm": "Excluir"
     },
-    "saved": "Remote connection saved.",
-    "deleted": "Remote connection deleted.",
-    "loadFailed": "Failed to load remote connections",
-    "saveFailed": "Failed to save remote connection",
-    "deleteFailed": "Failed to delete remote connection",
-    "openFailed": "Failed to open remote workspace",
+    "saved": "Conexão remota salva.",
+    "deleted": "Conexão remota excluída.",
+    "loadFailed": "Não foi possível carregar as conexões remotas",
+    "saveFailed": "Não foi possível salvar a conexão remota",
+    "deleteFailed": "Não foi possível excluir a conexão remota",
+    "openFailed": "Não foi possível abrir o espaço de trabalho remoto",
     "restoreFailed": "Não foi possível reabrir o espaço de trabalho remoto \"{name}\"",
-    "connectionLoadFailed": "Failed to load remote connection: {message}",
-    "connectionExpired": "Remote connection \"{name}\" is expired. Update its token and reload this window."
+    "connectionLoadFailed": "Não foi possível carregar a conexão remota: {message}",
+    "connectionExpired": "A conexão remota \"{name}\" expirou. Atualize o token dela e recarregue esta janela."
   },
   "ServerFileBrowser": {
     "title": "Selecionar arquivo do servidor",
@@ -5145,6 +5476,14 @@
     "errorLoadingDir": "Falha ao carregar o diretório",
     "selectedCount": "{count} selecionado(s)"
   },
+  "BranchPicker": {
+    "searchPlaceholder": "Pesquisar branches…",
+    "none": "Sem branches",
+    "local": "Local",
+    "remote": "Remoto",
+    "useCustom": "Usar \"{query}\"",
+    "head": "HEAD"
+  },
   "BackupSettings": {
     "title": "Backup e restauração",
     "description": "Exporte um backup portátil dos seus dados do codeg ou restaure a partir de um.",
@@ -5153,6 +5492,7 @@
       "restore": "Restauração"
     },
     "export": {
+      "description": "Empacota os dados do codeg desta máquina — banco de dados e arquivos enviados — em um único arquivo.",
       "includeExternal": "Incluir o conteúdo das conversas",
       "includeExternalHint": "Também arquiva as transcrições das CLIs (Claude, Codex, Gemini, …). Aumenta o tamanho.",
       "passphrase": "Senha (opcional)",
@@ -5172,10 +5512,10 @@
         "recoveredOnCopy": "recuperado a partir de uma cópia privada — completo",
         "bareFileOnly": "arquivado sem o registro de escrita antecipada — as mensagens mais recentes podem faltar",
         "notArchived": "não arquivado — continuou mudando durante a cópia"
-      },
-      "description": "Empacota os dados do codeg desta máquina — banco de dados e arquivos enviados — em um único arquivo."
+      }
     },
     "restore": {
+      "description": "Substitui os dados do codeg desta máquina pelo conteúdo de um arquivo de backup.",
       "selectFile": "Selecionar arquivo de backup",
       "passphrasePrompt": "Este backup está criptografado. Digite a senha dele.",
       "unlock": "Desbloquear",
@@ -5227,8 +5567,7 @@
         "refusedHint": "Vêm de um backup antigo que guardava o banco e o registro de escrita antecipada separadamente, e não é possível provar que correspondem. Seus bancos atuais ficaram intactos — restaure para uma pasta à parte para obter os arquivos originais.",
         "restartNow": "Reiniciar agora",
         "later": "Depois"
-      },
-      "description": "Substitui os dados do codeg desta máquina pelo conteúdo de um arquivo de backup."
+      }
     },
     "remoteUnsupported": "O backup e a restauração atuam sobre os dados da máquina que executa o codeg. Você está conectado a um espaço de trabalho remoto — gerencie os backups dele diretamente nesse servidor.",
     "progress": {
@@ -5243,6 +5582,108 @@
       "rollbackConfirmTitle": "Voltar para este instantâneo?",
       "rollbackConfirmBody": "Isto substitui seus dados atuais pelo instantâneo e reinicia. Antes é feito um instantâneo dos dados substituídos."
     }
+  },
+  "ConfigSyncSettings": {
+    "title": "Sincronização de configuração",
+    "scopeTitle": "O que é sincronizado",
+    "scopeIncludedTitle": "Incluído",
+    "scopeExcludedTitle": "Não incluído",
+    "scopeIncluded": {
+      "providers": "Provedores de modelos (com chaves de API)",
+      "agentSettings": "Configurações de agentes",
+      "customAgents": "Agentes personalizados",
+      "quickMessages": "Mensagens rápidas",
+      "taskTemplates": "Modelos de tarefa",
+      "preferences": "Preferências do app (idioma, aparência, opções)",
+      "assistants": "Assistentes"
+    },
+    "scopeExcluded": {
+      "conversations": "Conversas e histórico",
+      "uploads": "Arquivos e imagens enviados",
+      "workspaces": "Projetos e caminhos do espaço de trabalho",
+      "mcp": "Servidores MCP (mantidos por cada CLI)",
+      "credentials": "Credenciais de login e tokens"
+    },
+    "fileTitle": "Arquivo de configuração",
+    "exportButton": "Exportar para arquivo",
+    "importButton": "Importar de arquivo",
+    "fileHint": "Grava um único arquivo JSON que você pode levar para outra máquina. A importação adiciona ou atualiza itens; os itens existentes que não estiverem no arquivo são mantidos.",
+    "webdavTitle": "Sincronização WebDAV",
+    "webdavHint": "Envia o instantâneo de configuração para o seu próprio servidor WebDAV.",
+    "presetLabel": "Servidor",
+    "preset": {
+      "jianguoyun": "Jianguoyun",
+      "nextcloud": "Nextcloud",
+      "synology": "NAS Synology",
+      "custom": "Personalizado"
+    },
+    "presetHint": {
+      "jianguoyun": "O Jianguoyun exige uma senha de aplicativo criada nas configurações de segurança, não a senha de login.",
+      "nextcloud": "Troque o domínio e o usuário e use uma senha de aplicativo em Configurações → Segurança.",
+      "synology": "Ative o WebDAV Server no Centro de Pacotes do DSM; as portas padrão são 5005 (HTTP) e 5006 (HTTPS)."
+    },
+    "serverUrl": "URL do servidor",
+    "username": "Usuário",
+    "password": "Senha",
+    "passwordKeep": "Deixe em branco para manter a senha salva",
+    "passwordPlaceholder": "Senha de aplicativo",
+    "remoteDir": "Pasta remota",
+    "profile": "Perfil",
+    "profileHint": "Máquinas com o mesmo perfil compartilham uma configuração. Use perfis diferentes para separar trabalho e uso pessoal.",
+    "autoSyncLabel": "Enviar automaticamente",
+    "autoSyncHint": "Verifica periodicamente e envia apenas quando a configuração muda.",
+    "intervalLabel": "Intervalo de verificação",
+    "intervalOption": "A cada {minutes} minutos",
+    "saveButton": "Salvar",
+    "testButton": "Testar conexão",
+    "uploadButton": "Sincronizar agora",
+    "restoreButton": "Restaurar do servidor",
+    "saved": "Ajustes de sincronização salvos",
+    "testSucceeded": "Conectado ao servidor WebDAV",
+    "uploaded": "Configuração enviada",
+    "exported": "Configuração exportada",
+    "restored": "{count, plural, one {# item aplicado} other {# itens aplicados}}",
+    "imported": "{count, plural, one {# item aplicado} other {# itens aplicados}}",
+    "noRemoteSnapshot": "Ainda não há instantâneo de configuração no servidor",
+    "lastSyncAt": "Última sincronização: {time}",
+    "neverSynced": "Ainda não sincronizado",
+    "lastError": "Último erro: {message}",
+    "working": "Processando…",
+    "plaintextWarning": "O instantâneo é enviado sem criptografia e contém chaves de API, então use um servidor WebDAV que só você acesse. As credenciais de sincronização nunca fazem parte do instantâneo.",
+    "importConfirmTitle": "Importar configuração?",
+    "importConfirmBody": "Os itens do arquivo serão adicionados ou atualizados nesta máquina. Os itens existentes que o arquivo não menciona são mantidos.",
+    "restartHint": "Algumas alterações (aparência, idioma e a lista de provedores) só têm efeito depois de reiniciar o codeg.",
+    "importConfirmAction": "Importar",
+    "restoreConfirmTitle": "Restaurar do servidor?",
+    "restoreConfirmBody": "O instantâneo de {device}, criado em {time}, será aplicado a esta máquina. Os itens existentes que o instantâneo não menciona são mantidos.",
+    "restoreConfirmAction": "Restaurar",
+    "cancel": "Cancelar",
+    "emptySnapshot": "Este instantâneo não contém itens de configuração.",
+    "domain": {
+      "modelProviders": "{count, plural, one {# provedor de modelos} other {# provedores de modelos}}",
+      "agentSettings": "{count, plural, one {# ajuste de agente} other {# ajustes de agentes}}",
+      "customAgents": "{count, plural, one {# agente personalizado} other {# agentes personalizados}}",
+      "quickMessages": "{count, plural, one {# mensagem rápida} other {# mensagens rápidas}}",
+      "taskTemplates": "{count, plural, one {# modelo de tarefa} other {# modelos de tarefa}}",
+      "preferences": "{count, plural, one {# preferência} other {# preferências}}",
+      "assistants": "{count, plural, one {# assistente} other {# assistentes}}"
+    },
+    "rollbackTitle": "Desfazer uma importação",
+    "rollbackHint": "Cada importação e cada restauração guardam antes o estado desta máquina. Os dez últimos são mantidos.",
+    "rollbackAction": "Desfazer",
+    "rollbackUnknownTime": "Hora desconhecida",
+    "rollbackConfirmTitle": "Voltar a esta configuração?",
+    "rollbackConfirmBody": "A configuração atual será substituída pela cópia guardada em {time}. A atual é guardada primeiro, por isso este passo também pode ser desfeito.",
+    "rollbackConfirmAction": "Desfazer",
+    "rolledBack": "{count, plural, one {# entrada restaurada} other {# entradas restauradas}}",
+    "encryptLabel": "Cifrar o snapshot",
+    "encryptHint": "Protege o ficheiro enviado com uma frase-passe. Todas as máquinas sincronizadas precisam da mesma.",
+    "encryptedNotice": "O snapshot é cifrado com a sua frase-passe antes do envio. Se a perder, a cópia no servidor não poderá ser recuperada.",
+    "passphrase": "Frase-passe",
+    "passphraseKeep": "Deixe vazio para manter a frase-passe guardada",
+    "passphrasePlaceholder": "Frase-passe de cifra",
+    "passphraseHint": "Fica no porta-chaves desta máquina e nunca é enviada. Introduza a mesma frase-passe nas suas outras máquinas.",
+    "assistantsRenamed": "{count, plural, one {# assistente foi renomeado: já havia um com o mesmo nome aqui.} other {# assistentes foram renomeados: já havia outros com os mesmos nomes aqui.}}"
   },
   "backup": {
     "restore": {
@@ -5259,13 +5700,37 @@
       "cancelled": "A operação foi cancelada."
     }
   },
+  "configSync": {
+    "error": {
+      "newerSchema": "Este instantâneo foi criado por uma versão mais nova do codeg (formato {snapshotVersion}); esta versão suporta até o formato {appVersion}.",
+      "checksum": "O instantâneo não confere com sua soma de verificação e pode estar incompleto.",
+      "invalidSnapshot": "Este arquivo não é um instantâneo de configuração válido do codeg.",
+      "noRemoteSnapshot": "Ainda não há instantâneo de configuração no servidor.",
+      "notConfigured": "Configure o servidor WebDAV antes de sincronizar.",
+      "unauthorized": "O servidor WebDAV recusou o usuário ou a senha.",
+      "forbidden": "O servidor WebDAV negou acesso a esta pasta.",
+      "remotePath": "A pasta remota ou o nome do perfil não é válido.",
+      "quota": "O servidor WebDAV não tem mais espaço.",
+      "network": "Não foi possível alcançar o servidor WebDAV.",
+      "server": "O servidor WebDAV retornou um erro ({status}).",
+      "passphraseRequired": "Este snapshot está cifrado. Defina a frase-passe antes de sincronizar.",
+      "badPassphrase": "Não foi possível decifrar o snapshot. Verifique a frase-passe — o ficheiro também pode estar danificado.",
+      "badDomain": "Não foi possível ler a secção {domain} deste snapshot.",
+      "noRollback": "Essa configuração guardada já não está nesta máquina.",
+      "credentialsUnreadable": "Não foi possível ler as credenciais salvas. Desbloqueie o chaveiro do sistema e tente novamente.",
+      "notEncrypted": "O instantâneo no servidor não está criptografado, mas a criptografia está ativada neste dispositivo. Envie a partir deste dispositivo para substituí-lo ou desative a criptografia para usá-lo."
+    }
+  },
   "WebConnection": {
     "disconnectedTitle": "Conexão perdida",
     "reconnectingDescription": "Tentando reconectar ao servidor. Normalmente isso se resolve sozinho em alguns segundos.",
     "reconnectNow": "Reconectar agora",
     "sessionExpiredTitle": "Sessão expirada",
     "sessionExpiredDescription": "Sua sessão não é mais válida. Faça login novamente para continuar.",
-    "goToLogin": "Ir para o login"
+    "goToLogin": "Ir para o login",
+    "versionChangedTitle": "O servidor agora executa o Codeg {version}",
+    "versionChangedDescription": "Esta página ainda está na versão {version}. Recarregue-a para usar a versão do servidor.",
+    "reloadPage": "Recarregar"
   },
   "LiveFeedback": {
     "placeholder": "Envie uma nota para {agent} enquanto ele trabalha…",
@@ -5305,6 +5770,53 @@
     "saveFailed": "Falha ao salvar as configurações de ferramentas",
     "loadFailed": "Falha ao carregar: {detail}"
   },
+  "AgentTools": {
+    "delegation": {
+      "label": "Delegação",
+      "short": "Passa uma tarefa para outro agente.",
+      "hint": "Permite que um agente passe uma subtarefa autônoma para outro agente, que a executa na própria sessão e devolve o resultado. O restante — quantos níveis de aninhamento, qual agente executa — está na seção logo acima."
+    },
+    "feedback": {
+      "label": "Feedback ao vivo",
+      "short": "Acrescenta notas sem interromper o turno.",
+      "hint": "Envie notas e correções a um agente enquanto ele trabalha. Se o agente oferecer inserção instantânea, sua nota entra imediatamente no turno em andamento; caso contrário, o agente recebe uma ferramenta para verificar seu feedback — esses agentes normalmente só verificam quando você menciona isso no prompt, por exemplo, adicione \"verifique meu feedback ao vivo regularmente\" à sua mensagem."
+    },
+    "ask": {
+      "label": "Perguntar ao usuário",
+      "short": "Deixa o agente perguntar antes de decidir.",
+      "hint": "Permite que os agentes pausem e façam uma pergunta de múltipla escolha que aparece acima da caixa de entrada da conversa. O agente aguarda até você responder (ou pular)."
+    },
+    "sessions": {
+      "label": "Obter informações da sessão",
+      "short": "Consulta sessões anteriores e seus resultados.",
+      "hint": "Permite que os agentes consultem uma sessão mencionada na sua mensagem (um selo de sessão) para ler o título, agente, status, espaço de trabalho, uso de tokens e mensagens recentes."
+    },
+    "browser": {
+      "label": "Ler e conduzir o navegador integrado",
+      "short": "Abre, lê e age sobre as páginas do navegador integrado.",
+      "hint": "Permite que um agente veja quais páginas estão abertas no navegador integrado, leia as que você compartilhar e clique e digite naquelas em que você permitir ações. Ele também pode abrir um endereço por conta própria, levar uma aba para outro lugar e fechar abas. Desativado por padrão. Qual página ele pode ler continua sendo decisão sua, na barra daquela aba — mas note que, com um nível de compartilhamento padrão definido, uma página que o agente abre para si fica compartilhada com ele assim que carrega. Desativar tem efeito imediato, inclusive sobre agentes já em execução."
+    },
+    "browserEval": {
+      "label": "Executar código no navegador integrado",
+      "short": "Executa o próprio código numa página compartilhada, sem perguntar.",
+      "hint": "Permite que os agentes executem o próprio JavaScript numa página que você compartilhou. Desativado por padrão e depende do interruptor acima. Ligá-lo significa que os trechos são executados sem perguntar, então a decisão é tomada neste interruptor; em Configurações → Navegador integrado dá para pedir que cada trecho seja mostrado a você."
+    },
+    "computer": {
+      "label": "Ver e usar as janelas da área de trabalho",
+      "short": "Listar apps e janelas; ler as que você compartilhar e agir nas que permitir.",
+      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho, leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera — e clique, digite e pressione teclas nas que você compartilhar para agir. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e em nenhuma é possível agir sem que você também permita; o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe, e Parar agentes nesse painel para todos de uma vez. A entrada chega à janela em segundo plano; para uma ação que não chega em segundo plano, um agente pode trazer a janela para a frente, o que você pode desativar nas configurações de Uso do computador. Apenas no app para desktop; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
+    },
+    "automations": {
+      "label": "Criar automações",
+      "short": "Cria e gere automações agendadas.",
+      "hint": "Salva a conversa como uma automação que roda em um agendamento. Desativado por padrão — depois ela inicia agentes por conta própria."
+    },
+    "taskboard": {
+      "label": "Criar tarefas a fazer",
+      "short": "Cria e gere tarefas de trabalho.",
+      "hint": "Coloca um cartão no quadro de tarefas a partir da conversa. Desativado por padrão — grava o estado do app."
+    }
+  },
   "DesktopNotificationSettings": {
     "title": "Notificações do sistema",
     "description": "Mostra uma notificação do sistema quando um agente precisa de você. A configuração é por dispositivo — em outro navegador ou máquina ela é independente.",
@@ -5340,9 +5852,22 @@
     "hideBody": "Ocultar o conteúdo",
     "hideBodyHint": "Mostra uma linha genérica no lugar da saída do agente. A central de notificações guarda o conteúdo fora do app, mesmo depois de fechar a conversa. O título continua nomeando a pasta, para você saber a qual janela voltar.",
     "eventsTitle": "Eventos",
-    "eventsHint": "Desligue os eventos que não devem interromper você. Repetições do mesmo evento em poucos segundos são agrupadas em uma notificação.",
+    "eventsHint": "Desligue os eventos que não devem interromper você. Repetições do mesmo evento em poucos segundos são agrupadas em uma notificação. Solicitações de permissão incluem aprovações de plano.",
     "eventBackgroundTask": "Tarefa em segundo plano",
     "eventWorkTask": "Tarefa de trabalho"
+  },
+  "WindowAttentionSettings": {
+    "title": "Alertas na barra de tarefas e no Dock",
+    "descriptionMac": "Faz o ícone do Dock saltar quando um agente precisa de você enquanto você está em outro app.",
+    "descriptionWindows": "Faz o botão da janela piscar na barra de tarefas quando um agente precisa de você e a janela não está em foco.",
+    "descriptionLinux": "Marca a janela como urgente quando um agente precisa de você e ela não está em foco. A aparência depende do seu ambiente de desktop.",
+    "eventsTitle": "Eventos",
+    "eventsHintMac": "“Brevemente” faz o ícone saltar uma vez. “Até você voltar” o mantém saltando até você voltar ao Codeg. Solicitações de permissão incluem aprovações de plano.",
+    "eventsHintWindows": "“Brevemente” faz o botão piscar algumas vezes e o deixa destacado. “Até você voltar” o mantém piscando até você voltar à janela. Solicitações de permissão incluem aprovações de plano.",
+    "eventsHintLinux": "O Linux tem uma única marca de urgência, então os dois níveis mantêm a janela marcada até você voltar a ela. Solicitações de permissão incluem aprovações de plano.",
+    "levelOff": "Desligado",
+    "levelInformational": "Brevemente",
+    "levelCritical": "Até você voltar"
   },
   "NotificationSoundSettings": {
     "title": "Sons de notificação",
@@ -5883,7 +6408,10 @@
     "branchLocal": "Local",
     "branchRemote": "Remoto",
     "branchSearchPlaceholder": "Pesquisar branches…",
-    "branchNone": "Sem branches"
+    "branchNone": "Sem branches",
+    "booleanOn": "Ativado",
+    "booleanOff": "Desativado",
+    "modelNotSwitched": "O agente não mudou para o modelo selecionado, então estas opções podem ser de outro modelo."
   },
   "Tasks": {
     "title": "Tarefas a fazer",
@@ -5902,6 +6430,10 @@
     "viewSwitchToList": "Mudar para a visualização de lista",
     "statusFilter": "Estado",
     "statusFilterAll": "Todos os estados",
+    "searchPlaceholder": "Pesquisar tarefas",
+    "clearSearch": "Limpar pesquisa",
+    "searchEmptyColumn": "Nenhum resultado",
+    "searchNoResults": "Nenhuma tarefa corresponde a “{query}”",
     "listEmpty": "Nenhuma tarefa corresponde aos filtros atuais",
     "listColStatus": "Estado",
     "listColTask": "Tarefa",
@@ -5923,6 +6455,7 @@
     "statusFailed": "Falhou",
     "statusCanceled": "Cancelada",
     "statusInterrupted": "Interrompida",
+    "statusDeferred": "Adiada",
     "badgeCleanupFailed": "Limpeza falhou",
     "badgeWorktreeKept": "Worktree mantido",
     "badgeWorktreeRemoved": "Worktree removido",
@@ -5975,6 +6508,7 @@
     "actionFollowUp": "Continuar",
     "actionAddNote": "Adicionar observação",
     "followUpSubmit": "Enviar",
+    "followUpDialogDescription": "Escolha um cenário e diga do que precisa: o agente retoma a tarefa na mesma sessão e o cartão volta para Em andamento.",
     "followUpIntentRevise": "Corrigir",
     "followUpIntentContinue": "Prosseguir",
     "followUpIntentQuestion": "Perguntar",
@@ -5987,6 +6521,8 @@
     "followUpPlaceholderRequeue": "Opcional: por que você cancelou e o que deve mudar desta vez?",
     "actionArchive": "Arquivar",
     "actionUnarchive": "Desarquivar",
+    "actionDefer": "Tratar depois",
+    "actionUndefer": "Voltar para Aguardando você",
     "archiveAllDone": "Arquivar tudo",
     "dropToStart": "Solte para iniciar",
     "errorView": "Ver",
@@ -6014,6 +6550,10 @@
     "promptLabel": "Descrição da tarefa",
     "promptPlaceholder": "Descreva a tarefa para o agente — @ para referenciar arquivos, / para comandos",
     "folderPlaceholder": "Selecione uma pasta",
+    "baseBranch": "Branch base",
+    "baseBranchPlaceholder": "Branch atual",
+    "baseBranchDefault": "Branch atual quando a tarefa iniciar",
+    "baseBranchHint": "A tarefa parte deste branch e o merge a devolve para ele.",
     "agentInheritedHint": "Herdado das configurações de tarefas; altere para personalizar esta tarefa",
     "agentNoDefaultHint": "Não há agente padrão nas configurações de tarefas; o agente selecionado será salvo com a tarefa",
     "agentInheritedUnavailableHint": "O agente {agent} das configurações de tarefas não está disponível; o agente selecionado será salvo com a tarefa",
@@ -6131,6 +6671,10 @@
     "deleteWorktreeConfirmTitle": "Excluir o worktree?",
     "deleteWorktreeConfirmBody": "O diretório do worktree e o seu branch de trabalho são excluídos em definitivo. A tarefa continua no quadro e a sua conversa passa para a pasta do projeto.",
     "eventCreated": "Criada",
+    "eventCreatedAuto": "Criada pelo processamento automático",
+    "eventAutoSchedule": "escaneamento agendado",
+    "eventAutoWebhook": "webhook",
+    "eventAutoManual": "escaneamento manual",
     "eventStatusChanged": "Mudança de status",
     "eventConfigEffective": "Configuração de execução",
     "eventInitCommand": "Comando de inicialização",
@@ -6173,11 +6717,7 @@
     "deliverPrBackDeleteWorktree": "Excluir o worktree após enviar",
     "deliverPrBackSubmit": "Enviar",
     "deliverPrBackDone": "Enviado ao pull request",
-    "deliverPrBackDoneMr": "Enviado ao merge request",
-    "baseBranch": "Branch base",
-    "baseBranchPlaceholder": "Branch atual",
-    "baseBranchDefault": "Branch atual quando a tarefa iniciar",
-    "baseBranchHint": "A tarefa parte deste branch e o merge a devolve para ele."
+    "deliverPrBackDoneMr": "Enviado ao merge request"
   },
   "CustomSkillsSettings": {
     "loading": "Carregando habilidades personalizadas…",
@@ -6683,9 +7223,9 @@
     "viewExisting": "Ver a tarefa existente",
     "scenarioLabel": "Como tratar",
     "scenarioFix": "Corrigir / implementar",
-    "scenarioFixHint": "O agente primeiro confirma que o problema é real no worktree e só então corrige; se não conseguir confirmar, relata isso em vez de mexer no código.",
+    "scenarioFixHint": "O agente primeiro avalia se o relato se sustenta e só então corrige; se não se sustentar (não reproduz, funciona como projetado, já corrigido…), não mexe em nada, encerra cedo e devolve a conclusão para você decidir.",
     "scenarioPlanFirst": "Planejar primeiro",
-    "scenarioPlanFirstHint": "O agente confirma que o problema é real, entrega um plano de implementação e para — aprove devolvendo a tarefa para a implementação.",
+    "scenarioPlanFirstHint": "O agente primeiro avalia se o relato se sustenta; se sim, entrega um plano de implementação e para, e se não, encerra cedo sem plano e devolve a conclusão. Aprove um plano devolvendo a tarefa para a implementação.",
     "scenarioReviewFix": "Revisar e corrigir",
     "scenarioReviewFixHint": "O agente primeiro avalia se a abordagem em si se sustenta e só então corrige os problemas em cima; se não se sustentar, não faz nenhum commit e devolve a revisão para você decidir. Ao aceitar, as correções voltam para o branch.",
     "scenarioReviewOnly": "Apenas revisar",
@@ -6712,6 +7252,79 @@
     "settingsPromptAllHint": "Vai em toda tarefa que este painel cria, seja qual for o cenário.",
     "settingsPromptScenarioHint": "Vai só nas tarefas criadas com este cenário.",
     "settingsPromptPlaceholder": "ex.: Responda em português. Rode os testes do projeto antes de terminar.",
+    "settingsSections": "Seções das configurações do painel",
+    "settingsTabGeneral": "Geral",
+    "settingsTabAuto": "Processamento automático",
+    "autoIntro": "Transforma em tarefas os issues e pull requests correspondentes, sem clicar em Iniciar. Cada item é processado no máximo uma vez — um item que já teve uma tarefa, mesmo que você a tenha excluído, é deixado de lado.",
+    "autoGlobalNote": "Estas regras valem para toda pasta de projeto que segue as configurações globais.",
+    "autoSchedule": "Escanear periodicamente",
+    "autoScheduleHint": "Procura itens correspondentes no repositório em intervalos fixos.",
+    "autoInterval": "Escanear a cada",
+    "autoIntervalMinutes": "{count, plural, one {# minuto} other {# minutos}}",
+    "autoIntervalHours": "{count, plural, one {# hora} other {# horas}}",
+    "autoWebhook": "Escanear em eventos de webhook",
+    "autoWebhookHint": "Escaneia assim que a forja avisa que um issue ou pull request mudou.",
+    "autoWebhookUrl": "URL de payload",
+    "autoWebhookUrlUnavailable": "O app desktop só recebe webhooks enquanto o serviço web está rodando — inicie-o em Configurações → Serviço web.",
+    "autoWebhookSecret": "Segredo",
+    "autoWebhookSecretPending": "Um segredo é gerado ao salvar.",
+    "autoWebhookShowSecret": "Mostrar segredo",
+    "autoWebhookHideSecret": "Ocultar segredo",
+    "autoWebhookRegenerate": "Gerar um novo segredo",
+    "autoWebhookSetup": "Nas configurações de webhook do repositório, informe esta URL com o tipo de conteúdo application/json e este segredo, e escolha os eventos de issues e pull requests (no GitLab: eventos de Issues e Merge request, com o segredo como secret token). A forja precisa conseguir alcançar este endereço — se não conseguir, use o escaneamento periódico.",
+    "autoCopy": "Copiar",
+    "autoCopied": "Copiado",
+    "autoIssues": "Issues",
+    "autoIssuesHint": "Processar issues abertos.",
+    "autoPulls": "Pull / merge requests",
+    "autoPullsHint": "Processar pull ou merge requests abertos.",
+    "autoHandleWith": "Tratar como",
+    "autoIssueScenario": "Como as tarefas automáticas de issues são tratadas",
+    "autoPrScenario": "Como as tarefas automáticas de pull / merge requests são tratadas",
+    "autoSkipDrafts": "Ignorar rascunhos até ficarem prontos",
+    "autoIncludeExisting": "Incluir itens que já estavam abertos",
+    "autoIncludeExistingHint": "Desligado: só itens abertos ou atualizados depois de ligar o processamento automático são considerados. Rotule um item mais antigo para incluí-lo.",
+    "autoIncludeExistingOnHint": "Todo item aberto correspondente é considerado, inclusive os abertos antes de ligar o processamento automático.",
+    "autoSinceHint": "Desligado: só itens abertos ou atualizados desde {time}, quando o processamento automático foi ligado, são considerados. Rotule um item mais antigo para incluí-lo.",
+    "autoRulesHint": "Os padrões ignoram maiúsculas e minúsculas, e * corresponde a qualquer coisa: area/* é todo rótulo que começa com area/, *[bot] toda conta de bot. Um item precisa passar em todas as listas preenchidas, e as listas de “nunca” sempre vencem. Listas vazias não filtram.",
+    "autoIncludeLabels": "Somente itens com um destes rótulos",
+    "autoExcludeLabels": "Nunca itens com algum destes rótulos",
+    "autoIncludeAuthors": "Somente itens abertos por",
+    "autoExcludeAuthors": "Nunca itens abertos por",
+    "autoLabelPlaceholder": "Rótulo ou padrão, depois Enter",
+    "autoAuthorPlaceholder": "Usuário ou padrão, depois Enter",
+    "autoRemovePattern": "Remover {pattern}",
+    "autoAutoStart": "Iniciar imediatamente",
+    "autoAutoStartHint": "Coloca cada nova tarefa na fila na hora — o limite de concorrência das configurações de tarefas decide quando ela roda. Desligado: ela espera em A fazer.",
+    "autoWriteback": "Comentar o resultado",
+    "autoWritebackHint": "Ao terminar a tarefa, publica o mesmo breve comentário de status que o interruptor do diálogo de início publica.",
+    "autoActivity": "Atividade",
+    "autoScanNow": "Escanear agora",
+    "autoScanNowOff": "Ligue um gatilho e salve para escanear.",
+    "autoScanNowDirty": "Salve primeiro — o escaneamento usa as regras salvas.",
+    "autoStatusUnavailable": "Outro processo do codeg executa o quadro de tarefas deste diretório de dados, então o processamento automático roda lá, não aqui.",
+    "autoStatusNever": "Ainda não escaneado.",
+    "autoStatusScanning": "Escaneando…",
+    "autoStatusLast": "Último escaneamento {time} ({trigger}):",
+    "autoStatusCounts": "{examined} listados · {matched} correspondentes · {handled} já tinham tarefa · {created} criadas.",
+    "autoStatusError": "O último escaneamento {time} ({trigger}) parou: {error}",
+    "autoStatusCreated": "Novas tarefas: {items}",
+    "autoStatusSkipped": "Ignorados: {list}",
+    "autoStatusFailed": "Não foi possível criar: {items}",
+    "autoStatusStartFailed": "Criada, mas não iniciada: {error}",
+    "autoStatusTruncated": "A listagem foi cortada — o próximo escaneamento lê o mesmo intervalo de novo.",
+    "autoStatusNext": "Próximo escaneamento agendado: {time}",
+    "autoStatusDelivery": "Última entrega de webhook: {time}",
+    "autoTriggerSchedule": "agendado",
+    "autoTriggerWebhook": "webhook",
+    "autoTriggerManual": "manual",
+    "autoSkipKind": "outro tipo",
+    "autoSkipNotOpen": "não aberto",
+    "autoSkipDraft": "rascunho",
+    "autoSkipExcludedLabel": "rótulo excluído",
+    "autoSkipExcludedAuthor": "autor excluído",
+    "autoSkipMissingLabel": "sem rótulo correspondente",
+    "autoSkipAuthorNotIncluded": "autor fora da lista",
     "save": "Salvar"
   },
   "Canvas": {
@@ -7513,233 +8126,6 @@
         "available": "O arquivo de origem existe",
         "missing": "O arquivo de origem está ausente"
       }
-    }
-  },
-  "AgentVocabulary": {
-    "deepseekModeDefault": "Normal",
-    "deepseekModeDefaultDescription": "Lê e edita arquivos e executa comandos diretamente para concluir a tarefa",
-    "deepseekModePlan": "Plano",
-    "deepseekModePlanDescription": "Investiga primeiro e apresenta um plano completo para você confirmar antes de agir. Isso orienta o modelo; o limite real continua sendo o do acesso a arquivos.",
-    "deepseekOptionModel": "Modelo",
-    "deepseekOptionReasoning": "Esforço de raciocínio",
-    "deepseekOptionReasoningDescription": "Quanto maior, mais lento e mais tokens consome, mas é mais estável em problemas difíceis",
-    "deepseekOptionSandbox": "Acesso a arquivos",
-    "deepseekOptionSandboxDescription": "Comandos e ferramentas de arquivo compartilham este único limite",
-    "deepseekReasoningOff": "Desligado",
-    "deepseekReasoningOffDescription": "Responde direto, sem raciocinar; o mais rápido",
-    "deepseekReasoningLow": "Baixo",
-    "deepseekReasoningLowDescription": "Raciocina brevemente; mais estável que desligado, mais rápido que alto",
-    "deepseekReasoningHigh": "Alto",
-    "deepseekReasoningHighDescription": "Raciocina antes de responder; o padrão para o dia a dia",
-    "deepseekReasoningMax": "Máximo",
-    "deepseekReasoningMaxDescription": "Raciocina por mais tempo; mais estável em problemas difíceis, porém mais lento e mais caro",
-    "deepseekSandboxReadOnly": "Somente leitura",
-    "deepseekSandboxReadOnlyDescription": "Executa com uma política somente de leitura; troque o acesso quando precisar gravar. Em algumas plataformas a aplicação é apenas parcial.",
-    "deepseekSandboxWorkspaceWrite": "Escrita no espaço de trabalho",
-    "deepseekSandboxWorkspaceWriteDescription": "As gravações devem ficar dentro do espaço de trabalho da sessão e dos diretórios temporários do sistema; uma chamada fora deles pede autorização pontual. Em algumas plataformas a aplicação é apenas parcial.",
-    "deepseekSandboxFullAccess": "Acesso total (sem sandbox)",
-    "deepseekSandboxFullAccessDescription": "Não aplica nenhuma restrição de arquivos. Escolha apenas se entender as consequências.",
-    "deepseekPermissionAllowOnce": "Permitir uma vez",
-    "deepseekPermissionRejectOnce": "Recusar"
-  },
-  "CloseBehaviorSettings": {
-    "title": "Comportamento do botão Fechar",
-    "description": "Escolha o que o botão Fechar da janela principal faz.",
-    "trayUnavailable": "Este sistema não tem uma bandeja utilizável, portanto o botão Fechar sempre encerra o codeg.",
-    "behaviorAsk": "Perguntar sempre",
-    "behaviorMinimize": "Minimizar para a bandeja",
-    "behaviorExit": "Sair do codeg",
-    "saveFailed": "Falha ao salvar o comportamento de fechamento: {message}"
-  },
-  "CloseRequestDialog": {
-    "askTitle": "Fechar o codeg?",
-    "askDescription": "O codeg pode continuar em execução na bandeja para manter agentes e terminais ativos, ou encerrar por completo.",
-    "confirmExitTitle": "Sair do codeg?",
-    "confirmExitDescription": "Fechar a janela está configurado para encerrar o codeg.",
-    "runningTerminals": "{count, plural, one {# terminal ainda está em execução e será encerrado ao sair.} other {# terminais ainda estão em execução e serão encerrados ao sair.}}",
-    "remember": "Lembrar minha escolha",
-    "cancel": "Cancelar",
-    "minimize": "Minimizar para a bandeja",
-    "exit": "Sair do codeg",
-    "actionFailed": "Falha na ação: {message}"
-  },
-  "CollaborationSettings": {
-    "sectionTitle": "Colaboração",
-    "sectionDescription": "Como os agentes colaboram entre si e quais ferramentas do próprio codeg eles podem acessar dentro de uma conversa."
-  },
-  "BranchPicker": {
-    "searchPlaceholder": "Pesquisar branches…",
-    "none": "Sem branches",
-    "local": "Local",
-    "remote": "Remoto",
-    "useCustom": "Usar \"{query}\"",
-    "head": "HEAD"
-  },
-  "ConfigSyncSettings": {
-    "title": "Sincronização de configuração",
-    "scopeTitle": "O que é sincronizado",
-    "scopeIncludedTitle": "Incluído",
-    "scopeExcludedTitle": "Não incluído",
-    "scopeIncluded": {
-      "providers": "Provedores de modelos (com chaves de API)",
-      "agentSettings": "Configurações de agentes",
-      "customAgents": "Agentes personalizados",
-      "quickMessages": "Mensagens rápidas",
-      "taskTemplates": "Modelos de tarefa",
-      "preferences": "Preferências do app (idioma, aparência, opções)"
-    },
-    "scopeExcluded": {
-      "conversations": "Conversas e histórico",
-      "uploads": "Arquivos e imagens enviados",
-      "workspaces": "Projetos e caminhos do espaço de trabalho",
-      "mcp": "Servidores MCP (mantidos por cada CLI)",
-      "credentials": "Credenciais de login e tokens"
-    },
-    "fileTitle": "Arquivo de configuração",
-    "exportButton": "Exportar para arquivo",
-    "importButton": "Importar de arquivo",
-    "fileHint": "Grava um único arquivo JSON que você pode levar para outra máquina. A importação adiciona ou atualiza itens; os itens existentes que não estiverem no arquivo são mantidos.",
-    "webdavTitle": "Sincronização WebDAV",
-    "webdavHint": "Envia o instantâneo de configuração para o seu próprio servidor WebDAV.",
-    "presetLabel": "Servidor",
-    "preset": {
-      "jianguoyun": "Jianguoyun",
-      "nextcloud": "Nextcloud",
-      "synology": "NAS Synology",
-      "custom": "Personalizado"
-    },
-    "presetHint": {
-      "jianguoyun": "O Jianguoyun exige uma senha de aplicativo criada nas configurações de segurança, não a senha de login.",
-      "nextcloud": "Troque o domínio e o usuário e use uma senha de aplicativo em Configurações → Segurança.",
-      "synology": "Ative o WebDAV Server no Centro de Pacotes do DSM; as portas padrão são 5005 (HTTP) e 5006 (HTTPS)."
-    },
-    "serverUrl": "URL do servidor",
-    "username": "Usuário",
-    "password": "Senha",
-    "passwordKeep": "Deixe em branco para manter a senha salva",
-    "passwordPlaceholder": "Senha de aplicativo",
-    "remoteDir": "Pasta remota",
-    "profile": "Perfil",
-    "profileHint": "Máquinas com o mesmo perfil compartilham uma configuração. Use perfis diferentes para separar trabalho e uso pessoal.",
-    "autoSyncLabel": "Enviar automaticamente",
-    "autoSyncHint": "Verifica periodicamente e envia apenas quando a configuração muda.",
-    "intervalLabel": "Intervalo de verificação",
-    "intervalOption": "A cada {minutes} minutos",
-    "saveButton": "Salvar",
-    "testButton": "Testar conexão",
-    "uploadButton": "Sincronizar agora",
-    "restoreButton": "Restaurar do servidor",
-    "saved": "Ajustes de sincronização salvos",
-    "testSucceeded": "Conectado ao servidor WebDAV",
-    "uploaded": "Configuração enviada",
-    "exported": "Configuração exportada",
-    "restored": "{count, plural, one {# item aplicado} other {# itens aplicados}}",
-    "imported": "{count, plural, one {# item aplicado} other {# itens aplicados}}",
-    "noRemoteSnapshot": "Ainda não há instantâneo de configuração no servidor",
-    "lastSyncAt": "Última sincronização: {time}",
-    "neverSynced": "Ainda não sincronizado",
-    "lastError": "Último erro: {message}",
-    "working": "Processando…",
-    "plaintextWarning": "O instantâneo é enviado sem criptografia e contém chaves de API, então use um servidor WebDAV que só você acesse. As credenciais de sincronização nunca fazem parte do instantâneo.",
-    "importConfirmTitle": "Importar configuração?",
-    "importConfirmBody": "Os itens do arquivo serão adicionados ou atualizados nesta máquina. Os itens existentes que o arquivo não menciona são mantidos.",
-    "restartHint": "Algumas alterações (aparência, idioma e a lista de provedores) só têm efeito depois de reiniciar o codeg.",
-    "importConfirmAction": "Importar",
-    "restoreConfirmTitle": "Restaurar do servidor?",
-    "restoreConfirmBody": "O instantâneo de {device}, criado em {time}, será aplicado a esta máquina. Os itens existentes que o instantâneo não menciona são mantidos.",
-    "restoreConfirmAction": "Restaurar",
-    "cancel": "Cancelar",
-    "emptySnapshot": "Este instantâneo não contém itens de configuração.",
-    "domain": {
-      "modelProviders": "{count, plural, one {# provedor de modelos} other {# provedores de modelos}}",
-      "agentSettings": "{count, plural, one {# ajuste de agente} other {# ajustes de agentes}}",
-      "customAgents": "{count, plural, one {# agente personalizado} other {# agentes personalizados}}",
-      "quickMessages": "{count, plural, one {# mensagem rápida} other {# mensagens rápidas}}",
-      "taskTemplates": "{count, plural, one {# modelo de tarefa} other {# modelos de tarefa}}",
-      "preferences": "{count, plural, one {# preferência} other {# preferências}}"
-    },
-    "rollbackTitle": "Desfazer uma importação",
-    "rollbackHint": "Cada importação e cada restauração guardam antes o estado desta máquina. Os dez últimos são mantidos.",
-    "rollbackAction": "Desfazer",
-    "rollbackUnknownTime": "Hora desconhecida",
-    "rollbackConfirmTitle": "Voltar a esta configuração?",
-    "rollbackConfirmBody": "A configuração atual será substituída pela cópia guardada em {time}. A atual é guardada primeiro, por isso este passo também pode ser desfeito.",
-    "rollbackConfirmAction": "Desfazer",
-    "rolledBack": "{count, plural, one {# entrada restaurada} other {# entradas restauradas}}",
-    "encryptLabel": "Cifrar o snapshot",
-    "encryptHint": "Protege o ficheiro enviado com uma frase-passe. Todas as máquinas sincronizadas precisam da mesma.",
-    "encryptedNotice": "O snapshot é cifrado com a sua frase-passe antes do envio. Se a perder, a cópia no servidor não poderá ser recuperada.",
-    "passphrase": "Frase-passe",
-    "passphraseKeep": "Deixe vazio para manter a frase-passe guardada",
-    "passphrasePlaceholder": "Frase-passe de cifra",
-    "passphraseHint": "Fica no porta-chaves desta máquina e nunca é enviada. Introduza a mesma frase-passe nas suas outras máquinas."
-  },
-  "configSync": {
-    "error": {
-      "newerSchema": "Este instantâneo foi criado por uma versão mais nova do codeg (formato {snapshotVersion}); esta versão suporta até o formato {appVersion}.",
-      "checksum": "O instantâneo não confere com sua soma de verificação e pode estar incompleto.",
-      "invalidSnapshot": "Este arquivo não é um instantâneo de configuração válido do codeg.",
-      "noRemoteSnapshot": "Ainda não há instantâneo de configuração no servidor.",
-      "notConfigured": "Configure o servidor WebDAV antes de sincronizar.",
-      "unauthorized": "O servidor WebDAV recusou o usuário ou a senha.",
-      "forbidden": "O servidor WebDAV negou acesso a esta pasta.",
-      "remotePath": "A pasta remota ou o nome do perfil não é válido.",
-      "quota": "O servidor WebDAV não tem mais espaço.",
-      "network": "Não foi possível alcançar o servidor WebDAV.",
-      "server": "O servidor WebDAV retornou um erro ({status}).",
-      "passphraseRequired": "Este snapshot está cifrado. Defina a frase-passe antes de sincronizar.",
-      "badPassphrase": "Não foi possível decifrar o snapshot. Verifique a frase-passe — o ficheiro também pode estar danificado.",
-      "badDomain": "Não foi possível ler a secção {domain} deste snapshot.",
-      "noRollback": "Essa configuração guardada já não está nesta máquina.",
-      "credentialsUnreadable": "Não foi possível ler as credenciais salvas. Desbloqueie o chaveiro do sistema e tente novamente.",
-      "notEncrypted": "O instantâneo no servidor não está criptografado, mas a criptografia está ativada neste dispositivo. Envie a partir deste dispositivo para substituí-lo ou desative a criptografia para usá-lo."
-    }
-  },
-  "AgentTools": {
-    "delegation": {
-      "label": "Delegação",
-      "short": "Passa uma tarefa para outro agente.",
-      "hint": "Permite que um agente passe uma subtarefa autônoma para outro agente, que a executa na própria sessão e devolve o resultado. O restante — quantos níveis de aninhamento, qual agente executa — está na seção logo acima."
-    },
-    "feedback": {
-      "label": "Feedback ao vivo",
-      "short": "Acrescenta notas sem interromper o turno.",
-      "hint": "Envie notas e correções a um agente enquanto ele trabalha. Se o agente oferecer inserção instantânea, sua nota entra imediatamente no turno em andamento; caso contrário, o agente recebe uma ferramenta para verificar seu feedback — esses agentes normalmente só verificam quando você menciona isso no prompt, por exemplo, adicione \"verifique meu feedback ao vivo regularmente\" à sua mensagem."
-    },
-    "ask": {
-      "label": "Perguntar ao usuário",
-      "short": "Deixa o agente perguntar antes de decidir.",
-      "hint": "Permite que os agentes pausem e façam uma pergunta de múltipla escolha que aparece acima da caixa de entrada da conversa. O agente aguarda até você responder (ou pular)."
-    },
-    "sessions": {
-      "label": "Obter informações da sessão",
-      "short": "Consulta sessões anteriores e seus resultados.",
-      "hint": "Permite que os agentes consultem uma sessão mencionada na sua mensagem (um selo de sessão) para ler o título, agente, status, espaço de trabalho, uso de tokens e mensagens recentes."
-    },
-    "browser": {
-      "label": "Ler e conduzir o navegador integrado",
-      "short": "Abre, lê e age sobre as páginas do navegador integrado.",
-      "hint": "Permite que um agente veja quais páginas estão abertas no navegador integrado, leia as que você compartilhar e clique e digite naquelas em que você permitir ações. Ele também pode abrir um endereço por conta própria, levar uma aba para outro lugar e fechar abas. Desativado por padrão. Qual página ele pode ler continua sendo decisão sua, na barra daquela aba — mas note que, com um nível de compartilhamento padrão definido, uma página que o agente abre para si fica compartilhada com ele assim que carrega. Desativar tem efeito imediato, inclusive sobre agentes já em execução."
-    },
-    "browserEval": {
-      "label": "Executar código no navegador integrado",
-      "short": "Executa o próprio código numa página compartilhada, sem perguntar.",
-      "hint": "Permite que os agentes executem o próprio JavaScript numa página que você compartilhou. Desativado por padrão e depende do interruptor acima. Ligá-lo significa que os trechos são executados sem perguntar, então a decisão é tomada neste interruptor; em Configurações → Navegador integrado dá para pedir que cada trecho seja mostrado a você."
-    },
-    "computer": {
-      "label": "Ver e usar as janelas da área de trabalho",
-      "short": "Listar apps e janelas; ler as que você compartilhar e agir nas que permitir.",
-      "hint": "Permite que um agente liste os aplicativos e janelas da sua área de trabalho, leia as janelas que você compartilhar com ele — uma captura, o conteúdo, se mostra o que se espera — e clique, digite e pressione teclas nas que você compartilhar para agir. Nada fica legível até você compartilhar uma janela no painel Uso do computador da barra de status, e em nenhuma é possível agir sem que você também permita; o compartilhamento termina quando a janela fecha, depois de um tempo sem uso ou quando você o interrompe, e Parar agentes nesse painel para todos de uma vez. A entrada chega à janela em segundo plano; para uma ação que não chega em segundo plano, um agente pode trazer a janela para a frente, o que você pode desativar nas configurações de Uso do computador. Apenas no app para desktop; no macOS, exige permissões concedidas ao codeg-computer-helper. Prévia."
-    },
-    "automations": {
-      "label": "Criar automações",
-      "short": "Cria e gere automações agendadas.",
-      "hint": "Salva a conversa como uma automação que roda em um agendamento. Desativado por padrão — depois ela inicia agentes por conta própria."
-    },
-    "taskboard": {
-      "label": "Criar tarefas a fazer",
-      "short": "Cria e gere tarefas de trabalho.",
-      "hint": "Coloca um cartão no quadro de tarefas a partir da conversa. Desativado por padrão — grava o estado do app."
     }
   },
   "Browser": {

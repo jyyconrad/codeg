@@ -53,10 +53,23 @@ import { cn, copyTextFromMenu } from "@/lib/utils"
  * own header (see below). Maximize/restore lives in the file tab strip
  * (`FileWorkspaceTabBar`, embedded) instead, flush right of the tabs.
  *
- * An HTML preview rendered in this column draws no header strip of its own
- * (`chrome="hoisted"`); it publishes its controls and they are shown here.
- * The transcript file viewer and the canvas file card keep the preview's own
- * strip.
+ * An HTML preview rendered in this column draws NO header strip of its own
+ * (`chrome="hoisted"`); it publishes its controls and they are shown here, so
+ * the document sits under one row of chrome instead of two. Its scripts switch
+ * stays a visible button — it is the one security decision on this row, and a
+ * toggle whose state you cannot see without opening a menu is not a toggle.
+ * The other surfaces that render the same preview (the transcript's file
+ * viewer drawer, the canvas file card) have no such header and keep the
+ * preview's own strip.
+ *
+ * Rendered in two places (`app/workspace/layout.tsx`): under the desktop file
+ * column's tab strip, and as the mobile file view's ONLY header — there is no
+ * tab strip there, so a mobile browser tab ends up with no header at all. That
+ * is intended: on mobile a browser tab is a `BrowserBridgeView`, which carries
+ * the address and its own buttons in a row of the same shape.
+ *
+ * Sits above every `FileWorkspacePanel` render branch (editor / preview /
+ * diff / image / PDF / office), so it wraps them all uniformly.
  */
 export function FileWorkspaceHeader() {
   const t = useTranslations("Folder.fileWorkspace")

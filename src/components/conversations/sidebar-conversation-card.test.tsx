@@ -21,6 +21,10 @@ import {
 } from "@/lib/session-attachment-events"
 import type { DbConversationSummary } from "@/lib/types"
 import enMessages from "@/i18n/messages/en.json"
+import {
+  resetAssistantsStore,
+  useAssistantsStore,
+} from "@/stores/assistants-store"
 
 // AgentIcon renders exactly once per card body execution, so counting its
 // renders counts how many cards actually re-rendered (a card that bails out via
@@ -212,6 +216,35 @@ describe("SidebarConversationCard pin action", () => {
     fireEvent.contextMenu(getByText("conv-2"))
     fireEvent.click(getByText("Unpin"))
     expect(onTogglePin).toHaveBeenCalledWith(2, false)
+  })
+})
+
+describe("SidebarConversationCard command-line badge", () => {
+  function renderCard(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel=""
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  it("marks a conversation codeg-cli started, and only that one", () => {
+    const fromCli = renderCard({ ...conv(1), source: "cli" })
+    expect(fromCli.getByTitle("Started from the command line")).toBeTruthy()
+    fromCli.unmount()
+    const fromWindow = renderCard(conv(2))
+    expect(fromWindow.queryByTitle("Started from the command line")).toBeNull()
+    fromWindow.unmount()
+    // A source this build does not know is shown as nothing.
+    const unknown = renderCard({ ...conv(3), source: "future" })
+    expect(unknown.queryByTitle("Started from the command line")).toBeNull()
   })
 })
 
@@ -755,6 +788,21 @@ describe("SidebarConversationCard hover details bubble", () => {
     expect(screen.queryByText(FOLDER_PATH)).toBeNull()
   })
 
+  it("leaves a removed source worktree to the bubble, with no mark on the row", () => {
+    const origin = "/Users/dev/projects/codeg-feature-x"
+    const { container } = renderCard({ ...conv(1), origin_cwd: origin })
+
+    expect(screen.queryByText("Source worktree removed")).toBeNull()
+    expect(screen.queryByTitle("Source worktree removed")).toBeNull()
+
+    fireEvent.pointerEnter(rowOf(container), { pointerType: "mouse" })
+    act(() => {
+      vi.advanceTimersByTime(600)
+    })
+    expect(screen.getByText("Source worktree removed")).toBeDefined()
+    expect(screen.getByText(origin)).toBeDefined()
+  })
+
   // NOT covered here: touch. Radix's `excludeTouch` drops enter/leave whose
   // `pointerType === "touch"`, so a tap never strands a bubble on screen — but
   // jsdom ships no `PointerEvent`, so every synthetic pointer event arrives as a
@@ -885,5 +933,73 @@ describe("SidebarConversationCard branch chip", () => {
 
     setBranchTag(false, "#1a7f37")
     expect(screen.queryByTitle("Branch: main")).toBeNull()
+  })
+})
+
+describe("SidebarConversationCard — assistant sub-sessions", () => {
+  beforeEach(() => {
+    resetAssistantsStore()
+  })
+
+  function renderChild(c: DbConversationSummary) {
+    return renderWithIntl(
+      <SidebarConversationCard
+        conversation={c}
+        isSelected={false}
+        timeLabel=""
+        onSelect={onSelect}
+        onDoubleClick={onDoubleClick}
+        onRename={onRename}
+        onDelete={onDelete}
+        onStatusChange={onStatusChange}
+      />
+    )
+  }
+
+  it("shows the assistant's avatar where the agent icon goes", () => {
+    useAssistantsStore.getState().merge([
+      {
+        id: 3,
+        uid: "u-3",
+        name: "Reviewer",
+        description: "",
+        avatar: { kind: "emoji", emoji: "🦉", color: "teal" },
+        agent_type: "codex",
+        agent_options: { config_values: {} },
+        label_snapshot: { agent: "Codex", mode: null, options: [] },
+        instructions: "",
+        enabled: true,
+        sort_order: 1,
+        revision: 1,
+        created_at: "2026-10-16T00:00:00Z",
+        updated_at: "2026-10-16T00:00:00Z",
+        deleted_at: null,
+      },
+    ])
+    const before = probe.agentIconRenders
+    const { container } = renderChild({
+      ...conv(7),
+      parent_id: 1,
+      assistant_id: 3,
+      assistant_name: "Reviewer",
+    })
+    expect(
+      container.querySelector('[data-slot="assistant-avatar"]')
+    ).toHaveTextContent("🦉")
+    expect(probe.agentIconRenders).toBe(before)
+  })
+
+  it("draws the generic assistant glyph when the store lacks the row", () => {
+    const before = probe.agentIconRenders
+    const { container } = renderChild({
+      ...conv(8),
+      parent_id: 1,
+      assistant_id: 9,
+      assistant_name: "Planner",
+    })
+    const avatar = container.querySelector('[data-slot="assistant-avatar"]')
+    expect(avatar?.querySelector("svg")).not.toBeNull()
+    // Still not the agent's icon: the row ran as an assistant.
+    expect(probe.agentIconRenders).toBe(before)
   })
 })

@@ -806,6 +806,9 @@ fn supported_agents() -> Vec<AgentType> {
         AgentType::DeepSeek,
         AgentType::Qoder,
         AgentType::Antigravity,
+        AgentType::Kiro,
+        AgentType::Trae,
+        AgentType::CommandCode,
         AgentType::CodegAgent,
     ];
     // Custom agents that declared the shared skills store join the built-in

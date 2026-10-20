@@ -579,6 +579,27 @@ impl TerminalManager {
                 }
             }
         }
+        // codeg's own codeg-cli first (`cli_run::shim`). Said here because
+        // on Windows portable-pty rebuilds PATH from the registry, dropping
+        // what this process put on its own.
+        if let Some(dir) = crate::cli_run::shim::path_dir() {
+            let current = cmd.get_env("PATH").map(|p| p.to_os_string());
+            let first = current
+                .as_deref()
+                .and_then(|p| std::env::split_paths(p).next());
+            if first.as_deref() != Some(dir) {
+                let sep = if cfg!(windows) { ";" } else { ":" };
+                let mut path = dir.as_os_str().to_os_string();
+                if let Some(current) = current.filter(|p| !p.is_empty()) {
+                    path.push(sep);
+                    path.push(current);
+                }
+                cmd.env("PATH", path);
+            }
+        }
+        // The session's environment, not the one an AppImage's launcher set
+        // up for codeg itself.
+        crate::appimage_env::restore_pty(&mut cmd);
 
         let child = pair
             .slave
@@ -1429,6 +1450,7 @@ mod tests {
             initial_command: Some(command.to_string()),
             extra_env: None,
             temp_files: vec![],
+            on_exit: None,
         }
     }
 
@@ -1654,6 +1676,8 @@ mod tests {
                     initial_command: Some("printf 'last-output-marker\\n'; exit 7".to_string()),
                     extra_env: None,
                     temp_files: vec![],
+
+                    on_exit: None,
                 },
                 emitter,
             )
@@ -1697,6 +1721,8 @@ mod tests {
             initial_command: Some(command.to_string()),
             extra_env: None,
             temp_files: vec![],
+
+            on_exit: None,
         };
 
         manager
@@ -1765,6 +1791,8 @@ mod tests {
             initial_command: Some("sleep 30".to_string()),
             extra_env: None,
             temp_files: vec![],
+
+            on_exit: None,
         };
         manager.kill(&id).expect("close overtakes spawn");
         let refused = manager
@@ -1817,6 +1845,8 @@ mod tests {
                         )),
                         extra_env: None,
                         temp_files: vec![],
+
+                        on_exit: None,
                     },
                     EventEmitter::Noop,
                 )

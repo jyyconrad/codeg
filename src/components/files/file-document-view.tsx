@@ -6,6 +6,9 @@ import type { BundledLanguage } from "shiki"
 
 import { CodeBlockContent } from "@/components/ai-elements/code-block"
 import { FilePreview } from "@/components/files/file-preview"
+import { ImagePreview } from "@/components/files/image-preview"
+import { OfficePreview } from "@/components/files/office-preview"
+import { PdfPreview } from "@/components/files/pdf-preview"
 import type { FileWorkspaceTab } from "@/contexts/workspace-context"
 import { shouldUseFilePreview } from "@/lib/file-preview-kind"
 
@@ -17,7 +20,12 @@ import { shouldUseFilePreview } from "@/lib/file-preview-kind"
  * It branches exactly the way the file column does, on the same tab fields, so
  * the surfaces can never disagree about what a tab holds:
  *
- *   previewable kinds → FilePreview (image / office / html / markdown / …)
+ *   language "pdf"    → PdfPreview        (content is a data: URL)
+ *   previewable paths → FilePreview       (image / office / html / markdown /
+ *                                          spreadsheet, with the officecli
+ *                                          fallback)
+ *   language "image" / "office" on a path that is not itself that kind
+ *                     → ImagePreview / OfficePreview
  *   everything else   → shiki-highlighted source
  *
  * Deliberately NOT Monaco: these surfaces never edit, and Monaco's models and
@@ -114,6 +122,11 @@ export function FileDocumentView({
   // whatever the tab holds. A load failure surfaces as its own message in the
   // document body, which is exactly where the column shows it.
   //
+  // PDF.js, not the office/js fallback. The synthetic language is what the
+  // file column stamps; a path-only check would miss a tab seeded that way.
+  if (tab.language === "pdf") {
+    return <PdfPreview key={tab.id} tab={tab} />
+  }
   if (tab.path && shouldUseFilePreview(tab.path, isPreview)) {
     return (
       <FilePreview
@@ -128,6 +141,18 @@ export function FileDocumentView({
         openFilePreview={onOpenMarkdownLink ?? noop}
         previewRoot={previewRoot}
         tab={tab}
+      />
+    )
+  }
+  if (tab.language === "image") {
+    return <ImagePreview key={tab.id} tab={tab} />
+  }
+  if (tab.language === "office") {
+    return (
+      <OfficePreview
+        key={tab.id}
+        rootPath={io?.rootPath ?? null}
+        relPath={io?.ioPath ?? null}
       />
     )
   }
