@@ -425,6 +425,7 @@ fn json_canceled(message: &str) -> crate::acp::delegation::types::DelegationTask
         blocked_on: None,
         assistant_id: None,
         assistant_name: None,
+        progress: None,
     }
 }
 

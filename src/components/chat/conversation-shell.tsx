@@ -260,7 +260,11 @@ export function ConversationShell({
           />
         )}
         {asyncTasks && asyncTasks.length > 0 && (
-          <AsyncTaskStrip tasks={asyncTasks} onStop={onStopAsyncTask} />
+          <AsyncTaskStrip
+            tasks={asyncTasks}
+            onStop={onStopAsyncTask}
+            agentName={agentName}
+          />
         )}
 
         {/* Flex column, not a percentage-height slot. WKWebView often treats
@@ -376,7 +380,6 @@ export function ConversationShell({
                 onInjectConsumed={onInjectConsumed}
               />
             )}
-
           </div>
         </div>
       </div>

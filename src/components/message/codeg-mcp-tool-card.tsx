@@ -9,7 +9,7 @@
  * #2122", "进度：tests passing", "任务完成 · 成功"), with a status badge and an
  * inline expansion for the result text — for a work-task report, the whole
  * report plus what the board did with it. Deliberately the same shape and visual
- * language as `DelegationStatusCard` / `DelegationStatusRow` so every codeg-mcp
+ * language as `DelegationStatusRow` so every codeg-mcp
  * companion reads as one family in the transcript instead of these five landing
  * on the generic tool shell as a raw `{"message": "…"}` argument dump.
  *
@@ -33,6 +33,7 @@ import {
   Timer,
 } from "lucide-react"
 
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import {
   parseCodegMcpToolCall,
@@ -42,6 +43,11 @@ import {
 import type { ToolCallState } from "@/lib/adapters/ai-elements-adapter"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
+import {
+  RowChevron,
+  RowFigure,
+} from "@/components/message/activity/activity-row"
+import { StatusFigure } from "@/components/message/activity/step-visuals"
 import { StatusBadge } from "@/components/message/delegation-status-badge"
 
 interface Props {
@@ -52,9 +58,15 @@ interface Props {
   output?: string | null
   errorText?: string | null
   state?: ToolCallState
+  /** `timeline`: drawn on the activity timeline's rail — the rail's ring
+   *  carries the icon and the status, so the row drops both and its frame. */
+  layout?: "card" | "timeline"
 }
 
-const ICONS: Record<CodegMcpWorkbenchTool, typeof BookOpen> = {
+export const CODEG_MCP_TOOL_ICONS: Record<
+  CodegMcpWorkbenchTool,
+  typeof BookOpen
+> = {
   get_session_info: BookOpen,
   task_progress: Signpost,
   task_complete: CircleCheckBig,
@@ -64,9 +76,18 @@ const ICONS: Record<CodegMcpWorkbenchTool, typeof BookOpen> = {
   set_session_timer: Timer,
 }
 
-/** The panel's Markdown blocks: the report and the result share one look. */
-const MARKDOWN_BLOCK =
-  'max-h-80 overflow-auto prose prose-sm max-w-none break-words text-xs dark:prose-invert [&_ol]:list-inside [&_ul]:list-inside [&_[data-streamdown="code-block-body"]]:max-h-96 [&_[data-streamdown="code-block-body"]]:overflow-auto'
+/** The panel's Markdown blocks: the report and the result share one look,
+ *  each scrolling past its cap on the overlay scrollbars (its code blocks
+ *  grow inside it instead of scrolling on their own). */
+function MarkdownBlock({ children }: { children: string }) {
+  return (
+    <ScrollArea className="max-h-80">
+      <div className="prose prose-sm max-w-none break-words text-xs dark:prose-invert [&_ol]:list-inside [&_ul]:list-inside">
+        <MessageResponse>{children}</MessageResponse>
+      </div>
+    </ScrollArea>
+  )
+}
 
 /**
  * What the board did with a work-task report, in the reader's words, where the
@@ -84,7 +105,7 @@ function TaskAckLine({ ack }: { ack: TaskReportAck }) {
     )
   }
   return (
-    <div className="flex items-start gap-1.5 text-amber-600 dark:text-amber-400">
+    <div className="flex items-start gap-1.5 text-tone-warning">
       <CircleAlert className="mt-px h-3.5 w-3.5 shrink-0" />
       <span className="min-w-0 break-words">
         {ack.note
@@ -101,7 +122,9 @@ export function CodegMcpToolCard({
   output,
   errorText,
   state,
+  layout = "card",
 }: Props) {
+  const timeline = layout === "timeline"
   const t = useTranslations("Folder.chat.codegMcpTool")
   const [expanded, setExpanded] = useState(false)
   const panelId = useId()
@@ -152,7 +175,7 @@ export function CodegMcpToolCard({
     }
   }, [t, tool, model])
 
-  const Icon = ICONS[tool]
+  const Icon = CODEG_MCP_TOOL_ICONS[tool]
   const isError = model.status === "err"
   const isRunning = model.status === "running"
   const resultText = model.resultText?.trim() ?? ""
@@ -171,7 +194,33 @@ export function CodegMcpToolCard({
   const expandable =
     resultText !== "" || prompt !== "" || report !== "" || ack !== null
 
-  const row = (
+  // `title` restores the full text on hover: a long progress message or task
+  // summary is CSS-truncated here, and the panel below has to be opened to
+  // read it.
+  const row = timeline ? (
+    // Laid out like the timeline's other rows: the chevron follows the label,
+    // a failure is the word at the end (the ring carries the icon), and the
+    // label is in the light ink of the delegation checks it sits among.
+    <>
+      <span className="flex min-w-0 items-start gap-1">
+        <span
+          title={label}
+          className={cn(
+            "min-w-0 truncate font-medium",
+            isRunning ? "activity-shimmer" : "text-muted-foreground"
+          )}
+        >
+          {label}
+        </span>
+        {expandable ? <RowChevron open={expanded} /> : null}
+      </span>
+      {isError ? (
+        <RowFigure>
+          <StatusFigure status="failed" />
+        </RowFigure>
+      ) : null}
+    </>
+  ) : (
     <>
       <Icon
         className={cn(
@@ -179,9 +228,6 @@ export function CodegMcpToolCard({
           isError ? "text-destructive" : "text-muted-foreground"
         )}
       />
-      {/* `title` restores the full text on hover: a long progress message or
-          task summary is CSS-truncated here, and the panel below has to be
-          opened to read it. */}
       <span
         title={label}
         className="min-w-0 flex-1 truncate text-xs font-medium text-foreground"
@@ -209,10 +255,12 @@ export function CodegMcpToolCard({
       data-testid="codeg-mcp-tool-card"
       data-tool={tool}
       className={cn(
-        "overflow-hidden rounded-lg border text-xs ws-msg-card",
-        isError
-          ? "border-destructive/30 bg-destructive/5"
-          : "border-border bg-card"
+        "text-xs",
+        !timeline && "overflow-hidden rounded-lg border ws-msg-card",
+        !timeline &&
+          (isError
+            ? "border-destructive/30 bg-destructive/5"
+            : "border-border bg-card")
       )}
     >
       {expandable ? (
@@ -223,17 +271,36 @@ export function CodegMcpToolCard({
           // Only reference the panel while it is mounted — it is kept out of the
           // collapsed tree so the Markdown renderer isn't paid for unopened rows.
           aria-controls={expanded ? panelId : undefined}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/50"
+          className={cn(
+            "flex w-full text-start",
+            timeline
+              ? "group/row min-w-0 cursor-pointer items-start rounded-sm py-0.5 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              : "items-center gap-2 px-3 py-2 transition-colors hover:bg-muted/50"
+          )}
         >
           {row}
         </button>
       ) : (
-        <div className="flex w-full items-center gap-2 px-3 py-2">{row}</div>
+        <div
+          className={cn(
+            "flex w-full",
+            timeline
+              ? "min-w-0 items-start py-0.5 text-sm leading-6"
+              : "items-center gap-2 px-3 py-2"
+          )}
+        >
+          {row}
+        </div>
       )}
       {expandable && expanded && (
         <div
           id={panelId}
-          className="flex flex-col gap-2 border-t border-border px-3 py-2"
+          className={cn(
+            "flex flex-col gap-2 px-3 py-2",
+            timeline
+              ? "mt-1 mb-1.5 rounded-[0.625rem] bg-activity-surface ws-msg-card ws-msg-panel"
+              : "border-t border-border"
+          )}
         >
           {/* The instruction the automation / board task will run. Shown as
               plain pre-wrapped text, NOT Markdown: it is an argument the user
@@ -243,25 +310,19 @@ export function CodegMcpToolCard({
               <div className="mb-1 text-3xs font-medium uppercase tracking-wide text-muted-foreground">
                 {t("promptLabel")}
               </div>
-              <div className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-2 py-1.5 text-xs text-foreground/90">
-                {prompt}
-              </div>
+              <ScrollArea className="max-h-40 rounded-md bg-muted/40">
+                <div className="whitespace-pre-wrap break-words px-2 py-1.5 text-xs text-foreground/90">
+                  {prompt}
+                </div>
+              </ScrollArea>
             </div>
           )}
           {/* The report through the chat's Markdown renderer, as the task
               drawer shows the same summary: the agent writes it the way it
               writes anything else — `code`, bullets, bold. */}
-          {report !== "" && (
-            <div className={MARKDOWN_BLOCK}>
-              <MessageResponse>{report}</MessageResponse>
-            </div>
-          )}
+          {report !== "" && <MarkdownBlock>{report}</MarkdownBlock>}
           {ack && <TaskAckLine ack={ack} />}
-          {resultText !== "" && (
-            <div className={MARKDOWN_BLOCK}>
-              <MessageResponse>{resultText}</MessageResponse>
-            </div>
-          )}
+          {resultText !== "" && <MarkdownBlock>{resultText}</MarkdownBlock>}
         </div>
       )}
     </div>

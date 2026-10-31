@@ -26,6 +26,7 @@ pub mod quick_message;
 pub mod remote_workspace_connection;
 pub mod token_usage_sync;
 pub mod token_usage_turn;
+pub mod tool_approval;
 pub mod wiki_contribution;
 pub mod wiki_job;
 pub mod wiki_job_attempt;

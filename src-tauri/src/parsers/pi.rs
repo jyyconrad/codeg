@@ -857,6 +857,7 @@ fn parse_message_record(sp: &mut SessionParse, value: &Value, ts: DateTime<Utc>,
                     is_error,
                     agent_stats: None,
                     images: content_images(message.get("content")),
+                    exit_code: None,
                 }],
                 ts,
                 None,
@@ -939,6 +940,7 @@ fn parse_compaction(sp: &mut SessionParse, value: &Value, ts: DateTime<Utc>, idx
                 is_error: false,
                 agent_stats: None,
                 images: Vec::new(),
+                exit_code: None,
             },
         ],
         ts,
@@ -1063,6 +1065,7 @@ fn parse_bash_execution(sp: &mut SessionParse, value: &Value, ts: DateTime<Utc>,
             is_error,
             agent_stats: None,
             images: Vec::new(),
+            exit_code,
         }],
         ts,
         None,
@@ -2056,12 +2059,12 @@ mod tests {
         assert!(has_bash_use, "bashExecution becomes a bash ToolUse");
 
         let errored = detail.turns.iter().flat_map(|t| &t.blocks).any(|b| {
-            matches!(b, ContentBlock::ToolResult { is_error, output_preview, .. }
-                if *is_error && output_preview.as_deref() == Some("boom"))
+            matches!(b, ContentBlock::ToolResult { is_error, output_preview, exit_code, .. }
+                if *is_error && output_preview.as_deref() == Some("boom") && *exit_code == Some(1))
         });
         assert!(
             errored,
-            "a non-zero exitCode marks the bash result an error"
+            "a non-zero exitCode marks the bash result an error, and is kept"
         );
     }
 
@@ -2546,7 +2549,7 @@ mod tests {
             ],
             id,
         );
-        let (output, is_error) = detail
+        let (output, is_error, exit_code) = detail
             .turns
             .iter()
             .flat_map(|t| &t.blocks)
@@ -2554,12 +2557,18 @@ mod tests {
                 ContentBlock::ToolResult {
                     output_preview,
                     is_error,
+                    exit_code,
                     ..
-                } => Some((output_preview.clone().unwrap_or_default(), *is_error)),
+                } => Some((
+                    output_preview.clone().unwrap_or_default(),
+                    *is_error,
+                    *exit_code,
+                )),
                 _ => None,
             })
             .expect("the bash result");
         assert!(is_error, "a cancelled run is not a success");
+        assert_eq!(exit_code, None, "an interrupted run never got a code");
         assert!(output.contains("partial"), "the output is kept: {output}");
         assert!(output.contains("[cancelled]"), "got: {output}");
         assert!(output.contains("/tmp/pi-out.txt"), "got: {output}");

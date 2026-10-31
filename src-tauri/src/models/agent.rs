@@ -8,9 +8,9 @@ pub const CUSTOM_AGENT_WIRE_PREFIX: &str = "custom:";
 
 /// Which agent backs a conversation.
 ///
-/// The twenty named variants are compile-time built-ins with hand-written
+/// The twenty-one named variants are compile-time built-ins with hand-written
 /// launch metadata (`acp::registry`). Most use a dedicated transcript parser;
-/// ZCode, TRAE CLI and Command Code use the Codeg-owned ACP transcript, and
+/// ZCode, TRAE CLI, Command Code and MiniMax Code use the Codeg-owned ACP transcript, and
 /// [`AgentType::CodegAgent`] uses the ACP-native transcript
 /// (`parsers::acp_native`). [`AgentType::Custom`] is the open end: a user-registered
 /// ACP agent whose launch metadata lives in the database
@@ -42,6 +42,7 @@ pub enum AgentType {
     ZCode,
     Trae,
     CommandCode,
+    MiniMaxCode,
     /// Built-in in-process coding agent. History uses the ACP-native transcript
     /// (`parsers::acp_native`), same as [`AgentType::Custom`].
     CodegAgent,
@@ -50,7 +51,7 @@ pub enum AgentType {
     Custom(&'static str),
 }
 
-/// The twenty compile-time agents, in declaration order. Does NOT include
+/// The twenty-one compile-time agents, in declaration order. Does NOT include
 /// custom agents — use [`crate::acp::registry::all_acp_agents`] for the live
 /// set that includes them.
 pub const BUILTIN_AGENT_TYPES: &[AgentType] = &[
@@ -73,6 +74,7 @@ pub const BUILTIN_AGENT_TYPES: &[AgentType] = &[
     AgentType::ZCode,
     AgentType::Trae,
     AgentType::CommandCode,
+    AgentType::MiniMaxCode,
     AgentType::CodegAgent,
 ];
 
@@ -86,7 +88,11 @@ impl AgentType {
     pub fn uses_acp_transcript(&self) -> bool {
         matches!(
             self,
-            AgentType::Custom(_) | AgentType::ZCode | AgentType::Trae | AgentType::CommandCode
+            AgentType::Custom(_)
+                | AgentType::ZCode
+                | AgentType::Trae
+                | AgentType::CommandCode
+                | AgentType::MiniMaxCode
         )
     }
 
@@ -141,6 +147,7 @@ impl AgentType {
             AgentType::ZCode => Cow::Borrowed("zcode"),
             AgentType::Trae => Cow::Borrowed("trae"),
             AgentType::CommandCode => Cow::Borrowed("command_code"),
+            AgentType::MiniMaxCode => Cow::Borrowed("minimax_code"),
             AgentType::CodegAgent => Cow::Borrowed("codeg_agent"),
             AgentType::Custom(id) => Cow::Owned(format!("{CUSTOM_AGENT_WIRE_PREFIX}{id}")),
         }
@@ -169,6 +176,7 @@ impl AgentType {
             "zcode" => Some(AgentType::ZCode),
             "trae" => Some(AgentType::Trae),
             "command_code" => Some(AgentType::CommandCode),
+            "minimax_code" => Some(AgentType::MiniMaxCode),
             "codeg_agent" => Some(AgentType::CodegAgent),
             other => other
                 .strip_prefix(CUSTOM_AGENT_WIRE_PREFIX)
@@ -262,6 +270,7 @@ impl fmt::Display for AgentType {
             AgentType::ZCode => write!(f, "ZCode"),
             AgentType::Trae => write!(f, "TRAE CLI"),
             AgentType::CommandCode => write!(f, "Command Code"),
+            AgentType::MiniMaxCode => write!(f, "MiniMax Code"),
             AgentType::CodegAgent => write!(f, "Codeg Agent"),
             // Prefer the registered display name; fall back to the raw id when
             // the registry has not been hydrated (or the agent was deleted
@@ -302,6 +311,7 @@ mod tests {
             (AgentType::ZCode, "zcode"),
             (AgentType::Trae, "trae"),
             (AgentType::CommandCode, "command_code"),
+            (AgentType::MiniMaxCode, "minimax_code"),
             (AgentType::CodegAgent, "codeg_agent"),
         ];
         for (agent, wire) in expected {
@@ -427,6 +437,17 @@ mod tests {
             let stored = serde_json::to_string(&custom).unwrap();
             assert_eq!(serde_json::from_str::<AgentType>(&stored).unwrap(), custom);
             assert_ne!(custom, AgentType::CommandCode);
+        }
+    }
+
+    #[test]
+    fn minimax_code_builtin_preserves_hand_registered_custom_identities() {
+        assert!(AgentType::MiniMaxCode.uses_acp_transcript());
+        assert_eq!(AgentType::MiniMaxCode.to_string(), "MiniMax Code");
+        for id in ["mcode", "minimax-code", "minimax_code"] {
+            let custom = AgentType::custom(id).expect("previously valid custom id");
+            assert_eq!(AgentType::from_wire(&format!("custom:{id}")), Some(custom));
+            assert_ne!(custom, AgentType::MiniMaxCode);
         }
     }
 

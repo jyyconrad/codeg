@@ -29,6 +29,11 @@ import {
   type CodegProviderPresetId,
 } from "@/lib/codeg-agent-providers"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
+import type { CodexCatalogEndpoint } from "@/components/settings/codex-catalog-source"
+import {
+  describeCodexSaveError,
+  type CodexCatalogTranslator,
+} from "@/lib/codex-catalog-error"
 import {
   MODEL_PROVIDER_AGENT_TYPES,
   serializeClaudeProviderModel,
@@ -39,6 +44,9 @@ import {
   type ModelProviderInfo,
 } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
+import { ClaudeProviderModelFields } from "@/components/settings/claude-model-fields"
+import { ModelIdInputWithFetch } from "@/components/settings/provider-models"
+import { useProviderModels } from "@/hooks/use-provider-models"
 
 interface AddModelProviderDialogProps {
   open: boolean
@@ -54,6 +62,9 @@ export function AddModelProviderDialog({
   defaultAgentType,
 }: AddModelProviderDialogProps) {
   const t = useTranslations("ModelProviderSettings")
+  const tCatalog = useTranslations(
+    "CodexModelEditor.catalogSource"
+  ) as unknown as CodexCatalogTranslator
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -116,6 +127,31 @@ export function AddModelProviderDialog({
     [name, t]
   )
 
+  // "Fetch models" asks the provider with the key typed here; nothing is
+  // published until a Codex agent is bound to the saved provider.
+  const codexEndpoint = useMemo<CodexCatalogEndpoint>(
+    () => ({
+      baseUrl: apiUrl,
+      keySource: apiKey.trim()
+        ? { kind: "inline", apiKey: apiKey.trim() }
+        : null,
+    }),
+    [apiUrl, apiKey]
+  )
+
+  // Claude and Gemini fields offer the models the provider lists, asked the
+  // way each agent sends this key.
+  const providerModels = useProviderModels(
+    agentType === "claude_code" || agentType === "gemini"
+      ? {
+          protocol: agentType === "gemini" ? "gemini" : "anthropic",
+          baseUrl: apiUrl,
+          apiKey,
+          keyHeader: agentType === "claude_code" ? "bearer" : null,
+        }
+      : null
+  )
+
   const modelPlaceholder = useMemo(() => {
     if (agentType === "codex") return t("modelPlaceholderCodex")
     if (agentType === "gemini") return t("modelPlaceholderGemini")
@@ -166,14 +202,9 @@ export function AddModelProviderDialog({
       handleOpenChange(false)
       onProviderAdded(created)
     } catch (err: unknown) {
-      const raw = err as Record<string, unknown>
-      const msg =
-        typeof raw?.message === "string"
-          ? raw.message
-          : err instanceof Error
-            ? err.message
-            : String(err)
-      setError(msg)
+      // A Codex agent bound to the provider gets the change through the
+      // model list commit; its errors carry a code to localize.
+      setError(describeCodexSaveError(err, tCatalog))
     } finally {
       setLoading(false)
     }
@@ -188,6 +219,7 @@ export function AddModelProviderDialog({
     handleOpenChange,
     onProviderAdded,
     t,
+    tCatalog,
   ])
 
   return (
@@ -292,159 +324,27 @@ export function AddModelProviderDialog({
           )}
 
           {agentType === "claude_code" ? (
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  {t("claudeMainModel")}
-                </label>
-                <Input
-                  value={claudeModel.main ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      main: e.target.value,
-                    }))
-                  }
-                  placeholder="claude-sonnet-5-5"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  {t("claudeReasoningModel")}
-                </label>
-                <Input
-                  value={claudeModel.reasoning ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      reasoning: e.target.value,
-                    }))
-                  }
-                  placeholder="claude-opus-5-5"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  {t("claudeHaikuDefaultModel")}
-                </label>
-                <Input
-                  value={claudeModel.haiku ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      haiku: e.target.value,
-                    }))
-                  }
-                  placeholder="claude-haiku-5-5"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  {t("claudeSonnetDefaultModel")}
-                </label>
-                <Input
-                  value={claudeModel.sonnet ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      sonnet: e.target.value,
-                    }))
-                  }
-                  placeholder="claude-sonnet-5-5"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  {t("claudeOpusDefaultModel")}
-                </label>
-                <Input
-                  value={claudeModel.opus ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      opus: e.target.value,
-                    }))
-                  }
-                  placeholder="claude-opus-5-5"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  {t("claudeFableDefaultModel")}
-                </label>
-                <Input
-                  value={claudeModel.fable ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      fable: e.target.value,
-                    }))
-                  }
-                  placeholder="claude-fable-5-1"
-                />
-              </div>
-              <div className="space-y-1.5 md:col-span-2">
-                <label className="text-xs font-medium">
-                  {t("claudeCustomModelOption")}
-                </label>
-                <Input
-                  value={claudeModel.customOption ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      customOption: e.target.value,
-                    }))
-                  }
-                  placeholder="my-gateway/claude-opus-5-5"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  {t("claudeCustomModelOptionName")}
-                </label>
-                <Input
-                  value={claudeModel.customOptionName ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      customOptionName: e.target.value,
-                    }))
-                  }
-                  placeholder="Gateway Opus"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  {t("claudeCustomModelOptionDescription")}
-                </label>
-                <Input
-                  value={claudeModel.customOptionDescription ?? ""}
-                  onChange={(e) =>
-                    setClaudeModel((prev) => ({
-                      ...prev,
-                      customOptionDescription: e.target.value,
-                    }))
-                  }
-                  placeholder="Routed via custom gateway"
-                />
-              </div>
-              <p className="text-2xs text-muted-foreground md:col-span-2">
-                {t("claudeCustomModelOptionHint")}
-              </p>
-            </div>
+            <ClaudeProviderModelFields
+              value={claudeModel}
+              onChange={setClaudeModel}
+              state={providerModels}
+            />
           ) : agentType === "codex" ? (
             <div className="space-y-1.5">
               <CodexModelListEditor
                 value={codexModel}
                 onChange={setCodexModel}
+                endpoint={codexEndpoint}
               />
             </div>
           ) : (
             <div className="space-y-1.5">
               <label className="text-xs font-medium">{t("model")}</label>
-              <Input
+              <ModelIdInputWithFetch
+                aria-label={t("model")}
                 value={singleModel}
-                onChange={(e) => setSingleModel(e.target.value)}
+                onChange={setSingleModel}
+                state={providerModels}
                 placeholder={modelPlaceholder}
               />
             </div>

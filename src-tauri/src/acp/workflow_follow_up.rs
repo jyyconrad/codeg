@@ -207,6 +207,7 @@ pub fn host_wake_policy(agent_type: AgentType) -> HostWakePolicy {
         | AgentType::ZCode
         | AgentType::Trae
         | AgentType::CommandCode
+        | AgentType::MiniMaxCode
         | AgentType::CodegAgent
         | AgentType::Custom(_) => HostWakePolicy::Skip,
     }

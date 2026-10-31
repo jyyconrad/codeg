@@ -13,6 +13,7 @@ import { AgentSelector } from "@/components/chat/agent-selector"
 import { ConversationShell } from "@/components/chat/conversation-shell"
 import { SessionTerminalInput } from "@/components/terminal/session-terminal-input"
 import type { ConversationFolderPickerOverride } from "@/components/chat/conversation-context-bar"
+import type { ComposerInjectContent } from "@/components/chat/message-input"
 import { MessageListView } from "@/components/message/message-list-view"
 import {
   getCachedSelectors,
@@ -80,7 +81,9 @@ import { useShallow } from "zustand/react/shallow"
  * What it deliberately leaves out: the message queue, live-feedback steering,
  * transcript export and the welcome-page quick actions. Those belong
  * to the full workspace surface, which the card's "open in workspace" menu
- * entry is one click away from.
+ * entry is one click away from. Without a queue, a message written while the
+ * agent is still answering stays in the composer (`MessageInput` holds it), and
+ * one that bounces off a turn the card hadn't heard of yet is handed back there.
  *
  * `contextKey` is the ACP connection key and must be STABLE for the card's
  * lifetime; when this conversation is also open in a workspace tab, the two
@@ -192,6 +195,7 @@ export function CanvasConversationSurface({
   const sharedT = useTranslations("Folder.chat.shared")
   const tWelcome = useTranslations("Folder.chat.welcomeInputPanel")
   const tAsyncTasks = useTranslations("Folder.chat.asyncTasks")
+  const tComposer = useTranslations("Folder.chat.messageInput")
   const acpActions = useAcpActions()
   const {
     appendOptimisticTurn,
@@ -280,6 +284,16 @@ export function CanvasConversationSurface({
         ? (acpAgents.find((agent) => agent.agent_type === agentType)
             ?.launch_mode ?? "acp")
         : null
+  // Sends handed back to the composer, which cleared itself as each went out
+  // (see the bounce handler in `handleSend`). Oldest first, offered one at a
+  // time: a second can bounce before the composer has taken the first.
+  const [composerHandBacks, setComposerHandBacks] = useState<
+    ComposerInjectContent[]
+  >([])
+  const handleComposerHandBackConsumed = useCallback(
+    () => setComposerHandBacks((pending) => pending.slice(1)),
+    []
+  )
   const [sendSignal, setSendSignal] = useState(0)
   const creatingRef = useRef(false)
   // Mirrors `creatingRef` as state, purely so the card can refuse to be thrown
@@ -609,10 +623,6 @@ export function CanvasConversationSurface({
       )
       setSendSignal((prev) => prev + 1)
       setSyncState(effectiveConversationId, "awaiting_persist")
-      // No message queue on this surface: a send the backend bounces (a turn
-      // already in flight) rolls back and surfaces as a toast rather than
-      // silently parking the draft somewhere the card doesn't render.
-      //
       // Rolled back against BOTH ids the turn can be filed under. A rejection
       // is a round trip of its own, so it can land after the row has arrived
       // and the card that replaced this one has adopted the session onto the
@@ -629,6 +639,25 @@ export function CanvasConversationSurface({
           removeOptimisticTurn(persistedId, optimisticTurn.id)
         }
       }
+      // No message queue on this surface, so a send the backend bounces (a
+      // turn already in flight) has nowhere to wait. The composer holds one
+      // written while the card can SEE the agent answering; what lands here is
+      // a turn it hadn't heard of yet — started from another surface, or its
+      // `prompting` still on the way. Rolling the message back used to be all
+      // that happened, and the composer had cleared itself when it went out, so
+      // it was simply gone, with no notice either. Hand it back instead.
+      const onTurnInProgress = () => {
+        onSendFailed()
+        setComposerHandBacks((pending) => [
+          ...pending,
+          { handBack: draft.blocks },
+        ])
+        notify({
+          level: "info",
+          key: `held-while-responding:${contextKey}`,
+          title: tComposer("heldWhileResponding"),
+        })
+      }
 
       const persistedId = dbConversationIdRef.current
       if (persistedId) {
@@ -636,7 +665,7 @@ export function CanvasConversationSurface({
           folderId: boundFolderId ?? undefined,
           conversationId: persistedId,
           clientMessageId: optimisticTurn.id,
-          onTurnInProgress: onSendFailed,
+          onTurnInProgress,
           onSendFailed,
         })
         return
@@ -685,7 +714,7 @@ export function CanvasConversationSurface({
             folderId: sendFolderId,
             conversationId: newId,
             clientMessageId: optimisticTurn.id,
-            onTurnInProgress: onSendFailed,
+            onTurnInProgress,
             onSendFailed,
           })
         } catch (e) {
@@ -726,6 +755,7 @@ export function CanvasConversationSurface({
       setSyncState,
       sharedT,
       t,
+      tComposer,
       upsertFolder,
     ]
   )
@@ -898,6 +928,8 @@ export function CanvasConversationSurface({
           availableCommands={connectionCommands ?? []}
           promptSuggestion={connIsForOtherAgent ? null : conn.promptSuggestion}
           draftStorageKey={`canvas-draft:${contextKey}`}
+          injectContent={composerHandBacks[0] ?? null}
+          onInjectConsumed={handleComposerHandBackConsumed}
           getSentHistory={getSentHistory}
           // The card's own connection key doubles as its composer scope: the
           // context-usage ring and connection dot in the picker row read it as

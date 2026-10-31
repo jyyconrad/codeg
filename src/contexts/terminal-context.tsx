@@ -18,7 +18,10 @@ import {
   terminalSnapshot,
 } from "@/lib/api"
 import { getActiveRemoteConnectionId, getTransport } from "@/lib/transport"
-import { useCommandTerminalLinkStore } from "@/stores/command-terminal-link-store"
+import {
+  commandLinkKey,
+  useCommandTerminalLinkStore,
+} from "@/stores/command-terminal-link-store"
 import { randomUUID } from "@/lib/utils"
 import { getCurrentWindowLabel } from "@/lib/browser/window-label"
 import { useActiveFolder } from "@/contexts/active-folder-context"
@@ -121,10 +124,10 @@ function isRestorableTab(tab: unknown): tab is StoredTerminalTab {
   )
 }
 
+/** Any safe integer: folder commands have positive ids, global ones (see
+ *  `global-commands`) negative. */
 function storedCommandId(value: unknown): number | undefined {
-  return Number.isSafeInteger(value) && (value as number) >= 0
-    ? (value as number)
-    : undefined
+  return Number.isSafeInteger(value) ? (value as number) : undefined
 }
 
 /**
@@ -283,8 +286,6 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     string | null
   >(null)
   const lastMouseActivityInTerminalRef = useRef(false)
-  // Keep a ref of tabs for cleanup on unmount (effect [] captures stale state)
-  const tabsRef = useRef(tabs)
   const pendingAgentLaunchesRef = useRef(
     new Map<
       string,
@@ -294,9 +295,6 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   const bufferedAgentEventsRef = useRef(new Map<string, AgentTerminalEvent>())
   const explicitlyClosedTerminalIdsRef = useRef(new Set<string>())
   const [agentTabsRestored, setAgentTabsRestored] = useState(false)
-  useEffect(() => {
-    tabsRef.current = tabs
-  }, [tabs])
   // Persist before TerminalView's passive spawn effect. A refresh during the
   // spawn request must leave an ID that the next page can probe without replay.
   useLayoutEffect(() => {
@@ -570,7 +568,9 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const { setLink } = useCommandTerminalLinkStore.getState()
     for (const tab of restoredSession.tabs) {
-      if (tab.commandId !== undefined) setLink(tab.commandId, tab.id)
+      if (tab.commandId !== undefined) {
+        setLink(commandLinkKey(tab.folderId, tab.commandId), tab.id)
+      }
     }
   }, [restoredSession])
 
@@ -927,7 +927,9 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     shortcuts.new_terminal_tab,
   ])
 
-  // Cleanup all terminals on unmount — uses ref to get current tabs
+  // Reject launches still waiting when the provider goes away. Do not kill
+  // the PTYs: a reload reattaches to them, and an agent session is resumed
+  // the same way. An explicit close is what stops a terminal.
   useEffect(() => {
     const pendingAgentLaunches = pendingAgentLaunchesRef.current
     return () => {
@@ -935,10 +937,6 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         reject(new Error("Terminal provider unmounted before agent launch"))
       )
       pendingAgentLaunches.clear()
-      tabsRef.current.forEach((t) => {
-        if (t.agentLaunch || t.agentAttach) return
-        terminalKill(t.id).catch(() => {})
-      })
     }
   }, [])
 

@@ -220,6 +220,7 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     pendingPlanApproval: null,
     claudeApiRetry: null,
     sessionFailures: [],
+    toolApprovals: {},
     asyncTasks: [],
     workflows: [],
     error: null,
@@ -238,6 +239,7 @@ function makeConnState(overrides: Partial<ConnectionState>): ConnectionState {
     configStaleDismissed: false,
     backgroundOutstanding: 0,
     outOfTurnToolCalls: null,
+    hasPrompted: false,
     cancelledTurn: null,
     ...overrides,
   }

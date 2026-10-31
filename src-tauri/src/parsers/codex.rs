@@ -1425,6 +1425,7 @@ fn unwrap_code_mode_script(
             is_error,
             agent_stats: None,
             images: Vec::new(),
+            exit_code: None,
         }
     };
 
@@ -1661,6 +1662,137 @@ fn serialize_preview(value: &serde_json::Value, max_chars: usize) -> Option<Stri
     (!text.is_empty()).then(|| truncate_str(&text, max_chars))
 }
 
+/// What a persisted MCP result over 64 KiB became in codex 0.164: codex's
+/// rollout policy swaps it for ONE text block holding the result's own JSON
+/// serialization, cut in the middle with codex's `…N chars truncated…` marker
+/// (`truncate_mcp_tool_result`), drops `structuredContent` and keeps
+/// `isError`. Read as text, that block is JSON: an image-only result's
+/// preview went from the 4,000-character fallback below to 65,000 characters
+/// of escaped base64, and a text result came back JSON-escaped.
+///
+/// The preview of such a stand-in: the text of the text blocks the
+/// serialization opens on, decoded out of their JSON strings and joined the
+/// way an MCP result's text always is
+/// ([`crate::parsers::pi::tool_result_content_text`]), then codex's marker —
+/// unless the cut fell after the whole `content` array (inside the dropped
+/// `structuredContent`, say), so that no text was lost. Reading stops at the
+/// cut, at a block that is not text, and at a shape it does not know. A
+/// stand-in with no text to show — one opening on an image, a resource or an
+/// empty `content` — is capped like a result that answered in blocks alone.
+/// `None` when `result` is not the stand-in.
+fn codex_truncated_mcp_result_preview(result: &serde_json::Value) -> Option<String> {
+    static MARKER: OnceLock<Regex> = OnceLock::new();
+    let result = result.as_object()?;
+    if result.contains_key("structuredContent") {
+        return None;
+    }
+    let [block] = result.get("content")?.as_array()?.as_slice() else {
+        return None;
+    };
+    if block.get("type").and_then(serde_json::Value::as_str) != Some("text") {
+        return None;
+    }
+    let text = block.get("text")?.as_str()?;
+    if !text.starts_with(r#"{"content":["#) {
+        return None;
+    }
+    let marker = MARKER
+        .get_or_init(|| Regex::new(r"…\d+ chars truncated…").expect("valid marker regex"))
+        .find(text)?;
+    let mut rest = &text[r#"{"content":["#.len()..marker.start()];
+    let mut shown = String::new();
+    let mut whole = false;
+    while let Some(string) = [r#"{"type":"text","text":""#, r#"{"text":""#]
+        .iter()
+        .find_map(|opening| rest.strip_prefix(opening))
+    {
+        let (decoded, after) = decode_json_string_prefix(string);
+        shown.push_str(&decoded);
+        // `None`: the cut fell inside this text.
+        let Some(after) = after else {
+            break;
+        };
+        // A block written `{"text":…,"type":"text"}` closes after its type.
+        let after = after.strip_prefix(r#","type":"text""#).unwrap_or(after);
+        if let Some(next) = after.strip_prefix("},") {
+            rest = next;
+            continue;
+        }
+        whole = after.starts_with("}]");
+        break;
+    }
+    if shown.is_empty() {
+        return Some(truncate_str(text, MCP_RESULT_FALLBACK_CAP));
+    }
+    Some(if whole {
+        shown
+    } else {
+        format!("{shown}{}", marker.as_str())
+    })
+}
+
+/// `s` read as the inside of a JSON string literal whose end may have been cut
+/// off: the decoded text up to the closing quote, with what follows the quote,
+/// or up to the end of `s` with `None`, an escape the cut left unfinished
+/// dropped. An escape JSON does not have ends the text there too (`None`). A
+/// `\u` surrogate with no partner decodes to U+FFFD.
+fn decode_json_string_prefix(s: &str) -> (String, Option<&str>) {
+    fn hex4(chars: &mut std::str::Chars<'_>) -> Option<u32> {
+        let digits: String = chars.by_ref().take(4).collect();
+        (digits.len() == 4 && digits.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| u32::from_str_radix(&digits, 16).ok())
+            .flatten()
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return (out, Some(chars.as_str())),
+            '\\' => {
+                let decoded = match chars.next() {
+                    Some('"') => '"',
+                    Some('\\') => '\\',
+                    Some('/') => '/',
+                    Some('b') => '\u{8}',
+                    Some('f') => '\u{c}',
+                    Some('n') => '\n',
+                    Some('r') => '\r',
+                    Some('t') => '\t',
+                    Some('u') => {
+                        let Some(unit) = hex4(&mut chars) else {
+                            break;
+                        };
+                        if (0xD800..0xDC00).contains(&unit) {
+                            let mut lookahead = chars.clone();
+                            let low = (lookahead.next() == Some('\\')
+                                && lookahead.next() == Some('u'))
+                            .then(|| hex4(&mut lookahead))
+                            .flatten()
+                            .filter(|low| (0xDC00..0xE000).contains(low));
+                            match low {
+                                Some(low) => {
+                                    chars = lookahead;
+                                    char::from_u32(
+                                        0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00),
+                                    )
+                                    .unwrap_or('\u{FFFD}')
+                                }
+                                None => '\u{FFFD}',
+                            }
+                        } else {
+                            char::from_u32(unit).unwrap_or('\u{FFFD}')
+                        }
+                    }
+                    _ => break,
+                };
+                out.push(decoded);
+            }
+            c => out.push(c),
+        }
+    }
+    (out, None)
+}
+
 fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     let item = payload.get("item")?;
     if item.get("type").and_then(|v| v.as_str()) != Some("McpToolCall") {
@@ -1683,10 +1815,16 @@ fn completed_mcp_call(payload: &serde_json::Value) -> Option<CompletedMcpCall> {
     // `status` inside it (`infer_output_text_is_error`), and truncating valid
     // JSON makes that parse fail silently, settling a call that reported
     // failure GREEN. So the cut branch also hands back the value it cut, and
-    // the outcome is read from that instead.
+    // the outcome is read from that instead. codex 0.164's stand-in for an
+    // oversized result goes first: its one text block is JSON, not the
+    // result's text (`codex_truncated_mcp_result_preview`).
     let output_preview = result
-        .and_then(|result| result.get("content"))
-        .and_then(crate::parsers::pi::tool_result_content_text)
+        .and_then(codex_truncated_mcp_result_preview)
+        .or_else(|| {
+            result
+                .and_then(|result| result.get("content"))
+                .and_then(crate::parsers::pi::tool_result_content_text)
+        })
         .or_else(|| {
             result
                 .and_then(|result| result.get("structuredContent"))
@@ -1808,6 +1946,7 @@ fn unwrap_completed_mcp_calls(
             is_error: item.is_error,
             agent_stats: None,
             images: Vec::new(),
+            exit_code: None,
         });
     }
     Some((uses, results))
@@ -3659,6 +3798,7 @@ impl CodexParser {
                                                 is_error: false,
                                                 agent_stats: None,
                                                 images: Vec::new(),
+                                                exit_code: None,
                                             },
                                         ],
                                         timestamp,
@@ -4500,6 +4640,7 @@ impl CodexParser {
                                             is_error: false,
                                             agent_stats: None,
                                             images: Vec::new(),
+                                            exit_code: None,
                                         }],
                                         timestamp,
                                         usage: None,
@@ -4577,6 +4718,7 @@ impl CodexParser {
                                                 is_error,
                                                 agent_stats: None,
                                                 images: Vec::new(),
+                                                exit_code: None,
                                             }],
                                             timestamp,
                                             usage: None,
@@ -4696,6 +4838,7 @@ impl CodexParser {
                                             is_error,
                                             agent_stats: None,
                                             images: Vec::new(),
+                                            exit_code: None,
                                         }],
                                         timestamp,
                                         usage: None,
@@ -5212,6 +5355,9 @@ impl CodexParser {
         // After every pass that drops messages, so it sees every pair of cards
         // they leave touching.
         merge_touching_thinking_cards(&mut messages, turn_starts);
+        // After the promotion and dedupe passes, which compare the raw text of
+        // a record's twins.
+        render_agent_message_citations(&mut messages, cwd.as_deref().unwrap_or(""));
         let mut turns = group_into_turns(messages);
         reconcile_turn_usage(&mut turns, &recorded_round_usage);
         super::relocate_orphaned_tool_results(&mut turns);
@@ -5543,6 +5689,41 @@ fn push_turn_start(turn_starts: &mut Vec<DateTime<Utc>>, ts: DateTime<Utc>) {
     }
 }
 
+/// Rewrite the model's file citations in agent prose as the Markdown links
+/// codex-acp 2.4.0 streams for them (#698), resolved against the session cwd —
+/// see [`super::codex_file_citations`]. The adapter rewrites `agentMessage`
+/// text only, so this takes the two places that text lands: the
+/// `event_msg.agent_message` arm (`assistant-N`) and promoted `response_item`
+/// messages (`codex-ri-…`). Plan documents, image generations and the
+/// plan-review marker keep their text, as they do live.
+fn render_agent_message_citations(messages: &mut [UnifiedMessage], cwd: &str) {
+    for message in messages.iter_mut() {
+        if !matches!(message.role, MessageRole::Assistant)
+            || !is_agent_prose_message_id(&message.id)
+        {
+            continue;
+        }
+        for block in &mut message.content {
+            if let ContentBlock::Text { text } = block {
+                if let std::borrow::Cow::Owned(rendered) =
+                    super::codex_file_citations::render_file_citations(text, cwd)
+                {
+                    *text = rendered;
+                }
+            }
+        }
+    }
+}
+
+/// `assistant-<n>` (the agent-message arm) or a promoted record
+/// (`codex-ri-…`), as opposed to `assistant-plan-…`, `assistant-imagegen-…`
+/// and the other synthesized assistant messages.
+fn is_agent_prose_message_id(id: &str) -> bool {
+    id.strip_prefix("assistant-")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+        || id.starts_with("codex-ri-")
+}
+
 /// Join the thinking cards left touching once the transcript is assembled.
 ///
 /// A reasoning run ends at the first record that is not reasoning, and many of
@@ -5853,6 +6034,7 @@ fn push_plan_review_marker(messages: &mut Vec<UnifiedMessage>, timestamp: DateTi
                 is_error: false,
                 agent_stats: None,
                 images: Vec::new(),
+                exit_code: None,
             },
         ],
         timestamp,
@@ -6539,6 +6721,7 @@ fn codex_compaction_divider(
             is_error: false,
             agent_stats: None,
             images: Vec::new(),
+            exit_code: None,
         },
     ];
     if let Some(summary) = summary {
@@ -7798,8 +7981,10 @@ mod tests {
     use super::codex_compacted_summary;
     use super::codex_line_ordinal;
     use super::codex_parent_thread_id;
+    use super::codex_truncated_mcp_result_preview;
     use super::codex_usage_counters;
     use super::completed_mcp_call;
+    use super::decode_json_string_prefix;
     use super::extract_codex_title_candidate;
     use super::extract_context_window_used_tokens_from_token_count_info;
     use super::extract_response_item_user_image_blocks;
@@ -13885,6 +14070,170 @@ mod tests {
         }
     }
 
+    /// codex 0.164's stand-in for an MCP result over 64 KiB, shaped like the
+    /// one a live 0.164.0 rollout holds for a 100,000-character text result
+    /// (codex's `truncate_mcp_tool_result`: the result's JSON cut in the middle,
+    /// `structuredContent` dropped, `isError` kept).
+    fn truncated_result(serialized: &str) -> serde_json::Value {
+        serde_json::json!({
+            "content": [{"type": "text", "text": serialized}],
+            "isError": false,
+        })
+    }
+
+    #[test]
+    fn a_truncated_text_result_reads_as_its_text_up_to_the_cut() {
+        let stub = truncated_result(
+            r#"{"content":[{"type":"text","text":"big-head BIGDATA-BIGDATA-B…34680 chars truncated…IGDATA-BIGDATA-"}],"structuredContent":{"size":100000,"status":"ok"},"isError":false}"#,
+        );
+        assert_eq!(
+            codex_truncated_mcp_result_preview(&stub).as_deref(),
+            Some("big-head BIGDATA-BIGDATA-B…34680 chars truncated…")
+        );
+
+        // Escapes are text again, and one the cut left unfinished is dropped.
+        let stub = truncated_result(
+            r#"{"content":[{"type":"text","text":"line 1\nsaid \"hi\" \\ café 😀 \u00…99 chars truncated…ignored"}],"isError":false}"#,
+        );
+        assert_eq!(
+            codex_truncated_mcp_result_preview(&stub).as_deref(),
+            Some("line 1\nsaid \"hi\" \\ café 😀 …99 chars truncated…")
+        );
+
+        // Text blocks are joined the way an MCP result's text always is, up
+        // to the cut, whichever order a server writes a block's keys in.
+        let stub = truncated_result(
+            r#"{"content":[{"text":"first ","type":"text"},{"type":"text","text":"x…10 chars truncated…y"}],"isError":false}"#,
+        );
+        assert_eq!(
+            codex_truncated_mcp_result_preview(&stub).as_deref(),
+            Some("first x…10 chars truncated…")
+        );
+
+        // A cut after the whole `content` array lost none of the text.
+        let stub = truncated_result(
+            r#"{"content":[{"type":"text","text":"all "},{"type":"text","text":"of it"}],"structuredContent":{"blob":"aaa…5 chars truncated…bb"},"isError":false}"#,
+        );
+        assert_eq!(
+            codex_truncated_mcp_result_preview(&stub).as_deref(),
+            Some("all of it")
+        );
+
+        // A block that is not text ends the reading, and the marker says that
+        // something after it was cut.
+        let stub = truncated_result(
+            r#"{"content":[{"type":"text","text":"caption"},{"type":"image","data":"AAAA…9 chars truncated…B","mimeType":"image/png"}],"isError":false}"#,
+        );
+        assert_eq!(
+            codex_truncated_mcp_result_preview(&stub).as_deref(),
+            Some("caption…9 chars truncated…")
+        );
+
+        // Nothing to show as text is never an empty preview.
+        let serialized = r#"{"content":[{"type":"text","text":""},{"type":"image","data":"AAAA…9 chars truncated…B","mimeType":"image/png"}],"isError":false}"#;
+        assert_eq!(
+            codex_truncated_mcp_result_preview(&truncated_result(serialized)).as_deref(),
+            Some(serialized)
+        );
+    }
+
+    #[test]
+    fn a_truncated_result_of_other_blocks_is_capped_like_any_block_result() {
+        let serialized = format!(
+            r#"{{"content":[{{"type":"image","data":"{}…71177 chars truncated…{}","mimeType":"image/png"}}],"isError":false}}"#,
+            "A".repeat(30_000),
+            "B".repeat(30_000)
+        );
+        let preview = codex_truncated_mcp_result_preview(&truncated_result(&serialized))
+            .expect("the stand-in");
+        assert_eq!(preview, truncate_str(&serialized, MCP_RESULT_FALLBACK_CAP));
+        assert!(preview.chars().count() <= MCP_RESULT_FALLBACK_CAP + 3);
+    }
+
+    /// Only codex's stand-in: one text block opening on the result's own
+    /// JSON with codex's marker in it, and no `structuredContent` beside it.
+    #[test]
+    fn a_result_that_only_resembles_the_stand_in_is_left_alone() {
+        let cut = r#"{"content":[{"type":"text","text":"a…5 chars truncated…b"}],"isError":false}"#;
+        for result in [
+            // No marker: a tool that answers with JSON of its own.
+            truncated_result(r#"{"content":[{"type":"text","text":"whole"}],"isError":false}"#),
+            // The stand-in never keeps `structuredContent`.
+            serde_json::json!({
+                "content": [{"type": "text", "text": cut}],
+                "structuredContent": {"ok": true},
+            }),
+            // Nor more than one block.
+            serde_json::json!({
+                "content": [{"type": "text", "text": cut}, {"type": "text", "text": "more"}],
+            }),
+            // Nor a block of another kind.
+            serde_json::json!({"content": [{"type": "resource", "text": cut}]}),
+            // And it opens on the result's `content`.
+            truncated_result(&format!("prefix {cut}")),
+        ] {
+            assert_eq!(
+                codex_truncated_mcp_result_preview(&result),
+                None,
+                "{result}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_json_string_decodes_as_far_as_it_goes() {
+        assert_eq!(
+            decode_json_string_prefix(r#"done" tail"#),
+            ("done".into(), Some(" tail"))
+        );
+        assert_eq!(decode_json_string_prefix("cut \\"), ("cut ".into(), None));
+        assert_eq!(
+            decode_json_string_prefix("cut \\u12"),
+            ("cut ".into(), None)
+        );
+        assert_eq!(
+            decode_json_string_prefix("bad \\x tail"),
+            ("bad ".into(), None)
+        );
+        assert_eq!(
+            decode_json_string_prefix("plus \\u+123"),
+            ("plus ".into(), None)
+        );
+        assert_eq!(
+            decode_json_string_prefix("lone \\ud800 x"),
+            ("lone \u{FFFD} x".into(), None)
+        );
+        assert_eq!(
+            decode_json_string_prefix("pair \\ud83d\\ude00!\""),
+            ("pair 😀!".into(), Some(""))
+        );
+        assert_eq!(
+            decode_json_string_prefix("ctl \\u0001\\b\\f\\r\\t\\/"),
+            ("ctl \u{1}\u{8}\u{c}\r\t/".into(), None)
+        );
+    }
+
+    /// End to end: the semantic MCP call recovered from a code-mode script
+    /// shows the stand-in's text and keeps the outcome codex stated.
+    #[test]
+    fn a_truncated_mcp_call_keeps_its_text_and_its_outcome() {
+        let call = completed_mcp_call(&serde_json::json!({
+            "item": {
+                "type": "McpToolCall", "id": "i", "server": "s", "tool": "t",
+                "status": "completed",
+                "result": truncated_result(
+                    r#"{"content":[{"type":"text","text":"Error: looks bad…9 chars truncated…"}],"isError":false}"#,
+                ),
+            }
+        }))
+        .expect("well-formed item");
+        assert_eq!(
+            call.output_preview.as_deref(),
+            Some("Error: looks bad…9 chars truncated…")
+        );
+        assert!(!call.is_error, "codex kept `isError: false`");
+    }
+
     /// The marker search reads a block's own outcome fields and stops there.
     /// Walking on into `data` would read the PAYLOAD — the base64 the cap
     /// refuses to copy, which the text heuristic would then lowercase into a
@@ -17089,6 +17438,272 @@ mod tests {
         assert_eq!(
             turn_texts(&detail),
             vec![("assistant", Some("still readable".into()))]
+        );
+    }
+
+    /// Where the adapter's `path.join(cwd, path)` lands on this host: `/` on
+    /// posix, `\` under `path.win32` (a rooted `/w` keeps no drive there).
+    fn host_joined(cwd: &str, path: &str) -> String {
+        if cfg!(windows) {
+            format!("{cwd}/{path}").replace('/', "\\")
+        } else {
+            format!("{cwd}/{path}")
+        }
+    }
+
+    /// A codex 0.165 rollout written through codex-acp 2.4.0, recorded live:
+    /// no `event_msg.user_message` / `agent_message`, only the `response_item`
+    /// records and their `item_completed` twins. The reply cites two files,
+    /// one in code and one escaped; codex-acp streamed it as
+    /// `[docs/policy.txt](<cwd>/docs/policy.txt)` and `[/abs/dir/a b.txt](</abs/dir/a b.txt>)`,
+    /// leaving the other two as written, and a reload reads the same.
+    #[test]
+    fn a_reloaded_reply_shows_its_file_citations_as_the_links_live_showed() {
+        const REPLY: &str = "Read the policy :codex-file-citation{path=\"docs/policy.txt\" purpose=\"source\"} and ::codex-file-citation{path='/abs/dir/a b.txt'}. Code `:codex-file-citation{path=\"in-code.txt\"}` stays, so does \\:codex-file-citation{path=\"escaped.txt\"} here. End with a tick `x`";
+        let content = jsonl(&[
+            record(
+                "2026-10-29T11:20:34.397Z",
+                "session_meta",
+                serde_json::json!({"id": "cite-1", "cwd": "/w/proj", "cli_version": "0.165.0", "source": "vscode", "model_provider": "fake"}),
+            ),
+            record(
+                "2026-10-29T11:20:34.398Z",
+                "event_msg",
+                serde_json::json!({"type": "task_started", "turn_id": "t1"}),
+            ),
+            record(
+                "2026-10-29T11:20:34.418Z",
+                "turn_context",
+                serde_json::json!({"turn_id": "t1", "cwd": "/w/proj", "model": "gpt-5.5"}),
+            ),
+            record(
+                "2026-10-29T11:20:34.422Z",
+                "response_item",
+                serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "CITE please"}]}),
+            ),
+            record(
+                "2026-10-29T11:20:34.423Z",
+                "event_msg",
+                serde_json::json!({"type": "item_completed", "turn_id": "t1", "item": {"type": "UserMessage", "id": "u1", "content": [{"type": "text", "text": "CITE please", "text_elements": []}]}}),
+            ),
+            record(
+                "2026-10-29T11:20:34.761Z",
+                "event_msg",
+                serde_json::json!({"type": "item_completed", "turn_id": "t1", "item": {"type": "AgentMessage", "id": "msg_1", "content": [{"type": "Text", "text": REPLY}]}}),
+            ),
+            assistant_item("2026-10-29T11:20:34.762Z", REPLY),
+            record(
+                "2026-10-29T11:20:34.770Z",
+                "event_msg",
+                serde_json::json!({"type": "task_complete", "turn_id": "t1", "last_agent_message": REPLY}),
+            ),
+        ]);
+        let detail = parse_rollout("cite-live", &content, "cite-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("CITE please".into())),
+                (
+                    "assistant",
+                    Some(format!("Read the policy [docs/policy.txt]({}) and [/abs/dir/a b.txt](</abs/dir/a b.txt>). Code `:codex-file-citation{{path=\"in-code.txt\"}}` stays, so does \\:codex-file-citation{{path=\"escaped.txt\"}} here. End with a tick `x`", host_joined("/w/proj", "docs/policy.txt")))
+                ),
+            ]
+        );
+    }
+
+    /// The older shape, an `event_msg.agent_message`, reads the same, against
+    /// the session's own cwd.
+    #[test]
+    fn an_agent_message_event_renders_its_citations_against_the_session_cwd() {
+        let content = jsonl(&[
+            record(
+                "2026-10-29T10:00:00Z",
+                "session_meta",
+                serde_json::json!({"id": "cite-2", "cwd": "/repo"}),
+            ),
+            record(
+                "2026-10-29T10:00:01Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": "where is it?"}),
+            ),
+            record(
+                "2026-10-29T10:00:02Z",
+                "event_msg",
+                serde_json::json!({"type": "agent_message", "message": "Here: :codex-file-citation{path=\"src/app.ts\" purpose=\"source\"}"}),
+            ),
+        ]);
+        let detail = parse_rollout("cite-event", &content, "cite-2");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("where is it?".into())),
+                (
+                    "assistant",
+                    Some(format!(
+                        "Here: [src/app.ts]({})",
+                        host_joined("/repo", "src/app.ts")
+                    ))
+                ),
+            ]
+        );
+    }
+
+    /// codex-acp rewrites agent messages only. A plan document, and a
+    /// user's own text, keep a directive as written.
+    #[test]
+    fn citations_stay_as_written_outside_agent_prose() {
+        let directive = ":codex-file-citation{path=\"a.txt\"}";
+        let plan = format!("Plan.\n\n<proposed_plan>\n1. Edit {directive}\n</proposed_plan>\n");
+        let content = jsonl(&[
+            record(
+                "2026-10-29T10:00:00Z",
+                "session_meta",
+                serde_json::json!({"id": "cite-3", "cwd": "/repo"}),
+            ),
+            record(
+                "2026-10-29T10:00:01Z",
+                "event_msg",
+                serde_json::json!({"type": "user_message", "message": format!("keep {directive}")}),
+            ),
+            assistant_item("2026-10-29T10:00:02Z", &plan),
+        ]);
+        let detail = parse_rollout("cite-plan", &content, "cite-3");
+        let texts = turn_texts(&detail);
+        assert_eq!(texts[0], ("user", Some(format!("keep {directive}"))));
+        let rendered: String = detail
+            .turns
+            .iter()
+            .flat_map(|turn| turn.blocks.iter())
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(rendered.contains(directive), "{rendered}");
+        assert!(!rendered.contains("[a.txt]("), "{rendered}");
+    }
+
+    /// A note steered into a running codex turn (codex-acp 2.4.0 + codex
+    /// 0.165, recorded live): the steered response was cut off before its
+    /// first item, and the note is a user `response_item` with a
+    /// `client_id`-bearing twin, mid-turn. History shows it where it was sent.
+    #[test]
+    fn a_steered_note_reads_as_the_user_message_it_was() {
+        let content = jsonl(&[
+            record(
+                "2026-10-29T11:23:18.966Z",
+                "session_meta",
+                serde_json::json!({"id": "steer-1", "cwd": "/w", "cli_version": "0.165.0"}),
+            ),
+            record(
+                "2026-10-29T11:23:19.106Z",
+                "event_msg",
+                serde_json::json!({"type": "task_started", "turn_id": "t2"}),
+            ),
+            record(
+                "2026-10-29T11:23:19.112Z",
+                "turn_context",
+                serde_json::json!({"turn_id": "t2", "cwd": "/w", "model": "gpt-5.5"}),
+            ),
+            record(
+                "2026-10-29T11:23:19.114Z",
+                "response_item",
+                serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "SLOW:5 first"}]}),
+            ),
+            record(
+                "2026-10-29T11:23:19.115Z",
+                "event_msg",
+                serde_json::json!({"type": "item_completed", "turn_id": "t2", "item": {"type": "UserMessage", "id": "u2", "content": [{"type": "text", "text": "SLOW:5 first", "text_elements": []}]}}),
+            ),
+            token_count("2026-10-29T11:23:19.130Z", 1000, 10),
+            record(
+                "2026-10-29T11:23:19.133Z",
+                "response_item",
+                serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "PLAIN steered note"}]}),
+            ),
+            record(
+                "2026-10-29T11:23:19.134Z",
+                "event_msg",
+                serde_json::json!({"type": "item_completed", "turn_id": "t2", "item": {"type": "UserMessage", "id": "u3", "client_id": "aeaeb2f0-d3cf-4188-b659-ae30ef7bd7f7", "content": [{"type": "text", "text": "PLAIN steered note", "text_elements": []}]}}),
+            ),
+            record(
+                "2026-10-29T11:23:19.144Z",
+                "event_msg",
+                serde_json::json!({"type": "item_completed", "turn_id": "t2", "item": {"type": "AgentMessage", "id": "msg_3", "content": [{"type": "Text", "text": "Plain answer."}]}}),
+            ),
+            assistant_item("2026-10-29T11:23:19.145Z", "Plain answer."),
+            token_count("2026-10-29T11:23:19.148Z", 2000, 20),
+            record(
+                "2026-10-29T11:23:19.168Z",
+                "event_msg",
+                serde_json::json!({"type": "task_complete", "turn_id": "t2", "last_agent_message": "Plain answer."}),
+            ),
+        ]);
+        let detail = parse_rollout("steered", &content, "steer-1");
+
+        assert_eq!(
+            turn_texts(&detail),
+            vec![
+                ("user", Some("SLOW:5 first".into())),
+                ("user", Some("PLAIN steered note".into())),
+                ("assistant", Some("Plain answer.".into())),
+            ]
+        );
+    }
+
+    /// codex 0.165 turns `reasoning_effort_override` on: under a ChatGPT
+    /// login (the built-in OpenAI provider), a mid-thread effort change is
+    /// recorded as a `configuration_update` response item after the prompt.
+    /// It is model input, not conversation, so the transcript is the one the
+    /// rollout without it reads as.
+    #[test]
+    fn a_configuration_update_record_changes_nothing_on_screen() {
+        let records = |with_update: bool| {
+            let mut records = vec![
+                record(
+                    "2026-10-29T10:00:00Z",
+                    "session_meta",
+                    serde_json::json!({"id": "cfg-1", "cwd": "/w", "cli_version": "0.165.0"}),
+                ),
+                record(
+                    "2026-10-29T10:00:01Z",
+                    "event_msg",
+                    serde_json::json!({"type": "task_started", "turn_id": "t1"}),
+                ),
+                record(
+                    "2026-10-29T10:00:01.500Z",
+                    "response_item",
+                    serde_json::json!({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "think harder"}]}),
+                ),
+            ];
+            if with_update {
+                records.push(record(
+                    "2026-10-29T10:00:01.600Z",
+                    "response_item",
+                    serde_json::json!({"type": "configuration_update", "reasoning": {"effort": "high"}}),
+                ));
+            }
+            records.extend([
+                record("2026-10-29T10:00:02Z", "response_item", serde_json::json!({"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "**Thinking it over**"}]})),
+                assistant_item("2026-10-29T10:00:03Z", "Done."),
+                token_count("2026-10-29T10:00:03.100Z", 1000, 10),
+                record("2026-10-29T10:00:04Z", "event_msg", serde_json::json!({"type": "task_complete", "turn_id": "t1"})),
+            ]);
+            jsonl(&records)
+        };
+        let with = parse_rollout("cfg-update", &records(true), "cfg-1");
+        let without = parse_rollout("cfg-plain", &records(false), "cfg-1");
+
+        assert_eq!(turn_texts(&with), turn_texts(&without));
+        assert_eq!(
+            serde_json::to_value(&with.turns).unwrap(),
+            serde_json::to_value(&without.turns).unwrap()
+        );
+        assert_eq!(
+            summary_of("cfg-update-sum", &records(true)).message_count,
+            summary_of("cfg-plain-sum", &records(false)).message_count
         );
     }
 

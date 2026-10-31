@@ -353,6 +353,7 @@ fn upsert_tool_result(turn: &mut MessageTurn, result: FoldedResult, is_error: bo
         is_error,
         agent_stats: None,
         images,
+        exit_code: None,
     });
 }
 
@@ -427,6 +428,7 @@ fn overlay_turn(turn: &mut MessageTurn, facts: &HashMap<&str, &ExecutionFact>) {
                 is_error,
                 agent_stats: None,
                 images: Vec::new(),
+                exit_code: None,
             });
         }
     }

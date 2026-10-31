@@ -18,9 +18,23 @@ use super::{auth, handlers, ws};
 use crate::app_state::AppState;
 use tracing::Instrument;
 
+/// Token-only authentication: the desktop app's web service and the tests.
 pub fn build_router(
     state: Arc<AppState>,
     token: String,
+    static_dir: std::path::PathBuf,
+    shutdown_signal: Arc<ShutdownSignal>,
+) -> Router {
+    build_router_with_proxy_auth(state, token, None, static_dir, shutdown_signal)
+}
+
+/// `proxy_auth` turns on the opt-in proxy-JWT authentication beside the
+/// token (`CODEG_AUTH=proxy-jwt`, standalone `codeg-server` only); `None` is
+/// the same as `build_router`.
+pub fn build_router_with_proxy_auth(
+    state: Arc<AppState>,
+    token: String,
+    proxy_auth: Option<Arc<super::proxy_auth::ProxyJwtAuth>>,
     static_dir: std::path::PathBuf,
     shutdown_signal: Arc<ShutdownSignal>,
 ) -> Router {
@@ -29,7 +43,11 @@ pub fn build_router(
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let token_for_ws = token.clone();
+    let web_auth = auth::WebAuth {
+        token: token.clone(),
+        proxy: proxy_auth,
+    };
+    let web_auth_for_ws = web_auth.clone();
     let token_for_cli_hello = token.clone();
 
     let api = Router::new()
@@ -1119,12 +1137,12 @@ pub fn build_router(
             post(handlers::acp::acp_qoder_auth_status),
         )
         .route(
-            "/acp_update_kimi_code_config",
-            post(handlers::acp::acp_update_kimi_code_config),
+            "/acp_update_claude_model_picker",
+            post(handlers::acp::acp_update_claude_model_picker),
         )
         .route(
-            "/acp_fetch_kimi_models",
-            post(handlers::acp::acp_fetch_kimi_models),
+            "/acp_update_kimi_code_config",
+            post(handlers::acp::acp_update_kimi_code_config),
         )
         .route(
             "/acp_probe_codeg_protocol",
@@ -1283,12 +1301,48 @@ pub fn build_router(
             post(handlers::acp::codex_bundled_catalog),
         )
         .route(
-            "/opencode_install_plugins",
-            post(handlers::acp::opencode_install_plugins),
+            "/opencode_list_integrations",
+            post(handlers::opencode_credentials::opencode_list_integrations),
         )
         .route(
-            "/opencode_uninstall_plugin",
-            post(handlers::acp::opencode_uninstall_plugin),
+            "/opencode_connect_key",
+            post(handlers::opencode_credentials::opencode_connect_key),
+        )
+        .route(
+            "/opencode_disconnect_provider",
+            post(handlers::opencode_credentials::opencode_disconnect_provider),
+        )
+        .route(
+            "/codex_fetch_endpoint_catalog",
+            post(handlers::acp::codex_fetch_endpoint_catalog),
+        )
+        .route(
+            "/codex_catalog_plan_preview",
+            post(handlers::acp::codex_catalog_plan_preview),
+        )
+        .route(
+            "/codex_endpoint_catalog_published",
+            post(handlers::acp::codex_endpoint_catalog_published),
+        )
+        .route(
+            "/codex_endpoint_catalog_cached",
+            post(handlers::acp::codex_endpoint_catalog_cached),
+        )
+        .route(
+            "/codex_endpoint_catalog_status",
+            post(handlers::acp::codex_endpoint_catalog_status),
+        )
+        .route(
+            "/codex_refresh_endpoint_catalog",
+            post(handlers::acp::codex_refresh_endpoint_catalog),
+        )
+        .route(
+            "/opencode_add_plugin",
+            post(handlers::acp::opencode_add_plugin),
+        )
+        .route(
+            "/opencode_remove_plugin",
+            post(handlers::acp::opencode_remove_plugin),
         )
         .route(
             "/codex_request_device_code",
@@ -1673,6 +1727,10 @@ pub fn build_router(
             "/delete_model_provider",
             post(handlers::model_provider::delete_model_provider),
         )
+        .route(
+            "/list_provider_models",
+            post(handlers::model_provider::list_provider_models),
+        )
         // ─── Quick Messages ───
         .route(
             "/quick_messages_list",
@@ -2027,13 +2085,13 @@ pub fn build_router(
         )
         .route(
             "/background_set",
-            // A 16MiB image becomes ~21.4MiB once base64-encoded and wrapped in
+            // A 64MiB image becomes ~85.4MiB once base64-encoded and wrapped in
             // the JSON envelope; axum's default 2MiB `DefaultBodyLimit` would
             // 413 any real photo before the handler runs. Raise it to cover the
             // advertised ceiling; `backgrounds::validate_background` stays the
             // authoritative size boundary on the decoded bytes.
             post(handlers::background::background_set)
-                .layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
+                .layer(DefaultBodyLimit::max(96 * 1024 * 1024)),
         )
         .route(
             "/background_clear",
@@ -2140,7 +2198,7 @@ pub fn build_router(
         // Catch-all
         .fallback(api_not_found)
         .layer(middleware::from_fn(move |req, next| {
-            auth::require_token(req, next, token.clone())
+            auth::require_auth(req, next, web_auth.clone())
         }));
 
     // Public endpoints — no token required.
@@ -2201,7 +2259,7 @@ pub fn build_router(
     // the viewer. `.instrument()` the downstream future; never `.enter()` across
     // an await, which corrupts the span stack.
     //
-    // Layer order: the protected router's `auth::require_token` layer was added
+    // Layer order: the protected router's `auth::require_auth` layer was added
     // (above) BEFORE this `.layer()`, and this layer is applied to the MERGED
     // router, so it is the OUTERMOST layer. The instrumented `next.run(req)`
     // future therefore wraps routing + auth + handler — auth-reject logs land
@@ -2224,7 +2282,7 @@ pub fn build_router(
             get(crate::web::browser_tunnel::ws_handler),
         )
         .layer(middleware::from_fn(move |req, next| {
-            auth::require_token(req, next, token_for_ws.clone())
+            auth::require_auth(req, next, web_auth_for_ws.clone())
         }));
 
     // Static file serving.

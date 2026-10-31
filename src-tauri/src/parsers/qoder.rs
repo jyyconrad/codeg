@@ -30,7 +30,7 @@ use crate::parsers::{
 /// sessions vanish from the list, and skills install where nothing loads them:
 ///
 /// ```js
-/// function homeRoot(){ return firstEnv(QODER_CLI_HOME, GEMINI_CLI_HOME) || os.homedir() }
+/// function homeRoot(){ return firstEnv(QODER_CLI_HOME) || os.homedir() }
 /// function getGlobalConfigDir(){
 ///   let e = /* --config-dir flag */, t = firstEnv(QODER_CONFIG_DIR)
 ///   if (e) A = e
@@ -48,10 +48,15 @@ use crate::parsers::{
 /// at 1.1.33, then `Zn`/`MYA`/`FYA`/`UYA` at 1.1.40–1.1.41, then
 /// `qn`/`A7A`/`t7A`/`n7A` at 1.1.44, then `Ai`/`d7A`/`g7A`/`f7A` at 1.1.45),
 /// so a grep written against the old names returns zero hits and reads as
-/// "the resolver is gone" when nothing moved. `GEMINI_CLI_HOME` really is a
-/// second key on the home lookup: qodercli carries its ancestry.
-/// Re-checked against the pinned 1.1.45 bundle: same precedence, same keys,
-/// same `.qoder` config-dir name.)
+/// "the resolver is gone" when nothing moved. Re-checked against the pinned
+/// 1.1.45 bundle: same precedence, same keys, same `.qoder` config-dir name.)
+///
+/// Up to 1.1.74 the home lookup also fell back to `GEMINI_CLI_HOME`, a leftover
+/// of qodercli's Gemini CLI ancestry. 1.1.75 dropped that key, so with only
+/// `GEMINI_CLI_HOME` set the CLI keeps its config dir and transcripts under
+/// the OS home, and so does this resolver. A `qoder` older than 1.1.75 that
+/// codeg finds on PATH still follows the key, and with it set, codeg looks for
+/// that CLI's sessions in the wrong place.
 ///
 /// Not mirrored, deliberately: the `--config-dir` FLAG, which codeg never
 /// passes, and the `QODERCN_*` twin, which belongs to the separate `.qoder-cn`
@@ -64,8 +69,7 @@ pub(crate) fn resolve_qoder_config_dir() -> PathBuf {
 pub(crate) fn resolve_qoder_config_dir_for_env(env: &AgentEnv) -> PathBuf {
     resolve_qoder_config_dir_from(
         env.var_os("QODER_CONFIG_DIR"),
-        env.var_os("QODER_CLI_HOME")
-            .or_else(|| env.var_os("GEMINI_CLI_HOME")),
+        env.var_os("QODER_CLI_HOME"),
         env.var_os("QODER_CONFIG_DIR_NAME"),
         dirs::home_dir(),
     )
@@ -79,8 +83,12 @@ pub(crate) fn resolve_qoder_config_dir_for_env(env: &AgentEnv) -> PathBuf {
 /// `getGlobalAgentsDir(){ return join(pa(), ".agents") }`, and
 /// `getUserAgentSkillsDir()` joins `skills` onto that.
 pub(crate) fn resolve_qoder_home() -> PathBuf {
-    std::env::var_os("QODER_CLI_HOME")
-        .or_else(|| std::env::var_os("GEMINI_CLI_HOME"))
+    resolve_qoder_home_for_env(&AgentEnv::inherited())
+}
+
+/// [`resolve_qoder_home`] for the Qoder launched with `env`.
+fn resolve_qoder_home_for_env(env: &AgentEnv) -> PathBuf {
+    env.var_os("QODER_CLI_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(dirs::home_dir)
@@ -662,7 +670,14 @@ fn parse_transcript(bytes: &[u8]) -> Transcript {
         }
         match record_type {
             "runtime-config" => {
-                if let Some(model) = value.get("model").and_then(Value::as_str) {
+                // Blank like a reply's (see `entry_model`): 1.1.81 writes one of
+                // these per turn, with an empty `model` when its catalog had no
+                // model to name, which must not replace the one named before.
+                if let Some(model) = value
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|m| !m.trim().is_empty())
+                {
                     launch_model = Some(model.to_string());
                 }
                 // The CLI's own window for the launch model. Authoritative where
@@ -1234,7 +1249,7 @@ pub(crate) fn qoder_ask_envelope_from_recorded(recorded: &Value) -> Option<Strin
 /// The start and end of the sentence Qoder's `AskUserQuestion` returns once
 /// questions are answered (deobfuscated from the 1.1.67 bundle; the same
 /// strings ship in every release from 1.1.23 through 1.1.69, and again in
-/// 1.1.72 and 1.1.73).
+/// 1.1.72 through 1.1.75; 1.1.81 returns the same sentence live).
 const QODER_ANSWERED_PREFIX: &str = "Your questions have been answered: ";
 const QODER_ANSWERED_SUFFIX: &str = ". You can now continue with these answers in mind.";
 
@@ -1882,6 +1897,26 @@ mod tests {
             .find(|t| matches!(t.role, crate::models::TurnRole::Assistant))
             .expect("assistant turn");
         assert_eq!(blank_turn.model, None);
+    }
+
+    // A blank `runtime-config` model is dropped the same way. 1.1.81 writes one
+    // such record per turn, and a later blank one must not replace the launch
+    // model that a session whose answers name none falls back to.
+    #[test]
+    fn a_blank_runtime_config_model_keeps_the_launch_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blank_config = RUNTIME_CONFIG.replace(r#""model":"qmodel_38max""#, r#""model":"""#);
+        let unnamed_answer = ANSWER_LINE.replace(r#""model":"qmodel_38max""#, r#""model":"""#);
+        write_session(
+            tmp.path(),
+            "s1",
+            &[RUNTIME_CONFIG, USER_LINE, &blank_config, &unnamed_answer],
+        );
+
+        let summaries = parser_in(tmp.path()).list_conversations().unwrap();
+        assert_eq!(summaries[0].model.as_deref(), Some("qmodel_38max"));
+        let detail = parser_in(tmp.path()).get_conversation("s1").unwrap();
+        assert_eq!(detail.summary.model.as_deref(), Some("qmodel_38max"));
     }
 
     // The same on a later FRAGMENT of one response: the bubble it merges into
@@ -2736,6 +2771,80 @@ mod tests {
         );
     }
 
+    // Since 1.1.74, `session/new` writes the transcript straight away, so a
+    // session nobody prompted (a draft codeg opened and left) is a file of null
+    // `active-leaf` markers and workspace metadata. The lines are a real
+    // never-prompted 1.1.74 session, ids and paths trimmed. It is not a
+    // conversation yet and must stay out of the scan. Once the user prompts,
+    // those markers sit BEFORE every content record, so the turns that follow
+    // must read exactly as they would without them.
+    #[test]
+    fn a_session_written_before_its_first_prompt_is_not_a_conversation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty_leaf = r#"{"type":"active-leaf","sessionId":"s1","leafUuid":null,"explicit":true,"timestamp":1792504551292}"#;
+        let workspace = r#"{"type":"workspace-directories","sessionId":"s1","directories":["/private/tmp/probe"]}"#;
+        let worktree = r#"{"type":"worktree-state","sessionId":"s1","worktreeSession":null}"#;
+        let unprompted = [empty_leaf, workspace, empty_leaf, worktree, workspace];
+        let path = write_session(tmp.path(), "s1", &unprompted);
+
+        assert!(parse_summary(&path).is_none());
+        assert!(parser_in(tmp.path())
+            .list_conversations()
+            .unwrap()
+            .is_empty());
+        let detail = parser_in(tmp.path()).get_conversation("s1").unwrap();
+        assert!(detail.turns.is_empty());
+
+        let turn = [
+            USER_LINE,
+            THINKING_LINE,
+            TOOL_USE_LINE,
+            TOOL_RESULT_LINE,
+            ANSWER_LINE,
+            ACTIVE_LEAF_LINE,
+        ];
+        let prompted: Vec<&str> = unprompted.iter().chain(turn.iter()).copied().collect();
+        write_session(tmp.path(), "s2", &prompted);
+        write_session(tmp.path(), "s3", &turn);
+        let parser = parser_in(tmp.path());
+        let with_markers = parser.get_conversation("s2").unwrap();
+        let without = parser.get_conversation("s3").unwrap();
+        assert!(!with_markers.turns.is_empty());
+        assert_eq!(
+            serde_json::to_value(&with_markers.turns).unwrap(),
+            serde_json::to_value(&without.turns).unwrap()
+        );
+        assert_eq!(with_markers.summary.title, without.summary.title);
+        assert_eq!(
+            with_markers.summary.message_count,
+            without.summary.message_count
+        );
+
+        // Until Qoder records the turn's leaf, the newest marker is one of the
+        // leading null ones. It predates every message, so it must not blank
+        // them: a turn cut off before its leaf was written still shows.
+        let unfinished: Vec<&str> = unprompted
+            .iter()
+            .chain(turn[..turn.len() - 1].iter())
+            .copied()
+            .collect();
+        write_session(tmp.path(), "s4", &unfinished);
+        let cut_off = parser.get_conversation("s4").unwrap();
+        assert_eq!(
+            serde_json::to_value(&cut_off.turns).unwrap(),
+            serde_json::to_value(&without.turns).unwrap()
+        );
+
+        let listed: Vec<String> = parser
+            .list_conversations()
+            .unwrap()
+            .into_iter()
+            .map(|summary| summary.id)
+            .collect();
+        assert_eq!(listed.len(), 3, "{listed:?}");
+        assert!(!listed.contains(&"s1".to_string()), "{listed:?}");
+    }
+
     // The ACP entrypoint — the one codeg itself drives — writes the human
     // prompt as a block ARRAY. Reading only `content.as_str()` dropped the whole
     // user turn AND left the session untitled.
@@ -3549,7 +3658,7 @@ mod tests {
             PathBuf::from("/relocated/qoder").join("projects")
         );
 
-        // No config-dir override: the home keys, in order, and the dir name.
+        // No config-dir override: the home key and the dir name.
         let env = AgentEnv::with_overrides(&[
             ("QODER_CONFIG_DIR", ""),
             ("QODER_CLI_HOME", "/relocated/qoder-home"),
@@ -3562,6 +3671,15 @@ mod tests {
                 .join(".qoder-alt")
                 .join("projects")
         );
+    }
+
+    // Up to 1.1.74 Qoder fell back to `GEMINI_CLI_HOME` for its home, so a
+    // Gemini CLI relocation in the launch env moved Qoder's config dir and its
+    // shared `.agents` store with it. 1.1.75 reads `QODER_CLI_HOME` alone and
+    // keeps both under the OS home.
+    #[test]
+    fn gemini_cli_home_does_not_move_qoder() {
+        let home = dirs::home_dir().unwrap_or_default();
         let env = AgentEnv::with_overrides(&[
             ("QODER_CONFIG_DIR", ""),
             ("QODER_CLI_HOME", ""),
@@ -3570,9 +3688,17 @@ mod tests {
         ]);
         assert_eq!(
             QoderParser::for_env(&env).base_dir,
-            PathBuf::from("/relocated/gemini-home")
-                .join(".qoder")
-                .join("projects")
+            home.join(".qoder").join("projects")
+        );
+        assert_eq!(resolve_qoder_home_for_env(&env), home);
+
+        let env = AgentEnv::with_overrides(&[
+            ("QODER_CLI_HOME", "/relocated/qoder-home"),
+            ("GEMINI_CLI_HOME", "/relocated/gemini-home"),
+        ]);
+        assert_eq!(
+            resolve_qoder_home_for_env(&env),
+            PathBuf::from("/relocated/qoder-home")
         );
     }
 }
