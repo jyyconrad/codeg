@@ -5,8 +5,70 @@ use sea_orm::{
 };
 
 use crate::chat_channel::types::ChannelMessageTarget;
-use crate::db::entities::chat_channel_thread_binding;
+use crate::db::entities::{chat_channel, chat_channel_thread_binding};
 use crate::db::error::DbError;
+
+/// A conversation in an ordinary IM chat, not a provider-side forum topic.
+pub const CHANNEL_CHAT_ROUTE_KIND: &str = "channel_chat";
+
+/// Keep a chat-mode conversation's reply address across turns and restarts.
+/// Its row id is an internal route key and must never be sent as a topic id.
+pub async fn set_chat_conversation_target(
+    conn: &DatabaseConnection,
+    target: &ChannelMessageTarget,
+    conversation_id: i32,
+    sender_id: &str,
+) -> Result<(), DbError> {
+    let channel = chat_channel::Entity::find_by_id(target.channel_id)
+        .one(conn)
+        .await?
+        .ok_or_else(|| DbError::NotFound(format!("chat channel {}", target.channel_id)))?;
+    let route = ChannelMessageTarget {
+        channel_id: target.channel_id,
+        chat_id: Some(target.chat_id.clone().unwrap_or_default()),
+        thread_key: Some(conversation_id.to_string()),
+        thread_kind: Some(CHANNEL_CHAT_ROUTE_KIND.to_string()),
+        provider_payload: target.provider_payload.clone(),
+    };
+    upsert_for_target(
+        conn,
+        &route,
+        &channel.channel_type,
+        conversation_id,
+        None,
+        sender_id,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn chat_conversation_target(
+    conn: &DatabaseConnection,
+    conversation_id: i32,
+) -> Result<Option<ChannelMessageTarget>, DbError> {
+    let Some(route) = chat_channel_thread_binding::Entity::find()
+        .filter(chat_channel_thread_binding::Column::ConversationId.eq(conversation_id))
+        .filter(chat_channel_thread_binding::Column::ThreadKind.eq(CHANNEL_CHAT_ROUTE_KIND))
+        .one(conn)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let provider_payload = route
+        .provider_payload_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| DbError::Validation(format!("invalid channel chat target: {e}")))?;
+    Ok(Some(ChannelMessageTarget {
+        channel_id: route.channel_id,
+        chat_id: (!route.chat_id.is_empty()).then_some(route.chat_id),
+        thread_key: None,
+        thread_kind: None,
+        provider_payload,
+    }))
+}
 
 pub async fn get_by_target(
     conn: &DatabaseConnection,

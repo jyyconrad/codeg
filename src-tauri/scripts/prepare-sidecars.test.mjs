@@ -11,21 +11,24 @@ import {
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { delimiter, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import test from "node:test"
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 const HOST = "aarch64-apple-darwin"
+const BIN_NAMES = ["codeg-mcp", "codeg-computer-helper", "codeg-cli"]
+const FEATURES = "mcp-bin,computer-helper,cli-bin"
 const BUILD_ARGS = [
   "build",
   "--release",
-  "--bin",
-  "codeg-mcp",
+  ...BIN_NAMES.flatMap((name) => ["--bin", name]),
   "--no-default-features",
+  "--features",
+  FEATURES,
 ]
 
-function fixture(t, { host = HOST, built, failBuild = false } = {}) {
+function fixture(t, { host = HOST, built = [], failBuild = false } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "codeg-sidecar-test-")))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const srcTauri = join(root, "src-tauri")
@@ -40,11 +43,19 @@ function fixture(t, { host = HOST, built, failBuild = false } = {}) {
     const suffix = process.platform === "win32" ? ".exe" : ""
     writeFileSync(join(cargoHome, "bin", name + suffix), "")
   }
-  if (built) {
-    const binary = join(srcTauri, "target", built)
+  for (const builtPath of built) {
+    const binary = join(srcTauri, "target", builtPath)
     mkdirSync(dirname(binary), { recursive: true })
-    writeFileSync(binary, "new companion binary")
+    writeFileSync(binary, `new ${builtPath.split("/").at(-1)} binary`)
   }
+  mkdirSync(join(srcTauri, "macos"), { recursive: true })
+  mkdirSync(join(srcTauri, "icons"), { recursive: true })
+  writeFileSync(join(srcTauri, "tauri.conf.json"), '{"version":"0.38.0"}')
+  writeFileSync(
+    join(srcTauri, "macos", "codeg-computer-helper.plist"),
+    "version={{version}}"
+  )
+  writeFileSync(join(srcTauri, "icons", "icon.icns"), "fixture icon")
 
   // Replace only external compilers. The real CLI still selects and copies
   // files in an isolated project, and a compiler is never launched.
@@ -57,8 +68,10 @@ childProcess.execFileSync = (command, args, options = {}) => {
   appendFileSync(${JSON.stringify(join(root, "calls.jsonl"))}, JSON.stringify({
     command, args, cwd: options.cwd,
     targetDir: options.env?.CARGO_TARGET_DIR,
+    path: options.env?.PATH,
   }) + "\\n")
   if (command === "rustc") return ${JSON.stringify(`rustc 1.98.1\nhost: ${host}\n`)}
+  if (command === "codesign") return ""
   if (command !== "cargo") throw new Error("unexpected command: " + command)
   if (${failBuild}) throw new Error("fixture cargo build failed")
   return ""
@@ -69,6 +82,7 @@ await import("./prepare-sidecars.mjs")
   )
 
   return {
+    cargoHome,
     srcTauri,
     staged: (name) => join(srcTauri, "binaries", name),
     run(args = [], env = {}) {
@@ -102,31 +116,56 @@ for (const [name, args, env] of [
   ["explicit host", ["--target", HOST], {}],
 ]) {
   test(`${name} stages native release without another target tree`, (t) => {
-    const project = fixture(t, { built: "release/codeg-mcp" })
+    const project = fixture(t, {
+      built: BIN_NAMES.map((binary) => `release/${binary}`),
+    })
     const result = project.run(args, env)
     assert.equal(result.status, 0, result.stderr)
+    for (const binary of BIN_NAMES) {
+      assert.equal(
+        readFileSync(project.staged(`${binary}-${HOST}`), "utf8"),
+        `new ${binary} binary`
+      )
+    }
     assert.equal(
-      readFileSync(project.staged(`codeg-mcp-${HOST}`), "utf8"),
-      "new companion binary"
+      readFileSync(
+        project.staged(
+          "codeg-computer-helper.app/Contents/MacOS/codeg-computer-helper"
+        ),
+        "utf8"
+      ),
+      "new codeg-computer-helper binary"
+    )
+    assert.equal(
+      readFileSync(
+        project.staged("codeg-computer-helper.app/Contents/Info.plist"),
+        "utf8"
+      ),
+      "version=0.38.0"
     )
     const cargo = result.calls.find((call) => call.command === "cargo")
     assert.deepEqual(cargo.args, BUILD_ARGS)
     assert.equal(resolve(cargo.cwd), project.srcTauri)
     assert.equal(cargo.targetDir, join(project.srcTauri, "target"))
+    assert.equal(cargo.path.split(delimiter)[0], join(project.cargoHome, "bin"))
   })
 }
 
 test("cross compilation overrides the Tauri host and retains target directory", (t) => {
   const target = "x86_64-unknown-linux-gnu"
-  const project = fixture(t, { built: `${target}/release/codeg-mcp` })
+  const project = fixture(t, {
+    built: BIN_NAMES.map((binary) => `${target}/release/${binary}`),
+  })
   const result = project.run([`--target=${target}`], {
     TAURI_TARGET_TRIPLE: HOST,
   })
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(
-    readFileSync(project.staged(`codeg-mcp-${target}`), "utf8"),
-    "new companion binary"
-  )
+  for (const binary of BIN_NAMES) {
+    assert.equal(
+      readFileSync(project.staged(`${binary}-${target}`), "utf8"),
+      `new ${binary} binary`
+    )
+  }
   assert.deepEqual(result.calls.find((call) => call.command === "cargo").args, [
     ...BUILD_ARGS,
     "--target",
@@ -136,24 +175,33 @@ test("cross compilation overrides the Tauri host and retains target directory", 
 
 test("Windows native staging keeps the exe suffix without a triple directory", (t) => {
   const host = "x86_64-pc-windows-msvc"
-  const project = fixture(t, { host, built: "release/codeg-mcp.exe" })
+  const project = fixture(t, {
+    host,
+    built: BIN_NAMES.map((binary) => `release/${binary}.exe`),
+  })
   const result = project.run([], { TAURI_TARGET_TRIPLE: host })
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(
-    readFileSync(project.staged(`codeg-mcp-${host}.exe`), "utf8"),
-    "new companion binary"
-  )
+  for (const binary of BIN_NAMES) {
+    assert.equal(
+      readFileSync(project.staged(`${binary}-${host}.exe`), "utf8"),
+      `new ${binary}.exe binary`
+    )
+  }
 })
 
 test("a Tauri cross target selects its directory and Windows exe suffix", (t) => {
   const target = "x86_64-pc-windows-msvc"
-  const project = fixture(t, { built: `${target}/release/codeg-mcp.exe` })
+  const project = fixture(t, {
+    built: BIN_NAMES.map((binary) => `${target}/release/${binary}.exe`),
+  })
   const result = project.run([], { TAURI_TARGET_TRIPLE: target })
   assert.equal(result.status, 0, result.stderr)
-  assert.equal(
-    readFileSync(project.staged(`codeg-mcp-${target}.exe`), "utf8"),
-    "new companion binary"
-  )
+  for (const binary of BIN_NAMES) {
+    assert.equal(
+      readFileSync(project.staged(`${binary}-${target}.exe`), "utf8"),
+      `new ${binary}.exe binary`
+    )
+  }
   assert.deepEqual(result.calls.find((call) => call.command === "cargo").args, [
     ...BUILD_ARGS,
     "--target",
@@ -163,7 +211,7 @@ test("a Tauri cross target selects its directory and Windows exe suffix", (t) =>
 
 test("a failed build does not replace a previously staged companion", (t) => {
   const project = fixture(t, {
-    built: "release/codeg-mcp",
+    built: BIN_NAMES.map((binary) => `release/${binary}`),
     failBuild: true,
   })
   const staged = project.staged(`codeg-mcp-${HOST}`)
@@ -191,5 +239,8 @@ test("skip mode neither invokes compilers nor creates a staged file", (t) => {
   const result = project.run([], { CODEG_SKIP_SIDECAR: "1" })
   assert.equal(result.status, 0, result.stderr)
   assert.deepEqual(result.calls, [])
-  assert.equal(existsSync(project.staged(`codeg-mcp-${HOST}`)), false)
+  for (const binary of BIN_NAMES) {
+    assert.equal(existsSync(project.staged(`${binary}-${HOST}`)), false)
+  }
+  assert.equal(existsSync(project.staged("codeg-computer-helper.app")), false)
 })

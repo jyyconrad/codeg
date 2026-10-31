@@ -35,7 +35,7 @@ import {
   normalizeAbsPath,
   splitAbsPath,
 } from "@/lib/file-open-target"
-import { isImageFile } from "@/lib/language-detect"
+import { isImageFile, isPdfFile } from "@/lib/language-detect"
 import { isBinaryPreviewable } from "@/lib/file-preview-kind"
 import { getWorkspaceStateStore } from "@/hooks/use-workspace-state-store"
 import type { FileEditContent } from "@/lib/types"

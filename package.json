@@ -7,7 +7,7 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "lint": "eslint",
-    "tauri": "tauri",
+    "tauri": "node src-tauri/scripts/rust-run.mjs tauri",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",

@@ -240,9 +240,9 @@ async fn dispatch_command(
     let without_prefix = match text.strip_prefix(prefix) {
         Some(rest) => rest,
         None => {
-            // Forum topics stay 1:1 with their bound session. Folder-bound
-            // chats (matched by inbound chat_id) quote → that conversation,
-            // otherwise start a new one with the channel's default agent.
+            // Forum topics stay 1:1 with their bound session. Quotes select a
+            // conversation; unquoted messages start in chat mode using the
+            // channel's default agent, including in folder notification chats.
             if target.is_telegram_forum_topic() {
                 return DispatchResponse::current(
                     session_commands::handle_followup(session_commands::FollowupRequest {
@@ -288,32 +288,12 @@ async fn dispatch_command(
                 return DispatchResponse::none(target);
             }
 
-            // Check if sender has an active session for follow-up
-            let has_session = {
-                let guard = bridge.lock().await;
-                guard.find_by_sender(channel_id, sender_id).is_some()
-            };
-            if has_session {
-                return DispatchResponse::current(
-                    session_commands::handle_followup(session_commands::FollowupRequest {
-                        db,
-                        text,
-                        extra_blocks: &cmd.extra_blocks,
-                        channel_id,
-                        sender_id,
-                        target,
-                        conn_mgr,
-                        emitter,
-                        bridge,
-                        data_dir,
-                        lang,
-                        prefix,
-                    })
-                    .await,
-                    target,
-                );
-            }
-            return DispatchResponse::current(command_handlers::handle_help(prefix, lang), target);
+            return DispatchResponse::from_command_result(
+                session_commands::handle_chat_inbound(
+                    db, cmd, manager, conn_mgr, emitter, bridge, lang, prefix, data_dir,
+                )
+                .await,
+            );
         }
     };
 
@@ -611,6 +591,170 @@ mod tests {
         assert_eq!(response.target, target);
     }
 
+    async fn assert_unquoted_message_starts_chat_mode(bind_notification_folder: bool) {
+        use crate::acp::types::AgentLaunchMode;
+        use crate::db::entities::{conversation, folder};
+        use crate::db::service::agent_setting_service;
+
+        let db = fresh_in_memory_db().await;
+        let channel_id = seed_chat_channel(&db).await;
+        let project_folder_id = seed_folder(&db, "/tmp/channel-existing-project").await;
+        let project_conversation =
+            seed_conversation(&db, project_folder_id, AgentType::OpenCode).await;
+        sender_context_service::update_folder(
+            &db.conn,
+            channel_id,
+            "sender-1",
+            Some(project_folder_id),
+        )
+        .await
+        .unwrap();
+        if bind_notification_folder {
+            folder_chat_channel_service::set_bindings(
+                &db.conn,
+                project_folder_id,
+                &[folder_chat_channel_service::FolderChannelBinding {
+                    channel_id,
+                    chat_id: Some("oc_channel_chat".into()),
+                }],
+            )
+            .await
+            .unwrap();
+        }
+        chat_channel_service::update(
+            &db.conn,
+            channel_id,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Some("codex".into())),
+        )
+        .await
+        .unwrap();
+        agent_setting_service::ensure_defaults(
+            &db.conn,
+            &[agent_setting_service::AgentDefaultInput {
+                agent_type: AgentType::Codex,
+                registry_id: "codex".into(),
+                default_sort_order: 0,
+            }],
+        )
+        .await
+        .unwrap();
+        agent_setting_service::update_launch_mode(
+            &db.conn,
+            AgentType::Codex,
+            AgentLaunchMode::Terminal,
+        )
+        .await
+        .unwrap();
+
+        let conn_mgr = ConnectionManager::new();
+        let mut old_prompts = conn_mgr
+            .insert_test_connection_live(
+                "project-connection",
+                AgentType::OpenCode,
+                Some(std::path::PathBuf::from("/tmp/channel-existing-project")),
+                EventEmitter::Noop,
+            )
+            .await;
+        sender_context_service::update_session(
+            &db.conn,
+            channel_id,
+            "sender-1",
+            Some(project_conversation),
+            Some("project-connection".into()),
+        )
+        .await
+        .unwrap();
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let target = ChannelMessageTarget::with_chat_id(channel_id, "oc_channel_chat");
+        bridge.lock().await.register(
+            "project-connection".into(),
+            ActiveSession {
+                channel_id,
+                sender_id: "sender-1".into(),
+                target: target.clone(),
+                conversation_id: project_conversation,
+                connection_id: "project-connection".into(),
+                agent_type: AgentType::OpenCode,
+                content_buffer: String::new(),
+                tool_calls: Vec::new(),
+                tool_call_inputs: std::collections::HashMap::new(),
+                delegation_rendered: std::collections::HashSet::new(),
+                last_flushed: Instant::now(),
+                pending_prompt: None,
+                permission_pending: None,
+            },
+        );
+        let mut cmd = IncomingCommand::plain(channel_id, "sender-1", "new chat", target);
+        cmd.provider_message_id = Some("om_new_chat".into());
+        let data_dir = tempfile::tempdir().unwrap();
+        let response = dispatch_command(
+            &cmd,
+            "/",
+            &db.conn,
+            &ChatChannelManager::new(),
+            &conn_mgr,
+            &EventEmitter::Noop,
+            &bridge,
+            data_dir.path(),
+            Lang::En,
+        )
+        .await;
+
+        let new_id = response
+            .conversation_id
+            .expect("a new message must create a chat conversation");
+        assert_ne!(new_id, project_conversation);
+        let chat = conversation::Entity::find_by_id(new_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(chat.kind, conversation::ConversationKind::Chat);
+        assert_eq!(chat.agent_type, "codex");
+        assert_eq!(chat.launch_mode, "terminal");
+        assert_ne!(chat.folder_id, project_folder_id);
+        let scratch = folder::Entity::find_by_id(chat.folder_id)
+            .one(&db.conn)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(scratch.kind, folder::FolderKind::Chat);
+        assert!(std::path::Path::new(&scratch.path).starts_with(data_dir.path()));
+        assert!(old_prompts.try_recv().is_err());
+        assert_eq!(
+            crate::db::service::thread_binding_service::chat_conversation_target(&db.conn, new_id)
+                .await
+                .unwrap(),
+            Some(cmd.target.clone())
+        );
+        assert_eq!(
+            crate::db::service::chat_channel_message_map_service::conversation_id_for(
+                &db.conn,
+                channel_id,
+                "om_new_chat",
+            )
+            .await
+            .unwrap(),
+            Some(new_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn folder_notification_new_message_uses_chat_mode() {
+        assert_unquoted_message_starts_chat_mode(true).await;
+    }
+
+    #[tokio::test]
+    async fn global_channel_new_message_uses_chat_mode_after_project_reply() {
+        assert_unquoted_message_starts_chat_mode(false).await;
+    }
+
     #[tokio::test]
     async fn folder_bound_plain_text_starts_new_instead_of_latest() {
         let db = fresh_in_memory_db().await;
@@ -750,6 +894,37 @@ mod tests {
             &blocks[0],
             PromptInputBlock::Text { text } if text == "reply on quote"
         ));
+
+        // A later quote of the user's first reply must still reach this
+        // conversation after the agent has completed its preceding turn.
+        conn_mgr
+            .get_state("conn-quoted")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .turn_in_flight = false;
+        cmd.command_text = "second quoted reply".into();
+        cmd.quoted_message_id = Some("om_child".into());
+        cmd.provider_message_id = Some("om_grandchild".into());
+        let response = dispatch(&db, &cmd, &bridge, &conn_mgr).await;
+        assert_eq!(response.conversation_id, Some(quoted));
+        let command = rx.try_recv().expect("second prompt command");
+        assert!(matches!(
+            command,
+            ConnectionCommand::Prompt { blocks, .. }
+                if matches!(&blocks[0], PromptInputBlock::Text { text } if text == "second quoted reply")
+        ));
+        assert_eq!(
+            crate::db::service::chat_channel_message_map_service::conversation_id_for(
+                &db.conn,
+                channel_id,
+                "om_grandchild",
+            )
+            .await
+            .unwrap(),
+            Some(quoted)
+        );
     }
 
     #[tokio::test]
@@ -793,7 +968,7 @@ mod tests {
         let ctx = sender_context_service::get_or_create(&db.conn, channel_id, "sender-1")
             .await
             .expect("context");
-        assert_eq!(ctx.current_folder_id, Some(folder_id));
+        assert_eq!(ctx.current_folder_id, None);
     }
 
     #[tokio::test]
@@ -929,6 +1104,12 @@ mod tests {
             message.body,
             crate::chat_channel::i18n::task_deferred_busy(Lang::En)
         );
+        let guard = bridge.lock().await;
+        let deferred = guard
+            .get("conn-quoted-desktop")
+            .expect("busy desktop reply must enter the existing deferred-send path");
+        assert_eq!(deferred.conversation_id, conv_id);
+        assert_eq!(deferred.pending_prompt.as_deref(), Some("介绍一下你的能力"));
     }
 
     #[tokio::test]

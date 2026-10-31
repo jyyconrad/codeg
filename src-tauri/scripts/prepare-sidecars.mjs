@@ -163,27 +163,32 @@ function main() {
   // and shares the swatinem/rust-cache key with other cargo invocations.
   // `--no-default-features` keeps the sidecars free of the Tauri runtime deps
   // — so they cross-compile without dragging in macOS-private-api / Linux
-  // WebKit / Windows WebView2. One cargo invocation for both, so they share
+  // WebKit / Windows WebView2. One cargo invocation for all three, so they share
   // one dependency build. Each binary target needs its own feature (see
   // Cargo.toml): off by default, so `tauri build` leaves them alone.
-  execFileSync(
-    "cargo",
-    [
-      "build",
-      "--release",
-      ...BIN_NAMES.flatMap((name) => ["--bin", name]),
-      "--no-default-features",
-      "--features",
-      FEATURES,
-      "--target",
-      target,
-    ],
-    { stdio: "inherit", cwd: SRC_TAURI }
-  )
+  const cargoArgs = [
+    "build",
+    "--release",
+    ...BIN_NAMES.flatMap((name) => ["--bin", name]),
+    "--no-default-features",
+    "--features",
+    FEATURES,
+  ]
+  if (crossCompile) cargoArgs.push("--target", target)
+  execFileSync("cargo", cargoArgs, {
+    stdio: "inherit",
+    cwd: SRC_TAURI,
+    env,
+  })
 
   mkdirSync(BINARIES_DIR, { recursive: true })
   for (const name of BIN_NAMES) {
-    const built = join(SRC_TAURI, "target", target, "release", `${name}${ext}`)
+    const built = join(
+      TARGET_DIR,
+      ...(crossCompile ? [target] : []),
+      "release",
+      `${name}${ext}`
+    )
     if (!existsSync(built)) {
       die(`expected ${built} after cargo build, but it does not exist`)
     }

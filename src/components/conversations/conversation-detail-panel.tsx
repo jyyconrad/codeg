@@ -2626,7 +2626,9 @@ const ConversationTabView = memo(function ConversationTabView({
                 setUsableAgentCount(agents.filter(isAvailableAgent).length)
               }}
               onOpenAgentsSettings={handleOpenAgentsSettings}
-              disabled={isConnecting || dbConversationId != null}
+              disabled={
+                composerConnStatus === "connecting" || dbConversationId != null
+              }
             />
           </div>
           <SessionTerminalInput

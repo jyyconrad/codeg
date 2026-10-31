@@ -20,7 +20,6 @@ import {
 } from "@/contexts/acp-connections-context"
 import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useConnectionLifecycle } from "@/hooks/use-connection-lifecycle"
-import { useAcpAgents } from "@/hooks/use-acp-agents"
 import { useConversationDetail } from "@/hooks/use-conversation-detail"
 import {
   acpStopAsyncTask,
@@ -422,7 +421,6 @@ export function CanvasConversationSurface({
   // Enabled and platform-available, yet nothing installed: the preflight
   // refuses such an agent before it tears anything down, so a switch to one
   // never gets past the old connection.
-  const { agents: acpAgents } = useAcpAgents()
   const selectedAgentNotInstalled = useMemo(() => {
     const info = acpAgents.find((a) => a.agent_type === agentType)
     return (
@@ -432,7 +430,7 @@ export function CanvasConversationSurface({
   // What the composer shows. Only ever differs from `connStatus` while the
   // connection belongs to another agent: still `connecting` while the switch
   // can complete, `disconnected` when the selected agent can't connect at all.
-  const composerStatus = connIsForOtherAgent
+  const acpComposerStatus = connIsForOtherAgent
     ? selectedAgentNotInstalled
       ? "disconnected"
       : "connecting"
@@ -836,8 +834,7 @@ export function CanvasConversationSurface({
     showSessionTerminal &&
     terminalInfo != null &&
     terminalInfo.terminal_available !== true
-  const composerStatus =
-    isDraft && launchMode === "terminal" ? "connected" : connStatus
+  const composerStatus = showSessionTerminal ? "connected" : acpComposerStatus
 
   useEffect(() => {
     if (showSessionTerminal && !terminalUnavailable) return

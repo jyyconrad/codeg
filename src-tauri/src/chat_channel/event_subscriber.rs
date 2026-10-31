@@ -19,7 +19,7 @@ use crate::acp::types::{AcpEvent, EventEnvelope};
 use crate::db::entities::conversation::ConversationKind;
 use crate::db::service::{
     app_metadata_service, chat_channel_message_log_service, chat_channel_service,
-    conversation_service, folder_chat_channel_service,
+    conversation_service, folder_chat_channel_service, thread_binding_service,
 };
 use crate::logging::throttle::{LagLogThrottle, LAG_LOG_WINDOW};
 
@@ -349,9 +349,11 @@ async fn process_envelope(
         );
     }
 
-    // Some events bypass the per-(channel, event) debounce. That debounce
-    // throttles high-frequency events like turn_complete, but these are discrete,
+    // Some events bypass the per-(channel, event) debounce. These are discrete,
     // individually-meaningful events that must each deliver:
+    //   - turn_complete: each completed turn creates a replyable card. Dropping
+    //     a fast follow-up completion also drops its provider-message mapping,
+    //     so the next quoted reply cannot continue from the latest card.
     //   - permission_request: a blocking gate; a second gate on the same
     //     connection (sequential) or a concurrent agent's gate within the 5s
     //     window would otherwise be dropped — and a blocked agent emits no
@@ -364,7 +366,7 @@ async fn process_envelope(
     //     the 5s window would be dropped with no later event to re-trigger it.
     let debounced = !matches!(
         event_type.as_str(),
-        "permission_request" | "user_prompt_sent" | "question_request"
+        "turn_complete" | "permission_request" | "user_prompt_sent" | "question_request"
     );
 
     // Live ACP connections carry the row on session state. Terminal-hook cards
@@ -374,13 +376,10 @@ async fn process_envelope(
     let conversation_id = envelope_conversation_id(&envelope.connection_id, conn_mgr.as_ref())
         .await
         .or_else(|| payload_conversation_id(&envelope.payload));
-    // A folder that names a channel session gets that session only. Other
-    // enabled channels keep their own default chats, and would otherwise
-    // deliver the same card into a second Feishu conversation.
-    let folder_bindings = folder_bindings_for_conversation(db_conn, conversation_id).await;
-    let deliveries = deliveries_for_folder(&config.enabled_channels, &folder_bindings);
+    let deliveries =
+        deliveries_for_conversation(db_conn, conversation_id, &config.enabled_channels).await;
 
-    for (ch, chat_id) in &deliveries {
+    for (ch, delivery_target) in &deliveries {
         // Per-channel event filter
         if let Some(filter_json) = &ch.event_filter_json {
             if let Ok(filter) = serde_json::from_str::<Vec<String>>(filter_json) {
@@ -391,7 +390,7 @@ async fn process_envelope(
         }
 
         // Debounce: skip if the same event type was pushed to this channel
-        // recently (permission_request is exempt — see above).
+        // recently. Discrete reply/gate events are exempt above.
         let key = (ch.id, event_type.clone());
         let now = Instant::now();
         if debounced {
@@ -402,12 +401,8 @@ async fn process_envelope(
             }
         }
 
-        // Folder notify-channel session id overrides the channel default chat.
-        let (send_result, target) = match nonempty_trimmed(chat_id.as_deref()) {
-            Some(chat_id) => {
-                let target = ChannelMessageTarget::with_chat_id(ch.id, chat_id);
-                (manager.send_to_target(&target, &msg).await, target)
-            }
+        let (send_result, target) = match delivery_target {
+            Some(target) => (manager.send_to_target(target, &msg).await, target.clone()),
             None => (
                 manager.send_to_channel(ch.id, &msg).await,
                 ChannelMessageTarget::channel(ch.id),
@@ -462,17 +457,19 @@ fn payload_conversation_id(payload: &AcpEvent) -> Option<i32> {
     }
 }
 
-async fn folder_bindings_for_conversation(
+async fn deliveries_for_conversation<'a>(
     db: &DatabaseConnection,
     conversation_id: Option<i32>,
-) -> Vec<folder_chat_channel_service::FolderChannelBinding> {
+    enabled: &'a [CachedChannel],
+) -> Vec<(&'a CachedChannel, Option<ChannelMessageTarget>)> {
     let Some(conversation_id) = conversation_id else {
-        return Vec::new();
+        return deliveries_for_folder(enabled, &[]);
     };
     let Ok(row) = conversation_service::get_by_id(db, conversation_id).await else {
-        return Vec::new();
+        return deliveries_for_folder(enabled, &[]);
     };
-    match folder_chat_channel_service::list_bindings(db, row.folder_id).await {
+    let folder_bindings = match folder_chat_channel_service::list_bindings(db, row.folder_id).await
+    {
         Ok(bindings) => bindings,
         Err(e) => {
             tracing::warn!(
@@ -483,7 +480,33 @@ async fn folder_bindings_for_conversation(
             );
             Vec::new()
         }
+    };
+    if !folder_bindings.is_empty() {
+        return deliveries_for_folder(enabled, &folder_bindings);
     }
+
+    if row.kind == ConversationKind::Chat {
+        match thread_binding_service::chat_conversation_target(db, conversation_id).await {
+            Ok(Some(target)) => {
+                return enabled
+                    .iter()
+                    .find(|channel| channel.id == target.channel_id)
+                    .map(|channel| vec![(channel, Some(target))])
+                    .unwrap_or_default();
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    conversation_id,
+                    error = %e,
+                    "[ChatChannel] failed to load chat conversation target for event push"
+                );
+                return Vec::new();
+            }
+        }
+    }
+
+    deliveries_for_folder(enabled, &[])
 }
 
 /// No folder binding: every enabled channel, using that channel's default chat.
@@ -492,7 +515,7 @@ async fn folder_bindings_for_conversation(
 fn deliveries_for_folder<'a>(
     enabled: &'a [CachedChannel],
     bindings: &[folder_chat_channel_service::FolderChannelBinding],
-) -> Vec<(&'a CachedChannel, Option<String>)> {
+) -> Vec<(&'a CachedChannel, Option<ChannelMessageTarget>)> {
     if bindings.is_empty() {
         return enabled.iter().map(|channel| (channel, None)).collect();
     }
@@ -504,7 +527,9 @@ fn deliveries_for_folder<'a>(
         .iter()
         .filter_map(|binding| {
             let channel = *by_id.get(&binding.channel_id)?;
-            Some((channel, binding.chat_id.clone()))
+            let target = nonempty_trimmed(binding.chat_id.as_deref())
+                .map(|chat_id| ChannelMessageTarget::with_chat_id(channel.id, chat_id));
+            Some((channel, target))
         })
         .collect()
 }
@@ -759,9 +784,18 @@ mod permission_push_tests {
     struct Recorder {
         msgs: Arc<Mutex<Vec<String>>>,
         chat_ids: Arc<Mutex<Vec<Option<String>>>>,
+        targets: Arc<Mutex<Vec<ChannelMessageTarget>>>,
+        sent_seq: Arc<AtomicU64>,
     }
     struct RecordingBackend {
         rec: Recorder,
+    }
+
+    impl RecordingBackend {
+        fn next_message_id(&self) -> SentMessageId {
+            let seq = self.rec.sent_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            SentMessageId(seq.to_string())
+        }
     }
 
     #[async_trait]
@@ -781,7 +815,7 @@ mod permission_push_tests {
         async fn send_message(&self, text: &str) -> Result<SentMessageId, ChatChannelError> {
             self.rec.msgs.lock().await.push(text.to_string());
             self.rec.chat_ids.lock().await.push(None);
-            Ok(SentMessageId("1".into()))
+            Ok(self.next_message_id())
         }
         async fn send_rich_message(
             &self,
@@ -789,7 +823,7 @@ mod permission_push_tests {
         ) -> Result<SentMessageId, ChatChannelError> {
             self.rec.msgs.lock().await.push(message.to_plain_text());
             self.rec.chat_ids.lock().await.push(None);
-            Ok(SentMessageId("1".into()))
+            Ok(self.next_message_id())
         }
         async fn send_rich_message_to(
             &self,
@@ -798,7 +832,8 @@ mod permission_push_tests {
         ) -> Result<SentMessageId, ChatChannelError> {
             self.rec.msgs.lock().await.push(message.to_plain_text());
             self.rec.chat_ids.lock().await.push(target.chat_id.clone());
-            Ok(SentMessageId("1".into()))
+            self.rec.targets.lock().await.push(target.clone());
+            Ok(self.next_message_id())
         }
         async fn test_connection(&self) -> Result<(), ChatChannelError> {
             Ok(())
@@ -839,6 +874,109 @@ mod permission_push_tests {
     /// `config.webhooks` empty, `process_envelope` never issues a request.
     fn test_client() -> reqwest::Client {
         reqwest::Client::new()
+    }
+
+    struct ChatRouteFixture {
+        db: crate::db::AppDatabase,
+        conversation_id: i32,
+        source_channel_id: i32,
+        source_target: ChannelMessageTarget,
+        manager: ChatChannelManager,
+        source_recorder: Recorder,
+        other_recorder: Recorder,
+        config: EventConfigCache,
+    }
+
+    async fn chat_route_fixture() -> ChatRouteFixture {
+        use crate::db::service::{
+            chat_channel_service, conversation_service, thread_binding_service,
+        };
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-chat-route").await;
+        let conversation = conversation_service::create_chat(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("Channel chat".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        let source_channel = chat_channel_service::create(
+            &db.conn,
+            "source".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_global" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let other_channel = chat_channel_service::create(
+            &db.conn,
+            "other".into(),
+            "telegram".into(),
+            serde_json::json!({ "chat_id": "-100-global" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let source_target = ChannelMessageTarget {
+            channel_id: source_channel.id,
+            chat_id: Some("oc_source".into()),
+            thread_key: None,
+            thread_kind: None,
+            provider_payload: Some(serde_json::json!({ "root_id": "om_root" })),
+        };
+        let mut stored_target = source_target.clone();
+        stored_target.thread_key = Some(conversation.id.to_string());
+        stored_target.thread_kind = Some("channel_chat".into());
+        thread_binding_service::upsert_for_target(
+            &db.conn,
+            &stored_target,
+            "lark",
+            conversation.id,
+            None,
+            "sender-1",
+            conversation.title.clone(),
+        )
+        .await
+        .unwrap();
+
+        let (manager, source_recorder) = manager_with_recorder(source_channel.id).await;
+        let other_recorder = Recorder::default();
+        manager
+            .add_channel(
+                other_channel.id,
+                "other".into(),
+                ChannelType::Telegram,
+                Box::new(RecordingBackend {
+                    rec: other_recorder.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+        let mut config = config_all_on(source_channel.id);
+        config.enabled_channels.push(CachedChannel {
+            id: other_channel.id,
+            event_filter_json: None,
+        });
+
+        ChatRouteFixture {
+            db,
+            conversation_id: conversation.id,
+            source_channel_id: source_channel.id,
+            source_target,
+            manager,
+            source_recorder,
+            other_recorder,
+            config,
+        }
     }
 
     /// Accept one connection, read the full HTTP/1.1 request (headers +
@@ -1146,18 +1284,19 @@ mod permission_push_tests {
         );
     }
 
-    /// Contrast: turn_complete is still debounced — a second one within the 5s
-    /// window is dropped. Guards against accidentally exempting everything.
+    /// Every completed turn is a replyable card. Two separate turns can finish
+    /// inside the debounce window, including consecutive quoted replies on the
+    /// same connection, and both must be delivered.
     #[tokio::test]
-    async fn turn_complete_is_debounced_within_window() {
+    async fn rapid_turn_completions_are_not_debounced() {
         let db = test_helpers::fresh_in_memory_db().await;
         let (chat, rec) = manager_with_recorder(7).await;
         let bridge = Arc::new(Mutex::new(SessionBridge::new()));
         let config = config_all_on(7);
         let mut last_push = HashMap::new();
 
-        let turn_complete = || EventEnvelope {
-            seq: 1,
+        let turn_complete = |seq| EventEnvelope {
+            seq,
             connection_id: "c".into(),
             payload: AcpEvent::TurnComplete {
                 session_id: "s".into(),
@@ -1167,7 +1306,7 @@ mod permission_push_tests {
             },
         };
         process_envelope(
-            &turn_complete(),
+            &turn_complete(1),
             &bridge,
             &chat,
             &db.conn,
@@ -1177,7 +1316,7 @@ mod permission_push_tests {
         )
         .await;
         process_envelope(
-            &turn_complete(),
+            &turn_complete(2),
             &bridge,
             &chat,
             &db.conn,
@@ -1189,8 +1328,254 @@ mod permission_push_tests {
 
         assert_eq!(
             sent(&rec).await.len(),
-            1,
-            "second turn_complete within 5s must be debounced"
+            2,
+            "separate turns completed within 5s must both be delivered"
+        );
+    }
+
+    /// A folder destination must receive every rapid completion and each sent
+    /// provider message id must remain replyable back to the same conversation.
+    #[tokio::test]
+    async fn rapid_folder_turn_completions_are_delivered_and_mapped() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::db::service::{
+            chat_channel_message_map_service, chat_channel_service, conversation_service,
+            folder_chat_channel_service,
+        };
+        use crate::web::event_bridge::EventEmitter;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-rapid-folder").await;
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "lark".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_default" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            folder_id,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_folder".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Codex,
+            Some("Rapid quoted replies".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (chat, rec) = manager_with_recorder(channel.id).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live("rapid-conn", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        conn_mgr
+            .get_state("rapid-conn")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(conv.id);
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let config = config_all_on(channel.id);
+        let mut last_push = HashMap::new();
+        for seq in [1, 2] {
+            process_envelope(
+                &EventEnvelope {
+                    seq,
+                    connection_id: "rapid-conn".into(),
+                    payload: AcpEvent::TurnComplete {
+                        session_id: "agent-session".into(),
+                        stop_reason: "end_turn".into(),
+                        agent_type: "codex".into(),
+                        run_id: None,
+                    },
+                },
+                &bridge,
+                &chat,
+                &db.conn,
+                &config,
+                &mut last_push,
+                &test_client(),
+            )
+            .await;
+        }
+
+        assert_eq!(
+            sent_chat_ids(&rec).await,
+            vec![Some("oc_folder".into()), Some("oc_folder".into())],
+            "both completion cards must use the folder chat override"
+        );
+        for message_id in ["1", "2"] {
+            assert_eq!(
+                chat_channel_message_map_service::conversation_id_for(
+                    &db.conn, channel.id, message_id,
+                )
+                .await
+                .unwrap(),
+                Some(conv.id),
+                "sent message {message_id} must remain replyable"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_turn_complete_uses_persisted_source_target_only() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::db::service::chat_channel_message_map_service;
+        use crate::web::event_bridge::EventEmitter;
+
+        let fixture = chat_route_fixture().await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live("chat-route", AgentType::Codex, None, EventEmitter::Noop)
+            .await;
+        conn_mgr
+            .get_state("chat-route")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(fixture.conversation_id);
+        fixture
+            .manager
+            .set_connection_manager(conn_mgr.clone_ref())
+            .await;
+
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "chat-route".into(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "agent-session".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "codex".into(),
+                    run_id: None,
+                },
+            },
+            &Arc::new(Mutex::new(SessionBridge::new())),
+            &fixture.manager,
+            &fixture.db.conn,
+            &fixture.config,
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+
+        assert_eq!(
+            fixture.source_recorder.targets.lock().await.as_slice(),
+            std::slice::from_ref(&fixture.source_target),
+            "chat completion must return to the persisted source target"
+        );
+        assert!(fixture.other_recorder.msgs.lock().await.is_empty());
+        assert_eq!(
+            chat_channel_message_map_service::conversation_id_for(
+                &fixture.db.conn,
+                fixture.source_channel_id,
+                "1",
+            )
+            .await
+            .unwrap(),
+            Some(fixture.conversation_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_chat_card_uses_persisted_source_target_only() {
+        let mut fixture = chat_route_fixture().await;
+        fixture.config.global_filter = Some(vec!["user_prompt_sent".into()]);
+
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "terminal-hook:chat".into(),
+                payload: AcpEvent::TerminalSessionCard {
+                    conversation_id: fixture.conversation_id,
+                    agent_type: "codex".into(),
+                    kind: "turn_started".into(),
+                    body: Some("start from channel".into()),
+                },
+            },
+            &Arc::new(Mutex::new(SessionBridge::new())),
+            &fixture.manager,
+            &fixture.db.conn,
+            &fixture.config,
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+
+        assert_eq!(
+            fixture.source_recorder.targets.lock().await.as_slice(),
+            [fixture.source_target],
+            "terminal chat card must return to the persisted source target"
+        );
+        assert!(fixture.other_recorder.msgs.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_source_route_still_respects_global_and_channel_filters() {
+        let mut fixture = chat_route_fixture().await;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let envelope = EventEnvelope {
+            seq: 1,
+            connection_id: "terminal-hook:chat".into(),
+            payload: AcpEvent::TerminalSessionCard {
+                conversation_id: fixture.conversation_id,
+                agent_type: "codex".into(),
+                kind: "turn_started".into(),
+                body: Some("filtered prompt".into()),
+            },
+        };
+
+        fixture.config.global_filter = Some(vec!["error".into()]);
+        process_envelope(
+            &envelope,
+            &bridge,
+            &fixture.manager,
+            &fixture.db.conn,
+            &fixture.config,
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+        assert!(fixture.source_recorder.msgs.lock().await.is_empty());
+        assert!(fixture.other_recorder.msgs.lock().await.is_empty());
+
+        fixture.config.global_filter = Some(vec!["user_prompt_sent".into()]);
+        fixture.config.enabled_channels[0].event_filter_json = Some(r#"["error"]"#.into());
+        process_envelope(
+            &envelope,
+            &bridge,
+            &fixture.manager,
+            &fixture.db.conn,
+            &fixture.config,
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+        assert!(
+            fixture.source_recorder.msgs.lock().await.is_empty(),
+            "the source channel filter must suppress its chat route"
+        );
+        assert!(
+            fixture.other_recorder.msgs.lock().await.is_empty(),
+            "a filtered source route must not fall back to another enabled channel"
         );
     }
 
@@ -2188,8 +2573,7 @@ mod permission_push_tests {
     }
 
     /// Webhooks are intentionally NOT debounced: two `turn_complete` events
-    /// inside the 5s window each deliver, even though the IM-channel push of the
-    /// second is debounced (contrast `turn_complete_is_debounced_within_window`).
+    /// inside the 5s window each deliver, independently of IM-channel delivery.
     #[tokio::test]
     async fn webhook_is_not_debounced() {
         use tokio::net::TcpListener;
