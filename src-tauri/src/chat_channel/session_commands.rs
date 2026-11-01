@@ -10,6 +10,7 @@ use super::folder_inbound::{
     inbound_provider_message_id, remember_provider_message, FolderInboundAction, FolderInboundPlan,
 };
 use super::i18n::{self, Lang};
+use super::lark_delivery;
 use super::manager::ChatChannelManager;
 use super::session_bridge::{ActiveSession, SessionBridge};
 use super::terminal_followup;
@@ -24,8 +25,8 @@ use crate::acp::types::{
 };
 use crate::db::entities::{chat_channel_thread_binding, conversation};
 use crate::db::service::{
-    chat_channel_service, conversation_service, folder_service, sender_context_service,
-    thread_binding_service,
+    chat_channel_service, conversation_service, folder_chat_channel_service, folder_service,
+    sender_context_service, thread_binding_service,
 };
 use crate::db::AppDatabase;
 use crate::models::agent::AgentType;
@@ -1247,6 +1248,10 @@ pub async fn handle_folder_bound_inbound(
     prefix: &str,
     data_dir: &Path,
 ) -> CommandMessageResult {
+    let topic_folder = binding_folder_for_topic(db, cmd, plan.bound_folder_id).await;
+    if let Some(folder_id) = topic_folder {
+        pin_folder_topic(db, cmd, folder_id).await;
+    }
     match plan.action {
         FolderInboundAction::Continue { conversation_id } => {
             let _ = sender_context_service::update_folder(
@@ -1260,6 +1265,7 @@ pub async fn handle_folder_bound_inbound(
                 db,
                 cmd,
                 conversation_id,
+                topic_folder,
                 manager,
                 conn_mgr,
                 emitter,
@@ -1280,7 +1286,16 @@ pub async fn handle_folder_bound_inbound(
         }
         FolderInboundAction::StartNew => {
             handle_chat_inbound(
-                db, cmd, manager, conn_mgr, emitter, bridge, lang, prefix, data_dir,
+                db,
+                cmd,
+                manager,
+                conn_mgr,
+                emitter,
+                bridge,
+                lang,
+                prefix,
+                data_dir,
+                topic_folder,
             )
             .await
         }
@@ -1310,6 +1325,7 @@ pub async fn handle_chat_inbound(
     lang: Lang,
     prefix: &str,
     data_dir: &Path,
+    bound_folder_id: Option<i32>,
 ) -> CommandMessageResult {
     let text = cmd.command_text.trim();
     if text.is_empty() {
@@ -1391,6 +1407,7 @@ pub async fn handle_chat_inbound(
         db,
         cmd,
         conversation_id,
+        bound_folder_id,
         manager,
         conn_mgr,
         emitter,
@@ -1466,11 +1483,105 @@ async fn continue_terminal_conversation(
     }
 }
 
+/// Folder that owns the channel binding. A quoted channel chat lives in a
+/// hidden folder, so the plan's folder is not always the bound one.
+async fn binding_folder_for_topic(
+    db: &DatabaseConnection,
+    cmd: &IncomingCommand,
+    bound_folder_id: i32,
+) -> Option<i32> {
+    match folder_chat_channel_service::list_bindings(db, bound_folder_id).await {
+        Ok(rows) if rows.iter().any(|row| row.channel_id == cmd.channel_id) => {
+            return Some(bound_folder_id);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                folder_id = bound_folder_id,
+                error = %error,
+                "[ChatChannel] failed to load folder binding for topic anchor"
+            );
+        }
+    }
+    let chat_id = super::folder_inbound::inbound_chat_id(cmd);
+    match folder_chat_channel_service::find_folder_id_for_inbound(
+        db,
+        cmd.channel_id,
+        chat_id.as_deref(),
+    )
+    .await
+    {
+        Ok(folder_id) => folder_id,
+        Err(error) => {
+            tracing::warn!(
+                channel_id = cmd.channel_id,
+                error = %error,
+                "[ChatChannel] failed to resolve folder topic binding"
+            );
+            None
+        }
+    }
+}
+
+async fn pin_folder_topic(db: &DatabaseConnection, cmd: &IncomingCommand, folder_id: i32) {
+    let Some(message_id) = lark_delivery::topic_anchor_message_id(&cmd.target.provider_payload)
+    else {
+        return;
+    };
+    if let Err(error) = folder_chat_channel_service::set_folder_topic_message(
+        db,
+        folder_id,
+        cmd.channel_id,
+        &message_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            folder_id,
+            channel_id = cmd.channel_id,
+            error = %error,
+            "[ChatChannel] failed to store folder topic anchor"
+        );
+    }
+}
+
+async fn remember_inbound_delivery(
+    db: &DatabaseConnection,
+    cmd: &IncomingCommand,
+    conversation_id: i32,
+    bound_folder_id: Option<i32>,
+) {
+    let mut target = cmd.target.clone();
+    let has_delivery = lark_delivery::ack_message_id(&target.provider_payload).is_some()
+        || lark_delivery::completion_plan(&target.provider_payload).is_some();
+    if !has_delivery {
+        return;
+    }
+    if let Some(folder_id) = bound_folder_id {
+        lark_delivery::stamp_bound_folder(&mut target, folder_id);
+    }
+    if let Err(e) = thread_binding_service::set_chat_conversation_target(
+        db,
+        &target,
+        conversation_id,
+        &cmd.sender_id,
+    )
+    .await
+    {
+        tracing::warn!(
+            conversation_id,
+            error = %e,
+            "[ChatChannel] failed to store Feishu reply target"
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn continue_folder_conversation(
     db: &DatabaseConnection,
     cmd: &IncomingCommand,
     conversation_id: i32,
+    bound_folder_id: Option<i32>,
     manager: &ChatChannelManager,
     conn_mgr: &ConnectionManager,
     emitter: &EventEmitter,
@@ -1488,6 +1599,7 @@ async fn continue_folder_conversation(
             );
         }
     };
+    remember_inbound_delivery(db, cmd, conversation_id, bound_folder_id).await;
     if conv.launch_mode == "terminal" {
         return continue_terminal_conversation(db, cmd, &conv, manager, emitter, lang, data_dir)
             .await;
@@ -1504,6 +1616,12 @@ async fn continue_folder_conversation(
             })
     };
     if let Some(session_ref) = live {
+        {
+            let mut guard = bridge.lock().await;
+            if let Some(session) = guard.get_mut(&session_ref.connection_id) {
+                session.target = cmd.target.clone();
+            }
+        }
         let followup = FollowupRequest {
             db,
             text: cmd.command_text.trim(),
@@ -2780,6 +2898,185 @@ mod tests {
             &blocks[0],
             PromptInputBlock::Text { text } if text == "continue task"
         ));
+    }
+
+    #[tokio::test]
+    async fn topic_inbound_pins_one_folder_topic_and_a_quote_does_not_move_it() {
+        use crate::db::service::folder_chat_channel_service::FolderChannelBinding;
+
+        let db = fresh_in_memory_db().await;
+        let channel_id = seed_chat_channel(&db).await;
+        let folder_id = seed_folder(&db, "/tmp/folder-topic-pin").await;
+        let conv_id = seed_conversation(&db, folder_id, AgentType::OpenCode).await;
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            folder_id,
+            &[FolderChannelBinding {
+                channel_id,
+                chat_id: Some("oc_group".into()),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live(
+                "conn-folder-topic",
+                AgentType::OpenCode,
+                Some(std::path::PathBuf::from("/tmp/folder-topic-pin")),
+                EventEmitter::Noop,
+            )
+            .await;
+        conn_mgr
+            .get_state("conn-folder-topic")
+            .await
+            .expect("connection")
+            .write()
+            .await
+            .turn_in_flight = true;
+        let bridge = Arc::new(Mutex::new(SessionBridge::new()));
+        let register = |target: ChannelMessageTarget| {
+            let bridge = bridge.clone();
+            async move {
+                bridge.lock().await.register(
+                    "conn-folder-topic".to_string(),
+                    ActiveSession {
+                        channel_id,
+                        sender_id: "sender-1".to_string(),
+                        target,
+                        conversation_id: conv_id,
+                        connection_id: "conn-folder-topic".to_string(),
+                        agent_type: AgentType::OpenCode,
+                        content_buffer: String::new(),
+                        tool_calls: Vec::new(),
+                        tool_call_inputs: std::collections::HashMap::new(),
+                        delegation_rendered: std::collections::HashSet::new(),
+                        last_flushed: Instant::now(),
+                        pending_prompt: None,
+                        permission_pending: None,
+                    },
+                );
+            }
+        };
+
+        let topic = |message_id: &str| {
+            let mut target = ChannelMessageTarget::with_chat_id(channel_id, "oc_group");
+            target.provider_payload = Some(serde_json::json!({
+                "lark_delivery": {
+                    "ack_message_id": message_id,
+                    "mode": "topic",
+                    "reply_message_id": message_id
+                }
+            }));
+            target
+        };
+
+        register(topic("om_first")).await;
+        let mut cmd = IncomingCommand::plain(channel_id, "sender-1", "first", topic("om_first"));
+        cmd.metadata = serde_json::json!({
+            "event": { "message": { "chat_id": "oc_group", "message_id": "om_first" } }
+        });
+        handle_folder_bound_inbound(
+            &db.conn,
+            &cmd,
+            FolderInboundPlan {
+                bound_folder_id: folder_id,
+                action: FolderInboundAction::Continue {
+                    conversation_id: conv_id,
+                },
+            },
+            &ChatChannelManager::new(),
+            &conn_mgr,
+            &EventEmitter::Noop,
+            &bridge,
+            Lang::En,
+            "/",
+            std::path::Path::new("/tmp/folder-topic-pin-data"),
+        )
+        .await;
+        assert_eq!(
+            folder_chat_channel_service::folder_topic_message(&db.conn, folder_id, channel_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("om_first")
+        );
+
+        register(topic("om_second")).await;
+        let mut cmd = IncomingCommand::plain(channel_id, "sender-1", "second", topic("om_second"));
+        cmd.metadata = serde_json::json!({
+            "event": { "message": { "chat_id": "oc_group", "message_id": "om_second" } }
+        });
+        handle_folder_bound_inbound(
+            &db.conn,
+            &cmd,
+            FolderInboundPlan {
+                bound_folder_id: folder_id,
+                action: FolderInboundAction::Continue {
+                    conversation_id: conv_id,
+                },
+            },
+            &ChatChannelManager::new(),
+            &conn_mgr,
+            &EventEmitter::Noop,
+            &bridge,
+            Lang::En,
+            "/",
+            std::path::Path::new("/tmp/folder-topic-pin-data"),
+        )
+        .await;
+        assert_eq!(
+            folder_chat_channel_service::folder_topic_message(&db.conn, folder_id, channel_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("om_first")
+        );
+        let stored = thread_binding_service::chat_conversation_target(&db.conn, conv_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lark_delivery::bound_folder_id(&stored.provider_payload),
+            Some(folder_id)
+        );
+
+        let mut quoted = ChannelMessageTarget::with_chat_id(channel_id, "oc_group");
+        quoted.provider_payload = Some(serde_json::json!({
+            "lark_delivery": {
+                "ack_message_id": "om_quote",
+                "mode": "quote",
+                "reply_message_id": "om_card"
+            }
+        }));
+        register(quoted.clone()).await;
+        let cmd = IncomingCommand::plain(channel_id, "sender-1", "quoted", quoted);
+        handle_folder_bound_inbound(
+            &db.conn,
+            &cmd,
+            FolderInboundPlan {
+                bound_folder_id: folder_id,
+                action: FolderInboundAction::Continue {
+                    conversation_id: conv_id,
+                },
+            },
+            &ChatChannelManager::new(),
+            &conn_mgr,
+            &EventEmitter::Noop,
+            &bridge,
+            Lang::En,
+            "/",
+            std::path::Path::new("/tmp/folder-topic-pin-data"),
+        )
+        .await;
+        assert_eq!(
+            folder_chat_channel_service::folder_topic_message(&db.conn, folder_id, channel_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("om_first")
+        );
     }
 
     #[tokio::test]

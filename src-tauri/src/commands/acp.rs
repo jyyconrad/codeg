@@ -20357,6 +20357,7 @@ wire_api = "chat"
             installed_version: None,
             env_json: None,
             model_provider_id: provider,
+            launch_mode: "acp".to_string(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         };

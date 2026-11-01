@@ -26550,6 +26550,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 stop_reason: "cancelled".to_string(),
                 agent_type: agent_type.to_string(),
+                run_id: None,
             },
         )
         .await;
@@ -27178,6 +27179,7 @@ mod tests {
             session_id: "s1".to_string(),
             stop_reason: "end_turn".to_string(),
             agent_type: "minimax_code".to_string(),
+            run_id: None,
         });
         assert!(guard.permission_matched_calls.is_empty());
     }

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 use sea_orm::{
-    ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, QueryOrder, Set, TransactionTrait,
+    ActiveModelTrait, ActiveValue::NotSet, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, Set, TransactionTrait,
 };
 
 use crate::db::entities::{chat_channel, folder_chat_channel};
@@ -205,6 +205,14 @@ pub async fn set_bindings(
         ensure_session_available(&txn, folder_id, binding).await?;
     }
 
+    // Re-saving the dialog deletes and inserts. Keep the topic anchor when
+    // the same channel session stays bound. A different chat drops it,
+    // because that message id belongs to the previous conversation.
+    let previous = folder_chat_channel::Entity::find()
+        .filter(folder_chat_channel::Column::FolderId.eq(folder_id))
+        .all(&txn)
+        .await?;
+
     folder_chat_channel::Entity::delete_many()
         .filter(folder_chat_channel::Column::FolderId.eq(folder_id))
         .exec(&txn)
@@ -214,12 +222,22 @@ pub async fn set_bindings(
         let now = Utc::now();
         let models = unique
             .iter()
-            .map(|binding| folder_chat_channel::ActiveModel {
-                id: NotSet,
-                folder_id: Set(folder_id),
-                channel_id: Set(binding.channel_id),
-                chat_id: Set(binding.chat_id.clone()),
-                created_at: Set(now),
+            .map(|binding| {
+                let topic_message_id = previous.iter().find_map(|row| {
+                    let same_session = row.channel_id == binding.channel_id
+                        && normalize_chat_id(row.chat_id.clone()) == binding.chat_id;
+                    same_session
+                        .then(|| normalize_chat_id(row.topic_message_id.clone()))
+                        .flatten()
+                });
+                folder_chat_channel::ActiveModel {
+                    id: NotSet,
+                    folder_id: Set(folder_id),
+                    channel_id: Set(binding.channel_id),
+                    chat_id: Set(binding.chat_id.clone()),
+                    topic_message_id: Set(topic_message_id),
+                    created_at: Set(now),
+                }
             })
             .collect::<Vec<_>>();
         folder_chat_channel::Entity::insert_many(models)
@@ -229,6 +247,50 @@ pub async fn set_bindings(
 
     txn.commit().await?;
     list_bindings(conn, folder_id).await
+}
+
+/// Feishu message id that later cards in this folder reply to, inside one topic.
+pub async fn folder_topic_message(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    channel_id: i32,
+) -> Result<Option<String>, DbError> {
+    let row = folder_chat_channel::Entity::find()
+        .filter(folder_chat_channel::Column::FolderId.eq(folder_id))
+        .filter(folder_chat_channel::Column::ChannelId.eq(channel_id))
+        .one(conn)
+        .await?;
+    Ok(row.and_then(|row| normalize_chat_id(row.topic_message_id)))
+}
+
+/// Point the folder's channel binding at one topic anchor. Does nothing when
+/// the folder has no row for this channel. The first topic stays. A later
+/// topic does not replace it, so every conversation in the folder keeps
+/// replying in that same topic.
+pub async fn set_folder_topic_message(
+    conn: &DatabaseConnection,
+    folder_id: i32,
+    channel_id: i32,
+    message_id: &str,
+) -> Result<bool, DbError> {
+    let Some(message_id) = normalize_chat_id(Some(message_id.to_string())) else {
+        return Ok(false);
+    };
+    let Some(row) = folder_chat_channel::Entity::find()
+        .filter(folder_chat_channel::Column::FolderId.eq(folder_id))
+        .filter(folder_chat_channel::Column::ChannelId.eq(channel_id))
+        .one(conn)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if normalize_chat_id(row.topic_message_id.clone()).is_some() {
+        return Ok(true);
+    }
+    let mut active = row.into_active_model();
+    active.topic_message_id = Set(Some(message_id));
+    active.update(conn).await?;
+    Ok(true)
 }
 
 pub async fn set_channel_ids(
@@ -495,6 +557,103 @@ mod tests {
                 .await
                 .unwrap(),
             Some(folder_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn topic_anchor_survives_resaving_the_same_session() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let folder_id = crate::db::test_helpers::seed_folder(&db, "/tmp/fcc-topic").await;
+        let channel = seed_channel(&db, "lark").await;
+        let other = seed_channel(&db, "tg").await;
+        set_bindings(
+            &db.conn,
+            folder_id,
+            &[FolderChannelBinding {
+                channel_id: channel,
+                chat_id: Some("oc_group".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        assert!(
+            set_folder_topic_message(&db.conn, folder_id, channel, " om_anchor ")
+                .await
+                .unwrap()
+        );
+        assert!(
+            set_folder_topic_message(&db.conn, folder_id, channel, "om_later")
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            folder_topic_message(&db.conn, folder_id, channel)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("om_anchor")
+        );
+
+        set_bindings(
+            &db.conn,
+            folder_id,
+            &[FolderChannelBinding {
+                channel_id: channel,
+                chat_id: Some("oc_group".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            folder_topic_message(&db.conn, folder_id, channel)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("om_anchor")
+        );
+
+        set_bindings(
+            &db.conn,
+            folder_id,
+            &[FolderChannelBinding {
+                channel_id: channel,
+                chat_id: Some("oc_other".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            folder_topic_message(&db.conn, folder_id, channel)
+                .await
+                .unwrap(),
+            None
+        );
+
+        assert!(
+            set_folder_topic_message(&db.conn, folder_id, channel, "om_again")
+                .await
+                .unwrap()
+        );
+        set_bindings(
+            &db.conn,
+            folder_id,
+            &[FolderChannelBinding {
+                channel_id: other,
+                chat_id: Some("oc_other".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            folder_topic_message(&db.conn, folder_id, other)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(
+            !set_folder_topic_message(&db.conn, folder_id, channel, "om_missing")
+                .await
+                .unwrap()
         );
     }
 

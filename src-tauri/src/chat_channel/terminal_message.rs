@@ -72,7 +72,8 @@ pub async fn publish_run_terminal_message(
     }
 
     let mut sent = 0usize;
-    for target in targets {
+    for mut target in targets {
+        super::lark_delivery::apply_folder_topic(db, Some(conversation_id), &mut target).await;
         match manager.send_to_target(&target, message).await {
             Ok(id) => {
                 remember_sent_message(db, &target, &id.0, conversation_id).await;

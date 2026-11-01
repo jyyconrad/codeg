@@ -211,6 +211,22 @@ impl ChatChannelManager {
         backend.send_rich_message_to(message, target).await
     }
 
+    pub async fn acknowledge(
+        &self,
+        channel_id: i32,
+        message_id: &str,
+    ) -> Result<(), ChatChannelError> {
+        let backend = {
+            let channels = self.inner.channels.lock().await;
+            channels
+                .get(&channel_id)
+                .ok_or(ChatChannelError::NotFound(channel_id))?
+                .backend
+                .clone()
+        };
+        backend.acknowledge_message(message_id).await
+    }
+
     pub async fn send_interactive_to_target(
         &self,
         target: &ChannelMessageTarget,

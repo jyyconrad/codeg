@@ -7,8 +7,10 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use super::command_handlers;
+use super::error::ChatChannelError;
 use super::folder_inbound::{remember_sent_message, route_folder_inbound};
 use super::i18n::{self, Lang};
+use super::lark_delivery;
 use super::manager::ChatChannelManager;
 use super::session_bridge::SessionBridge;
 use super::session_commands;
@@ -179,6 +181,46 @@ async fn send_dispatch_message(
         message.body_len()
     );
 
+    let mut target = target;
+    lark_delivery::apply_folder_topic(db, conversation_id, &mut target).await;
+
+    if let Some(ack_id) = status_ack_message_id(&message, &target) {
+        match manager.acknowledge(target.channel_id, &ack_id).await {
+            Ok(()) => {
+                let _ = chat_channel_message_log_service::create_log(
+                    db,
+                    channel_id,
+                    "outbound",
+                    "command_response",
+                    &message.to_plain_text(),
+                    "sent",
+                    None,
+                )
+                .await;
+                return;
+            }
+            Err(ChatChannelError::Unsupported(_)) => {}
+            Err(e) => {
+                tracing::error!(
+                    "[ChatChannel] failed to acknowledge {:?} on channel {}: {e}",
+                    command_text,
+                    channel_id
+                );
+                let _ = chat_channel_message_log_service::create_log(
+                    db,
+                    channel_id,
+                    "outbound",
+                    "command_response",
+                    &message.to_plain_text(),
+                    "failed",
+                    Some(e.to_string()),
+                )
+                .await;
+                return;
+            }
+        }
+    }
+
     let send_result = match &message {
         DispatchMessage::Rich(message) => manager.send_to_target(&target, message).await,
         DispatchMessage::Interactive(message) => {
@@ -290,7 +332,7 @@ async fn dispatch_command(
 
             return DispatchResponse::from_command_result(
                 session_commands::handle_chat_inbound(
-                    db, cmd, manager, conn_mgr, emitter, bridge, lang, prefix, data_dir,
+                    db, cmd, manager, conn_mgr, emitter, bridge, lang, prefix, data_dir, None,
                 )
                 .await,
             );
@@ -474,6 +516,22 @@ impl DispatchResponse {
             conversation_id: None,
         }
     }
+}
+
+fn status_ack_message_id(
+    message: &DispatchMessage,
+    target: &ChannelMessageTarget,
+) -> Option<String> {
+    let DispatchMessage::Rich(message) = message else {
+        return None;
+    };
+    if message.title.is_some()
+        || !message.fields.is_empty()
+        || !i18n::is_message_sent_text(&message.body)
+    {
+        return None;
+    }
+    lark_delivery::ack_message_id(&target.provider_payload)
 }
 
 enum DispatchMessage {

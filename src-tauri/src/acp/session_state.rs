@@ -5551,6 +5551,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert!(s.active_tool_calls.is_empty());
         assert_eq!(s.turn_progress(), None);
@@ -5560,6 +5561,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "codex".into(),
+            run_id: None,
         });
         assert!(s.delegation_progress().is_some());
     }
@@ -7309,6 +7311,7 @@ mod tests {
             session_id: "ext".into(),
             stop_reason: "end_turn".into(),
             agent_type: "claude_code".into(),
+            run_id: None,
         });
         let ids: Vec<_> = s
             .tool_approvals

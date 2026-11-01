@@ -76,6 +76,15 @@ pub trait ChatChannelBackend: Send + Sync + 'static {
         self.send_interactive_message(message).await
     }
 
+    /// React to an inbound message. Lark uses this for status acks so a
+    /// topic-mode group does not open a new topic. Backends without reactions
+    /// return [`ChatChannelError::Unsupported`] and the caller may send text.
+    async fn acknowledge_message(&self, _message_id: &str) -> Result<(), ChatChannelError> {
+        Err(ChatChannelError::Unsupported(
+            "message acknowledgement is not supported by this channel".to_string(),
+        ))
+    }
+
     /// [Phase 2] Update an already-sent message (e.g., permission status change).
     async fn update_message(
         &self,

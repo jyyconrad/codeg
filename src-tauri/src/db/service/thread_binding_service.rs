@@ -135,6 +135,15 @@ pub async fn upsert_for_target(
         active.created_by_sender_id = Set(created_by_sender_id.to_string());
         active.display_title = Set(display_title);
         active.updated_at = Set(now);
+        // A later inbound in the same chat replaces the reply anchor. `None`
+        // leaves the stored payload alone so a rebind that has no payload
+        // does not wipe a Feishu delivery plan.
+        if target.provider_payload.is_some() {
+            active.provider_payload_json = Set(target
+                .provider_payload
+                .as_ref()
+                .map(serde_json::Value::to_string));
+        }
         return Ok(active.update(conn).await?);
     }
 

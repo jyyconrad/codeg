@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_tungstenite::tungstenite;
 
 use crate::chat_channel::error::ChatChannelError;
+use crate::chat_channel::lark_delivery::{self, LarkCompletion};
 use crate::chat_channel::traits::ChatChannelBackend;
 use crate::chat_channel::types::*;
 
@@ -87,6 +88,23 @@ struct SendMessageRequest {
     receive_id: String,
     msg_type: String,
     content: String,
+}
+
+#[derive(Serialize)]
+struct ReplyMessageRequest {
+    msg_type: String,
+    content: String,
+    reply_in_thread: bool,
+}
+
+#[derive(Serialize)]
+struct ReactionRequest {
+    reaction_type: ReactionType,
+}
+
+#[derive(Serialize)]
+struct ReactionType {
+    emoji_type: String,
 }
 
 #[derive(Deserialize)]
@@ -213,6 +231,96 @@ impl LarkBackend {
 
         let message_id = result.data.and_then(|d| d.message_id).unwrap_or_default();
         Ok(SentMessageId(message_id))
+    }
+
+    async fn reply_lark_message(
+        &self,
+        message_id: &str,
+        msg_type: &str,
+        content: &str,
+        reply_in_thread: bool,
+    ) -> Result<SentMessageId, ChatChannelError> {
+        let token = self.get_tenant_access_token().await?;
+        let url = lark_message_url(message_id, "reply")?;
+        let resp = self
+            .client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&ReplyMessageRequest {
+                msg_type: msg_type.to_string(),
+                content: content.to_string(),
+                reply_in_thread,
+            })
+            .send()
+            .await
+            .map_err(|e| ChatChannelError::SendFailed(e.to_string()))?;
+        let result: SendMessageResponse = resp
+            .json()
+            .await
+            .map_err(|e| ChatChannelError::SendFailed(e.to_string()))?;
+        if result.code != 0 {
+            return Err(ChatChannelError::SendFailed(format!(
+                "code={}, msg={}",
+                result.code, result.msg
+            )));
+        }
+        let message_id = result.data.and_then(|d| d.message_id).unwrap_or_default();
+        Ok(SentMessageId(message_id))
+    }
+
+    async fn send_reply(
+        &self,
+        message_id: &str,
+        message: &RichMessage,
+        reply_in_thread: bool,
+    ) -> Result<SentMessageId, ChatChannelError> {
+        let post = build_lark_post(message);
+        let content = serde_json::to_string(&post)
+            .map_err(|e| ChatChannelError::SendFailed(e.to_string()))?;
+        match self
+            .reply_lark_message(message_id, "post", &content, reply_in_thread)
+            .await
+        {
+            Ok(id) => Ok(id),
+            Err(e) => {
+                tracing::warn!("[Lark] reply failed: {e}, retrying as plain text reply");
+                let text = serde_json::json!({ "text": message.to_plain_text() }).to_string();
+                self.reply_lark_message(message_id, "text", &text, reply_in_thread)
+                    .await
+            }
+        }
+    }
+
+    async fn add_message_reaction(
+        &self,
+        message_id: &str,
+        emoji_type: &str,
+    ) -> Result<(), ChatChannelError> {
+        let token = self.get_tenant_access_token().await?;
+        let url = lark_message_url(message_id, "reactions")?;
+        let resp = self
+            .client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&ReactionRequest {
+                reaction_type: ReactionType {
+                    emoji_type: emoji_type.to_string(),
+                },
+            })
+            .send()
+            .await
+            .map_err(|e| ChatChannelError::SendFailed(e.to_string()))?;
+        let result: SendMessageResponse = resp
+            .json()
+            .await
+            .map_err(|e| ChatChannelError::SendFailed(e.to_string()))?;
+        if result.code == 0 || reaction_already_present(result.code, &result.msg) {
+            return Ok(());
+        }
+        Err(ChatChannelError::SendFailed(format!(
+            "code={}, msg={}",
+            result.code, result.msg
+        )))
     }
 
     async fn send_rich_message_with_receive_id(
@@ -676,10 +784,11 @@ fn lark_inbound_command(event: &serde_json::Value, channel_id: i32) -> Option<In
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let target = match chat_id {
+    let mut target = match chat_id {
         Some(chat_id) => ChannelMessageTarget::with_chat_id(channel_id, chat_id),
         None => ChannelMessageTarget::channel(channel_id),
     };
+    lark_delivery::attach_delivery(&mut target, event);
 
     Some(IncomingCommand {
         channel_id,
@@ -1181,7 +1290,30 @@ impl ChatChannelBackend for LarkBackend {
         message: &RichMessage,
         target: &ChannelMessageTarget,
     ) -> Result<SentMessageId, ChatChannelError> {
+        match lark_delivery::completion_plan(&target.provider_payload) {
+            Some(LarkCompletion::Topic { message_id }) => {
+                return self.send_reply(&message_id, message, true).await;
+            }
+            Some(LarkCompletion::Quote { message_id }) => {
+                return self.send_reply(&message_id, message, false).await;
+            }
+            Some(LarkCompletion::Chat) | None => {}
+        }
         self.send_rich_message_with_receive_id(message, target.chat_id.as_deref())
+            .await
+    }
+
+    async fn send_interactive_message_to(
+        &self,
+        message: &InteractiveMessage,
+        target: &ChannelMessageTarget,
+    ) -> Result<SentMessageId, ChatChannelError> {
+        self.send_rich_message_to(&message.to_rich_fallback(), target)
+            .await
+    }
+
+    async fn acknowledge_message(&self, message_id: &str) -> Result<(), ChatChannelError> {
+        self.add_message_reaction(message_id, lark_delivery::LARK_ACK_EMOJI)
             .await
     }
 
@@ -1189,6 +1321,35 @@ impl ChatChannelBackend for LarkBackend {
         self.get_tenant_access_token().await?;
         Ok(())
     }
+}
+
+fn lark_message_url(message_id: &str, action: &str) -> Result<String, ChatChannelError> {
+    if message_id.is_empty()
+        || !message_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return Err(ChatChannelError::SendFailed(format!(
+            "invalid Feishu message id: {message_id}"
+        )));
+    }
+    Ok(format!(
+        "{FEISHU_BASE_URL}/open-apis/im/v1/messages/{message_id}/{action}"
+    ))
+}
+
+fn reaction_already_present(code: i32, msg: &str) -> bool {
+    // 231015 is Feishu's "this reaction request is already in progress".
+    // 230002 is "the bot is not in the group" and must stay a failure.
+    if code == 0 || code == 231015 {
+        return true;
+    }
+    let msg = msg.to_ascii_lowercase();
+    if msg.contains("not exist") || msg.contains("does not exist") || msg.contains("doesn't exist")
+    {
+        return false;
+    }
+    msg.contains("already") || msg.contains("exist") || msg.contains("duplicate")
 }
 
 fn lark_receive_id<'a>(default: &'a str, override_id: Option<&'a str>) -> &'a str {
@@ -1244,6 +1405,22 @@ mod tests {
         assert!(text.contains("- a"), "got {text}");
         assert!(post.get("header").is_none(), "must not use a card header");
         assert!(post.get("elements").is_none(), "must not use a card body");
+    }
+
+    #[test]
+    fn duplicate_reaction_is_an_ack_and_a_real_error_is_not() {
+        assert!(reaction_already_present(0, "ok"));
+        assert!(reaction_already_present(
+            231015,
+            "repeated request is processing"
+        ));
+        assert!(reaction_already_present(400, "reaction already exist"));
+        assert!(!reaction_already_present(
+            230002,
+            "The bot can not be outside the group."
+        ));
+        assert!(!reaction_already_present(231003, "message not exist"));
+        assert!(!reaction_already_present(231002, "no permission"));
     }
 
     /// `<at>` is Feishu-extended markdown that would @everyone / inject a

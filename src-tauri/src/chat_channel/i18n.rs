@@ -1498,6 +1498,22 @@ pub fn message_sent(lang: Lang) -> &'static str {
     }
 }
 
+pub fn is_message_sent_text(text: &str) -> bool {
+    const LANGS: [Lang; 10] = [
+        Lang::En,
+        Lang::ZhCn,
+        Lang::ZhTw,
+        Lang::Ja,
+        Lang::Ko,
+        Lang::Es,
+        Lang::De,
+        Lang::Fr,
+        Lang::Pt,
+        Lang::Ar,
+    ];
+    LANGS.into_iter().any(|lang| text == message_sent(lang))
+}
+
 /// Shown when a prompt is rejected because the agent is still processing the
 /// previous turn. Transient — the session stays alive; the user retries.
 pub fn agent_busy_retry(lang: Lang) -> &'static str {

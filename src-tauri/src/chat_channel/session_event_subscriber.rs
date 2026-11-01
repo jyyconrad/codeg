@@ -108,6 +108,17 @@ async fn get_lang(db: &DatabaseConnection) -> Lang {
         .unwrap_or_default()
 }
 
+async fn send_session_card(
+    db: &DatabaseConnection,
+    manager: &ChatChannelManager,
+    conversation_id: i32,
+    mut target: ChannelMessageTarget,
+    message: &RichMessage,
+) {
+    super::lark_delivery::apply_folder_topic(db, Some(conversation_id), &mut target).await;
+    let _ = manager.send_to_target(&target, message).await;
+}
+
 async fn get_prefix(db: &DatabaseConnection) -> String {
     app_metadata_service::get_value(db, COMMAND_PREFIX_KEY)
         .await
@@ -254,19 +265,21 @@ async fn handle_acp_envelope(
                         clear_session_route(db, channel_id, &sender_id, &target).await;
 
                         let lang = get_lang(db).await;
-                        let _ = manager
-                            .send_to_target(
-                                &target,
-                                &RichMessage::error(match lang {
-                                    Lang::ZhCn | Lang::ZhTw => {
-                                        "无法启动任务：该智能体会话已归属于另一个对话。".to_string()
-                                    }
-                                    _ => "Could not start the task: this agent session \
-                                          already belongs to another conversation."
-                                        .to_string(),
-                                }),
-                            )
-                            .await;
+                        send_session_card(
+                            db,
+                            manager,
+                            conv_id,
+                            target,
+                            &RichMessage::error(match lang {
+                                Lang::ZhCn | Lang::ZhTw => {
+                                    "无法启动任务：该智能体会话已归属于另一个对话。".to_string()
+                                }
+                                _ => "Could not start the task: this agent session \
+                                      already belongs to another conversation."
+                                    .to_string(),
+                            }),
+                        )
+                        .await;
                         return;
                     }
                     Err(e) => tracing::warn!(
@@ -296,16 +309,18 @@ async fn handle_acp_envelope(
                                  progress, will retry on TurnComplete"
                             );
                             let target = session.target.clone();
+                            let conversation_id = session.conversation_id;
                             let lang = get_lang(db).await;
                             let msg = RichMessage::info(
                                 super::i18n::task_deferred_busy(lang).to_string(),
                             );
-                            let _ = manager.send_to_target(&target, &msg).await;
+                            send_session_card(db, manager, conversation_id, target, &msg).await;
                         } else {
                             tracing::error!("[SessionEventSub] failed to send pending prompt: {e}");
                             let target = session.target.clone();
+                            let conversation_id = session.conversation_id;
                             let msg = RichMessage::error(format!("Failed to send task: {e}"));
-                            let _ = manager.send_to_target(&target, &msg).await;
+                            send_session_card(db, manager, conversation_id, target, &msg).await;
                         }
                     }
                 }
@@ -431,6 +446,7 @@ async fn handle_acp_envelope(
                 let channel_id = session.channel_id;
                 let sender_id = session.sender_id.clone();
                 let target = session.target.clone();
+                let conversation_id = session.conversation_id;
 
                 let auto_approve =
                     sender_context_service::get_or_create(db, channel_id, &sender_id)
@@ -518,7 +534,7 @@ async fn handle_acp_envelope(
                     fields: Vec::new(),
                     level: MessageLevel::Warning,
                 };
-                let _ = manager.send_to_target(&target, &msg).await;
+                send_session_card(db, manager, conversation_id, target, &msg).await;
             }
         }
 
@@ -569,7 +585,7 @@ async fn handle_acp_envelope(
                                 "[SessionEventSub] failed to send deferred kickoff: {e}"
                             );
                             let msg = RichMessage::error(format!("Failed to send task: {e}"));
-                            let _ = manager.send_to_target(&target, &msg).await;
+                            send_session_card(db, manager, conv_id, target, &msg).await;
                         }
                     }
                 }
@@ -612,12 +628,14 @@ async fn handle_acp_envelope(
                     fields: Vec::new(),
                     level: MessageLevel::Error,
                 };
-                let target = {
+                let routed = {
                     let guard = bridge.lock().await;
-                    guard.get(connection_id).map(|s| s.target.clone())
+                    guard
+                        .get(connection_id)
+                        .map(|s| (s.target.clone(), s.conversation_id))
                 };
-                if let Some(target) = target {
-                    let _ = manager.send_to_target(&target, &msg).await;
+                if let Some((target, conversation_id)) = routed {
+                    send_session_card(db, manager, conversation_id, target, &msg).await;
                 }
                 return;
             }

@@ -15,6 +15,9 @@ pub struct Model {
     /// Optional destination chat/session id for this folder on this channel.
     /// `None` (or blank) uses the channel's configured default.
     pub chat_id: Option<String>,
+    /// Feishu message that anchors this folder's single topic. Replies use
+    /// `reply_in_thread` against it. Not part of the binding dialog.
+    pub topic_message_id: Option<String>,
     pub created_at: DateTimeUtc,
 }
 

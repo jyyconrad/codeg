@@ -7,8 +7,10 @@ use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use super::error::ChatChannelError;
 use super::folder_inbound::remember_sent_message;
 use super::i18n::{self, Lang};
+use super::lark_delivery;
 use super::manager::ChatChannelManager;
 use super::message_formatter;
 use super::session_bridge::SessionBridge;
@@ -376,8 +378,10 @@ async fn process_envelope(
     let conversation_id = envelope_conversation_id(&envelope.connection_id, conn_mgr.as_ref())
         .await
         .or_else(|| payload_conversation_id(&envelope.payload));
-    let deliveries =
+    let mut deliveries =
         deliveries_for_conversation(db_conn, conversation_id, &config.enabled_channels).await;
+    attach_stored_lark_delivery(db_conn, conversation_id, &mut deliveries).await;
+    apply_folder_topics(db_conn, conversation_id, &mut deliveries).await;
 
     for (ch, delivery_target) in &deliveries {
         // Per-channel event filter
@@ -397,6 +401,43 @@ async fn process_envelope(
             if let Some(last) = last_push.get(&key) {
                 if now.duration_since(*last) < Duration::from_secs(DEBOUNCE_SECS) {
                     continue;
+                }
+            }
+        }
+
+        if event_type == "user_prompt_sent" {
+            if let Some(ack_id) = delivery_target
+                .as_ref()
+                .and_then(|target| lark_delivery::ack_message_id(&target.provider_payload))
+            {
+                match manager.acknowledge(ch.id, &ack_id).await {
+                    Ok(()) => {
+                        let _ = chat_channel_message_log_service::create_log(
+                            db_conn,
+                            ch.id,
+                            "outbound",
+                            "event_push",
+                            &msg.to_plain_text(),
+                            "sent",
+                            None,
+                        )
+                        .await;
+                        continue;
+                    }
+                    Err(ChatChannelError::Unsupported(_)) => {}
+                    Err(e) => {
+                        let _ = chat_channel_message_log_service::create_log(
+                            db_conn,
+                            ch.id,
+                            "outbound",
+                            "event_push",
+                            &msg.to_plain_text(),
+                            "failed",
+                            Some(e.to_string()),
+                        )
+                        .await;
+                        continue;
+                    }
                 }
             }
         }
@@ -532,6 +573,55 @@ fn deliveries_for_folder<'a>(
             Some((channel, target))
         })
         .collect()
+}
+
+async fn apply_folder_topics(
+    db: &DatabaseConnection,
+    conversation_id: Option<i32>,
+    deliveries: &mut [(&CachedChannel, Option<ChannelMessageTarget>)],
+) {
+    for (channel, slot) in deliveries.iter_mut() {
+        let mut target = slot
+            .clone()
+            .unwrap_or_else(|| ChannelMessageTarget::channel(channel.id));
+        if lark_delivery::apply_folder_topic(db, conversation_id, &mut target).await {
+            *slot = Some(target);
+        }
+    }
+}
+
+async fn attach_stored_lark_delivery(
+    db: &DatabaseConnection,
+    conversation_id: Option<i32>,
+    deliveries: &mut [(&CachedChannel, Option<ChannelMessageTarget>)],
+) {
+    let Some(conversation_id) = conversation_id else {
+        return;
+    };
+    let stored = match thread_binding_service::chat_conversation_target(db, conversation_id).await {
+        Ok(Some(target)) => target.provider_payload,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(
+                conversation_id,
+                error = %e,
+                "[ChatChannel] failed to load Feishu reply target"
+            );
+            return;
+        }
+    };
+    if lark_delivery::ack_message_id(&stored).is_none()
+        && lark_delivery::completion_plan(&stored).is_none()
+    {
+        return;
+    }
+    for (channel, target) in deliveries.iter_mut() {
+        let mut next = target
+            .clone()
+            .unwrap_or_else(|| ChannelMessageTarget::channel(channel.id));
+        lark_delivery::merge_stored_delivery(&mut next, &stored);
+        *target = Some(next);
+    }
 }
 
 fn nonempty_trimmed(value: Option<&str>) -> Option<&str> {
@@ -786,6 +876,7 @@ mod permission_push_tests {
         chat_ids: Arc<Mutex<Vec<Option<String>>>>,
         targets: Arc<Mutex<Vec<ChannelMessageTarget>>>,
         sent_seq: Arc<AtomicU64>,
+        acks: Arc<Mutex<Vec<String>>>,
     }
     struct RecordingBackend {
         rec: Recorder,
@@ -834,6 +925,10 @@ mod permission_push_tests {
             self.rec.chat_ids.lock().await.push(target.chat_id.clone());
             self.rec.targets.lock().await.push(target.clone());
             Ok(self.next_message_id())
+        }
+        async fn acknowledge_message(&self, message_id: &str) -> Result<(), ChatChannelError> {
+            self.rec.acks.lock().await.push(message_id.to_string());
+            Ok(())
         }
         async fn test_connection(&self) -> Result<(), ChatChannelError> {
             Ok(())
@@ -1432,6 +1527,337 @@ mod permission_push_tests {
                 "sent message {message_id} must remain replyable"
             );
         }
+    }
+
+    async fn seed_lark_delivery(
+        db: &crate::db::AppDatabase,
+        channel_id: i32,
+        conversation_id: i32,
+        mode: &str,
+        message_id: &str,
+    ) {
+        use crate::db::service::thread_binding_service;
+
+        let target = ChannelMessageTarget {
+            channel_id,
+            chat_id: Some("oc_folder".into()),
+            thread_key: None,
+            thread_kind: None,
+            provider_payload: Some(serde_json::json!({
+                "lark_delivery": {
+                    "ack_message_id": message_id,
+                    "mode": mode,
+                    "reply_message_id": message_id,
+                }
+            })),
+        };
+        thread_binding_service::set_chat_conversation_target(
+            &db.conn,
+            &target,
+            conversation_id,
+            "ou_user",
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Status cards for a topic mention must react to the inbound message.
+    /// Posting them as new messages opens another Feishu topic.
+    #[tokio::test]
+    async fn topic_user_prompt_sent_is_an_ack_not_a_new_message() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::db::service::{
+            chat_channel_service, conversation_service, folder_chat_channel_service,
+        };
+        use crate::web::event_bridge::EventEmitter;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-topic-ack").await;
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "lark".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_default" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            folder_id,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_folder".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("最新的版本是多少".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        seed_lark_delivery(&db, channel.id, conv.id, "topic", "om_topic").await;
+
+        let (chat, rec) = manager_with_recorder(channel.id).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live("topic-ack", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        conn_mgr
+            .get_state("topic-ack")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(conv.id);
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let mut config = config_all_on(channel.id);
+        config.global_filter = Some(vec!["user_prompt_sent".into()]);
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "topic-ack".into(),
+                payload: AcpEvent::UserPromptSent {
+                    text_preview: "最新的版本是多少".into(),
+                },
+            },
+            &Arc::new(Mutex::new(SessionBridge::new())),
+            &chat,
+            &db.conn,
+            &config,
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+
+        assert!(
+            rec.msgs.lock().await.is_empty(),
+            "开始任务 must not be posted as a new topic"
+        );
+        assert_eq!(rec.acks.lock().await.as_slice(), ["om_topic"]);
+    }
+
+    /// The finished task in a topic is addressed to that topic message, and a
+    /// quoted chat message is addressed to the quote, while the folder chat
+    /// stays the conversation.
+    #[tokio::test]
+    async fn topic_turn_complete_keeps_the_topic_reply_target() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::chat_channel::lark_delivery::{self, LarkCompletion};
+        use crate::db::service::{
+            chat_channel_service, conversation_service, folder_chat_channel_service,
+        };
+        use crate::web::event_bridge::EventEmitter;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-topic-done").await;
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "lark".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_default" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            folder_id,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_folder".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("最新的版本是多少".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        seed_lark_delivery(&db, channel.id, conv.id, "topic", "om_topic").await;
+
+        let (chat, rec) = manager_with_recorder(channel.id).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live("topic-done", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        conn_mgr
+            .get_state("topic-done")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(conv.id);
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "topic-done".into(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "s".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "Grok".into(),
+                    run_id: None,
+                },
+            },
+            &Arc::new(Mutex::new(SessionBridge::new())),
+            &chat,
+            &db.conn,
+            &config_all_on(channel.id),
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+
+        let targets = rec.targets.lock().await.clone();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].chat_id.as_deref(), Some("oc_folder"));
+        assert_eq!(
+            lark_delivery::completion_plan(&targets[0].provider_payload),
+            Some(LarkCompletion::Topic {
+                message_id: "om_topic".into()
+            })
+        );
+        assert!(rec.acks.lock().await.is_empty());
+    }
+
+    /// Every conversation in the folder replies inside the folder topic, while
+    /// the typing reaction stays on the message that was just received.
+    #[tokio::test]
+    async fn folder_topic_is_shared_by_later_conversations() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::chat_channel::lark_delivery::{self, LarkCompletion};
+        use crate::db::service::{
+            chat_channel_service, conversation_service, folder_chat_channel_service,
+        };
+        use crate::web::event_bridge::EventEmitter;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let folder_id = test_helpers::seed_folder(&db, "/tmp/event-folder-topic").await;
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "lark".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_default" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            folder_id,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_folder".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_folder_topic_message(
+            &db.conn,
+            folder_id,
+            channel.id,
+            "om_anchor",
+        )
+        .await
+        .unwrap();
+        let conv = conversation_service::create(
+            &db.conn,
+            folder_id,
+            AgentType::Grok,
+            Some("另一段对话".into()),
+            None,
+        )
+        .await
+        .unwrap();
+        seed_lark_delivery(&db, channel.id, conv.id, "topic", "om_later").await;
+
+        let (chat, rec) = manager_with_recorder(channel.id).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live("folder-topic", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        conn_mgr
+            .get_state("folder-topic")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(conv.id);
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let mut ack_config = config_all_on(channel.id);
+        ack_config.global_filter = Some(vec!["user_prompt_sent".into()]);
+        process_envelope(
+            &EventEnvelope {
+                seq: 1,
+                connection_id: "folder-topic".into(),
+                payload: AcpEvent::UserPromptSent {
+                    text_preview: "继续".into(),
+                },
+            },
+            &Arc::new(Mutex::new(SessionBridge::new())),
+            &chat,
+            &db.conn,
+            &ack_config,
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+        assert!(rec.msgs.lock().await.is_empty());
+        assert_eq!(rec.acks.lock().await.as_slice(), ["om_later"]);
+
+        process_envelope(
+            &EventEnvelope {
+                seq: 2,
+                connection_id: "folder-topic".into(),
+                payload: AcpEvent::TurnComplete {
+                    session_id: "s".into(),
+                    stop_reason: "end_turn".into(),
+                    agent_type: "Grok".into(),
+                    run_id: None,
+                },
+            },
+            &Arc::new(Mutex::new(SessionBridge::new())),
+            &chat,
+            &db.conn,
+            &config_all_on(channel.id),
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+
+        let targets = rec.targets.lock().await.clone();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].chat_id.as_deref(), Some("oc_folder"));
+        assert_eq!(
+            lark_delivery::ack_message_id(&targets[0].provider_payload).as_deref(),
+            Some("om_later")
+        );
+        assert_eq!(
+            lark_delivery::completion_plan(&targets[0].provider_payload),
+            Some(LarkCompletion::Topic {
+                message_id: "om_anchor".into()
+            })
+        );
     }
 
     #[tokio::test]

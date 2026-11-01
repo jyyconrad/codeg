@@ -6,6 +6,7 @@ pub mod event_filter;
 pub mod event_subscriber;
 pub mod folder_inbound;
 pub mod i18n;
+pub mod lark_delivery;
 pub mod manager;
 pub mod message_formatter;
 pub mod scheduler;
