@@ -8,13 +8,16 @@
     "means nothing type-checks the tests: vitest strips types without checking",
     "them and the ESLint setup is not type-aware. Editors keep using",
     "tsconfig.json, tests and all.",
-    "`exclude` replaces tsconfig.json's list instead of adding to it, so the",
-    "first three entries must stay in step with that file."
+    "`exclude` replaces tsconfig.json's list instead of adding to it, so every",
+    "entry there must be repeated here. Dropping `work` or `.grok` makes",
+    "`next build` type-check research notes and fail the DMG."
   ],
   "extends": "./tsconfig.json",
   "exclude": [
     "node_modules",
     "src-tauri",
+    "work",
+    ".grok",
     "browser-agent",
     "**/*.test.ts",
     "**/*.test.tsx"
