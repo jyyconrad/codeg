@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use super::types::ChannelMessageTarget;
 use crate::db::service::{
-    conversation_service, folder_chat_channel_service, thread_binding_service,
+    chat_channel_service, conversation_service, folder_chat_channel_service, thread_binding_service,
 };
 
 pub const LARK_DELIVERY_KEY: &str = "lark_delivery";
@@ -145,11 +145,78 @@ pub async fn apply_folder_topic(
     conversation_id: Option<i32>,
     target: &mut ChannelMessageTarget,
 ) -> bool {
-    let Some(anchor) = folder_topic_anchor(db, conversation_id, target).await else {
+    if let Some(anchor) = folder_topic_anchor(db, conversation_id, target).await {
+        force_topic_reply(target, &anchor);
+        return topic_reply_is(target, &anchor);
+    }
+    // This conversation's folder has no topic. A card aimed at the channel
+    // default (the original bot DM, or a bare channel target) goes to the
+    // channel's single bound topic when there is one.
+    redirect_original_channel_to_sole_topic(db, target).await
+}
+
+fn topic_reply_is(target: &ChannelMessageTarget, anchor: &str) -> bool {
+    completion_plan(&target.provider_payload)
+        == Some(LarkCompletion::Topic {
+            message_id: anchor.to_string(),
+        })
+}
+
+async fn redirect_original_channel_to_sole_topic(
+    db: &DatabaseConnection,
+    target: &mut ChannelMessageTarget,
+) -> bool {
+    if !is_original_channel(db, target).await {
+        return false;
+    }
+    let anchors = match folder_chat_channel_service::list_topic_anchors(db, target.channel_id).await
+    {
+        Ok(anchors) => anchors,
+        Err(error) => {
+            tracing::warn!(
+                channel_id = target.channel_id,
+                error = %error,
+                "[ChatChannel] failed to load channel topic anchors"
+            );
+            return false;
+        }
+    };
+    let [only] = anchors.as_slice() else {
         return false;
     };
+    if let Some(chat_id) = only.chat_id.clone() {
+        target.chat_id = Some(chat_id);
+    }
+    let anchor = only.topic_message_id.clone();
     force_topic_reply(target, &anchor);
-    completion_plan(&target.provider_payload) == Some(LarkCompletion::Topic { message_id: anchor })
+    topic_reply_is(target, &anchor)
+}
+
+/// Bare targets and the channel's configured chat are the original channel.
+/// A different chat id is some other session and stays where it was sent.
+async fn is_original_channel(db: &DatabaseConnection, target: &ChannelMessageTarget) -> bool {
+    let Some(chat_id) = target
+        .chat_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|chat_id| !chat_id.is_empty())
+    else {
+        return true;
+    };
+    let Ok(Some(channel)) = chat_channel_service::get_by_id(db, target.channel_id).await else {
+        return false;
+    };
+    configured_chat_id(&channel.config_json).as_deref() == Some(chat_id)
+}
+
+fn configured_chat_id(config_json: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(config_json).ok()?;
+    value
+        .get("chat_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|chat_id| !chat_id.is_empty())
+        .map(str::to_string)
 }
 
 async fn folder_topic_anchor(
@@ -661,5 +728,85 @@ mod tests {
                 message_id: "om_anchor".into()
             })
         );
+    }
+
+    /// The channel default chat is the original bot DM. Once this channel has
+    /// one topic anchor, a card that would have used that DM replies inside
+    /// the topic instead, including a card from a folder with no binding of
+    /// its own. A different chat is left alone.
+    #[tokio::test]
+    async fn original_channel_replies_in_the_only_bound_topic() {
+        use crate::db::service::{
+            chat_channel_service, conversation_service, folder_chat_channel_service,
+        };
+        use crate::db::test_helpers::{self, fresh_in_memory_db};
+        use crate::models::agent::AgentType;
+
+        let db = fresh_in_memory_db().await;
+        let bound_folder = test_helpers::seed_folder(&db, "/tmp/lark-bound-topic").await;
+        let other_folder = test_helpers::seed_folder(&db, "/tmp/lark-other-folder").await;
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "lark".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_default" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            bound_folder,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_group".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_folder_topic_message(
+            &db.conn,
+            bound_folder,
+            channel.id,
+            "om_anchor",
+        )
+        .await
+        .unwrap();
+        let other = conversation_service::create(
+            &db.conn,
+            other_folder,
+            AgentType::Grok,
+            Some("unbound".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mut bare = ChannelMessageTarget::channel(channel.id);
+        assert!(apply_folder_topic(&db.conn, Some(other.id), &mut bare).await);
+        assert_eq!(bare.chat_id.as_deref(), Some("oc_group"));
+        assert_eq!(
+            completion_plan(&bare.provider_payload),
+            Some(LarkCompletion::Topic {
+                message_id: "om_anchor".into()
+            })
+        );
+
+        let mut explicit_default = ChannelMessageTarget::with_chat_id(channel.id, "oc_default");
+        assert!(apply_folder_topic(&db.conn, Some(other.id), &mut explicit_default).await);
+        assert_eq!(explicit_default.chat_id.as_deref(), Some("oc_group"));
+        assert_eq!(
+            completion_plan(&explicit_default.provider_payload),
+            Some(LarkCompletion::Topic {
+                message_id: "om_anchor".into()
+            })
+        );
+
+        let mut elsewhere = ChannelMessageTarget::with_chat_id(channel.id, "oc_other");
+        assert!(!apply_folder_topic(&db.conn, Some(other.id), &mut elsewhere).await);
+        assert_eq!(elsewhere.chat_id.as_deref(), Some("oc_other"));
+        assert_eq!(completion_plan(&elsewhere.provider_payload), None);
     }
 }

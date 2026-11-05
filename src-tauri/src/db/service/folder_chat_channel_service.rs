@@ -15,6 +15,15 @@ pub struct FolderChannelBinding {
     pub chat_id: Option<String>,
 }
 
+/// One folder's Feishu topic on a channel. Later cards reply to
+/// `topic_message_id` instead of opening a new chat message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderTopicAnchor {
+    pub folder_id: i32,
+    pub chat_id: Option<String>,
+    pub topic_message_id: String,
+}
+
 fn normalize_chat_id(chat_id: Option<String>) -> Option<String> {
     chat_id.and_then(|value| {
         let trimmed = value.trim();
@@ -247,6 +256,30 @@ pub async fn set_bindings(
 
     txn.commit().await?;
     list_bindings(conn, folder_id).await
+}
+
+/// Topic anchors on this channel. A channel with exactly one anchor is the
+/// bound topic that replaces the channel's original default chat.
+pub async fn list_topic_anchors(
+    conn: &DatabaseConnection,
+    channel_id: i32,
+) -> Result<Vec<FolderTopicAnchor>, DbError> {
+    let rows = folder_chat_channel::Entity::find()
+        .filter(folder_chat_channel::Column::ChannelId.eq(channel_id))
+        .order_by_asc(folder_chat_channel::Column::Id)
+        .all(conn)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let topic_message_id = normalize_chat_id(row.topic_message_id)?;
+            Some(FolderTopicAnchor {
+                folder_id: row.folder_id,
+                chat_id: normalize_chat_id(row.chat_id),
+                topic_message_id,
+            })
+        })
+        .collect())
 }
 
 /// Feishu message id that later cards in this folder reply to, inside one topic.

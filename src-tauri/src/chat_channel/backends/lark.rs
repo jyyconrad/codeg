@@ -119,18 +119,17 @@ struct SendMessageData {
     message_id: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct WsConnectResponse {
-    code: i32,
-    msg: String,
-    data: Option<WsConnectData>,
+/// Feishu long-connection parameters. `service_id` comes from the endpoint
+/// URL and has to be on every CONTROL ping, or the server stops delivering
+/// events while the TCP socket stays open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LarkWsEndpoint {
+    url: String,
+    service_id: i32,
+    ping_interval: Duration,
 }
 
-#[derive(Deserialize)]
-struct WsConnectData {
-    #[serde(rename = "URL")]
-    url: Option<String>,
-}
+const DEFAULT_LARK_PING_INTERVAL: Duration = Duration::from_secs(120);
 
 // ── Token cache ──
 
@@ -346,7 +345,7 @@ impl LarkBackend {
         command_tx: mpsc::Sender<IncomingCommand>,
     ) -> Result<(), ChatChannelError> {
         // Verify we can get a WS URL before spawning the background task
-        let _ = fetch_ws_url(&self.client, &self.app_id, &self.app_secret).await?;
+        let _ = fetch_ws_endpoint(&self.client, &self.app_id, &self.app_secret).await?;
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
         *self.shutdown_tx.lock().await = Some(shutdown_tx);
@@ -366,8 +365,8 @@ impl LarkBackend {
                     break;
                 }
 
-                let ws_url = match fetch_ws_url(&client, &app_id, &app_secret).await {
-                    Ok(url) => url,
+                let endpoint = match fetch_ws_endpoint(&client, &app_id, &app_secret).await {
+                    Ok(endpoint) => endpoint,
                     Err(e) => {
                         tracing::error!("[Lark] failed to get WS endpoint: {e}");
                         *status.lock().await = ChannelConnectionStatus::Error;
@@ -379,8 +378,10 @@ impl LarkBackend {
                         }
                     }
                 };
+                let mut ping_interval = endpoint.ping_interval;
+                let service_id = endpoint.service_id;
 
-                let ws_result = tokio_tungstenite::connect_async(&ws_url).await;
+                let ws_result = tokio_tungstenite::connect_async(&endpoint.url).await;
                 let ws_stream = match ws_result {
                     Ok((stream, _)) => {
                         *status.lock().await = ChannelConnectionStatus::Connected;
@@ -403,10 +404,17 @@ impl LarkBackend {
                 let (mut write, mut read) = ws_stream.split();
                 let mut partial_msgs: HashMap<String, PartialMessage> = HashMap::new();
                 let mut last_partial_cleanup = Instant::now();
+                // Any inbound frame, including a protocol pong, proves the
+                // socket is still delivering. Silence for two ping intervals
+                // means Feishu has dropped the subscription.
+                let mut last_frame_at = tokio::time::Instant::now();
+                let mut next_ping = tokio::time::Instant::now();
 
                 loop {
+                    let idle_at = last_frame_at + ping_interval.saturating_mul(2);
                     tokio::select! {
                         msg = read.next() => {
+                            last_frame_at = tokio::time::Instant::now();
                             match msg {
                                 Some(Ok(tungstenite::Message::Binary(data))) => {
                                     match Frame::decode(data.as_ref()) {
@@ -414,15 +422,18 @@ impl LarkBackend {
                                             let frame_type = frame.get_header("type").unwrap_or("").to_string();
 
                                             if frame.method == FRAME_METHOD_CONTROL {
-                                                // Control frame: ping → respond with pong
                                                 if frame_type == "ping" {
                                                     let mut pong = frame.clone();
-                                                    // Clear type header and set to pong
                                                     pong.set_header("type", "pong");
                                                     pong.payload = Vec::new();
                                                     let mut buf = Vec::new();
                                                     if pong.encode(&mut buf).is_ok() {
                                                         let _ = write.send(tungstenite::Message::Binary(buf.into())).await;
+                                                    }
+                                                } else if frame_type == "pong" {
+                                                    if let Some(interval) = ping_interval_from_pong(&frame.payload) {
+                                                        ping_interval = interval;
+                                                        next_ping = tokio::time::Instant::now() + ping_interval;
                                                     }
                                                 }
                                             } else if frame.method == FRAME_METHOD_DATA && frame_type == "event" {
@@ -512,6 +523,26 @@ impl LarkBackend {
                                 }
                                 _ => {}
                             }
+                        }
+                        _ = tokio::time::sleep_until(next_ping) => {
+                            let frame = control_ping_frame(service_id);
+                            let mut buf = Vec::new();
+                            if frame.encode(&mut buf).is_err()
+                                || write
+                                    .send(tungstenite::Message::Binary(buf.into()))
+                                    .await
+                                    .is_err()
+                            {
+                                tracing::info!("[Lark] protocol ping failed, will reconnect");
+                                break;
+                            }
+                            next_ping = tokio::time::Instant::now() + ping_interval;
+                        }
+                        _ = tokio::time::sleep_until(idle_at) => {
+                            if lark_ws_is_idle(last_frame_at.elapsed(), ping_interval) {
+                                tracing::info!("[Lark] WebSocket idle, will reconnect");
+                            }
+                            break;
                         }
                         _ = shutdown_rx.changed() => {
                             let _ = write.close().await;
@@ -1206,12 +1237,13 @@ fn strip_lark_mentions(text: &str, event: &serde_json::Value) -> String {
     result.trim().to_string()
 }
 
-/// Fetch a fresh WebSocket endpoint URL from Feishu.
-async fn fetch_ws_url(
+/// Fetch a fresh WebSocket endpoint from Feishu, including the service id
+/// and ping interval the long connection has to keep alive.
+async fn fetch_ws_endpoint(
     client: &reqwest::Client,
     app_id: &str,
     app_secret: &str,
-) -> Result<String, ChatChannelError> {
+) -> Result<LarkWsEndpoint, ChatChannelError> {
     let resp = client
         .post(format!("{}/callback/ws/endpoint", FEISHU_BASE_URL))
         .json(&serde_json::json!({
@@ -1222,22 +1254,114 @@ async fn fetch_ws_url(
         .await
         .map_err(|e| ChatChannelError::ConnectionFailed(e.to_string()))?;
 
-    let ws_resp: WsConnectResponse = resp
+    let body: serde_json::Value = resp
         .json()
         .await
         .map_err(|e| ChatChannelError::ConnectionFailed(e.to_string()))?;
+    parse_lark_ws_endpoint(&body)
+}
 
-    if ws_resp.code != 0 {
+fn parse_lark_ws_endpoint(value: &serde_json::Value) -> Result<LarkWsEndpoint, ChatChannelError> {
+    let code = value
+        .get("code")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    if code != 0 {
+        let msg = value
+            .get("msg")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
         return Err(ChatChannelError::ConnectionFailed(format!(
-            "WS connect failed: code={}, msg={}",
-            ws_resp.code, ws_resp.msg
+            "WS connect failed: code={code}, msg={msg}"
         )));
     }
+    let url = value
+        .pointer("/data/URL")
+        .or_else(|| value.pointer("/data/url"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| ChatChannelError::ConnectionFailed("No WebSocket URL returned".into()))?;
+    let service_id = service_id_from_ws_url(url)?;
+    let ping_interval = value
+        .pointer("/data/ClientConfig")
+        .or_else(|| value.pointer("/data/client_config"))
+        .and_then(ping_interval_in)
+        .unwrap_or(DEFAULT_LARK_PING_INTERVAL);
+    Ok(LarkWsEndpoint {
+        url: url.to_string(),
+        service_id,
+        ping_interval,
+    })
+}
 
-    ws_resp
-        .data
-        .and_then(|d| d.url)
-        .ok_or_else(|| ChatChannelError::ConnectionFailed("No WebSocket URL returned".into()))
+fn service_id_from_ws_url(url: &str) -> Result<i32, ChatChannelError> {
+    let parsed = url::Url::parse(url).map_err(|error| {
+        ChatChannelError::ConnectionFailed(format!("invalid Feishu WebSocket URL: {error}"))
+    })?;
+    let raw = parsed
+        .query_pairs()
+        .find(|(key, _)| key == "service_id")
+        .map(|(_, value)| value.into_owned())
+        .ok_or_else(|| {
+            ChatChannelError::ConnectionFailed("Feishu WebSocket URL has no service_id".into())
+        })?;
+    raw.parse::<i32>().map_err(|_| {
+        ChatChannelError::ConnectionFailed(format!("invalid Feishu service_id: {raw}"))
+    })
+}
+
+fn ping_interval_in(value: &serde_json::Value) -> Option<Duration> {
+    let config = match value.as_str() {
+        Some(text) => serde_json::from_str::<serde_json::Value>(text).ok()?,
+        None => value.clone(),
+    };
+    let raw = config
+        .get("PingInterval")
+        .or_else(|| config.get("ping_interval"))?;
+    let secs = raw
+        .as_u64()
+        .or_else(|| raw.as_str().and_then(|text| text.parse().ok()))
+        .filter(|secs| *secs > 0)?;
+    Some(Duration::from_secs(secs))
+}
+
+fn control_ping_frame(service_id: i32) -> Frame {
+    let mut frame = Frame {
+        seq_id: 0,
+        log_id: 0,
+        service: service_id,
+        method: FRAME_METHOD_CONTROL,
+        headers: Vec::new(),
+        payload_encoding: String::new(),
+        payload_type: String::new(),
+        payload: Vec::new(),
+        log_id_new: String::new(),
+    };
+    frame.set_header("type", "ping");
+    frame
+}
+
+/// True when no frame has arrived for two ping intervals. One interval is
+/// the ping itself; the second interval with no pong or event is a dead
+/// subscription.
+fn lark_ws_is_idle(since_last_frame: Duration, ping_interval: Duration) -> bool {
+    let interval = if ping_interval.is_zero() {
+        DEFAULT_LARK_PING_INTERVAL
+    } else {
+        ping_interval
+    };
+    since_last_frame >= interval.saturating_mul(2)
+}
+
+fn ping_interval_from_pong(payload: &[u8]) -> Option<Duration> {
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+    ping_interval_in(&value).or_else(|| {
+        value
+            .get("ClientConfig")
+            .or_else(|| value.get("client_config"))
+            .and_then(ping_interval_in)
+    })
 }
 
 #[async_trait]
@@ -1759,5 +1883,65 @@ mod tests {
             }
             other => panic!("expected image block, got {other:?}"),
         }
+    }
+
+    /// Feishu drops a long connection that never sends a CONTROL ping for
+    /// `service_id`. REST sends keep working, so the bot can post cards and
+    /// still never see an @ in the bound topic.
+    #[test]
+    fn endpoint_ping_uses_the_service_id_and_interval() {
+        let body = serde_json::json!({
+            "code": 0,
+            "msg": "ok",
+            "data": {
+                "URL": "wss://msg-frontier.feishu.cn/ws/v2?device_id=dev&service_id=33554678",
+                "ClientConfig": {
+                    "ReconnectCount": 3,
+                    "ReconnectInterval": 120,
+                    "PingInterval": 120
+                }
+            }
+        });
+        let endpoint = parse_lark_ws_endpoint(&body).expect("endpoint");
+        assert_eq!(endpoint.service_id, 33554678);
+        assert_eq!(endpoint.ping_interval, Duration::from_secs(120));
+
+        let frame = control_ping_frame(endpoint.service_id);
+        assert_eq!(frame.method, FRAME_METHOD_CONTROL);
+        assert_eq!(frame.service, 33554678);
+        assert_eq!(frame.seq_id, 0);
+        assert_eq!(frame.log_id, 0);
+        assert_eq!(frame.get_header("type"), Some("ping"));
+        assert!(frame.payload.is_empty());
+    }
+
+    #[test]
+    fn missing_ping_interval_defaults_to_two_minutes() {
+        let body = serde_json::json!({
+            "code": 0,
+            "data": { "URL": "wss://msg-frontier.feishu.cn/ws/v2?service_id=7" }
+        });
+        let endpoint = parse_lark_ws_endpoint(&body).expect("endpoint");
+        assert_eq!(endpoint.service_id, 7);
+        assert_eq!(endpoint.ping_interval, Duration::from_secs(120));
+    }
+
+    /// A socket that stays open but delivers nothing, including pong, is the
+    /// half-open connection that stopped inbound Feishu messages.
+    #[test]
+    fn silent_socket_reconnects_after_two_ping_intervals() {
+        let interval = Duration::from_secs(120);
+        assert!(!lark_ws_is_idle(Duration::from_secs(120), interval));
+        assert!(lark_ws_is_idle(Duration::from_secs(240), interval));
+    }
+
+    #[test]
+    fn pong_payload_can_update_the_ping_interval() {
+        let payload = br#"{"ClientConfig":{"PingInterval":90}}"#;
+        assert_eq!(
+            ping_interval_from_pong(payload),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(ping_interval_from_pong(b"{}"), None);
     }
 }

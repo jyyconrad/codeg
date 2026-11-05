@@ -1860,6 +1860,106 @@ mod permission_push_tests {
         );
     }
 
+    /// A folder with no binding of its own still used the channel default
+    /// chat (the bot DM) after another folder had pinned the topic. That is
+    /// the second copy in the original channel.
+    #[tokio::test]
+    async fn unbound_folder_card_goes_to_the_bound_topic_once() {
+        use crate::acp::manager::ConnectionManager;
+        use crate::chat_channel::lark_delivery::{self, LarkCompletion};
+        use crate::db::service::{
+            chat_channel_service, conversation_service, folder_chat_channel_service,
+        };
+        use crate::web::event_bridge::EventEmitter;
+
+        let db = test_helpers::fresh_in_memory_db().await;
+        let bound_folder = test_helpers::seed_folder(&db, "/tmp/event-bound-topic").await;
+        let other_folder = test_helpers::seed_folder(&db, "/tmp/event-unbound-folder").await;
+        let channel = chat_channel_service::create(
+            &db.conn,
+            "lark".into(),
+            "lark".into(),
+            serde_json::json!({ "chat_id": "oc_default" }).to_string(),
+            true,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_bindings(
+            &db.conn,
+            bound_folder,
+            &[folder_chat_channel_service::FolderChannelBinding {
+                channel_id: channel.id,
+                chat_id: Some("oc_group".into()),
+            }],
+        )
+        .await
+        .unwrap();
+        folder_chat_channel_service::set_folder_topic_message(
+            &db.conn,
+            bound_folder,
+            channel.id,
+            "om_anchor",
+        )
+        .await
+        .unwrap();
+        let conv = conversation_service::create(
+            &db.conn,
+            other_folder,
+            AgentType::Grok,
+            Some("酒店两日经营数据分析".into()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (chat, rec) = manager_with_recorder(channel.id).await;
+        let conn_mgr = ConnectionManager::new();
+        let _rx = conn_mgr
+            .insert_test_connection_live("unbound", AgentType::Grok, None, EventEmitter::Noop)
+            .await;
+        conn_mgr
+            .get_state("unbound")
+            .await
+            .unwrap()
+            .write()
+            .await
+            .conversation_id = Some(conv.id);
+        chat.set_connection_manager(conn_mgr.clone_ref()).await;
+
+        let mut config = config_all_on(channel.id);
+        config.global_filter = Some(vec!["user_prompt_sent".into()]);
+        process_envelope(
+            &user_prompt_envelope("unbound", "酒店两日经营数据分析"),
+            &Arc::new(Mutex::new(SessionBridge::new())),
+            &chat,
+            &db.conn,
+            &config,
+            &mut HashMap::new(),
+            &test_client(),
+        )
+        .await;
+
+        let targets = rec.targets.lock().await.clone();
+        assert_eq!(targets.len(), 1, "the card must be sent once");
+        assert_eq!(sent(&rec).await.len(), 1);
+        assert_eq!(targets[0].chat_id.as_deref(), Some("oc_group"));
+        assert_eq!(
+            lark_delivery::completion_plan(&targets[0].provider_payload),
+            Some(LarkCompletion::Topic {
+                message_id: "om_anchor".into()
+            })
+        );
+        assert!(
+            sent_chat_ids(&rec)
+                .await
+                .iter()
+                .all(|chat_id| chat_id.as_deref() != Some("oc_default")),
+            "the original channel must not also receive the card"
+        );
+    }
+
     #[tokio::test]
     async fn chat_turn_complete_uses_persisted_source_target_only() {
         use crate::acp::manager::ConnectionManager;
