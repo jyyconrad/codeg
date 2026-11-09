@@ -1051,6 +1051,17 @@ pub enum AcpEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         assistant_name: Option<String>,
     },
+    /// A codeg delegation of this (parent) connection started (`running`) or
+    /// reached a terminal state. Lifecycle accounting only, so unlike
+    /// `DelegationStarted` / `DelegationCompleted` it is emitted for EVERY
+    /// broker delegation — including one whose parent tool call could not be
+    /// identified (a synthetic `delegation-*` id), which has no card to bind
+    /// but still dies with its parent (`cancel_by_parent`). The teardown gates
+    /// spare a parent while it has a delegated child running.
+    DelegationChildRunning {
+        child_connection_id: String,
+        running: bool,
+    },
     /// A human submitted a prompt from the Codeg conversation UI (desktop or
     /// web). Synthetic, notification-only event: it mutates no `SessionState`
     /// field and exists purely to drive the chat-channel "user message" push.
@@ -1987,6 +1998,8 @@ pub struct AcpAgentInfo {
     pub host_tools_agent_mode: bool,
     pub config_json: Option<String>,
     pub config_file_path: Option<String>,
+    pub system_instructions_file_path: Option<String>,
+    pub system_instructions_content: Option<String>,
     pub codex_auth_json: Option<String>,
     pub codex_config_toml: Option<String>,
     /// Compact structured codex model-catalog source (the `codeg` custom-model

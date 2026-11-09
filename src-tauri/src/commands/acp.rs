@@ -473,21 +473,24 @@ fn npx_native_install(agent_type: AgentType, cmd: &str) -> Option<PathBuf> {
 /// that PATH, and on Windows nothing lands in `~/.local/bin` either, so without
 /// this a working native install reads as not installed.
 ///
-/// `@xai-official/grok`'s npm postinstall writes its binary to the same place,
-/// and `npm uninstall -g` leaves that copy behind. Grok records which installer
-/// owns `~/.grok/bin` as `[cli].installer` in the `config.toml` beside it:
-/// `"internal"` from its own installers, `"npm"` from the npm package. A copy
-/// recorded as npm's does not count here. An npm-installed Grok resolves
+/// `@xai-official/grok`'s npm package writes its binary to the same place, and
+/// `npm uninstall -g` leaves that copy behind. An npm-installed Grok resolves
 /// through the npm prefix like every other npx agent, and counting its copy
-/// would keep Grok installed after codeg uninstalls it.
+/// would keep Grok installed after codeg uninstalls it, so that copy does not
+/// count here. Grok records which installer owns `~/.grok/bin` as
+/// `[cli].installer` in the `config.toml` beside it: `"internal"` from its own
+/// installers, `"npm"` from the npm package's postinstall. Where npm skipped
+/// that postinstall (npm 12 blocks install scripts it was not told to allow,
+/// and `ignore-scripts` skips them), the package's launcher unpacks the binary
+/// on its first run and records nothing; with no record, the copy is told
+/// apart by where its build lives ([`is_grok_npm_copy`]).
 ///
 /// Only the default location is probed. A `GROK_BIN_DIR` or `GROK_HOME`
 /// relocation is not followed.
 fn grok_native_install(home: &Path, cmd: &str) -> Option<PathBuf> {
     let grok_dir = home.join(".grok");
-    let cand = grok_dir
-        .join("bin")
-        .join(binary_cache::executable_file_name(cmd));
+    let bin_dir = grok_dir.join("bin");
+    let cand = bin_dir.join(binary_cache::executable_file_name(cmd));
     if !cand.is_file() {
         return None;
     }
@@ -502,7 +505,48 @@ fn grok_native_install(home: &Path, cmd: &str) -> Option<PathBuf> {
                 .as_str()
                 .map(str::to_string)
         });
-    (installer.as_deref() != Some("npm")).then_some(cand)
+    let npm_copy = match installer.as_deref() {
+        Some(installer) => installer == "npm",
+        None => is_grok_npm_copy(&bin_dir, &cand, cmd),
+    };
+    (!npm_copy).then_some(cand)
+}
+
+/// Whether `cand`, `<cmd>` in `bin_dir` (`~/.grok/bin`), is laid out as
+/// `@xai-official/grok`'s npm scripts leave it: they unpack the build beside it
+/// as `<cmd>-<version>` (with `.exe` on Windows) and make `cand` a symlink to
+/// that bare name, or on Windows a copy of that file. Grok's own installers and
+/// its updater keep their builds in `~/.grok/downloads` and link or copy `cand`
+/// from there.
+fn is_grok_npm_copy(bin_dir: &Path, cand: &Path, cmd: &str) -> bool {
+    let prefix = format!("{cmd}-");
+    // As the npm scripts' own cleanup matches their builds: a digit right after
+    // the prefix, which leaves out `grok-pager-<version>`.
+    let is_build = |name: &std::ffi::OsStr| {
+        name.to_str()
+            .and_then(|name| name.strip_prefix(prefix.as_str()))
+            .is_some_and(|version| version.starts_with(|c: char| c.is_ascii_digit()))
+    };
+    if let Ok(target) = fs::read_link(cand) {
+        let mut parts = target.components();
+        return matches!(
+            (parts.next(), parts.next()),
+            (Some(std::path::Component::Normal(name)), None) if is_build(name)
+        );
+    }
+    let Ok(len) = fs::metadata(cand).map(|meta| meta.len()) else {
+        return false;
+    };
+    fs::read_dir(bin_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            is_build(&entry.file_name())
+                && entry
+                    .metadata()
+                    .is_ok_and(|meta| meta.is_file() && meta.len() == len)
+        })
 }
 
 #[derive(Default)]
@@ -2466,9 +2510,9 @@ const NPM_INCLUDE_OPTIONAL: &str = "--include=optional";
 /// npm ≥7 hides lifecycle-script output by default. hermes-agent's postinstall
 /// runs a multi-minute runtime bootstrap (pinned upstream checkout + isolated
 /// venv sync); without this flag the install log goes silent for the whole
-/// bootstrap, which reads as a hang (codeg imposes no timeout on npm). Other
-/// agents' packages have no meaningful install scripts, so this only adds
-/// their (empty) script output.
+/// bootstrap, which reads as a hang (codeg imposes no timeout on npm). Grok's
+/// postinstall only unpacks its binary and other agents' packages have no
+/// meaningful install scripts, so for them this adds a few lines at most.
 const NPM_FOREGROUND_SCRIPTS: &str = "--foreground-scripts";
 /// CLI override forcing lifecycle scripts ON. A user-level
 /// `ignore-scripts=true` (.npmrc or npm_config_ignore_scripts) makes `npm
@@ -2483,8 +2527,8 @@ const NPM_FOREGROUND_SCRIPTS: &str = "--foreground-scripts";
 const NPM_RUN_SCRIPTS_OVERRIDE: &str = "--ignore-scripts=false";
 
 /// The flags that let `package`'s own install scripts run, for the packages
-/// whose install is those scripts ([`npm_package_requires_scripts`]); none for
-/// any other package.
+/// whose install needs those scripts ([`npm_package_requires_scripts`]); none
+/// for any other package.
 ///
 /// [`NPM_RUN_SCRIPTS_OVERRIDE`] stopped being enough with npm 12, which runs no
 /// install script it was not told to: npm 12.2.1 skipped hermes-agent's
@@ -2494,7 +2538,8 @@ const NPM_RUN_SCRIPTS_OVERRIDE: &str = "--ignore-scripts=false";
 /// so npm takes `--allow-scripts=<name>` for those, matched against the
 /// package's resolved registry identity: it covers the package being
 /// installed and none of its dependencies. npm 9.6.7, 10.2.4, 10.8.2 and
-/// 11.17.0 accept the flag without a warning and run the script as before.
+/// 11.17.0 accept the flag without a warning and run the script as before
+/// (11.17.0 and 12.2.2 likewise for a scoped name, `@xai-official/grok`).
 fn npm_run_scripts_args(package: &str) -> Vec<String> {
     if !npm_package_requires_scripts(package) {
         return Vec::new();
@@ -2518,10 +2563,28 @@ fn npm_run_scripts_args(package: &str) -> Vec<String> {
 const NODE_ENV_PROXY_VAR: &str = "NODE_USE_ENV_PROXY";
 
 /// Whether an npm package's lifecycle scripts are load-bearing for the
-/// install (skipping them yields a broken command). Only the hermes-agent
-/// community bridge today: its postinstall bootstraps the entire Python
-/// runtime the `hermes` bin execs into.
+/// install, so codeg's install lets them run ([`npm_run_scripts_args`]):
+///
+/// - hermes-agent ([`npm_package_bootstraps_runtime`]): its postinstall
+///   bootstraps the entire Python runtime the `hermes` bin execs into, so
+///   skipping it yields a broken command.
+/// - `@xai-official/grok`: only its postinstall points `~/.grok/bin/grok` at
+///   the build just installed and records that copy as npm's (see
+///   [`grok_native_install`]). Skipping it leaves the package's launcher to
+///   unpack a build there on its first run and to run whatever
+///   `~/.grok/bin/grok` is from then on, so an upgrade never reaches it (on
+///   npm 12.2.2, an upgrade from 1.0.70 to 1.0.77 still ran 1.0.70), and the
+///   copy `npm uninstall -g` leaves records no installer.
 fn npm_package_requires_scripts(package: &str) -> bool {
+    npm_package_bootstraps_runtime(package)
+        || package_name_from_spec(package) == "@xai-official/grok"
+}
+
+/// Whether an npm package is a bootstrap wrapper: its postinstall downloads
+/// the runtime its bin execs into, so the install can die inside those
+/// downloads ([`annotate_npm_bootstrap_failure`]) or leave a bin with no
+/// runtime behind it. Only the hermes-agent community bridge today.
+fn npm_package_bootstraps_runtime(package: &str) -> bool {
     package_name_from_spec(package) == "hermes-agent"
 }
 
@@ -2531,7 +2594,7 @@ fn npm_package_requires_scripts(package: &str) -> bool {
 /// `fetch` go through — worth spelling out, because npm reports it as a bare
 /// `fetch failed` that says nothing about a proxy.
 fn annotate_npm_bootstrap_failure(package: &str, err: AcpError) -> AcpError {
-    if !npm_package_requires_scripts(package) {
+    if !npm_package_bootstraps_runtime(package) {
         return err;
     }
     let AcpError::Protocol(message) = &err else {
@@ -4440,9 +4503,9 @@ fn parse_grok_settings(raw_toml: &str) -> GrokSettings {
 /// (Grok's config reference: "Allowed reasoning-effort values for this model.
 /// When omitted, the menu comes from the endpoint's `/v1/models` row"). That
 /// endpoint is Grok's model catalog (xAI's, or `[endpoints].models_base_url`),
-/// matched by model id: grok 1.0.62 and 1.0.70 never fetch the list of a
-/// model's own `base_url`, so a custom model the catalog lacks has levels only
-/// from here.
+/// matched by model id: grok 1.0.62, 1.0.70 and 1.0.77 never fetch the list of
+/// a model's own `base_url`, so a custom model the catalog lacks has levels
+/// only from here.
 const GROK_REASONING_EFFORTS_KEY: &str = "reasoning_efforts";
 
 /// One `reasoning_efforts` level as the panel compares it: trimmed and
@@ -8785,7 +8848,7 @@ async fn hermes_setup_argvs() -> (Vec<String>, Vec<String>) {
         // Unreachable: Hermes is always an Npx distribution. Fall through to
         // the npx guidance with the same pinned spec so a future match-arm
         // change can't resurrect a stale recipe.
-        _ => "hermes-agent@0.22.2",
+        _ => "hermes-agent@0.23.0",
     };
     (
         hermes_npx_argv(package, &["acp", "--setup"]),
@@ -9465,6 +9528,223 @@ fn qoder_settings_json_path() -> PathBuf {
     crate::parsers::qoder::resolve_qoder_config_dir().join("settings.json")
 }
 
+
+/// The user-global instructions file the agent itself loads at session start,
+/// or `None` when it has no such file codeg can edit safely.
+///
+/// Each entry is the file the agent's shipped code reads (checked against the
+/// pinned releases), resolved with the same environment overrides as the rest
+/// of this panel. `None` on purpose:
+/// - Hermes: its only global file is `SOUL.md`, which REPLACES the persona;
+/// - Cursor: user rules are `.mdc` files with front matter, or server-side;
+/// - MiniMax Code: the data dir moves with profiles and a legacy migration;
+/// - OpenClaw: the file lives in a workspace configured in openclaw.json, and
+///   may be on a remote Gateway;
+/// - custom agents: codeg does not know their file layout.
+pub(crate) fn agent_system_instructions_path(agent_type: AgentType) -> Option<PathBuf> {
+    match agent_type {
+        AgentType::ClaudeCode => {
+            Some(crate::parsers::claude::resolve_claude_config_dir().join("CLAUDE.md"))
+        }
+        // `AGENTS.override.md` wins while it is non-blank.
+        AgentType::Codex => Some(codex_style_instructions_file(
+            &crate::parsers::codex::resolve_codex_home_dir(),
+        )),
+        AgentType::Gemini => {
+            Some(crate::parsers::gemini::resolve_gemini_base_dir().join("GEMINI.md"))
+        }
+        // Antigravity reads every one of `~/.gemini/{AGENTS,GEMINI}.md` from a
+        // hardcoded `~/.gemini` (it ignores `GEMINI_HOME`); `AGENTS.md` keeps
+        // it apart from Gemini CLI's `GEMINI.md`.
+        AgentType::Antigravity => Some(home_dir_or_default().join(".gemini").join("AGENTS.md")),
+        AgentType::OpenCode => Some(
+            crate::acp::opencode_config::config_dir()
+                .unwrap_or_else(|| home_dir_or_default().join(".config").join("opencode"))
+                .join("AGENTS.md"),
+        ),
+        // Cline's "Global AGENTS.md" is the cross-agent `~/.agents` one.
+        AgentType::Cline => Some(home_dir_or_default().join(".agents").join("AGENTS.md")),
+        // User memory is `<config dir>/CODEBUDDY.md` (or `.mdc`, first found);
+        // an `AGENTS.md` there is only read when the workspace IS the home.
+        AgentType::CodeBuddy => Some(first_existing_file(
+            &crate::parsers::codebuddy::resolve_codebuddy_config_dir(),
+            CODEBUDDY_INSTRUCTIONS_FILES,
+        )),
+        AgentType::KimiCode => {
+            Some(crate::parsers::kimi_code::resolve_kimi_code_home_dir().join("AGENTS.md"))
+        }
+        // Pi loads the first of these that exists.
+        AgentType::Pi => Some(first_existing_file(
+            &crate::parsers::pi::resolve_pi_agent_dir(),
+            PI_INSTRUCTIONS_FILES,
+        )),
+        AgentType::Grok => Some(crate::parsers::grok::resolve_grok_home_dir().join("AGENTS.md")),
+        AgentType::DeepSeek => {
+            Some(crate::parsers::deepseek::resolve_dsh_home_dir().join("AGENTS.md"))
+        }
+        AgentType::Qoder => {
+            Some(crate::parsers::qoder::resolve_qoder_config_dir().join("AGENTS.md"))
+        }
+        // Kiro's global instructions are steering files.
+        AgentType::Kiro => Some(
+            crate::parsers::kiro::resolve_kiro_home_dir()
+                .join("steering")
+                .join("AGENTS.md"),
+        ),
+        // A Codex fork: same override precedence.
+        AgentType::Trae => Some(codex_style_instructions_file(
+            &crate::acp::trae::resolve_trae_home_dir(),
+        )),
+        AgentType::CommandCode => {
+            Some(crate::acp::command_code::command_code_home_dir().join("AGENTS.md"))
+        }
+        // ZCode follows HOME / USERPROFILE only.
+        AgentType::ZCode => Some(inherited_node_home_dir().join(".zcode").join("AGENTS.md")),
+        // Codeg Agent reads the workspace AGENTS.md itself. It has no separate
+        // user-global instructions file this panel can edit safely.
+        AgentType::CodegAgent
+        | AgentType::Hermes
+        | AgentType::Cursor
+        | AgentType::MiniMaxCode
+        | AgentType::OpenClaw
+        | AgentType::Custom(_) => None,
+    }
+}
+
+const CODEX_INSTRUCTIONS_FILES: &[&str] = &["AGENTS.override.md", "AGENTS.md"];
+const PI_INSTRUCTIONS_FILES: &[&str] =
+    &["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+const CODEBUDDY_INSTRUCTIONS_FILES: &[&str] = &["CODEBUDDY.md", "CODEBUDDY.mdc"];
+
+/// Every file [`agent_system_instructions_path`] may resolve to for the agent,
+/// whichever is in effect right now. A save goes to the file the panel showed
+/// (when it is one of these), not to a fresh resolution: blanking Codex's
+/// override, say, flips the resolution to `AGENTS.md`, whose content the
+/// editor never displayed.
+fn agent_system_instructions_candidates(agent_type: AgentType) -> Vec<PathBuf> {
+    let Some(resolved) = agent_system_instructions_path(agent_type) else {
+        return Vec::new();
+    };
+    let siblings: &[&str] = match agent_type {
+        AgentType::Codex | AgentType::Trae => CODEX_INSTRUCTIONS_FILES,
+        AgentType::Pi => PI_INSTRUCTIONS_FILES,
+        AgentType::CodeBuddy => CODEBUDDY_INSTRUCTIONS_FILES,
+        _ => &[],
+    };
+    let mut candidates = vec![resolved.clone()];
+    if let Some(dir) = resolved.parent() {
+        candidates.extend(siblings.iter().map(|name| dir.join(name)));
+    }
+    candidates
+}
+
+/// `<dir>/AGENTS.override.md` while it holds anything but whitespace, else
+/// `<dir>/AGENTS.md` — the file Codex (and its forks) actually loads.
+fn codex_style_instructions_file(dir: &Path) -> PathBuf {
+    let override_file = dir.join(CODEX_INSTRUCTIONS_FILES[0]);
+    match fs::read_to_string(&override_file) {
+        Ok(text) if !text.trim().is_empty() => override_file,
+        _ => dir.join(CODEX_INSTRUCTIONS_FILES[1]),
+    }
+}
+
+/// The first of `names` in `dir` that is a file, else the first name.
+fn first_existing_file(dir: &Path, names: &[&str]) -> PathBuf {
+    names
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| dir.join(names[0]))
+}
+
+/// The agent's global instructions file as `(path, content)` for the settings
+/// panel; the content is `None` when the file does not exist or cannot be read
+/// as UTF-8 text.
+pub(crate) fn load_agent_system_instructions(
+    agent_type: AgentType,
+) -> (Option<String>, Option<String>) {
+    let path = agent_system_instructions_path(agent_type);
+    let path_str = path.as_ref().map(|p| p.display().to_string());
+    let content = path.and_then(|p| fs::read_to_string(p).ok());
+    (path_str, content)
+}
+
+/// Write `content` as the agent's global instructions file.
+///
+/// The file belongs to the agent (and to the user, who may edit it by hand or
+/// keep it in a dotfiles checkout), so the write is careful with it:
+/// - content equal to what is on disk is not written at all, and empty content
+///   for a missing file does not create it (nor its directory);
+/// - a file that exists but cannot be read as text is refused rather than
+///   replaced, since the panel showed it empty;
+/// - the write is atomic and goes through a symlink, keeping the link and the
+///   file's permissions.
+///
+/// `shown_path` is the file the panel displayed (the `system_instructions_file_path`
+/// it was given); the write goes there, and only when it is one of the
+/// agent's own instruction files. Without it the file is resolved afresh.
+fn persist_agent_system_instructions(
+    agent_type: AgentType,
+    content: &str,
+    shown_path: Option<&str>,
+) -> Result<(), AcpError> {
+    let Some(resolved) = agent_system_instructions_path(agent_type) else {
+        return Err(AcpError::protocol(
+            "this agent has no global instructions file",
+        ));
+    };
+    let path = instructions_write_target(
+        resolved,
+        agent_system_instructions_candidates(agent_type),
+        shown_path,
+    )?;
+    write_instructions_file(&path, content)
+}
+
+/// The file a save writes: the one the panel showed when it is among the
+/// agent's `candidates`, else (nothing shown) the `resolved` one.
+fn instructions_write_target(
+    resolved: PathBuf,
+    candidates: Vec<PathBuf>,
+    shown_path: Option<&str>,
+) -> Result<PathBuf, AcpError> {
+    let Some(shown) = shown_path else {
+        return Ok(resolved);
+    };
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.display().to_string() == shown)
+        .ok_or_else(|| {
+            AcpError::protocol(format!(
+                "{shown} is not this agent's instructions file (it is now {}); reopen the settings to edit it",
+                resolved.display()
+            ))
+        })
+}
+
+fn write_instructions_file(path: &Path, content: &str) -> Result<(), AcpError> {
+    let current = match fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(AcpError::protocol(format!(
+                "failed to read instructions file {}: {e}",
+                path.display()
+            )))
+        }
+    };
+    if current.as_deref().unwrap_or_default() == content {
+        return Ok(());
+    }
+    crate::acp::opencode_config::write_atomic(path, content).map_err(|e| {
+        AcpError::protocol(format!(
+            "failed to write instructions file {}: {e}",
+            path.display()
+        ))
+    })
+}
+
+
 pub(crate) fn load_agent_local_config_json(agent_type: AgentType) -> Option<String> {
     if agent_type == AgentType::Codex {
         return load_codex_local_config_json();
@@ -9659,7 +9939,9 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
         // or, at the top of one of those directories, a flat `<id>.md`
         // (`skill-scan.ts`, `skill-file.ts`). New skills go to the first of
         // each list, the layout OpenCode documents. It also reads
-        // `.claude/skills`, which codeg lists under Claude Code.
+        // `.claude/skills`, which codeg lists under Claude Code, and the same
+        // folders in every directory above the project; the composer's `/`
+        // menu reads all of them (`acp::opencode_skills`).
         //
         // `~/.agents/skills` matters beyond OpenCode: OpenCode is a
         // "universal" agent for the `skills` CLI, whose global `skills add`
@@ -9904,7 +10186,7 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
         // a flat `<id>.md` — from `~/.commandcode/skills` and the shared
         // `~/.agents/skills` store, plus `.commandcode/skills` and
         // `.agents/skills` in the project. Verified against 1.84.0, 1.86.3,
-        // 1.88.0, 1.88.1 and 1.88.2 by planting one skill in each candidate
+        // 1.88.0, 1.88.1, 1.88.2 and 1.88.4 by planting one skill in each candidate
         // directory: exactly those four reached the session's commands, while
         // `.claude/skills` (project and user) and the flat file were ignored.
         // The Command Code directory leads so linking targets it without
@@ -10230,7 +10512,7 @@ pub(crate) fn parse_frontmatter_scalar(rest: &str) -> Option<String> {
     }
 }
 
-fn build_skill_item(
+pub(crate) fn build_skill_item(
     id: String,
     scope: AgentSkillScope,
     layout: AgentSkillLayout,
@@ -12886,6 +13168,8 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         } else {
             (local_config_json, None)
         };
+        let (system_instructions_file_path, system_instructions_content) =
+            load_agent_system_instructions(agent_type);
         let grok_config_toml = if agent_type == AgentType::Grok {
             load_grok_config_toml_raw()
         } else {
@@ -12983,6 +13267,8 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             config_json,
             config_file_path: agent_local_config_path(agent_type)
                 .map(|path| path.display().to_string()),
+            system_instructions_file_path,
+            system_instructions_content,
             codex_auth_json,
             codex_config_toml,
             codex_sandbox_settings,
@@ -13409,6 +13695,8 @@ pub async fn acp_update_agent_env(
 pub(crate) async fn acp_update_agent_config_core(
     agent_type: AgentType,
     config_json: Option<String>,
+    system_instructions_content: Option<String>,
+    system_instructions_file_path: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_config_toml_baseline: Option<String>,
@@ -13441,6 +13729,31 @@ pub(crate) async fn acp_update_agent_config_core(
             return Err(AcpError::protocol(
                 "invalid config_json: root must be a JSON object",
             ));
+        }
+    }
+
+    if let Some(instructions) = system_instructions_content.as_deref() {
+        persist_agent_system_instructions(
+            agent_type,
+            instructions,
+            system_instructions_file_path.as_deref(),
+        )?;
+        // The instructions panel saves on its own: nothing else was sent, so
+        // no native config file may be touched — the generic tail below would
+        // re-serialize the agent's settings file (and reset it to `{}` when it
+        // does not parse).
+        if config_json.is_none()
+            && codex_auth_json.is_none()
+            && codex_config_toml.is_none()
+            && codex_model_catalog.is_none()
+            && codex_sandbox.is_none()
+            && grok_config_toml.is_none()
+            && grok_structured.is_none()
+            && cursor_cli_config_json.is_none()
+            && cursor_structured.is_none()
+        {
+            emit_acp_agents_updated(emitter, "config_updated", Some(agent_type));
+            return Ok(());
         }
     }
 
@@ -13570,6 +13883,8 @@ pub(crate) async fn acp_update_agent_config_core(
 pub(crate) async fn acp_update_agent_config_and_refresh(
     agent_type: AgentType,
     config_json: Option<String>,
+    system_instructions_content: Option<String>,
+    system_instructions_file_path: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_config_toml_baseline: Option<String>,
@@ -13587,6 +13902,8 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
     acp_update_agent_config_core(
         agent_type,
         config_json,
+        system_instructions_content,
+        system_instructions_file_path,
         codex_auth_json,
         codex_config_toml,
         codex_config_toml_baseline,
@@ -13616,6 +13933,8 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
 pub async fn acp_update_agent_config(
     agent_type: AgentType,
     config_json: Option<String>,
+    system_instructions_content: Option<String>,
+    system_instructions_file_path: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_config_toml_baseline: Option<String>,
@@ -13638,6 +13957,8 @@ pub async fn acp_update_agent_config(
     acp_update_agent_config_and_refresh(
         agent_type,
         config_json,
+        system_instructions_content,
+        system_instructions_file_path,
         codex_auth_json,
         codex_config_toml,
         codex_config_toml_baseline,
@@ -14601,7 +14922,7 @@ pub(crate) async fn acp_prepare_npx_agent_core(
             // `~/.local/bin`) legitimately satisfies the check. Without this,
             // a broken install is recorded as installed and only fails at
             // connect time with an opaque error.
-            if npm_package_requires_scripts(&install_spec) {
+            if npm_package_bootstraps_runtime(&install_spec) {
                 emit_agent_install_event(
                     emitter,
                     &task_id,
@@ -15047,6 +15368,38 @@ pub async fn acp_list_agent_skills(
         locations,
         skills,
     })
+}
+
+/// The skills an agent's sessions can load, for the composer menus. OpenCode
+/// loads skills from more folders than the Skills settings page manages for it
+/// (`acp::opencode_skills`), so its menu reads them all, with the environment
+/// OpenCode is launched with; every other agent's menu lists what
+/// [`acp_list_agent_skills`] does.
+pub(crate) async fn acp_list_agent_runtime_skills_core(
+    agent_type: AgentType,
+    workspace_path: Option<String>,
+    db: &AppDatabase,
+) -> Result<AgentSkillsListResult, AcpError> {
+    if agent_type != AgentType::OpenCode {
+        return acp_list_agent_skills(agent_type, workspace_path).await;
+    }
+    let env = agent_setting_service::load_agent_env(&db.conn, agent_type).await;
+    let workspace = workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(Path::new);
+    Ok(crate::acp::opencode_skills::SkillSources::for_env(&env).listing(workspace))
+}
+
+#[cfg(feature = "tauri-runtime")]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn acp_list_agent_runtime_skills(
+    agent_type: AgentType,
+    workspace_path: Option<String>,
+    db: State<'_, AppDatabase>,
+) -> Result<AgentSkillsListResult, AcpError> {
+    acp_list_agent_runtime_skills_core(agent_type, workspace_path, &db).await
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
@@ -17530,8 +17883,8 @@ mod tests {
             },
         )
         .unwrap();
-        // The shape verified against grok 1.0.62 and 1.0.70: bare levels make
-        // it advertise `supportsReasoningEffort` with exactly these
+        // The shape verified against grok 1.0.62, 1.0.70 and 1.0.77: bare levels
+        // make it advertise `supportsReasoningEffort` with exactly these
         // `reasoningEfforts`.
         assert_eq!(
             grok_efforts_text(&merged, "grok-4.7").as_deref(),
@@ -20654,18 +21007,19 @@ wire_api = "chat"
         assert!(build_npm_install_spec("cline@3.0.9", Some("latest")).is_err());
     }
 
-    // hermes-agent's postinstall bootstraps its runtime, and it is the only
-    // package codeg force-enables lifecycle scripts for. The spec, not the
-    // agent type, is what `npm_package_requires_scripts` keys off, so a custom
-    // version spec must still name the package, or the install leaves a shim
-    // that only fails later, at connect, with "runtime is not ready". The spec's
-    // own version is also the recorded fallback when detection comes up empty.
+    // hermes-agent's postinstall bootstraps its runtime, so codeg
+    // force-enables its lifecycle scripts. The spec, not the agent type, is
+    // what `npm_package_requires_scripts` keys off, so a custom version spec
+    // must still name the package, or the install leaves a shim that only
+    // fails later, at connect, with "runtime is not ready". The spec's own
+    // version is also the recorded fallback when detection comes up empty.
     #[test]
     fn hermes_custom_version_spec_keeps_lifecycle_scripts_and_records_its_version() {
-        let spec = build_npm_install_spec("hermes-agent@0.22.2", Some("0.23.0")).unwrap();
-        assert_eq!(spec, "hermes-agent@0.23.0");
+        let spec = build_npm_install_spec("hermes-agent@0.23.0", Some("0.24.0")).unwrap();
+        assert_eq!(spec, "hermes-agent@0.24.0");
         assert!(npm_package_requires_scripts(&spec));
-        assert_eq!(version_from_package_spec(&spec).as_deref(), Some("0.23.0"));
+        assert!(npm_package_bootstraps_runtime(&spec));
+        assert_eq!(version_from_package_spec(&spec).as_deref(), Some("0.24.0"));
     }
 
     #[test]
@@ -20801,8 +21155,9 @@ wire_api = "chat"
     }
 
     /// A `grok` in `~/.grok/bin` (`grok.exe` on Windows) counts as Grok's
-    /// native install unless Grok recorded it as the npm package's copy, the
-    /// one `npm uninstall -g` leaves behind.
+    /// native install unless it is the npm package's copy, the one `npm
+    /// uninstall -g` leaves behind: recorded as npm's, or, with no record,
+    /// laid out as the npm package lays it out (see the layout tests below).
     #[test]
     fn grok_native_install_counts_any_copy_but_the_npm_packages() {
         let home = tempfile::tempdir().expect("tempdir");
@@ -20822,7 +21177,8 @@ wire_api = "chat"
         // The record as `install.ps1` writes it, with CRLF line endings.
         assert_eq!(found().as_deref(), Some(bin.as_path()));
 
-        // Only an explicit npm record excludes the copy.
+        // Without an npm record, a copy with no build of the npm package's
+        // beside it still counts.
         for other in ["", "[cli]\nauto_update = false\n", "not = [toml"] {
             std::fs::write(&config, other).expect("write config");
             assert_eq!(found().as_deref(), Some(bin.as_path()), "config: {other:?}");
@@ -20835,6 +21191,89 @@ wire_api = "chat"
         std::fs::write(&config, "[cli]\ninstaller = \"npm\"\nauto_update = true\n")
             .expect("write config");
         assert_eq!(found(), None);
+    }
+
+    /// Where npm skipped the postinstall, the package's launcher unpacks the
+    /// build on its first run and records no installer, and the copy is told
+    /// apart by its layout. This is the Windows one, which the test can build
+    /// on any host: `grok.exe` copied from the `grok-<version>.exe` beside it.
+    #[test]
+    fn grok_native_install_skips_an_unrecorded_copy_of_an_npm_build() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let grok_dir = home.path().join(".grok");
+        let bin_dir = grok_dir.join("bin");
+        let bin = bin_dir.join(binary_cache::executable_file_name("grok"));
+        let build_name = |stem: &str| format!("{stem}{}", std::env::consts::EXE_SUFFIX);
+        let build = bin_dir.join(build_name("grok-1.0.70"));
+        let config = grok_dir.join("config.toml");
+        let found = || grok_native_install(home.path(), "grok");
+
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::write(&build, "build 1.0.70").expect("write build");
+        std::fs::write(&bin, "build 1.0.70").expect("write copy");
+        // The launcher's first run leaves no config; a turn then writes one
+        // with a `[cli]` table and still no installer.
+        assert_eq!(found(), None, "no config");
+        std::fs::write(&config, "[cli]\nauto_update = true\n").expect("write config");
+        assert_eq!(found(), None, "no installer");
+
+        // A record decides over the layout.
+        std::fs::write(&config, "[cli]\ninstaller = \"internal\"\n").expect("write config");
+        assert_eq!(found().as_deref(), Some(bin.as_path()));
+        std::fs::remove_file(&config).expect("remove config");
+
+        // A `grok` that is no copy of that build counts, and so does one beside
+        // files that only look like builds (the pager's, another `grok-…`).
+        std::fs::write(&bin, "another build").expect("write other");
+        assert_eq!(found().as_deref(), Some(bin.as_path()));
+        std::fs::remove_file(&build).expect("remove build");
+        for name in ["grok-pager-1.0.70", "grok-latest"] {
+            let lookalike = bin_dir.join(build_name(name));
+            std::fs::write(&lookalike, "another build").expect("write lookalike");
+            assert_eq!(found().as_deref(), Some(bin.as_path()), "{name}");
+            std::fs::remove_file(&lookalike).expect("remove lookalike");
+        }
+    }
+
+    /// The Unix layout: npm links `grok` to the bare name of the build beside
+    /// it, where Grok's own installers link it into `~/.grok/downloads`.
+    #[cfg(unix)]
+    #[test]
+    fn grok_native_install_skips_an_unrecorded_link_to_an_npm_build() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let grok_dir = home.path().join(".grok");
+        let bin_dir = grok_dir.join("bin");
+        let downloads = grok_dir.join("downloads");
+        let bin = bin_dir.join("grok");
+        let found = || grok_native_install(home.path(), "grok");
+        std::fs::create_dir_all(&bin_dir).expect("create bin dir");
+        std::fs::create_dir_all(&downloads).expect("create downloads");
+        std::fs::write(bin_dir.join("grok-1.0.70"), "build 1.0.70").expect("write build");
+        std::fs::write(downloads.join("grok-macos-aarch64"), "build").expect("write download");
+        let relink = |target: &Path| {
+            let _ = std::fs::remove_file(&bin);
+            symlink(target, &bin).expect("link grok");
+        };
+
+        // What the npm launcher and postinstall leave, with no record.
+        relink(Path::new("grok-1.0.70"));
+        assert_eq!(found(), None);
+        std::fs::write(grok_dir.join("config.toml"), "[cli]\nauto_update = true\n")
+            .expect("write config");
+        assert_eq!(found(), None, "a config without an installer");
+
+        // install.sh's relative link, and the absolute one it makes when the
+        // bin and download directories have different parents.
+        let absolute = downloads.join("grok-macos-aarch64");
+        for target in [
+            Path::new("../downloads/grok-macos-aarch64"),
+            absolute.as_path(),
+        ] {
+            relink(target);
+            assert_eq!(found().as_deref(), Some(bin.as_path()), "{target:?}");
+        }
     }
 
     #[cfg(not(windows))]
@@ -22522,35 +22961,52 @@ wire_api = "chat"
         }
     }
 
-    /// The script flags reach exactly the packages whose install is their
+    /// The script flags reach exactly the packages whose install needs their
     /// scripts, and name the package, which npm 12 needs before it runs a
     /// script of a global install or an `npx` run.
     #[test]
-    fn hermes_installs_name_the_package_whose_scripts_npm_must_run() {
-        for spec in ["hermes-agent@0.22.2", "hermes-agent@0.23.0", "hermes-agent"] {
-            assert_eq!(
-                npm_run_scripts_args(spec),
-                ["--ignore-scripts=false", "--allow-scripts=hermes-agent"],
-                "{spec}"
-            );
+    fn installs_name_the_packages_whose_scripts_npm_must_run() {
+        for (specs, name) in [
+            (
+                &["hermes-agent@0.23.0", "hermes-agent@0.24.0", "hermes-agent"][..],
+                "hermes-agent",
+            ),
+            (
+                &["@xai-official/grok@1.0.77", "@xai-official/grok"][..],
+                "@xai-official/grok",
+            ),
+        ] {
+            for spec in specs {
+                assert_eq!(
+                    npm_run_scripts_args(spec),
+                    [
+                        "--ignore-scripts=false".to_string(),
+                        format!("--allow-scripts={name}"),
+                    ],
+                    "{spec}"
+                );
+            }
         }
-        // Every other agent keeps the user's own script policy.
+        // Every other agent keeps the user's own script policy, and so does a
+        // package whose name only starts like one of those.
         for spec in [
             "cline@3.0.74",
-            "@xai-official/grok@1.0.70",
+            "@xai-official/grok-darwin-arm64@1.0.77",
             "hermes-agent-npm@1.0.0",
         ] {
             assert!(npm_run_scripts_args(spec).is_empty(), "{spec}");
         }
+        // Grok's postinstall downloads nothing and leaves no runtime to check.
+        assert!(!npm_package_bootstraps_runtime("@xai-official/grok@1.0.77"));
         assert_eq!(
-            hermes_npx_argv("hermes-agent@0.22.2", &["acp", "--setup"]),
+            hermes_npx_argv("hermes-agent@0.23.0", &["acp", "--setup"]),
             [
                 "npx",
                 "-y",
                 "--ignore-scripts=false",
                 "--allow-scripts=hermes-agent",
                 "--package",
-                "hermes-agent@0.22.2",
+                "hermes-agent@0.23.0",
                 "hermes",
                 "acp",
                 "--setup",
@@ -22577,7 +23033,7 @@ wire_api = "chat"
                     .expect("npx recipe must pin via --package");
                 assert_eq!(
                     argv.get(pkg_idx + 1).map(String::as_str),
-                    Some("hermes-agent@0.22.2")
+                    Some("hermes-agent@0.23.0")
                 );
                 assert_eq!(argv.get(pkg_idx + 2).map(String::as_str), Some("hermes"));
             } else {
@@ -23225,19 +23681,25 @@ model = "gpt"
             )
         };
 
-        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.22.2", download());
+        let annotated = annotate_npm_bootstrap_failure("hermes-agent@0.23.0", download());
         let text = annotated.to_string();
         assert!(text.contains("fetch failed"), "keeps the original error");
         assert!(text.contains("HTTP(S)_PROXY"), "adds the proxy hint");
 
         // A package whose install runs no bootstrap can't fail this way, so the
-        // hint would be noise even on a matching message.
-        let other = annotate_npm_bootstrap_failure("@zed-industries/claude-code-acp", download());
-        assert!(!other.to_string().contains("HTTP(S)_PROXY"));
+        // hint would be noise even on a matching message. That includes Grok,
+        // whose postinstall codeg also runs but which downloads nothing.
+        for other in [
+            "@zed-industries/claude-code-acp",
+            "@xai-official/grok@1.0.77",
+        ] {
+            let other = annotate_npm_bootstrap_failure(other, download());
+            assert!(!other.to_string().contains("HTTP(S)_PROXY"));
+        }
 
         // A hermes failure that isn't a download stays untouched.
         let permissions = annotate_npm_bootstrap_failure(
-            "hermes-agent@0.22.2",
+            "hermes-agent@0.23.0",
             AcpError::Protocol("failed to install npm package globally: EACCES".to_string()),
         );
         assert!(!permissions.to_string().contains("HTTP(S)_PROXY"));
@@ -24080,5 +24542,154 @@ model = "gpt"
             env.get("CLINE_PROVIDER").map(String::as_str),
             Some("cline-pass")
         );
+    }
+
+    #[test]
+    fn instructions_write_creates_the_file_and_its_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent").join("AGENTS.md");
+        write_instructions_file(&path, "# Rules\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# Rules\n");
+        write_instructions_file(&path, "").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn instructions_write_of_empty_text_never_creates_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        write_instructions_file(&agent_dir.join("AGENTS.md"), "").unwrap();
+        assert!(!agent_dir.exists());
+    }
+
+    #[test]
+    fn instructions_write_refuses_a_file_it_cannot_read_as_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("AGENTS.md");
+        fs::write(&path, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(write_instructions_file(&path, "# Rules").is_err());
+        assert_eq!(fs::read(&path).unwrap(), vec![0xff, 0xfe, 0x00]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn instructions_write_goes_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dotfiles-CLAUDE.md");
+        fs::write(&target, "old").unwrap();
+        let link = dir.path().join("CLAUDE.md");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_instructions_file(&link, "new").unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+    }
+
+    #[test]
+    fn test_agent_system_instructions_paths() {
+        let file_name = |agent: AgentType| {
+            agent_system_instructions_path(agent)
+                .and_then(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+        };
+        assert_eq!(file_name(AgentType::ClaudeCode).as_deref(), Some("CLAUDE.md"));
+        assert_eq!(file_name(AgentType::Gemini).as_deref(), Some("GEMINI.md"));
+        for agent in [
+            AgentType::Antigravity,
+            AgentType::OpenCode,
+            AgentType::Cline,
+            AgentType::KimiCode,
+            AgentType::Grok,
+            AgentType::DeepSeek,
+            AgentType::Qoder,
+            AgentType::Kiro,
+            AgentType::CommandCode,
+            AgentType::ZCode,
+        ] {
+            assert_eq!(file_name(agent).as_deref(), Some("AGENTS.md"), "{agent:?}");
+        }
+        let antigravity = agent_system_instructions_path(AgentType::Antigravity).unwrap();
+        assert!(antigravity.ends_with(".gemini/AGENTS.md"));
+        let kiro = agent_system_instructions_path(AgentType::Kiro).unwrap();
+        assert!(kiro.ends_with("steering/AGENTS.md"));
+        let cline = agent_system_instructions_path(AgentType::Cline).unwrap();
+        assert!(cline.ends_with(".agents/AGENTS.md"));
+        // Codex, Trae, Pi and CodeBuddy pick among candidates that exist on
+        // this machine; their rules are covered by the helpers' tests.
+        for agent in [AgentType::Codex, AgentType::Trae, AgentType::Pi, AgentType::CodeBuddy] {
+            assert!(agent_system_instructions_path(agent).is_some(), "{agent:?}");
+        }
+        for agent in [
+            AgentType::Hermes,
+            AgentType::Cursor,
+            AgentType::MiniMaxCode,
+            AgentType::OpenClaw,
+            AgentType::Custom("my-bot"),
+        ] {
+            assert_eq!(agent_system_instructions_path(agent), None, "{agent:?}");
+        }
+    }
+
+    #[test]
+    fn codex_style_instructions_use_a_non_blank_override() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(codex_style_instructions_file(dir.path()), dir.path().join("AGENTS.md"));
+        fs::write(dir.path().join("AGENTS.override.md"), " \n").unwrap();
+        assert_eq!(codex_style_instructions_file(dir.path()), dir.path().join("AGENTS.md"));
+        fs::write(dir.path().join("AGENTS.override.md"), "# Override").unwrap();
+        assert_eq!(
+            codex_style_instructions_file(dir.path()),
+            dir.path().join("AGENTS.override.md")
+        );
+    }
+
+    #[test]
+    fn instructions_save_stays_on_the_shown_file_when_the_resolution_flips() {
+        let dir = tempfile::tempdir().unwrap();
+        let override_file = dir.path().join("AGENTS.override.md");
+        let agents_file = dir.path().join("AGENTS.md");
+        fs::write(&override_file, "# Override").unwrap();
+        fs::write(&agents_file, "# Fallback").unwrap();
+        let candidates = || vec![override_file.clone(), agents_file.clone()];
+        let shown = override_file.display().to_string();
+
+        // Blanking the shown override flips Codex's resolution to AGENTS.md…
+        write_instructions_file(&override_file, "").unwrap();
+        let resolved = codex_style_instructions_file(dir.path());
+        assert_eq!(resolved, agents_file);
+        // …but the next save still lands on the file the editor showed.
+        let target = instructions_write_target(resolved, candidates(), Some(&shown)).unwrap();
+        assert_eq!(target, override_file);
+        write_instructions_file(&target, "# New").unwrap();
+        assert_eq!(fs::read_to_string(&agents_file).unwrap(), "# Fallback");
+        assert_eq!(fs::read_to_string(&override_file).unwrap(), "# New");
+    }
+
+    #[test]
+    fn instructions_save_refuses_a_path_that_is_not_the_agents_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents_file = dir.path().join("AGENTS.md");
+        let elsewhere = dir.path().join("elsewhere.md").display().to_string();
+        assert!(instructions_write_target(
+            agents_file.clone(),
+            vec![agents_file.clone()],
+            Some(&elsewhere)
+        )
+        .is_err());
+        assert_eq!(
+            instructions_write_target(agents_file.clone(), vec![agents_file.clone()], None)
+                .unwrap(),
+            agents_file
+        );
+    }
+
+    #[test]
+    fn first_existing_instructions_file_falls_back_to_the_first_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
+        assert_eq!(
+            first_existing_file(dir.path(), &names),
+            dir.path().join("AGENTS.override.md")
+        );
+        fs::write(dir.path().join("CLAUDE.md"), "x").unwrap();
+        assert_eq!(first_existing_file(dir.path(), &names), dir.path().join("CLAUDE.md"));
     }
 }

@@ -47,6 +47,7 @@ const EMPTY_STEERED_MESSAGE_IDS: string[] = []
 // for every connection that has no async tasks — i.e. almost all of them.
 const EMPTY_ASYNC_TASKS: AsyncTaskRecord[] = []
 const EMPTY_WORKFLOWS: WorkflowRun[] = []
+const EMPTY_DELEGATED_CHILDREN: string[] = []
 
 export interface UseConnectionReturn {
   connectionId: string | null
@@ -135,6 +136,11 @@ export interface UseConnectionReturn {
    *  teardown (`shouldDisconnectOnUnmount`) spares a connection whose agent CLI
    *  still has background work to finish. */
   backgroundOutstanding: number
+  /** The codeg delegations this connection still has running (their child
+   *  connection ids). Never rendered from here either — a busy signal, because
+   *  ending the parent cancels them. See
+   *  `ConnectionState.delegatedChildren`. */
+  delegatedChildren: string[]
   connect: (
     agentType: AgentType,
     workingDir?: string,
@@ -320,6 +326,8 @@ export function useConnection(contextKey: string): UseConnectionReturn {
   const configStaleDismissed = connection?.configStaleDismissed ?? false
   const isDelegationChild = connection?.isDelegationChild ?? false
   const backgroundOutstanding = connection?.backgroundOutstanding ?? 0
+  const delegatedChildren =
+    connection?.delegatedChildren ?? EMPTY_DELEGATED_CHILDREN
 
   const connect = useCallback(
     (
@@ -432,6 +440,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       configStaleDismissed,
       isDelegationChild,
       backgroundOutstanding,
+      delegatedChildren,
       connect,
       disconnect,
       reapplyConfig,
@@ -479,6 +488,7 @@ export function useConnection(contextKey: string): UseConnectionReturn {
       configStaleDismissed,
       isDelegationChild,
       backgroundOutstanding,
+      delegatedChildren,
       connect,
       disconnect,
       reapplyConfig,

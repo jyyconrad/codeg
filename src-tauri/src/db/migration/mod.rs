@@ -69,6 +69,7 @@ mod m20261020_000001_folder_command_run_local;
 mod m20261022_000001_tool_approval;
 mod m20261022_000001_work_task_delivery;
 mod m20261031_000001_folder_chat_channel_topic_message_id;
+mod m20261106_000001_work_task_source_key;
 pub struct Migrator;
 
 #[async_trait::async_trait]
@@ -144,6 +145,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261022_000001_tool_approval::Migration),
             Box::new(m20261022_000001_work_task_delivery::Migration),
             Box::new(m20261031_000001_folder_chat_channel_topic_message_id::Migration),
+            Box::new(m20261106_000001_work_task_source_key::Migration),
         ]
     }
 }

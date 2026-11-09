@@ -2152,6 +2152,32 @@ fn agent_debug_callback(
     }
 }
 
+/// The settings codeg launches Qoder with, layered over the user's own as
+/// Qoder's command-line settings source.
+///
+/// From 1.1.84 Qoder defers the tools of every MCP server (all but those
+/// marked `alwaysLoad`) unless some settings source sets `mcp.lazyLoad`: the
+/// model is handed `mcp_list`, `mcp_get` and `mcp_call` instead, and reaches a
+/// deferred tool only through `mcp_call`, which carries the real
+/// `mcp__<server>__<tool>` name inside its arguments.
+/// Everything codeg does with codeg-mcp's tools keys on that name: the cards
+/// (`_meta.qoder.toolName`), the automatic answer to the permission request of
+/// codeg's own question and result tools ([`codeg_tool_auto_allow_option`]),
+/// and the history parser. So codeg turns lazy loading off, as it was through
+/// 1.1.83 (which takes the flag too). An option `qoder --acp` does not know
+/// makes it exit, but each release tried from 1.1.0 to 1.1.84 (1.1.0, 1.1.30,
+/// 1.1.50, 1.1.64, 1.1.75, 1.1.81, 1.1.83, 1.1.84) takes `--settings`, and
+/// 1.1.30 and 1.1.64 open sessions with this one as without it.
+const QODER_LAUNCH_SETTINGS: &str = r#"{"mcp":{"lazyLoad":false}}"#;
+
+/// The arguments codeg adds after an npx agent's registry `args`.
+fn npx_launch_extra_args(agent_type: AgentType) -> &'static [&'static str] {
+    match agent_type {
+        AgentType::Qoder => &["--settings", QODER_LAUNCH_SETTINGS],
+        _ => &[],
+    }
+}
+
 async fn build_agent(
     agent_type: AgentType,
     runtime_env: &BTreeMap<String, String>,
@@ -2299,7 +2325,7 @@ async fn build_agent(
                     parts.push(mode);
                 }
             }
-            for a in args {
+            for a in args.iter().chain(npx_launch_extra_args(agent_type)) {
                 parts.push((*a).into());
             }
             // Translate OpenClaw-specific env vars to CLI flags
@@ -4702,19 +4728,42 @@ fn filter_pi_enabled_model_options(
         .collect()
 }
 
+/// Emit the option list an establishment settled on.
 async fn emit_session_config_options_values(
     state: &Arc<RwLock<SessionState>>,
     emitter: &EventEmitter,
     config_options: Vec<SessionConfigOption>,
 ) {
+    emit_config_options(state, emitter, config_options, false).await;
+}
+
+/// Emit the option list an agent sent once the session was set up: its answer
+/// to a `session/set_config_option`, or its own `config_option_update`. Unlike
+/// an establishment's, such a list updates the selectors on screen, which for
+/// Hermes are partly codeg's own ([`fold_hermes_config_options`]).
+async fn emit_session_config_options_update(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    config_options: Vec<SessionConfigOption>,
+) {
+    emit_config_options(state, emitter, config_options, true).await;
+}
+
+async fn emit_config_options(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    config_options: Vec<SessionConfigOption>,
+    update: bool,
+) {
     // Drop what this launch froze BEFORE mapping, so every producer of this
     // event — establishment, the answer to a set, and the agent's own
     // `config_option_update` push — is filtered by one rule.
-    let (pinned, pi_enabled_model_patterns) = {
+    let (pinned, pi_enabled_model_patterns, agent_type) = {
         let guard = state.read().await;
         (
             guard.env_pinned_config_option_ids.clone(),
             guard.pi_enabled_model_patterns.clone(),
+            guard.agent_type,
         )
     };
     let visible = visible_config_options(&pinned, config_options);
@@ -4722,6 +4771,20 @@ async fn emit_session_config_options_values(
         Some(patterns) => filter_pi_enabled_model_options(patterns, visible),
         None => visible,
     };
+    if update && agent_type == AgentType::Hermes {
+        // Folded against the selectors on screen under the same lock that
+        // replaces them, so a pick landing in between is not undone.
+        let native = map_session_config_options(&visible);
+        emit_with_state_built(state, emitter, |s| {
+            let config_options = match s.config_options.as_deref() {
+                Some(shown) => fold_hermes_config_options(shown, native),
+                None => native,
+            };
+            Some(AcpEvent::SessionConfigOptions { config_options })
+        })
+        .await;
+        return;
+    }
     emit_with_state(
         state,
         emitter,
@@ -6030,18 +6093,22 @@ const HERMES_MODEL_OPTION_ID: &str = MODEL_CONFIG_OPTION_ID;
 /// session mode.
 const HERMES_MODE_OPTION_ID: &str = "mode";
 
-/// The selectors codeg builds for Hermes itself; neither is a Hermes config
-/// option.
+/// The selectors codeg builds for Hermes itself, from the session reply's
+/// legacy `models` and `modes`.
 const HERMES_SYNTHESIZED_OPTION_IDS: &[&str] = &[HERMES_MODEL_OPTION_ID, HERMES_MODE_OPTION_ID];
 
-/// Hermes lists its models only in the session reply's legacy `models`
-/// (verified against 0.21.6; its ACP adapter is the same through the pinned
-/// 0.22.2): every signed-in provider's models and every named endpoint's
-/// (`providers:` in config.yaml, codeg's own `custom:codeg` among them), with
-/// `provider:model` ids — `openrouter:anthropic/claude-opus-5.5`,
-/// `custom:codeg:glm-5.2`. It sends no `configOptions`, and takes a switch
-/// only as `session/set_model`: its `session/set_config_option` stores
-/// whatever it is sent and answers an empty list.
+/// Hermes lists its models in the session reply's legacy `models` (verified
+/// against 0.21.6, 0.22.2, 0.22.6, 0.22.7 and 0.23.0): every signed-in provider's
+/// models and every named endpoint's (`providers:` in config.yaml, codeg's own
+/// `custom:codeg` among them), with `provider:model` ids —
+/// `openrouter:anthropic/claude-opus-5.5`, `custom:codeg:glm-5.2`. Through
+/// 0.22.2 that is the only place: it sends no `configOptions`, and takes a
+/// switch only as `session/set_model`, its `session/set_config_option` storing
+/// whatever it is sent and answering an empty list. From 0.22.6 (0.23.0 is the
+/// pin) Hermes also sends the same rows, without the provider notes, as a
+/// `model` config option and takes a switch either way; codeg keeps building
+/// its selector from the legacy list and folds Hermes' own option into it
+/// ([`fold_hermes_config_options`]).
 ///
 /// The rows are grouped by provider under the label Hermes gives it, as in
 /// its own `/model` picker. The label comes off each row's name (`OpenRouter ·
@@ -6139,6 +6206,161 @@ fn hermes_mode_option(modes: &SessionModeState) -> Option<SessionConfigOptionInf
     mode_state_option(modes, HERMES_MODE_OPTION_ID, "Mode")
 }
 
+/// Hermes' own edit-mode option (0.22.6 on): the edit-approval policy its
+/// legacy modes set, as `ask` / `workspace_session` / `session`.
+const HERMES_EDIT_POLICY_OPTION_ID: &str = "edit_approval_policy";
+
+/// Each Hermes edit-approval policy with the legacy mode that sets it (its
+/// `acp_adapter/modes.py`): the same three settings under two sets of ids.
+const HERMES_EDIT_POLICY_MODES: [(&str, &str); 3] = [
+    ("ask", "default"),
+    ("workspace_session", "accept_edits"),
+    ("session", "dont_ask"),
+];
+
+fn hermes_mode_for_edit_policy(policy: &str) -> Option<&'static str> {
+    HERMES_EDIT_POLICY_MODES
+        .iter()
+        .find(|(known, _)| *known == policy)
+        .map(|(_, mode)| *mode)
+}
+
+/// Fold the options Hermes sends after the session is set up into the
+/// selectors codeg shows for it.
+///
+/// From 0.22.6 Hermes sends `configOptions` of its own — `edit_approval_policy`
+/// (its legacy modes under other ids), `model` (its legacy model list without
+/// the provider notes) and `reasoning_effort` — and sends the whole list again
+/// after every model or mode switch, in a `config_option_update` and in its
+/// answer to `session/set_config_option`. Taken as they come, they would
+/// replace codeg's grouped model selector with a flat list and its mode
+/// selector with a second control for the same policy. So Hermes' `model`
+/// keeps the groups and names `shown` has for it
+/// ([`regroup_hermes_model_option`]), its edit policy moves codeg's `mode`
+/// selector when `shown` has one, and every other option is Hermes' own. A
+/// list without a `model` (0.22.2's empty answer) leaves the one `shown` has.
+fn fold_hermes_config_options(
+    shown: &[SessionConfigOptionInfo],
+    native: Vec<SessionConfigOptionInfo>,
+) -> Vec<SessionConfigOptionInfo> {
+    let shown_model = shown.iter().find(|o| o.id == HERMES_MODEL_OPTION_ID);
+    let mut mode = shown
+        .iter()
+        .find(|o| o.id == HERMES_MODE_OPTION_ID)
+        .cloned();
+    let mut model = None;
+    let mut rest = Vec::with_capacity(native.len());
+    for option in native {
+        if option.id == HERMES_MODEL_OPTION_ID {
+            model = Some(match shown_model {
+                Some(shown) => regroup_hermes_model_option(shown, option),
+                None => option,
+            });
+        } else if option.id == HERMES_EDIT_POLICY_OPTION_ID && mode.is_some() {
+            let (SessionConfigKindInfo::Select(policy), Some(SessionConfigKindInfo::Select(sel))) =
+                (&option.kind, mode.as_mut().map(|m| &mut m.kind))
+            else {
+                continue;
+            };
+            if let Some(mode_id) = hermes_mode_for_edit_policy(&policy.current_value)
+                .filter(|id| sel.options.iter().any(|o| o.value == *id))
+            {
+                sel.current_value = mode_id.to_string();
+            }
+        } else {
+            rest.push(option);
+        }
+    }
+    model
+        .or_else(|| shown_model.cloned())
+        .into_iter()
+        .chain(mode)
+        .chain(rest)
+        .collect()
+}
+
+/// Hermes' own `model` option in the shape of `shown`, the model selector
+/// codeg shows: Hermes' rows and current value, each row with the name and
+/// notes `shown` gives it, under the provider group it sits in there. A row
+/// `shown` lacks (the model a `/model <name>` switched to, say) joins the group
+/// of its provider, or a group of its own named after it; the list stays flat
+/// when `shown` is, or when a row names no provider.
+fn regroup_hermes_model_option(
+    shown: &SessionConfigOptionInfo,
+    native: SessionConfigOptionInfo,
+) -> SessionConfigOptionInfo {
+    let (SessionConfigKindInfo::Select(shown_sel), SessionConfigKindInfo::Select(native_sel)) =
+        (&shown.kind, &native.kind)
+    else {
+        return native;
+    };
+    let mut flat = shown_sel.groups.is_empty();
+    let mut options = Vec::with_capacity(native_sel.options.len());
+    let mut groups: Vec<SessionConfigSelectGroupInfo> = Vec::new();
+    for row in &native_sel.options {
+        let in_group = |pick: &dyn Fn(&SessionConfigSelectOptionInfo) -> bool| {
+            shown_sel.groups.iter().find(|g| g.options.iter().any(pick))
+        };
+        let (row, group) = match shown_sel.options.iter().find(|o| o.value == row.value) {
+            Some(known) => (
+                known.clone(),
+                in_group(&|o| o.value == row.value).map(|g| (g.group.clone(), g.name.clone())),
+            ),
+            None => {
+                let provider = hermes_choice_provider(&row.value);
+                let mut row = row.clone();
+                // Hermes names a row off the session's provider `<label> ·
+                // <model>`, and one it does not list `<provider> · <model>`.
+                let group = match provider.and_then(|provider| {
+                    in_group(&|o| hermes_choice_provider(&o.value) == Some(provider))
+                }) {
+                    Some(group) => {
+                        for prefix in [group.name.as_str()].into_iter().chain(provider) {
+                            if let Some(model) = row.name.strip_prefix(&format!("{prefix} · ")) {
+                                row.name = model.to_string();
+                                break;
+                            }
+                        }
+                        Some((group.group.clone(), group.name.clone()))
+                    }
+                    None => provider.map(|provider| match row.name.split_once(" · ") {
+                        Some((label, model)) if !label.is_empty() && !model.is_empty() => {
+                            let label = label.to_string();
+                            row.name = model.to_string();
+                            (label.clone(), label)
+                        }
+                        _ => (provider.to_string(), provider.to_string()),
+                    }),
+                };
+                (row, group)
+            }
+        };
+        match group {
+            Some((key, name)) => match groups.iter_mut().find(|g| g.group == key) {
+                Some(group) => group.options.push(row.clone()),
+                None => groups.push(SessionConfigSelectGroupInfo {
+                    group: key,
+                    name,
+                    options: vec![row.clone()],
+                }),
+            },
+            None => flat = true,
+        }
+        options.push(row);
+    }
+    if flat {
+        groups.clear();
+    }
+    SessionConfigOptionInfo {
+        kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+            current_value: native_sel.current_value.clone(),
+            options,
+            groups,
+        }),
+        ..shown.clone()
+    }
+}
+
 /// Whether `value` is one of the selector `id`'s values and not the one it is
 /// on: a saved pick worth restoring.
 fn select_offers_other(opts: &[SessionConfigOptionInfo], id: &str, value: &str) -> bool {
@@ -6152,9 +6374,10 @@ fn select_offers_other(opts: &[SessionConfigOptionInfo], id: &str, value: &str) 
 
 /// On connect, re-apply the model and mode the user last picked for Hermes
 /// (saved per agent by the composer), each only when it differs from what the
-/// session already runs and is still offered, on the channel Hermes takes it
-/// on — the shared pipeline would send a `session/set_config_option` Hermes
-/// stores and ignores. A failure leaves the session on what it started on.
+/// session already runs and is still offered, on the channel every Hermes
+/// takes it on — the shared pipeline would send a `session/set_config_option`,
+/// which Hermes through 0.22.2 stores and ignores. A failure leaves the session
+/// on what it started on.
 async fn apply_hermes_preferred_options(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
@@ -6193,8 +6416,8 @@ async fn apply_hermes_preferred_options(
 }
 
 /// Apply a composer selector change for Hermes: the model and mode on the
-/// channels Hermes takes them on, anything else (none today) on the shared
-/// path.
+/// channels every Hermes takes them on, anything else (0.22.6's
+/// `reasoning_effort`) on the shared path.
 async fn set_hermes_config_option(
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
@@ -6205,8 +6428,12 @@ async fn set_hermes_config_option(
 ) -> Result<SetterOutcome, agent_client_protocol::Error> {
     let outcome = match config_id.as_str() {
         // Hermes answers `{}` once the session runs on the new model, without
-        // naming it; a turn in progress, or a model no provider serves, is an
-        // error instead.
+        // naming it; a model no provider serves is an error instead. So is a
+        // turn in progress through 0.22.2. From 0.22.6 a pick made during a
+        // turn is answered `{}` instead: Hermes says in the conversation that
+        // the model "applies from your next message" and runs the next turn on
+        // it (measured on 0.22.7 and 0.23.0); by its source it can also refuse
+        // the pick or ask about it when the turn ends.
         HERMES_MODEL_OPTION_ID => {
             set_legacy_session_model(cx, session_id, &value_id).await?;
             SetterOutcome::Accepted
@@ -6860,10 +7087,10 @@ async fn apply_and_emit_session_config_options(
     if agent_type == AgentType::Hermes {
         if let Some(model) = synthesize_hermes_model_option(session_models) {
             // As for Kiro: once Hermes has a model selector its modes have to
-            // be a config option too, or the composer drops them. Neither is a
-            // Hermes config option on the wire, so their saved values go out
-            // on their own channels, and only the rest through the shared
-            // pipeline.
+            // be a config option too, or the composer drops them. Hermes
+            // through 0.22.2 takes neither as a config option, so their saved
+            // values go out on their own channels, which 0.22.6 through 0.23.0 take
+            // as well, and only the rest through the shared pipeline.
             let standard_prefs: BTreeMap<String, String> = preferred_config_values
                 .iter()
                 .filter(|(id, _)| !HERMES_SYNTHESIZED_OPTION_IDS.contains(&id.as_str()))
@@ -6911,7 +7138,15 @@ async fn apply_and_emit_session_config_options(
             .await;
             let pinned = state.read().await.env_pinned_config_option_ids.clone();
             let mut infos = map_session_config_options(&visible_config_options(&pinned, updated));
-            infos.retain(|o| !HERMES_SYNTHESIZED_OPTION_IDS.contains(&o.id.as_str()));
+            // From 0.22.6 Hermes lists options of its own as well: its `model`
+            // is the selector above, and its `edit_approval_policy` is the
+            // mode selector's setting under other ids. Their values here
+            // predate the replay above, so they are dropped, not folded.
+            let shows_mode = synthesized.iter().any(|o| o.id == HERMES_MODE_OPTION_ID);
+            infos.retain(|o| {
+                !HERMES_SYNTHESIZED_OPTION_IDS.contains(&o.id.as_str())
+                    && !(shows_mode && o.id == HERMES_EDIT_POLICY_OPTION_ID)
+            });
             synthesized.extend(infos);
             emit_with_state(
                 state,
@@ -7856,10 +8091,10 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     //
     // Command Code joins it for the same reason: `command-code acp` loads
     // `~/.commandcode/mcp.json` and starts what `session/new` carries as well
-    // (verified against 1.84.0, 1.86.3, 1.88.0, 1.88.1 and 1.88.2, a server
-    // from each source in one session's tool list), and a name on both sides
-    // keeps the file's copy, as its docs say and 1.88.0, 1.88.1 and 1.88.2
-    // showed live. codeg's MCP settings UI manages that file.
+    // (verified against 1.84.0, 1.86.3, 1.88.0, 1.88.1, 1.88.2 and 1.88.4, a
+    // server from each source in one session's tool list), and a name on both
+    // sides keeps the file's copy, as its docs say and 1.88.0, 1.88.1, 1.88.2
+    // and 1.88.4 showed live. codeg's MCP settings UI manages that file.
     //
     // OpenCode joins it: 2.x loads `mcp.servers` from its own config, which
     // codeg's MCP settings UI manages, and turns each server `session/new`
@@ -9963,7 +10198,19 @@ async fn run_connection(
                         if let Some(tagged) = tag_pi_runtime_outdated(&e, agent_type) {
                             return Err(tagged);
                         }
-                        let err_str = e.to_string();
+                        // The same holds for a Claude Code that refused to
+                        // start on this machine (see `claude_refused_to_start`):
+                        // its error carries the CLI's own sentence about what
+                        // to fix, which is what the user needs to see.
+                        if claude_refused_to_start(&e) {
+                            tracing::warn!(
+                                "[ACP][{agent_type}] session/load refused at startup ({}); \
+                                 not falling back to session/new",
+                                agent_error_text(&e)
+                            );
+                            return Err(e);
+                        }
+                        let err_str = agent_error_text(&e);
                         let forgotten_session = classify_session_load_error(&e);
                         let recovers_locally =
                             recovers_load_failure_locally(agent_type, forgotten_session);
@@ -10023,7 +10270,7 @@ async fn run_connection(
                                 &state,
                                 &emitter_clone,
                                 AcpEvent::Error {
-                                    message: format!("Failed to load session, starting new: {e}"),
+                                    message: format!("Failed to load session, starting new: {err_str}"),
                                     agent_type: agent_type.to_string(),
                                     code: Some(SESSION_LOAD_FALLBACK_ERROR_CODE.to_string()),
                                     details: None,
@@ -10304,7 +10551,7 @@ fn connection_failure(err: agent_client_protocol::Error) -> AcpError {
         // let the frontend append the `supports_mcp` suggestion.
         AcpError::mcp_rejected(raw.replace(MCP_SUSPECT_SENTINEL, ""))
     } else {
-        AcpError::protocol(raw)
+        AcpError::protocol(agent_error_text(&err))
     }
 }
 
@@ -11829,7 +12076,7 @@ async fn set_session_config_option(
         emit_with_state(state, emitter, rejection).await;
     }
     let outcome = config_option_outcome(&mapped, &config_id);
-    emit_session_config_options_values(state, emitter, updated).await;
+    emit_session_config_options_update(state, emitter, updated).await;
     Ok(outcome)
 }
 
@@ -12322,7 +12569,7 @@ async fn set_session_config_option_inner(
 ) -> Result<Vec<SessionConfigOption>, agent_client_protocol::Error> {
     // Of the two ACP mode requests, only session/set_mode refreshes the
     // bridge's plan-enabled mirror; set_config_option("mode") keeps reporting
-    // "plan" while that mirror is set (bridge 0.69.2 through 0.79.1). Send
+    // "plan" while that mirror is set (bridge 0.69.2 through 0.82.0). Send
     // set_mode first for mode changes, then read the config response; the
     // initial-mode gate still requires an exact confirmation before prompt.
     if agent_type == AgentType::ZCode && config_id == "mode" {
@@ -13770,7 +14017,7 @@ fn stop_reason_to_str(reason: StopReason) -> &'static str {
 /// How long after the answer to a prompt that a Stop cancelled codeg holds
 /// CodeBuddy's next prompt.
 ///
-/// CodeBuddy (2.171.0 through 2.177.1) answers a `session/prompt` that starts
+/// CodeBuddy (2.171.0 through 2.181.0) answers a `session/prompt` that starts
 /// within 500 ms of a `session/cancel` it took mid-turn with `cancelled`, and
 /// does not run the prompt or keep it in its history (`isCancelBarrierActive`
 /// in its ACP view). It arms that barrier while it handles the cancel, before
@@ -13856,7 +14103,7 @@ async fn wait_out_codebuddy_cancel(held: &mut HeldPrompt) {
 /// CodeBuddy's stop reason for a prompt codeg did not cancel.
 ///
 /// After a Stop that caught a permission request, CodeBuddy (2.171.0 through
-/// 2.177.1) answers the next prompt it runs `cancelled` even though that
+/// 2.181.0) answers the next prompt it runs `cancelled` even though that
 /// prompt ran to the end: its forwarding keeps the session's aborted signal
 /// from the Stop. Such an answer carries `_meta["codebuddy.ai/finishReason"]:
 /// "stop"`, which a cancelled run never has. A prompt codeg cancelled never
@@ -13996,6 +14243,27 @@ fn classify_session_load_error(e: &agent_client_protocol::Error) -> Option<&'sta
     if reason == Some("thread_active_writer") {
         return Some("session_busy");
     }
+    // claude-agent-acp 0.100.0 (#1508): two of the reasons Claude Code gives
+    // for not starting belong to the session, not to the machine, so a
+    // `session/new` would open and leave the history behind.
+    //  * `session_held_by_background`: the session runs as a Claude Code
+    //    background job (`claude agents` lists it). Busy, not gone, as with
+    //    codex's writer lock: it opens once that job stops.
+    //  * `worktree_resume_refused` / `worktree_unverified`: the session is
+    //    bound to a git worktree Claude Code could not verify, or will not
+    //    enter. The CLI keeps or clears the binding itself, and its message
+    //    says whether opening it again can work.
+    // Up to 0.99.x both reached codeg as "Claude Code process exited with code
+    // 1. stderr: …", which `SESSION_GONE_MARKERS` reads as unavailable. From
+    // 0.100.0 the message is the CLI's own sentence, which names no marker.
+    // The other reasons are about the machine; see `claude_refused_to_start`.
+    match claude_startup_failure_reason(e) {
+        Some("session_held_by_background") => return Some("session_busy"),
+        Some("worktree_resume_refused" | "worktree_unverified") => {
+            return Some("session_unavailable")
+        }
+        _ => {}
+    }
     // codex-acp 2.2: the app-server died under the open (see
     // [`codex_app_server_lost`]). Never the `session/new` fallback, whether or
     // not the adapter will restart it. Up to 2.1.x a dead app-server took the
@@ -14016,6 +14284,63 @@ fn classify_session_load_error(e: &agent_client_protocol::Error) -> Option<&'sta
         return Some("resource_not_found");
     }
     classify_session_load_failure(e.code, &e.to_string())
+}
+
+/// Why Claude Code refused to start, as claude-agent-acp 0.100.0 (#1508)
+/// answers a request that starts it: `data.startupFailureReason`, one of the
+/// CLI's `SDKStartupFailureReason` values (`proxy_invalid`, `cli_version_too_old`,
+/// `session_held_by_background`, …). The adapter makes the CLI's own sentence
+/// the error's message (`Internal error: Invalid proxy URL in HTTPS_PROXY: …
+/// Fix or unset HTTPS_PROXY and restart Claude Code.`) and picks the code from
+/// the reason: `authRequired` for the three a new sign-in fixes
+/// (`gateway_signin_required`, `org_pin_mismatch`, `org_config_refused`),
+/// `invalidParams` for `cwd_unavailable`, `internalError` for the rest. `None`
+/// for any other error, and for older adapters, which report the same refusal
+/// as "Claude Code process exited with code 1. stderr: …" in `data.details`.
+fn claude_startup_failure_reason(e: &agent_client_protocol::Error) -> Option<&str> {
+    e.data
+        .as_ref()?
+        .get("startupFailureReason")?
+        .as_str()
+        .filter(|reason| !reason.is_empty())
+}
+
+/// Whether a failed `session/load` (or `session/resume`) is Claude Code
+/// refusing to start for a reason of the machine it runs on: a proxy setting
+/// that is no URL, managed settings or an organization policy it cannot apply,
+/// a CLI below the required version, an unusable temp directory, a required
+/// sandbox that cannot run, …. Those refuse every session the same way, so the
+/// `session/new` fallback would only announce a fresh start and fail as well,
+/// while the session itself is fine. The reasons of the session
+/// ([`classify_session_load_error`]) and those a sign-in fixes (`authRequired`,
+/// which keeps the ladder's own handling) are not this.
+fn claude_refused_to_start(e: &agent_client_protocol::Error) -> bool {
+    claude_startup_failure_reason(e).is_some()
+        && !matches!(
+            e.code,
+            agent_client_protocol::schema::v1::ErrorCode::AuthRequired
+        )
+        && classify_session_load_error(e).is_none()
+}
+
+/// An agent's error as the user reads it: its `Display`, the message followed
+/// by `data` as JSON, except that a `data` holding nothing but Claude Code's
+/// startup-failure reason is left out. That reason is the machine-readable
+/// twin of the message, which already is the CLI's sentence about it (see
+/// [`claude_startup_failure_reason`]), so it would only add
+/// `{"startupFailureReason": "proxy_invalid"}` under the advice.
+pub(crate) fn agent_error_text(e: &agent_client_protocol::Error) -> String {
+    let reason_only = e
+        .data
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|data| data.len() == 1)
+        && claude_startup_failure_reason(e).is_some();
+    if reason_only && !e.message.is_empty() {
+        e.message.clone()
+    } else {
+        e.to_string()
+    }
 }
 
 /// OpenCode 2's answer for a session it has no record of: -32602 with
@@ -15081,6 +15406,8 @@ async fn run_conversation_loop(
                 cb_state.claude_fork_awaiting_result.clear();
                 // Same for a Qoder ask the canceled turn never completed.
                 cb_state.qoder_ask_questions.clear();
+                // And for a Kimi call it never settled.
+                cb_state.kimi_tool_titles.clear();
                 // A codex web search whose request never reported (canceled
                 // mid-request) must not set aside this turn's first report.
                 // `/goal` continuation turns run on the idle loop and announce
@@ -15370,7 +15697,7 @@ async fn run_conversation_loop(
                                             // can quote a local path, and this
                                             // string is rendered in the UI and
                                             // pushed over the WebSocket.
-                                            message: AcpError::protocol(e.to_string())
+                                            message: AcpError::protocol(agent_error_text(&e))
                                                 .to_string(),
                                             agent_type: agent_type.to_string(),
                                             // No stable code: the payload IS the
@@ -20484,6 +20811,13 @@ struct CodeBuddyLiveState {
     /// start: an ask blocks its turn, so a canceled turn's entry is never
     /// completed.
     qoder_ask_questions: HashMap<String, Vec<crate::parsers::qoder::QoderAskQuestion>>,
+    /// Kimi Code tool calls in flight → the title their own frames gave them,
+    /// so a status Kimi shows on the card in its place lasts only until the
+    /// call settles (see [`KimiToolTitles`]). Dropped at a final status, and
+    /// cleared at turn start like `qoder_ask_questions`, so a call the
+    /// canceled turn never settled is not kept for good; a report of it that
+    /// still arrives after the next turn started keeps the status it shows.
+    kimi_tool_titles: KimiToolTitles,
     /// Codex sub-agent thread id → the launch capsule that spawned it, paired
     /// with the `rawInput` that capsule was announced with.
     ///
@@ -20978,6 +21312,131 @@ fn resolve_rewritten_title(
         return Some("agent".to_string());
     }
     overrides.get(tool_call_id).cloned()
+}
+
+/// Whether a Kimi Code `tool_call_update` reports the call's progress rather
+/// than revising the call.
+///
+/// Kimi's ACP server sends each `status` progress report of a tool as an
+/// update that carries a `title` and nothing else, the status text standing in
+/// for the call's own title (`toolProgressToSessionUpdate` in its
+/// `events-map.ts`, which "refreshes the tool card title"). Every other update
+/// it sends for a call carries a status as well, and the one that settles the
+/// call carries no title at all. These statuses come from an MCP call that has
+/// to reconnect ("MCP connection lost — reconnecting…", which 2.5.2 sends on
+/// every call to a tool whose server came back with a changed definition),
+/// from an MCP server's `authenticate` tool (the URL to open, then
+/// "Authorized — reconnecting <server>…"), and from the background-task wait
+/// (behind Kimi's `wait_for` flag).
+fn kimi_status_frame(
+    agent_type: AgentType,
+    fields: &agent_client_protocol::schema::v1::ToolCallUpdateFields,
+) -> bool {
+    agent_type == AgentType::KimiCode
+        && fields.title.is_some()
+        && fields.status.is_none()
+        && fields.kind.is_none()
+        && fields.name.is_none()
+        && fields.content.is_none()
+        && fields.locations.is_none()
+        && fields.raw_input.is_none()
+        && fields.raw_output.is_none()
+}
+
+/// A Kimi Code tool call's own title, and whether a status shows on its card
+/// in its place.
+struct KimiToolTitle {
+    own: String,
+    status_shown: bool,
+}
+
+/// The titles of the Kimi Code tool calls in flight on a connection
+/// (`CodeBuddyLiveState::kimi_tool_titles`).
+///
+/// A status (see [`kimi_status_frame`]) still shows on the card while the call
+/// runs: it can be the only place Kimi says what the call waits for, such as
+/// the URL to open for an MCP server's sign-in. But Kimi never puts the call's
+/// own title back, so the card would keep the status once the call was done,
+/// and the frontend, which tells a live call's tool from its title
+/// (`inferLiveToolName`), would stop recognising it: an MCP call that had to
+/// reconnect ended as a generic card titled "MCP connection lost —
+/// reconnecting…" until the conversation was reopened. So the frame that
+/// settles such a call brings its own title back.
+#[derive(Default)]
+struct KimiToolTitles {
+    calls: HashMap<String, KimiToolTitle>,
+}
+
+impl KimiToolTitles {
+    /// The opening `tool_call` of a call: its title is the call's own.
+    fn open(&mut self, tool_call_id: &str, title: &str, status: &str) {
+        if is_settled_tool_status(Some(status)) {
+            self.calls.remove(tool_call_id);
+        } else {
+            self.calls.insert(
+                tool_call_id.to_string(),
+                KimiToolTitle {
+                    own: title.to_string(),
+                    status_shown: false,
+                },
+            );
+        }
+    }
+
+    /// The title to send with a call's `tool_call_update`: the frame's own,
+    /// except that a frame settling a call whose card shows a status brings
+    /// the call's own title back.
+    fn update(
+        &mut self,
+        tool_call_id: &str,
+        status_frame: bool,
+        title: Option<String>,
+        status: Option<&str>,
+    ) -> Option<String> {
+        let settled = is_settled_tool_status(status);
+        let title = match title {
+            Some(text) if status_frame => {
+                if let Some(call) = self.calls.get_mut(tool_call_id) {
+                    call.status_shown = true;
+                }
+                Some(text)
+            }
+            Some(own) => {
+                if let Some(call) = self.calls.get_mut(tool_call_id) {
+                    call.own.clone_from(&own);
+                    call.status_shown = false;
+                } else if !settled {
+                    self.calls.insert(
+                        tool_call_id.to_string(),
+                        KimiToolTitle {
+                            own: own.clone(),
+                            status_shown: false,
+                        },
+                    );
+                }
+                Some(own)
+            }
+            None if settled => self
+                .calls
+                .get(tool_call_id)
+                .filter(|call| call.status_shown)
+                .map(|call| call.own.clone()),
+            None => None,
+        };
+        if settled {
+            self.calls.remove(tool_call_id);
+        }
+        title
+    }
+
+    fn clear(&mut self) {
+        self.calls.clear();
+    }
+}
+
+/// Whether a tool call's (lower-cased) status ends it.
+fn is_settled_tool_status(status: Option<&str>) -> bool {
+    matches!(status, Some("completed" | "failed" | "cancelled" | "error"))
 }
 
 fn map_plan_priority(priority: &PlanEntryPriority) -> String {
@@ -23222,13 +23681,77 @@ mod hermes_selector_tests {
 
     type Log = Arc<std::sync::Mutex<Vec<(&'static str, serde_json::Value)>>>;
 
+    /// Hermes 0.22.6's own `configOptions` (`acp_adapter/gateway_session_meta.py`
+    /// `config_options`): its edit policy, the `hermes_models()` rows plus
+    /// `extra_models` as `model`, and its reasoning effort, `default` offered
+    /// only while no level is set.
+    fn hermes_native_options_json(
+        policy: &str,
+        model: &str,
+        effort: &str,
+        extra_models: &[(&str, &str)],
+    ) -> serde_json::Value {
+        let mut models: Vec<serde_json::Value> = hermes_models()["availableModels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| serde_json::json!({"value": m["modelId"], "name": m["name"]}))
+            .collect();
+        models.extend(
+            extra_models
+                .iter()
+                .map(|(value, name)| serde_json::json!({"value": value, "name": name})),
+        );
+        let levels = [
+            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+        ];
+        let efforts: Vec<serde_json::Value> = (effort == "default")
+            .then_some("default")
+            .into_iter()
+            .chain(levels)
+            .map(|v| serde_json::json!({"value": v, "name": v}))
+            .collect();
+        serde_json::json!([
+            {"type": "select", "id": "edit_approval_policy", "name": "Edits",
+             "category": "mode", "currentValue": policy,
+             "options": [
+                 {"value": "ask", "name": "Default"},
+                 {"value": "workspace_session", "name": "Accept Edits"},
+                 {"value": "session", "name": "Don't Ask"}
+             ]},
+            {"type": "select", "id": "model", "name": "Model", "category": "model",
+             "currentValue": model, "options": models},
+            {"type": "select", "id": "reasoning_effort", "name": "Reasoning effort",
+             "category": "thought_level", "currentValue": effort, "options": efforts}
+        ])
+    }
+
+    fn hermes_native_options(
+        policy: &str,
+        model: &str,
+        effort: &str,
+        extra_models: &[(&str, &str)],
+    ) -> Vec<SessionConfigOption> {
+        serde_json::from_value(hermes_native_options_json(
+            policy,
+            model,
+            effort,
+            extra_models,
+        ))
+        .expect("Hermes 0.22.6 options")
+    }
+
     /// A fake Hermes on the agent end of `agent_end` that logs what it is
     /// sent and answers `{}` — or, for a model switch while `busy`, Hermes'
-    /// own refusal.
+    /// own refusal. Its `session/set_config_option` answers as 0.22.2 does (an
+    /// empty list), or with `native` as 0.22.6 does: its whole list, the
+    /// option it was sent set (a session on `custom:codeg:glm-5.2` that asks
+    /// before edits otherwise).
     fn fake_hermes(
         agent_end: Channel,
         log: &Log,
         busy: bool,
+        native: bool,
     ) -> tokio::task::JoinHandle<Result<(), agent_client_protocol::Error>> {
         let (model_log, mode_log, option_log) = (Arc::clone(log), Arc::clone(log), Arc::clone(log));
         tokio::spawn(
@@ -23263,11 +23786,29 @@ mod hermes_selector_tests {
                     async move |req: FakeHermesSetConfigOption,
                                 responder: Responder<serde_json::Value>,
                                 _cx: ConnectionTo<Client>| {
+                        let answer = if native {
+                            let value = req.0["value"].as_str().unwrap_or_default();
+                            let pick = |id: &str, default: &'static str| {
+                                if req.0["configId"] == id {
+                                    value.to_string()
+                                } else {
+                                    default.to_string()
+                                }
+                            };
+                            hermes_native_options_json(
+                                &pick("edit_approval_policy", "ask"),
+                                &pick("model", "custom:codeg:glm-5.2"),
+                                &pick("reasoning_effort", "default"),
+                                &[],
+                            )
+                        } else {
+                            serde_json::json!([])
+                        };
                         option_log
                             .lock()
                             .unwrap()
                             .push(("set_config_option", req.0));
-                        responder.respond(serde_json::json!({"configOptions": []}))
+                        responder.respond(serde_json::json!({"configOptions": answer}))
                     },
                     on_receive_request!(),
                 )
@@ -23297,9 +23838,22 @@ mod hermes_selector_tests {
         Vec<(&'static str, serde_json::Value)>,
         Arc<RwLock<SessionState>>,
     ) {
+        establish_with(prefs, legacy_mode, Vec::new()).await
+    }
+
+    /// [`establish`], on a Hermes whose session reply also carries `initial`
+    /// as its `configOptions` (0.22.6 does; 0.22.2 sends none).
+    async fn establish_with(
+        prefs: BTreeMap<String, String>,
+        legacy_mode: Option<&str>,
+        initial: Vec<SessionConfigOption>,
+    ) -> (
+        Vec<(&'static str, serde_json::Value)>,
+        Arc<RwLock<SessionState>>,
+    ) {
         let log: Log = Arc::default();
         let (client_end, agent_end) = Channel::duplex();
-        let agent = fake_hermes(agent_end, &log, false);
+        let agent = fake_hermes(agent_end, &log, false, !initial.is_empty());
         let state = hermes_state();
         let establishment_state = Arc::clone(&state);
         let legacy_mode = legacy_mode.map(str::to_string);
@@ -23319,7 +23873,7 @@ mod hermes_selector_tests {
                     Some(&hermes_models()),
                     legacy_mode.as_deref(),
                     &prefs,
-                    Vec::new(),
+                    initial.clone(),
                 )
                 .await;
                 Ok(())
@@ -23433,14 +23987,43 @@ mod hermes_selector_tests {
         Vec<(&'static str, serde_json::Value)>,
         BTreeMap<String, String>,
     ) {
+        let (outcome, sent, state) = pick_with(config_id, value, busy, false).await;
+        let current = current(&*state.read().await);
+        (outcome, sent, current)
+    }
+
+    /// [`pick`] on a 0.22.6 Hermes (`native`), whose session also shows its
+    /// own `reasoning_effort`; returns the session's state.
+    async fn pick_with(
+        config_id: &str,
+        value: &str,
+        busy: bool,
+        native: bool,
+    ) -> (
+        Result<SetterOutcome, String>,
+        Vec<(&'static str, serde_json::Value)>,
+        Arc<RwLock<SessionState>>,
+    ) {
         let log: Log = Arc::default();
         let (client_end, agent_end) = Channel::duplex();
-        let agent = fake_hermes(agent_end, &log, busy);
+        let agent = fake_hermes(agent_end, &log, busy, native);
         let state = hermes_state();
-        let opts = vec![
+        let mut opts = vec![
             synthesize_hermes_model_option(Some(&hermes_models())).unwrap(),
             hermes_mode_option(&hermes_modes()).unwrap(),
         ];
+        if native {
+            opts.extend(
+                map_session_config_options(&hermes_native_options(
+                    "ask",
+                    "custom:codeg:glm-5.2",
+                    "default",
+                    &[],
+                ))
+                .into_iter()
+                .filter(|o| o.id == "reasoning_effort"),
+            );
+        }
         emit_with_state(
             &state,
             &EventEmitter::Noop,
@@ -23470,8 +24053,7 @@ mod hermes_selector_tests {
             .expect("client connection");
         agent.abort();
         let sent = log.lock().unwrap().clone();
-        let current = current(&*state.read().await);
-        (outcome, sent, current)
+        (outcome, sent, state)
     }
 
     #[tokio::test]
@@ -23565,6 +24147,346 @@ mod hermes_selector_tests {
         assert_eq!(
             current.get("mode").map(String::as_str),
             Some("accept_edits")
+        );
+    }
+
+    /// The selectors codeg built for a session on `hermes_models()` and
+    /// `hermes_modes()`.
+    fn codeg_hermes_selectors() -> Vec<SessionConfigOptionInfo> {
+        vec![
+            synthesize_hermes_model_option(Some(&hermes_models())).unwrap(),
+            hermes_mode_option(&hermes_modes()).unwrap(),
+        ]
+    }
+
+    fn ids(opts: &[SessionConfigOptionInfo]) -> Vec<&str> {
+        opts.iter().map(|o| o.id.as_str()).collect()
+    }
+
+    #[test]
+    fn hermes_own_options_move_the_selectors_codeg_built() {
+        let shown = codeg_hermes_selectors();
+        let native = map_session_config_options(&hermes_native_options(
+            "workspace_session",
+            "custom:codeg:kimi-k3",
+            "high",
+            &[],
+        ));
+        let folded = fold_hermes_config_options(&shown, native);
+        assert_eq!(
+            ids(&folded),
+            ["model", "mode", "reasoning_effort"],
+            "one control per setting"
+        );
+        assert_eq!(
+            current_config_option_values(&folded),
+            BTreeMap::from([
+                ("mode".to_string(), "accept_edits".to_string()),
+                ("model".to_string(), "custom:codeg:kimi-k3".to_string()),
+                ("reasoning_effort".to_string(), "high".to_string()),
+            ])
+        );
+        // The model selector keeps codeg's groups, names and notes.
+        let (before, after) = (select(&shown[0]), select(&folded[0]));
+        assert_eq!(after.groups, before.groups);
+        assert_eq!(after.options, before.options);
+        assert_eq!(
+            (folded[0].name.as_str(), folded[1].name.as_str()),
+            (shown[0].name.as_str(), "Mode")
+        );
+    }
+
+    #[test]
+    fn each_hermes_edit_policy_is_one_of_its_legacy_modes() {
+        let shown = codeg_hermes_selectors();
+        let mode_after = |policy: &str| {
+            let native = map_session_config_options(&hermes_native_options(
+                policy,
+                "custom:codeg:glm-5.2",
+                "default",
+                &[],
+            ));
+            current_config_option_values(&fold_hermes_config_options(&shown, native))
+                .get("mode")
+                .cloned()
+        };
+        for (policy, mode) in [
+            ("ask", "default"),
+            ("workspace_session", "accept_edits"),
+            ("session", "dont_ask"),
+        ] {
+            assert_eq!(mode_after(policy).as_deref(), Some(mode), "{policy}");
+        }
+        // A policy this build does not know leaves the mode where it was.
+        let mut shown_on = shown.clone();
+        set_select_current(&mut shown_on, "mode", "dont_ask");
+        let native = map_session_config_options(&hermes_native_options(
+            "never",
+            "custom:codeg:glm-5.2",
+            "default",
+            &[],
+        ));
+        assert_eq!(
+            current_config_option_values(&fold_hermes_config_options(&shown_on, native))
+                .get("mode")
+                .map(String::as_str),
+            Some("dont_ask")
+        );
+    }
+
+    #[test]
+    fn a_model_hermes_lists_only_after_a_switch_joins_its_providers_group() {
+        let shown = codeg_hermes_selectors();
+        let native = map_session_config_options(&hermes_native_options(
+            "ask",
+            "custom:codeg:nowhere:no-such-model",
+            "default",
+            &[
+                // What a `/model nowhere:no-such-model` adds on 0.22.6.
+                (
+                    "custom:codeg:nowhere:no-such-model",
+                    "custom:codeg · nowhere:no-such-model",
+                ),
+                ("deepseek:deepseek-v4", "DeepSeek · deepseek-v4"),
+            ],
+        ));
+        let folded = fold_hermes_config_options(&shown, native);
+        let sel = select(&folded[0]);
+        assert_eq!(sel.current_value, "custom:codeg:nowhere:no-such-model");
+        let groups: Vec<(&str, &str, Vec<&str>)> = sel
+            .groups
+            .iter()
+            .map(|g| {
+                (
+                    g.group.as_str(),
+                    g.name.as_str(),
+                    g.options.iter().map(|o| o.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                (
+                    "OpenRouter",
+                    "OpenRouter",
+                    vec!["anthropic/claude-opus-5.5", "openai/gpt-6"]
+                ),
+                (
+                    "codeg",
+                    "codeg",
+                    vec!["glm-5.2", "kimi-k3", "nowhere:no-such-model"]
+                ),
+                ("Ollama", "Ollama", vec!["llama3:8b"]),
+                ("DeepSeek", "DeepSeek", vec!["deepseek-v4"]),
+            ]
+        );
+        assert_eq!(sel.options.len(), 7);
+    }
+
+    #[test]
+    fn a_hermes_row_naming_no_provider_leaves_its_model_list_flat() {
+        let shown = codeg_hermes_selectors();
+        let native = map_session_config_options(&hermes_native_options(
+            "ask",
+            "glm-5.2",
+            "default",
+            &[("glm-5.2", "glm-5.2")],
+        ));
+        let sel = select(&fold_hermes_config_options(&shown, native)[0]).clone();
+        assert!(sel.groups.is_empty());
+        assert_eq!(sel.current_value, "glm-5.2");
+        assert_eq!(sel.options.len(), 6);
+        assert_eq!(sel.options[0].name, "anthropic/claude-opus-5.5");
+    }
+
+    #[test]
+    fn without_codegs_mode_selector_hermes_keeps_its_edit_policy() {
+        let shown = vec![synthesize_hermes_model_option(Some(&hermes_models())).unwrap()];
+        let native = map_session_config_options(&hermes_native_options(
+            "session",
+            "custom:codeg:glm-5.2",
+            "default",
+            &[],
+        ));
+        let folded = fold_hermes_config_options(&shown, native);
+        assert_eq!(
+            ids(&folded),
+            ["model", "edit_approval_policy", "reasoning_effort"]
+        );
+    }
+
+    #[test]
+    fn an_empty_hermes_answer_keeps_the_selectors_codeg_built() {
+        // 0.22.2 answers `session/set_config_option` with an empty list.
+        let shown = codeg_hermes_selectors();
+        assert_eq!(fold_hermes_config_options(&shown, Vec::new()), shown);
+    }
+
+    #[tokio::test]
+    async fn a_hermes_0_22_6_session_shows_one_control_per_setting() {
+        let (sent, state) = establish_with(
+            BTreeMap::from([
+                ("model".to_string(), "custom:codeg:kimi-k3".to_string()),
+                ("mode".to_string(), "accept_edits".to_string()),
+                ("reasoning_effort".to_string(), "high".to_string()),
+            ]),
+            None,
+            hermes_native_options("ask", "custom:codeg:glm-5.2", "default", &[]),
+        )
+        .await;
+        assert_eq!(
+            sent,
+            [
+                (
+                    "set_config_option",
+                    serde_json::json!({
+                        "sessionId": "s1", "configId": "reasoning_effort", "value": "high"
+                    })
+                ),
+                (
+                    "set_model",
+                    serde_json::json!({"sessionId": "s1", "modelId": "custom:codeg:kimi-k3"})
+                ),
+                (
+                    "set_mode",
+                    serde_json::json!({"sessionId": "s1", "modeId": "accept_edits"})
+                ),
+            ]
+        );
+        let state = state.read().await;
+        let opts = state.config_options.as_deref().unwrap_or_default();
+        assert_eq!(ids(opts), ["model", "mode", "reasoning_effort"]);
+        assert_eq!(
+            current(&state),
+            BTreeMap::from([
+                ("mode".to_string(), "accept_edits".to_string()),
+                ("model".to_string(), "custom:codeg:kimi-k3".to_string()),
+                ("reasoning_effort".to_string(), "high".to_string()),
+            ])
+        );
+        assert_eq!(select(&opts[0]).groups.len(), 3, "codeg's grouped list");
+    }
+
+    /// What Hermes 0.22.6 pushes after a switch, from codeg or elsewhere,
+    /// moves codeg's selectors instead of replacing them.
+    #[tokio::test]
+    async fn a_hermes_push_moves_the_selectors_codeg_built() {
+        let state = hermes_state();
+        let mut shown = codeg_hermes_selectors();
+        shown.extend(
+            map_session_config_options(&hermes_native_options(
+                "ask",
+                "custom:codeg:glm-5.2",
+                "default",
+                &[],
+            ))
+            .into_iter()
+            .filter(|o| o.id == "reasoning_effort"),
+        );
+        emit_with_state(
+            &state,
+            &EventEmitter::Noop,
+            AcpEvent::SessionConfigOptions {
+                config_options: shown.clone(),
+            },
+        )
+        .await;
+        // As the session's update handling receives it.
+        let push: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "sessionUpdate": "config_option_update",
+            "configOptions": hermes_native_options_json(
+                "session",
+                "openrouter:openai/gpt-6",
+                "low",
+                &[],
+            ),
+        }))
+        .expect("a config_option_update");
+        emit_conversation_update(
+            &state,
+            &EventEmitter::Noop,
+            AgentType::Hermes,
+            push,
+            None,
+            &mut ToolCallOutputCache::default(),
+            &mut CodeBuddyLiveState::default(),
+        )
+        .await;
+        let state = state.read().await;
+        let opts = state.config_options.as_deref().unwrap_or_default();
+        assert_eq!(ids(opts), ["model", "mode", "reasoning_effort"]);
+        assert_eq!(
+            current(&state),
+            BTreeMap::from([
+                ("mode".to_string(), "dont_ask".to_string()),
+                ("model".to_string(), "openrouter:openai/gpt-6".to_string()),
+                ("reasoning_effort".to_string(), "low".to_string()),
+            ])
+        );
+        assert_eq!(select(&opts[0]).groups, select(&shown[0]).groups);
+        // Once a level is set Hermes stops offering `default`: its list is
+        // taken as it comes.
+        assert!(!select(&opts[2])
+            .options
+            .iter()
+            .any(|o| o.value == "default"));
+    }
+
+    /// An establishment's own list is the whole truth, whatever the session
+    /// showed before (a fork's or a load's parent, say).
+    #[tokio::test]
+    async fn a_hermes_establishment_list_replaces_what_was_shown() {
+        let state = hermes_state();
+        emit_with_state(
+            &state,
+            &EventEmitter::Noop,
+            AcpEvent::SessionConfigOptions {
+                config_options: codeg_hermes_selectors(),
+            },
+        )
+        .await;
+        emit_session_config_options_values(
+            &state,
+            &EventEmitter::Noop,
+            hermes_native_options("ask", "custom:codeg:glm-5.2", "default", &[]),
+        )
+        .await;
+        let state = state.read().await;
+        assert_eq!(
+            ids(state.config_options.as_deref().unwrap_or_default()),
+            ["edit_approval_policy", "model", "reasoning_effort"]
+        );
+    }
+
+    #[tokio::test]
+    async fn picking_hermes_reasoning_effort_keeps_codegs_other_selectors() {
+        let (outcome, sent, state) = pick_with("reasoning_effort", "high", false, true).await;
+        assert_eq!(
+            outcome,
+            Ok(SetterOutcome::Confirmed {
+                current: "high".to_string()
+            })
+        );
+        assert_eq!(
+            sent,
+            [(
+                "set_config_option",
+                serde_json::json!({
+                    "sessionId": "s1", "configId": "reasoning_effort", "value": "high"
+                })
+            )]
+        );
+        let state = state.read().await;
+        let opts = state.config_options.as_deref().unwrap_or_default();
+        assert_eq!(ids(opts), ["model", "mode", "reasoning_effort"]);
+        assert_eq!(
+            current(&state).get("reasoning_effort").map(String::as_str),
+            Some("high")
+        );
+        assert_eq!(
+            select(&opts[0]).groups,
+            select(&codeg_hermes_selectors()[0]).groups
         );
     }
 }
@@ -25158,6 +26080,12 @@ async fn emit_conversation_update(
                 &mut cb_state.title_overrides,
             )
             .unwrap_or(tc.title);
+            // The title a status may stand in for later (see `KimiToolTitles`).
+            if agent_type == AgentType::KimiCode {
+                cb_state
+                    .kimi_tool_titles
+                    .open(&tool_call_id, &title, &status);
+            }
             // Mark Cursor's identity-less MCP announcements as eligible for the
             // completion-time result sniff. Scoping the sniff to ids announced
             // with this exact title keeps a `shell`/`read` call whose OUTPUT
@@ -25199,6 +26127,8 @@ async fn emit_conversation_update(
         }
         SessionUpdate::ToolCallUpdate(mut tcu) => {
             let tool_call_id = tcu.tool_call_id.to_string();
+            // Read before the fields are taken apart below.
+            let kimi_status = kimi_status_frame(agent_type, &tcu.fields);
             // The closing "Response received" frame of an Antigravity question
             // would overwrite the answered card the bridge recorded (see
             // `take_antigravity_answered_close`).
@@ -25757,6 +26687,18 @@ async fn emit_conversation_update(
                 &mut cb_state.title_overrides,
             )
             .or(tcu.fields.title);
+            // A Kimi call's own title comes back once a status no longer
+            // stands in for it (see `KimiToolTitles`).
+            let title = if agent_type == AgentType::KimiCode {
+                cb_state.kimi_tool_titles.update(
+                    &tool_call_id,
+                    kimi_status,
+                    title,
+                    status.as_deref(),
+                )
+            } else {
+                title
+            };
             // Keep/close the sub-agent suppression window by status (an update
             // resolving to "agent" is a classified native sub-agent).
             track_subagent_window(
@@ -25820,7 +26762,7 @@ async fn emit_conversation_update(
                 "[ACP] agent pushed config_option_update: model={:?}",
                 current_model_id_from_opts(&map_session_config_options(&update.config_options))
             );
-            emit_session_config_options_values(state, emitter, update.config_options).await;
+            emit_session_config_options_update(state, emitter, update.config_options).await;
         }
         SessionUpdate::AvailableCommandsUpdate(update) => {
             let commands = available_command_infos(agent_type, &update.available_commands);
@@ -28035,6 +28977,42 @@ mod tests {
         );
     }
 
+    /// OpenCode 2.2.5's list as it sent it to codeg's capabilities, plus a
+    /// `steer`. Only ZCode leaves any of them out, the commands codeg drives
+    /// itself; OpenCode lists its `goal` like every other agent, though over
+    /// ACP it does not work yet (see the OpenCode entry in `acp::registry`).
+    #[test]
+    fn opencode_lists_goal_and_zcode_leaves_its_own_commands_out() {
+        let commands: Vec<agent_client_protocol::schema::v1::AvailableCommand> =
+            serde_json::from_value(serde_json::json!([
+                {"name": "init", "description": "guided AGENTS.md setup", "input": null},
+                {"name": "review", "description": "review changes [commit|branch|pr], defaults to uncommitted", "input": null},
+                {"name": "goal", "description": "keep working until an objective is met [pause|resume|clear]", "input": null},
+                {"name": "compact", "description": "Compact the session", "input": null},
+                {"name": "steer", "description": "steer the running turn", "input": null},
+            ]))
+            .unwrap();
+        let names = |agent_type| {
+            available_command_infos(agent_type, &commands)
+                .into_iter()
+                .map(|command| command.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(AgentType::ZCode), ["init", "review", "compact"]);
+        for agent_type in [
+            AgentType::OpenCode,
+            AgentType::ClaudeCode,
+            AgentType::Codex,
+            AgentType::KimiCode,
+        ] {
+            assert_eq!(
+                names(agent_type),
+                ["init", "review", "goal", "compact", "steer"],
+                "{agent_type:?}"
+            );
+        }
+    }
+
     #[test]
     fn goal_control_action_roundtrips_codex_wire_values() {
         // codex-acp #293: `_codex/session/goal_control` expects lowercase
@@ -28190,6 +29168,44 @@ mod tests {
                 .map(|info| info.version.as_str()),
             Some("2.3.0")
         );
+    }
+
+    /// zcode-acp-server 0.82.0's `initialize` answer to codeg's exact
+    /// `clientCapabilities`, recorded against a stand-in backend: from 0.81.0
+    /// the bridge advertises the steering extension, with a `timings` list of
+    /// its own. The answer must still parse, and the advertisement alone must
+    /// not move ZCode off the pull channel: codeg has no steering floor for
+    /// it, and the bridge's `_session/steering` still starts a turn of its own
+    /// when the running one ends just before the backend takes the text.
+    #[test]
+    fn zcode_0820_initialize_advertises_steering_but_keeps_the_pull_channel() {
+        let wire = serde_json::json!({
+            "_meta": {"steering": {"supported": true, "timings": ["now", "next"]}},
+            "agentCapabilities": {
+                "_meta": {"zcode": {"fs": true, "turnState": ["$/zcode/turnState", "_zcode/turnState"]}},
+                "loadSession": true,
+                "mcpCapabilities": {"http": true, "sse": false},
+                "promptCapabilities": {"audio": false, "embeddedContext": true, "image": true},
+                "sessionCapabilities": {"fork": {}, "list": {}, "resume": {}}
+            },
+            "agentInfo": {"name": "zcode-acp-server", "title": "ZCode", "version": "0.82.0"},
+            "authMethods": [{
+                "description": "Reads the GLM API key from the ZCode desktop app's credential files (~/.zcode/v2) or a saved zcode-acp account. No editor-side credentials required.",
+                "id": "zcode-credentials",
+                "name": "ZCode built-in credentials"
+            }],
+            "protocolVersion": 1
+        });
+        let response: agent_client_protocol::schema::v1::InitializeResponse =
+            serde_json::from_value(wire).expect("0.82.0 initialize parses");
+        assert_eq!(response.protocol_version, ProtocolVersion::V1);
+        assert!(response.agent_capabilities.load_session);
+        assert!(init_advertises_steering(response.meta.as_ref()));
+        assert!(!synthesize_native_steering(
+            AgentType::ZCode,
+            response.meta.as_ref(),
+            response.agent_info.as_ref(),
+        ));
     }
 
     #[test]
@@ -30111,6 +31127,120 @@ mod tests {
         // session to work around a lock that clears on its own.
         let custom = AgentType::custom("glm-acp-agent").expect("valid id");
         assert!(!recovers_load_failure_locally(custom, Some("session_busy")));
+    }
+
+    /// claude-agent-acp 0.100.0 (#1508) names why Claude Code refused to start.
+    /// The bodies are the ones measured on `session/resume` and `session/load`
+    /// with 0.100.0, and with 0.99.1 for the same refusal.
+    #[test]
+    fn classify_load_error_reads_claude_startup_failure_reason() {
+        let error = |body: serde_json::Value| -> agent_client_protocol::Error {
+            serde_json::from_value(body).expect("an ACP error body")
+        };
+        let refused = |reason: &str, message: &str| {
+            error(serde_json::json!({
+                "code": -32603,
+                "message": message,
+                "data": { "startupFailureReason": reason }
+            }))
+        };
+
+        // A background job holds the session: busy, the history kept.
+        let held = refused(
+            "session_held_by_background",
+            "Internal error: Error: That session is running in the background. Run \
+             `claude agents` to find it and open it, or stop it there first to resume it \
+             here. Add --fork-session to branch off a copy instead.",
+        );
+        assert_eq!(classify_session_load_error(&held), Some("session_busy"));
+        assert!(!claude_refused_to_start(&held));
+        // The worktree the session is bound to: unavailable, never a new session.
+        for reason in ["worktree_resume_refused", "worktree_unverified"] {
+            let worktree = refused(reason, "Internal error: Error: cannot resume into worktree");
+            assert_eq!(
+                classify_session_load_error(&worktree),
+                Some("session_unavailable"),
+                "{reason}"
+            );
+            assert!(!claude_refused_to_start(&worktree), "{reason}");
+        }
+        // A reason of the machine is left to the caller, which ends the open.
+        let proxy = refused(
+            "proxy_invalid",
+            "Internal error: Invalid proxy URL in HTTPS_PROXY: \"proxy.local:3128\" cannot \
+             be parsed as a URL.",
+        );
+        assert_eq!(classify_session_load_error(&proxy), None);
+        assert!(claude_refused_to_start(&proxy));
+        let cwd = error(serde_json::json!({
+            "code": -32602,
+            "message": "Invalid params: The working directory was deleted.",
+            "data": { "startupFailureReason": "cwd_unavailable" }
+        }));
+        assert!(claude_refused_to_start(&cwd));
+        // One a sign-in fixes keeps the ladder's `authRequired` handling.
+        let signed_out = error(serde_json::json!({
+            "code": -32000,
+            "message": "Authentication required: Your Claude apps gateway sign-in ended.",
+            "data": { "startupFailureReason": "gateway_signin_required" }
+        }));
+        assert_eq!(classify_session_load_error(&signed_out), None);
+        assert!(!claude_refused_to_start(&signed_out));
+
+        // 0.99.1 carries the same refusal only as the CLI's exit, which still
+        // reads as unavailable from its text.
+        let held_0_99_1 = error(serde_json::json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": {
+                "details": "Claude Code process exited with code 1. stderr: Error: That \
+                    session is running in the background. Run `claude agents` to find it \
+                    and open it, or stop it there first to resume it here."
+            }
+        }));
+        assert_eq!(
+            classify_session_load_error(&held_0_99_1),
+            Some("session_unavailable")
+        );
+        assert!(!claude_refused_to_start(&held_0_99_1));
+    }
+
+    /// The reason is the machine-readable twin of the CLI's sentence, so the
+    /// text the user reads stops at the sentence. Any other `data` stays.
+    #[test]
+    fn agent_error_text_leaves_out_a_lone_startup_failure_reason() {
+        let error = |body: serde_json::Value| -> agent_client_protocol::Error {
+            serde_json::from_value(body).expect("an ACP error body")
+        };
+        let proxy = error(serde_json::json!({
+            "code": -32603,
+            "message": "Internal error: Invalid proxy URL in HTTPS_PROXY.",
+            "data": { "startupFailureReason": "proxy_invalid" }
+        }));
+        assert_eq!(
+            agent_error_text(&proxy),
+            "Internal error: Invalid proxy URL in HTTPS_PROXY."
+        );
+        for body in [
+            serde_json::json!({
+                "code": -32603,
+                "message": "Internal error",
+                "data": { "details": "Claude Code process exited with code 1." }
+            }),
+            serde_json::json!({
+                "code": -32603,
+                "message": "Internal error: refused",
+                "data": { "startupFailureReason": "proxy_invalid", "extra": 1 }
+            }),
+            serde_json::json!({
+                "code": -32603,
+                "message": "Internal error: refused",
+                "data": { "startupFailureReason": 7 }
+            }),
+        ] {
+            let e = error(body);
+            assert_eq!(agent_error_text(&e), e.to_string());
+        }
     }
 
     /// The same lock as above, as each codex-acp version reports it. Both bodies
@@ -35429,7 +36559,7 @@ mod tests {
         assert!(!prompt_rejection_is_terminal(&e));
         // What the user reads is the agent's own sentence, sanitized — the
         // banner is the only place the reason exists.
-        let rendered = AcpError::protocol(e.to_string()).to_string();
+        let rendered = AcpError::protocol(agent_error_text(&e)).to_string();
         assert!(rendered.contains("/mcp"), "{rendered}");
     }
 
@@ -35705,6 +36835,11 @@ mod tests {
         terminal: Option<String>,
         /// Refuse session/new, once released, instead of opening a session.
         fail_session_new: bool,
+        /// Advertise `loadSession` and answer session/load with this ACP error
+        /// body, as the agent's JSON-RPC answer would carry it.
+        load_error: Option<serde_json::Value>,
+        /// Advertise `session/resume` and answer it with this ACP error body.
+        resume_error: Option<serde_json::Value>,
     }
 
     /// An in-process agent for `run_connection`'s handshake. It reports each
@@ -35727,9 +36862,19 @@ mod tests {
                 stall_initialize,
                 terminal,
                 fail_session_new,
+                load_error,
+                resume_error,
             } = script;
+            let advertises_load = load_error.is_some();
+            let advertises_resume = resume_error.is_some();
             let (seen_tx, seen) = mpsc::unbounded_channel();
-            let (init_seen, new_seen, prompt_seen) = (seen_tx.clone(), seen_tx.clone(), seen_tx);
+            let (init_seen, new_seen, load_seen, resume_seen, prompt_seen) = (
+                seen_tx.clone(),
+                seen_tx.clone(),
+                seen_tx.clone(),
+                seen_tx.clone(),
+                seen_tx,
+            );
             let open_session = Arc::new(tokio::sync::Notify::new());
             let release = Arc::clone(&open_session);
             let (closed_tx, closed) = oneshot::channel();
@@ -35749,7 +36894,48 @@ mod tests {
                                 });
                                 return Ok(());
                             }
-                            responder.respond(InitializeResponse::new(ProtocolVersion::V1))
+                            use agent_client_protocol::schema::v1::{
+                                AgentCapabilities, SessionCapabilities, SessionResumeCapabilities,
+                            };
+                            let mut sessions = SessionCapabilities::new();
+                            if advertises_resume {
+                                sessions = sessions.resume(SessionResumeCapabilities::new());
+                            }
+                            responder.respond(
+                                InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
+                                    AgentCapabilities::new()
+                                        .load_session(advertises_load)
+                                        .session_capabilities(sessions),
+                                ),
+                            )
+                        },
+                        on_receive_request!(),
+                    )
+                    .on_receive_request(
+                        async move |_req: LoadSessionRequest,
+                                    responder: Responder<LoadSessionResponse>,
+                                    _cx: ConnectionTo<Client>| {
+                            let _ = load_seen.send("session/load".to_string());
+                            match load_error.clone() {
+                                Some(body) => responder.respond_with_error(
+                                    serde_json::from_value(body).expect("an ACP error body"),
+                                ),
+                                None => responder.respond(LoadSessionResponse::new()),
+                            }
+                        },
+                        on_receive_request!(),
+                    )
+                    .on_receive_request(
+                        async move |_req: ResumeSessionRequest,
+                                    responder: Responder<ResumeSessionResponse>,
+                                    _cx: ConnectionTo<Client>| {
+                            let _ = resume_seen.send("session/resume".to_string());
+                            match resume_error.clone() {
+                                Some(body) => responder.respond_with_error(
+                                    serde_json::from_value(body).expect("an ACP error body"),
+                                ),
+                                None => responder.respond(ResumeSessionResponse::new()),
+                            }
                         },
                         on_receive_request!(),
                     )
@@ -35854,6 +37040,16 @@ mod tests {
 
     impl HandshakeRun {
         async fn start(client_end: agent_client_protocol::Channel) -> Self {
+            Self::start_reopening(client_end, None).await
+        }
+
+        /// [`Self::start`] for a conversation that already has the agent
+        /// session `session_id`, which the handshake reopens.
+        async fn start_reopening(
+            client_end: agent_client_protocol::Channel,
+            session_id: Option<&str>,
+        ) -> Self {
+            let session_id = session_id.map(str::to_string);
             let dir = tempfile::tempdir().expect("tempdir");
             let cwd = dir.path().to_path_buf();
             // An agent codeg forwards no MCP servers to, so the handshake reads
@@ -35881,7 +37077,7 @@ mod tests {
                         "conn-handshake".to_string(),
                         agent_type,
                         Some(cwd.to_string_lossy().into_owned()),
-                        None,
+                        session_id,
                         cmd_rx,
                         run_handshake,
                         EventEmitter::Noop,
@@ -36033,6 +37229,187 @@ mod tests {
         let (ended, _) = run.ended().await;
         assert!(ended.is_ok(), "{ended:?}");
         agent.closed().await;
+    }
+
+    /// Reopen the session `s-old` with an agent following `script`, and return
+    /// how the handshake ended, what it emitted, and every request the agent
+    /// got.
+    async fn reopen_with(
+        script: HandshakeScript,
+    ) -> (Result<(), AcpError>, Vec<AcpEvent>, Vec<String>) {
+        let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+        let mut agent = HandshakeAgent::start(agent_end, script);
+        let run = HandshakeRun::start_reopening(client_end, Some("s-old")).await;
+        let mut requests = vec![agent.next_request().await];
+        // A `session/new` fallback is held by the agent until released: let
+        // the handshake go there, as `a_cancelled_handshake_stops_waiting_for_the_session`.
+        // One that comes later leaves the handshake waiting, so `ended` fails.
+        while let Ok(Some(next)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), agent.seen.recv()).await
+        {
+            let fallback = next == "session/new";
+            requests.push(next);
+            if fallback {
+                run.handshake.cancel();
+                break;
+            }
+        }
+        let (ended, emitted) = run.ended().await;
+        while let Ok(next) = agent.seen.try_recv() {
+            requests.push(next);
+        }
+        agent.closed().await;
+        (ended, emitted, requests)
+    }
+
+    /// [`reopen_with`] an agent that answers session/load with `load_error`.
+    async fn reopen_failing_with(
+        load_error: serde_json::Value,
+    ) -> (Result<(), AcpError>, Vec<AcpEvent>, Vec<String>) {
+        reopen_with(HandshakeScript {
+            load_error: Some(load_error),
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// [`reopen_with`] an agent that, as claude-agent-acp does, offers
+    /// session/resume and answers it and session/load with the same `error`.
+    async fn reopen_resume_and_load_failing_with(
+        error: serde_json::Value,
+    ) -> (Result<(), AcpError>, Vec<AcpEvent>, Vec<String>) {
+        reopen_with(HandshakeScript {
+            load_error: Some(error.clone()),
+            resume_error: Some(error),
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// claude-agent-acp 0.100.0 (#1508) on a Claude Code that refused to start
+    /// for a reason of the machine: the CLI's own sentence as the message, and
+    /// the reason in `data` (the body as measured, `HTTPS_PROXY` set to
+    /// `proxy.local:3128`). A `session/new` would be refused the same way, so
+    /// the handshake ends with the CLI's words, without the reason's JSON, and
+    /// asks for no new session. (Any agent can send this body; the harness's
+    /// is not Claude, which would read the machine's MCP config.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_claude_code_refusing_to_start_ends_the_reopen_with_its_own_words() {
+        let message = "Internal error: Invalid proxy URL in HTTPS_PROXY: \"proxy.local:3128\" \
+            cannot be parsed as a URL.\nProxy settings must be a complete URL including the \
+            scheme, e.g. \"http://proxy.example.com:8080\".\nFix or unset HTTPS_PROXY and \
+            restart Claude Code.";
+        let (ended, emitted, requests) = reopen_resume_and_load_failing_with(serde_json::json!({
+            "code": -32603,
+            "message": message,
+            "data": { "startupFailureReason": "proxy_invalid" }
+        }))
+        .await;
+        assert_eq!(requests, ["initialize", "session/resume", "session/load"]);
+        assert!(
+            matches!(&ended, Err(AcpError::Protocol(text)) if text == message),
+            "{ended:?}"
+        );
+        assert!(
+            !emitted.iter().any(|e| matches!(
+                e,
+                AcpEvent::SessionStarted { .. }
+                    | AcpEvent::SessionLoadFailed { .. }
+                    | AcpEvent::Error { .. }
+            )),
+            "no fresh start is announced: {emitted:#?}"
+        );
+    }
+
+    /// A Claude Code background job holds the session (measured: a live
+    /// non-interactive holder registered for it). It is busy, not gone, so the
+    /// conversation keeps it: the banner, and no `session/new` that would bind
+    /// the row to an empty session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_running_in_the_background_keeps_its_conversation() {
+        let (ended, emitted, requests) = reopen_resume_and_load_failing_with(serde_json::json!({
+            "code": -32603,
+            "message": "Internal error: Error: That session is running in the background. \
+                Run `claude agents` to find it and open it, or stop it there first to \
+                resume it here. Add --fork-session to branch off a copy instead.",
+            "data": { "startupFailureReason": "session_held_by_background" }
+        }))
+        .await;
+        assert_eq!(requests, ["initialize", "session/resume", "session/load"]);
+        assert!(ended.is_ok(), "{ended:?}");
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                AcpEvent::SessionLoadFailed { session_id, code, .. }
+                    if session_id == "s-old" && code == "session_busy"
+            )),
+            "{emitted:#?}"
+        );
+    }
+
+    /// A session bound to a worktree Claude Code will not enter cannot be
+    /// opened now, but it is not gone either: the banner, no `session/new`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_claude_code_will_not_reenter_keeps_its_conversation() {
+        for reason in ["worktree_resume_refused", "worktree_unverified"] {
+            let (ended, emitted, requests) = reopen_failing_with(serde_json::json!({
+                "code": -32603,
+                "message": "Internal error: Error: cannot resume into worktree /w: unsafe.",
+                "data": { "startupFailureReason": reason }
+            }))
+            .await;
+            assert_eq!(requests, ["initialize", "session/load"], "{reason}");
+            assert!(ended.is_ok(), "{reason}: {ended:?}");
+            assert!(
+                emitted.iter().any(|e| matches!(
+                    e,
+                    AcpEvent::SessionLoadFailed { session_id, code, .. }
+                        if session_id == "s-old" && code == "session_unavailable"
+                )),
+                "{reason}: {emitted:#?}"
+            );
+        }
+    }
+
+    /// The reasons a new sign-in fixes come as `authRequired` and keep the
+    /// ladder's own handling of that code: no banner, no `session/new`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_startup_refusal_a_sign_in_fixes_keeps_the_auth_path() {
+        let (ended, emitted, requests) = reopen_failing_with(serde_json::json!({
+            "code": -32000,
+            "message": "Authentication required: Your Claude apps gateway sign-in ended.",
+            "data": { "startupFailureReason": "gateway_signin_required" }
+        }))
+        .await;
+        assert_eq!(requests, ["initialize", "session/load"]);
+        assert!(ended.is_ok(), "{ended:?}");
+        assert!(
+            !emitted.iter().any(|e| matches!(
+                e,
+                AcpEvent::SessionLoadFailed { .. } | AcpEvent::Error { .. }
+            )),
+            "{emitted:#?}"
+        );
+    }
+
+    /// The control: a failure without a reason still falls back to a new
+    /// session, announced first.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unexplained_load_failure_still_falls_back_to_a_new_session() {
+        let (_ended, emitted, requests) = reopen_failing_with(serde_json::json!({
+            "code": -32603,
+            "message": "Internal error",
+            "data": { "details": "something broke" }
+        }))
+        .await;
+        assert_eq!(requests, ["initialize", "session/load", "session/new"]);
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                AcpEvent::Error { code: Some(code), .. } if code == SESSION_LOAD_FALLBACK_ERROR_CODE
+            )),
+            "{emitted:#?}"
+        );
     }
 
     /// A [`HandshakeAgent`] that starts a terminal while opening the session,
@@ -43429,6 +44806,217 @@ mod tests {
             ),
             None
         );
+    }
+
+    // ─── Kimi Code status titles ─────────────────────────────────────────
+
+    /// The frames Kimi Code 2.5.2 sent for an MCP call that had to reconnect
+    /// (captured live: the server came back with a changed definition, so the
+    /// call first failed on the old connection).
+    fn kimi_reconnecting_mcp_call(tool_call_id: &str) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": tool_call_id,
+                "title": "mcp__resp__ping",
+                "kind": "other",
+                "status": "pending",
+                "content": [{"type": "content", "content": {"type": "text", "text": "{\"text\": \"hi\", \"count\": 1}"}}],
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "title": "mcp__resp__ping",
+                "kind": "other",
+                "status": "in_progress",
+                "rawInput": {"text": "hi", "count": 1},
+                "content": [{"type": "content", "content": {"type": "text", "text": "{\"text\":\"hi\",\"count\":1}"}}],
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "title": "MCP connection lost — reconnecting…",
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "PONG from start #2 (v2) args={\"text\":\"hi\",\"count\":1}"}}],
+                "rawOutput": "PONG from start #2 (v2) args={\"text\":\"hi\",\"count\":1}",
+            }),
+        ]
+    }
+
+    /// Drive `frames` through `emit_conversation_update` on one connection and
+    /// return the title each emitted tool-call event carries, in order, plus
+    /// how many Kimi calls are still tracked afterwards.
+    async fn tool_titles_emitted(
+        agent_type: AgentType,
+        frames: &[serde_json::Value],
+    ) -> (Vec<Option<String>>, usize) {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-titles".to_string(),
+            agent_type,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let emitter = EventEmitter::Noop;
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        for frame in frames {
+            let update: SessionUpdate =
+                serde_json::from_value(frame.clone()).expect("valid tool-call wire shape");
+            emit_conversation_update(
+                &state, &emitter, agent_type, update, None, &mut cache, &mut cb,
+            )
+            .await;
+        }
+        let guard = state.read().await;
+        let events = guard.recent_events_after(0).expect("events recorded");
+        let titles = events
+            .iter()
+            .filter_map(|e| match &e.payload {
+                AcpEvent::ToolCall { title, .. } => Some(Some(title.clone())),
+                AcpEvent::ToolCallUpdate { title, .. } => Some(title.clone()),
+                _ => None,
+            })
+            .collect();
+        (titles, cb.kimi_tool_titles.calls.len())
+    }
+
+    /// Kimi retitles a call's card with a status and never puts the call's
+    /// own title back, so the frame that settles the call has to: otherwise
+    /// the card stays "MCP connection lost — reconnecting…" and the frontend,
+    /// which names a live call from its title, no longer sees an MCP tool.
+    #[tokio::test]
+    async fn a_kimi_status_title_gives_way_to_the_calls_own_when_it_settles() {
+        let (titles, tracked) =
+            tool_titles_emitted(AgentType::KimiCode, &kimi_reconnecting_mcp_call("1:call_1")).await;
+        assert_eq!(
+            titles,
+            [
+                Some("mcp__resp__ping".to_string()),
+                Some("mcp__resp__ping".to_string()),
+                Some("MCP connection lost — reconnecting…".to_string()),
+                Some("mcp__resp__ping".to_string()),
+            ]
+        );
+        assert_eq!(tracked, 0, "a settled call is no longer tracked");
+
+        // The opening frame alone is enough to know the call's own title.
+        let mut opened_only = kimi_reconnecting_mcp_call("1:call_4");
+        opened_only.remove(1);
+        let (titles, _) = tool_titles_emitted(AgentType::KimiCode, &opened_only).await;
+        assert_eq!(titles.last(), Some(&Some("mcp__resp__ping".to_string())));
+
+        // A call no status stood in for settles without a title, as before:
+        // the card already shows its own.
+        let mut quiet = kimi_reconnecting_mcp_call("1:call_2");
+        quiet.remove(2);
+        let (titles, tracked) = tool_titles_emitted(AgentType::KimiCode, &quiet).await;
+        assert_eq!(titles.last(), Some(&None));
+        assert_eq!(tracked, 0);
+
+        // Only Kimi gets this: another agent's title-only update is a real
+        // retitle, and the settling frame leaves it be.
+        let (titles, _) =
+            tool_titles_emitted(AgentType::Gemini, &kimi_reconnecting_mcp_call("1:call_3")).await;
+        assert_eq!(titles.last(), Some(&None));
+    }
+
+    /// A status shown after the call's own title was revised gives way to the
+    /// revised title, and a call still open keeps whatever the agent sent.
+    #[test]
+    fn kimi_tool_titles_follow_the_latest_own_title() {
+        let mut titles = KimiToolTitles::default();
+        // Opened lazily under the tool's name, then upgraded to its
+        // description once the call was dispatched.
+        titles.open("c1", "tool", "pending");
+        assert_eq!(
+            titles.update(
+                "c1",
+                false,
+                Some("Ping the server".to_string()),
+                Some("in_progress")
+            ),
+            Some("Ping the server".to_string())
+        );
+        assert_eq!(
+            titles.update("c1", true, Some("Waiting…".to_string()), None),
+            Some("Waiting…".to_string())
+        );
+        // A frame that carries neither a title nor a final status keeps the
+        // status on the card.
+        assert_eq!(titles.update("c1", false, None, Some("in_progress")), None);
+        assert_eq!(
+            titles.update("c1", false, None, Some("failed")),
+            Some("Ping the server".to_string())
+        );
+        // A call opened already settled (a `session/load` replay) is not kept.
+        titles.open("c2", "mcp__resp__ping", "completed");
+        assert!(titles.calls.is_empty());
+    }
+
+    /// Qoder 1.1.84 hides every MCP server's tools behind `mcp_call` unless a
+    /// settings source sets `mcp.lazyLoad`, so codeg launches it with lazy
+    /// loading off; no other agent gets the flag.
+    #[test]
+    fn qoder_launches_with_mcp_lazy_loading_off() {
+        let [flag, settings] = npx_launch_extra_args(AgentType::Qoder) else {
+            panic!("Qoder gets `--settings <json>`");
+        };
+        assert_eq!(*flag, "--settings");
+        let settings: serde_json::Value =
+            serde_json::from_str(settings).expect("the settings are JSON");
+        assert_eq!(settings, serde_json::json!({"mcp": {"lazyLoad": false}}));
+        for other in [
+            AgentType::Grok,
+            AgentType::KimiCode,
+            AgentType::CodeBuddy,
+            AgentType::Hermes,
+            AgentType::Gemini,
+        ] {
+            assert!(npx_launch_extra_args(other).is_empty(), "{other}");
+        }
+    }
+
+    /// The launch `build_agent` assembles for Qoder carries the settings right
+    /// after the registry's `--acp`.
+    #[tokio::test]
+    async fn qoder_launch_carries_the_lazy_loading_settings() {
+        let tail = Arc::new(StderrTail::new());
+        let (agent, _) = build_agent(
+            AgentType::Qoder,
+            &BTreeMap::new(),
+            Path::new("."),
+            &tail,
+            None,
+            false,
+        )
+        .await
+        .expect("Qoder's launch builds");
+        let launch = format!("{agent:?}");
+        let expected = format!(
+            "{:?}, {:?}, {:?}",
+            "--acp", "--settings", QODER_LAUNCH_SETTINGS
+        );
+        assert!(launch.contains(&expected), "{launch}");
+    }
+
+    /// Only an update carrying a title and nothing else is a Kimi status.
+    #[test]
+    fn a_kimi_status_frame_carries_a_title_alone() {
+        use agent_client_protocol::schema::v1::{ToolCallStatus, ToolCallUpdateFields};
+        let status = ToolCallUpdateFields::new().title("MCP connection lost — reconnecting…");
+        assert!(kimi_status_frame(AgentType::KimiCode, &status));
+        assert!(!kimi_status_frame(AgentType::Gemini, &status));
+        let revision = ToolCallUpdateFields::new()
+            .title("mcp__resp__ping")
+            .status(ToolCallStatus::InProgress);
+        assert!(!kimi_status_frame(AgentType::KimiCode, &revision));
+        let settle = ToolCallUpdateFields::new().status(ToolCallStatus::Completed);
+        assert!(!kimi_status_frame(AgentType::KimiCode, &settle));
     }
 
     // ─── codebuddy_meta_marks_subagent ───────────────────────────────────

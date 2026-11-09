@@ -17,6 +17,7 @@ pub mod acp;
 pub mod acp_transcript;
 pub mod agent;
 pub use acp::scratch_dir::scratch_sweep_task;
+pub mod agent_turn_files;
 pub use acp::{
     idle_sweep_task, idle_timeout_from_env, lifecycle_subscriber_task, SWEEP_INTERVAL_SECS,
 };
@@ -2160,6 +2161,7 @@ mod tauri_app {
                 version_control::validate_github_token,
                 version_control::validate_gitlab_token,
                 version_control::validate_gitea_token,
+                version_control::validate_cnb_token,
                 version_control::update_github_accounts,
                 version_control::save_account_token,
                 version_control::get_account_token,
@@ -2235,6 +2237,7 @@ mod tauri_app {
                 crate::commands::custom_agents::acp_add_registry_agent,
                 crate::commands::custom_agents::acp_current_platform,
                 acp_commands::acp_list_agent_skills,
+                acp_commands::acp_list_agent_runtime_skills,
                 acp_commands::acp_read_agent_skill,
                 acp_commands::acp_save_agent_skill,
                 acp_commands::acp_delete_agent_skill,
@@ -2360,6 +2363,7 @@ mod tauri_app {
                 work_task_commands::work_task_template_delete,
                 forge_commands::folder_forge_remote,
                 forge_commands::forge_list_issues,
+                forge_commands::forge_issue_detail,
                 forge_commands::forge_tab_count,
                 forge_commands::forge_list_labels,
                 forge_commands::forge_list_comments,
@@ -2372,6 +2376,7 @@ mod tauri_app {
                 forge_commands::forge_merge_options,
                 forge_commands::forge_merge_change,
                 forge_commands::work_task_create_from_forge,
+                forge_commands::work_task_create_from_forge_issues,
                 forge_commands::work_task_lookup_by_source,
                 forge_commands::forge_settings_get,
                 forge_commands::forge_settings_set,
@@ -2475,6 +2480,8 @@ mod tauri_app {
                 chat_channel_commands::set_chat_event_filter,
                 chat_channel_commands::get_chat_event_webhooks,
                 chat_channel_commands::set_chat_event_webhooks,
+                chat_channel_commands::get_chat_event_top_level_only,
+                chat_channel_commands::set_chat_event_top_level_only,
                 chat_channel_commands::get_chat_message_language,
                 chat_channel_commands::set_chat_message_language,
                 chat_channel_commands::get_chat_folder_inbound_idle_minutes,
